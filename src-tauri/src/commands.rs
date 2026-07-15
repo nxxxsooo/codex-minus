@@ -2,10 +2,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use codex_plus_core::models::{DeleteResult, SessionRef};
-use codex_plus_core::relay_environment::RelayEnvironmentReport;
-use codex_plus_core::settings::{BackendSettings, RelayProfile, SettingsStore};
+use codex_plus_core::settings::{BackendSettings, RelayContextSelection, RelayProfile, SettingsStore};
 use codex_plus_core::status::LaunchStatus;
-use codex_plus_core::user_scripts::UserScriptManager;
 use codex_plus_core::zed_remote::{ZedOpenStrategy, ZedRemoteProject};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -342,16 +340,6 @@ pub struct StartupPayload {
     pub show_update: bool,
 }
 
-#[tauri::command]
-pub fn backend_version() -> CommandResult<VersionPayload> {
-    ok(
-        "后端版本已读取。",
-        VersionPayload {
-            version: codex_plus_core::version::VERSION.to_string(),
-        },
-    )
-}
-
 
 #[tauri::command]
 pub fn load_settings() -> CommandResult<SettingsPayload> {
@@ -576,6 +564,7 @@ fn normalize_settings_before_save(mut settings: BackendSettings) -> BackendSetti
         .provider_sync_last_selected_provider
         .trim()
         .to_string();
+    scrub_managed_context_state(&mut settings);
     settings
 }
 
@@ -828,16 +817,6 @@ pub fn check_env_conflicts() -> CommandResult<EnvConflictsPayload> {
     ok(message, EnvConflictsPayload { conflicts })
 }
 
-#[tauri::command]
-pub fn check_relay_environment() -> CommandResult<RelayEnvironmentReport> {
-    let report = codex_plus_core::relay_environment::inspect_relay_environment();
-    let message = if report.all_passed() {
-        "中转站环境配置检测全部通过。"
-    } else {
-        "检测到可能影响中转站配置的环境问题。"
-    };
-    ok(message, report)
-}
 
 #[tauri::command]
 pub fn remove_env_conflicts(
@@ -896,6 +875,14 @@ pub struct RelayProfileSwitchRequest {
 
 #[tauri::command]
 pub fn switch_relay_profile(
+    request: RelayProfileSwitchRequest,
+) -> CommandResult<RelaySwitchPayload> {
+    let result = with_context_tables_protected(|| switch_relay_profile_unguarded(request));
+    scrub_managed_context_store();
+    result
+}
+
+fn switch_relay_profile_unguarded(
     request: RelayProfileSwitchRequest,
 ) -> CommandResult<RelaySwitchPayload> {
     let Ok(_guard) = relay_switch_mutex().lock() else {
@@ -1033,156 +1020,6 @@ pub fn backfill_relay_profile_from_live(
     }
 }
 
-#[tauri::command]
-pub fn list_context_entries(
-    request: ContextSettingsRequest,
-) -> CommandResult<ContextEntriesPayload> {
-    match codex_plus_core::relay_config::list_context_entries_from_common_config(
-        &request.settings.relay_context_config_contents,
-    ) {
-        Ok(entries) => ok(
-            "工具与插件列表已读取。",
-            ContextEntriesPayload {
-                settings: request.settings,
-                entries,
-            },
-        ),
-        Err(error) => failed(
-            &format!("读取工具与插件列表失败：{error}"),
-            ContextEntriesPayload {
-                settings: request.settings,
-                entries: empty_context_entries(),
-            },
-        ),
-    }
-}
-
-#[tauri::command]
-pub fn read_live_context_entries() -> CommandResult<LiveContextEntriesPayload> {
-    let home = codex_plus_core::relay_config::default_codex_home_dir();
-    let config_path = home.join("config.toml");
-    let config = read_optional_text_file(&config_path).unwrap_or_default();
-    match codex_plus_core::relay_config::list_context_entries_from_common_config(&config) {
-        Ok(entries) => ok(
-            "live 工具与插件已读取。",
-            LiveContextEntriesPayload { entries },
-        ),
-        Err(error) => failed(
-            &format!("读取 live 工具与插件失败：{error}"),
-            LiveContextEntriesPayload {
-                entries: empty_context_entries(),
-            },
-        ),
-    }
-}
-
-#[tauri::command]
-pub fn upsert_context_entry(request: ContextEntryRequest) -> CommandResult<ContextEntriesPayload> {
-    let mut settings = request.settings;
-    match codex_plus_core::relay_config::upsert_context_entry_in_common_config(
-        &settings.relay_context_config_contents,
-        &request.kind,
-        &request.id,
-        &request.toml_body,
-    ) {
-        Ok(common) => {
-            settings.relay_context_config_contents = common;
-            list_context_entries(ContextSettingsRequest { settings })
-        }
-        Err(error) => failed(
-            &format!("保存工具与插件失败：{error}"),
-            ContextEntriesPayload {
-                settings,
-                entries: empty_context_entries(),
-            },
-        ),
-    }
-}
-
-#[tauri::command]
-pub fn sync_live_context_entries(
-    request: ContextSettingsRequest,
-) -> CommandResult<LiveContextEntriesPayload> {
-    let home = codex_plus_core::relay_config::default_codex_home_dir();
-    let config_path = home.join("config.toml");
-    let current_config = match read_optional_text_file(&config_path) {
-        Ok(config) => config,
-        Err(error) => {
-            return failed(
-                &format!("读取 live config.toml 失败：{error}"),
-                LiveContextEntriesPayload {
-                    entries: empty_context_entries(),
-                },
-            );
-        }
-    };
-    let updated_config = match codex_plus_core::relay_config::sync_live_config_context_entries(
-        &current_config,
-        &request.settings.relay_context_config_contents,
-    ) {
-        Ok(config) => config,
-        Err(error) => {
-            return failed(
-                &format!("同步 live 工具与插件失败：{error}"),
-                LiveContextEntriesPayload {
-                    entries: empty_context_entries(),
-                },
-            );
-        }
-    };
-    if let Some(parent) = config_path.parent() {
-        if let Err(error) = std::fs::create_dir_all(parent) {
-            return failed(
-                &format!("创建 Codex 配置目录失败：{error}"),
-                LiveContextEntriesPayload {
-                    entries: empty_context_entries(),
-                },
-            );
-        }
-    }
-    if let Err(error) = std::fs::write(&config_path, &updated_config) {
-        return failed(
-            &format!("写入 live config.toml 失败：{error}"),
-            LiveContextEntriesPayload {
-                entries: empty_context_entries(),
-            },
-        );
-    }
-    match codex_plus_core::relay_config::list_context_entries_from_common_config(&updated_config) {
-        Ok(entries) => ok(
-            "live 工具与插件已同步。",
-            LiveContextEntriesPayload { entries },
-        ),
-        Err(error) => failed(
-            &format!("读取同步后的 live 工具与插件失败：{error}"),
-            LiveContextEntriesPayload {
-                entries: empty_context_entries(),
-            },
-        ),
-    }
-}
-
-#[tauri::command]
-pub fn delete_context_entry(request: ContextDeleteRequest) -> CommandResult<ContextEntriesPayload> {
-    let mut settings = request.settings;
-    match codex_plus_core::relay_config::delete_context_entry_from_common_config(
-        &settings.relay_context_config_contents,
-        &request.kind,
-        &request.id,
-    ) {
-        Ok(common) => {
-            settings.relay_context_config_contents = common;
-            list_context_entries(ContextSettingsRequest { settings })
-        }
-        Err(error) => failed(
-            &format!("删除工具与插件失败：{error}"),
-            ContextEntriesPayload {
-                settings,
-                entries: empty_context_entries(),
-            },
-        ),
-    }
-}
 
 #[tauri::command]
 pub fn extract_relay_common_config(
@@ -1269,43 +1106,6 @@ pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayPro
     }
 }
 
-#[tauri::command]
-pub async fn test_stepwise_settings(
-    settings: BackendSettings,
-) -> CommandResult<StepwiseTestPayload> {
-    match codex_plus_core::stepwise::test_connection(&settings).await {
-        Ok(result) => {
-            let error = result
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let item_count = result
-                .get("items")
-                .and_then(Value::as_array)
-                .map(Vec::len)
-                .unwrap_or_default();
-            if error.is_empty() {
-                ok(
-                    &format!("Stepwise 连接正常，测试返回 {item_count} 条建议。"),
-                    StepwiseTestPayload { item_count, error },
-                )
-            } else {
-                failed(
-                    &format!("Stepwise 测试失败：{error}"),
-                    StepwiseTestPayload { item_count, error },
-                )
-            }
-        }
-        Err(error) => failed(
-            &format!("Stepwise 测试失败：{error}"),
-            StepwiseTestPayload {
-                item_count: 0,
-                error: error.to_string(),
-            },
-        ),
-    }
-}
 
 #[tauri::command]
 pub async fn fetch_relay_profile_models(
@@ -1543,6 +1343,10 @@ fn provider_doctor_recommendation(checks: &[ProviderDoctorCheck]) -> String {
 
 #[tauri::command]
 pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
+    with_context_tables_protected(apply_relay_injection_unguarded)
+}
+
+fn apply_relay_injection_unguarded() -> CommandResult<RelayPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let settings = SettingsStore::default().load().unwrap_or_default();
     if !settings.relay_profiles_enabled {
@@ -1678,6 +1482,10 @@ fn apply_aggregate_relay_injection_to_home(home: &Path) -> CommandResult<RelayPa
 
 #[tauri::command]
 pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
+    with_context_tables_protected(apply_pure_api_injection_unguarded)
+}
+
+fn apply_pure_api_injection_unguarded() -> CommandResult<RelayPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let settings = SettingsStore::default().load().unwrap_or_default();
     if !settings.relay_profiles_enabled {
@@ -1779,6 +1587,10 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
 
 #[tauri::command]
 pub fn clear_relay_injection() -> CommandResult<RelayPayload> {
+    with_context_tables_protected(clear_relay_injection_unguarded)
+}
+
+fn clear_relay_injection_unguarded() -> CommandResult<RelayPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let settings = SettingsStore::default().load().unwrap_or_default();
     let relay = settings.active_relay_profile();
@@ -1930,18 +1742,135 @@ fn relay_switch_payload(
     }
 }
 
+/// Codex-- 核心保证：供应商切换/注入永远不改动 config.toml 里不属于供应商的
+/// mcp_servers / skills / plugins 三张表。上游 core 的写入流程会用 settings 里的
+/// managed 副本对这些表做合并与选择过滤（正是历史上吞掉 `[mcp_servers.memory]`
+/// 的根源），所以这里在写入前快照、写入后原样回植。
+const PROTECTED_CONTEXT_TABLES: &[&str] = &["mcp_servers", "skills", "plugins"];
+
+struct ContextTablesSnapshot {
+    tables: Vec<(&'static str, Option<toml_edit::Item>)>,
+}
+
+fn snapshot_context_tables(home: &Path) -> anyhow::Result<ContextTablesSnapshot> {
+    let contents = std::fs::read_to_string(home.join("config.toml")).unwrap_or_default();
+    let doc: toml_edit::DocumentMut = contents.parse()?;
+    Ok(ContextTablesSnapshot {
+        tables: PROTECTED_CONTEXT_TABLES
+            .iter()
+            .map(|name| (*name, doc.get(name).cloned()))
+            .collect(),
+    })
+}
+
+/// 隐式表（只含子表）单独 to_string 会渲染成空串，必须挂进临时 Document
+/// 再整体渲染才能得到可比较的文本。
+fn render_context_table(name: &str, item: Option<&toml_edit::Item>) -> String {
+    match item {
+        Some(item) => {
+            let mut doc = toml_edit::DocumentMut::new();
+            doc[name] = item.clone();
+            doc.to_string()
+        }
+        None => String::new(),
+    }
+}
+
+fn restore_context_tables(home: &Path, snapshot: &ContextTablesSnapshot) -> anyhow::Result<()> {
+    let config_path = home.join("config.toml");
+    let contents = std::fs::read_to_string(&config_path).unwrap_or_default();
+    let mut doc: toml_edit::DocumentMut = contents.parse()?;
+    let mut changed = false;
+    for (name, item) in &snapshot.tables {
+        let live_rendered = render_context_table(name, doc.get(name));
+        let snapshot_rendered = render_context_table(name, item.as_ref());
+        if live_rendered == snapshot_rendered {
+            continue;
+        }
+        match item {
+            Some(item) => {
+                doc[*name] = item.clone();
+            }
+            None => {
+                doc.as_table_mut().remove(name);
+            }
+        }
+        changed = true;
+    }
+    if changed {
+        std::fs::write(&config_path, doc.to_string())?;
+        log_manager_event(
+            "manager.context_guard.restored",
+            json!({ "tables": PROTECTED_CONTEXT_TABLES }),
+        );
+    }
+    Ok(())
+}
+
+fn with_context_tables_protected<T>(run: impl FnOnce() -> T) -> T {
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    let snapshot = snapshot_context_tables(&home);
+    let result = run();
+    match snapshot {
+        Ok(snapshot) => {
+            if let Err(error) = restore_context_tables(&home, &snapshot) {
+                log_manager_event(
+                    "manager.context_guard.restore_failed",
+                    json!({ "error": error.to_string() }),
+                );
+            }
+        }
+        Err(error) => {
+            log_manager_event(
+                "manager.context_guard.snapshot_failed",
+                json!({ "error": error.to_string() }),
+            );
+        }
+    }
+    result
+}
+
+/// 销毁 settings 存储中的 managed context 副本：残缺的 `[mcp_servers.*]` 拷贝
+/// 曾经就存在这里，切换时会被回填、下次再被合并/过滤写回 config.toml。
+fn scrub_managed_context_state(settings: &mut BackendSettings) -> bool {
+    let mut dirty = false;
+    if !settings.relay_context_config_contents.is_empty() {
+        settings.relay_context_config_contents = String::new();
+        dirty = true;
+    }
+    for profile in &mut settings.relay_profiles {
+        if profile.context_selection_initialized
+            || profile.context_selection != RelayContextSelection::default()
+        {
+            profile.context_selection = RelayContextSelection::default();
+            profile.context_selection_initialized = false;
+            dirty = true;
+        }
+    }
+    dirty
+}
+
+pub fn scrub_managed_context_store() {
+    let store = SettingsStore::default();
+    let Ok(mut settings) = store.load() else {
+        return;
+    };
+    if scrub_managed_context_state(&mut settings) {
+        match store.save(&settings) {
+            Ok(()) => log_manager_event("manager.context_guard.store_scrubbed", json!({})),
+            Err(error) => log_manager_event(
+                "manager.context_guard.store_scrub_failed",
+                json!({ "error": error.to_string() }),
+            ),
+        }
+    }
+}
+
 fn relay_switch_mutex() -> &'static Mutex<()> {
     static RELAY_SWITCH_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     RELAY_SWITCH_LOCK.get_or_init(|| Mutex::new(()))
 }
 
-fn empty_context_entries() -> codex_plus_core::relay_config::CodexContextEntries {
-    codex_plus_core::relay_config::CodexContextEntries {
-        mcp_servers: Vec::new(),
-        skills: Vec::new(),
-        plugins: Vec::new(),
-    }
-}
 
 fn relay_files_payload_from_home(home: &std::path::Path) -> anyhow::Result<RelayFilesPayload> {
     let config_path = home.join("config.toml");
@@ -2026,46 +1955,8 @@ fn settings_payload_value() -> Result<SettingsPayload, (anyhow::Error, SettingsP
 
 
 fn user_script_inventory() -> Value {
-    default_user_script_manager()
-        .inventory()
-        .unwrap_or_else(|error| {
-            json!({
-                "enabled": true,
-                "scripts": [],
-                "error": error.to_string()
-            })
-        })
-}
-
-
-fn default_user_script_manager() -> UserScriptManager {
-    let config_dir = user_scripts_config_dir();
-    UserScriptManager::new(
-        builtin_user_scripts_dir(),
-        config_dir.join("user_scripts"),
-        config_dir.join("user_scripts.json"),
-    )
-}
-
-fn user_scripts_config_dir() -> PathBuf {
-    if cfg!(windows) {
-        if let Some(roaming) = std::env::var_os("APPDATA") {
-            return PathBuf::from(roaming).join("Codex++");
-        }
-    }
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".config")))
-        .unwrap_or_else(|| PathBuf::from(".config"))
-        .join("Codex++")
-}
-
-fn builtin_user_scripts_dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-        .map(|path| path.join("user_scripts"))
-        .unwrap_or_else(|| PathBuf::from("user_scripts"))
+    // 用户脚本功能已随注入一并移除；返回空清单，不再触碰 Codex++ 的配置目录。
+    json!({ "enabled": false, "scripts": [] })
 }
 
 
@@ -2097,3 +1988,106 @@ fn default_log_lines() -> usize {
     200
 }
 
+
+#[cfg(test)]
+mod context_guard_tests {
+    use super::*;
+
+    const LIVE_CONFIG: &str = r#"model_provider = "OpenAI"
+model = "gpt-5.6-sol"
+
+[model_providers.OpenAI]
+name = "OpenAI"
+base_url = "https://example.test/"
+
+[mcp_servers.memory]
+enabled = true
+type = "stdio"
+command = "/Users/x/.local/bin/memory"
+args = ["server", "--storage-backend", "sqlite_vec"]
+
+[mcp_servers.memory.env]
+HOME = "/Users/x"
+MCP_EMBEDDING_MODEL = "/Users/x/Models/Qwen/Qwen3-Embedding-0.6B"
+
+[mcp_servers.filesystem]
+command = "/opt/homebrew/bin/mcp-server-filesystem"
+"#;
+
+    #[test]
+    fn restore_recovers_clobbered_context_tables() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("config.toml"), LIVE_CONFIG).unwrap();
+        let snapshot = snapshot_context_tables(home.path()).unwrap();
+
+        // 模拟上游切换流程吞掉 memory 的 transport 字段并整表重排
+        let clobbered = r#"model_provider = "Other"
+model = "gpt-5.5"
+
+[model_providers.Other]
+name = "Other"
+base_url = "https://other.test/"
+
+[mcp_servers.memory]
+enabled = true
+"#;
+        std::fs::write(home.path().join("config.toml"), clobbered).unwrap();
+        restore_context_tables(home.path(), &snapshot).unwrap();
+
+        let restored = std::fs::read_to_string(home.path().join("config.toml")).unwrap();
+        // 供应商字段保持切换后的新值
+        assert!(restored.contains(r#"model_provider = "Other""#));
+        assert!(restored.contains("[model_providers.Other]"));
+        // 三张受保护表恢复原样
+        assert!(restored.contains(r#"command = "/Users/x/.local/bin/memory""#));
+        assert!(restored.contains(r#"args = ["server", "--storage-backend", "sqlite_vec"]"#));
+        assert!(restored.contains("MCP_EMBEDDING_MODEL"));
+        assert!(restored.contains("[mcp_servers.filesystem]"));
+    }
+
+    #[test]
+    fn restore_removes_tables_injected_from_managed_copy() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("config.toml"), "model = \"gpt-5.6-sol\"\n").unwrap();
+        let snapshot = snapshot_context_tables(home.path()).unwrap();
+
+        // 切换流程从 managed 副本注入了本不存在的 mcp_servers
+        let injected = "model = \"gpt-5.5\"\n\n[mcp_servers.ghost]\nenabled = true\n";
+        std::fs::write(home.path().join("config.toml"), injected).unwrap();
+        restore_context_tables(home.path(), &snapshot).unwrap();
+
+        let restored = std::fs::read_to_string(home.path().join("config.toml")).unwrap();
+        assert!(restored.contains(r#"model = "gpt-5.5""#));
+        assert!(!restored.contains("mcp_servers"));
+    }
+
+    #[test]
+    fn restore_is_noop_when_tables_untouched() {
+        let home = tempfile::tempdir().unwrap();
+        let config_path = home.path().join("config.toml");
+        std::fs::write(&config_path, LIVE_CONFIG).unwrap();
+        let snapshot = snapshot_context_tables(home.path()).unwrap();
+        let mtime_before = std::fs::metadata(&config_path).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        restore_context_tables(home.path(), &snapshot).unwrap();
+        let mtime_after = std::fs::metadata(&config_path).unwrap().modified().unwrap();
+        assert_eq!(mtime_before, mtime_after, "未被改动时不应重写 config.toml");
+    }
+
+    #[test]
+    fn scrub_clears_managed_copy_and_selections() {
+        let mut settings = BackendSettings::default();
+        settings.relay_context_config_contents = "[mcp_servers.memory]\nenabled = true\n".to_string();
+        let mut profile = RelayProfile::default();
+        profile.context_selection.mcp_servers = vec!["memory".to_string()];
+        profile.context_selection_initialized = true;
+        settings.relay_profiles.push(profile);
+
+        assert!(scrub_managed_context_state(&mut settings));
+        assert!(settings.relay_context_config_contents.is_empty());
+        assert!(!settings.relay_profiles[0].context_selection_initialized);
+        assert!(settings.relay_profiles[0].context_selection.mcp_servers.is_empty());
+        // 二次执行应为 no-op
+        assert!(!scrub_managed_context_state(&mut settings));
+    }
+}

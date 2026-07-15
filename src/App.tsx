@@ -16,7 +16,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { invoke } from "@tauri-apps/api/core";
 import { } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { } from "@tauri-apps/plugin-dialog";
 import {
   ArrowLeft,
   Bell,
@@ -31,7 +31,6 @@ import {
   Languages,
   MessageCircle,
   Moon,
-  Network,
   Plus,
   RefreshCw,
   Save,
@@ -370,7 +369,7 @@ type ExtractRelayCommonConfigResult = CommandResult<{
 type RelaySwitchResult = CommandResult<{
   settings: BackendSettings;
   settingsPath: string;
-  user_scripts: unknown;
+  userScripts: unknown;
   relay: RelayPayload;
 }>;
 
@@ -596,16 +595,14 @@ type StartupResult = CommandResult<{
   showUpdate: boolean;
 }>;
 
-type Route = "relay" | "relayEnvironment" | "sessions" | "context" | "about" | "settings";
+type Route = "relay" | "sessions" | "about" | "settings";
 type Theme = "dark" | "light";
 
 const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string }> = [
   { id: "relay", label: t("供应商配置"), icon: KeyRound },
   { id: "sessions", label: t("会话管理"), icon: MessageCircle },
-  { id: "context", label: t("工具与插件"), icon: Network },
   { id: "about", label: t("关于"), icon: Info },
   { id: "settings", label: t("设置"), icon: Settings },
-  { id: "relayEnvironment", label: t("中转站环境配置检测"), icon: ShieldCheck },
 ];
 
 const defaultSettings: BackendSettings = {
@@ -701,17 +698,10 @@ export function App() {
     resolve: (confirmed: boolean) => void;
   } | null>(null);
   const [settings, setSettings] = useState<SettingsResult | null>(null);
-  const [relay, setRelay] = useState<RelayResult | null>(null);
+  const [, setRelay] = useState<RelayResult | null>(null);
   const [relayFiles, setRelayFiles] = useState<RelayFilesResult | null>(null);
   const [envConflicts, setEnvConflicts] = useState<EnvConflictsResult | null>(null);
-  const [relayEnvironment, setRelayEnvironment] = useState<RelayEnvironmentResult | null>(null);
   const [localSessions, setLocalSessions] = useState<LocalSessionsResult | null>(null);
-  const [liveContextEntries, setLiveContextEntries] = useState<CodexContextEntries | null>(null);
-  const [launchForm, setLaunchForm] = useState({
-    appPath: "",
-    debugPort: "9229",
-    helperPort: "57321",
-  });
   const [settingsForm, setSettingsForm] = useState<BackendSettings>({ ...defaultSettings });
   const [relaySwitching, setRelaySwitching] = useState(false);
 
@@ -736,10 +726,6 @@ export function App() {
       setSettings(result);
       const normalized = normalizeSettings(result.settings);
       setSettingsForm(normalized);
-      setLaunchForm((current) => ({
-        ...current,
-        appPath: current.appPath || result.settings.codexAppPath || "",
-      }));
       if (!silent) showResultNotice(t("设置已加载"), result, { silentSuccess: true });
       return normalized;
     }
@@ -768,15 +754,6 @@ export function App() {
     if (result) {
       setEnvConflicts(result);
       if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("环境变量检测"), result, { silentSuccess: true });
-    }
-    return result;
-  };
-
-  const refreshRelayEnvironment = async (silent = false) => {
-    const result = await run(() => call<RelayEnvironmentResult>("check_relay_environment"));
-    if (result) {
-      setRelayEnvironment(result);
-      if (!silent) showResultNotice(t("中转站环境配置检测"), result, { silentSuccess: true });
     }
     return result;
   };
@@ -872,24 +849,6 @@ export function App() {
     await refreshLocalSessions(true);
   };
 
-  const refreshLiveContextEntries = async (silent = false) => {
-    const result = await run(() => call<LiveContextEntriesResult>("read_live_context_entries"));
-    if (result) {
-      setLiveContextEntries(result.entries);
-      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("工具与插件"), result, { silentSuccess: true });
-    }
-    return result;
-  };
-
-  const syncLiveContextEntries = async (next: BackendSettings, silent = false) => {
-    const result = await run(() => call<LiveContextEntriesResult>("sync_live_context_entries", { request: { settings: next } }));
-    if (result) {
-      setLiveContextEntries(result.entries);
-      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("工具与插件"), result, { silentSuccess: true });
-    }
-    return result;
-  };
-
   const navigate = async (next: Route) => {
     setRoute(next);
     if (next === "relay") {
@@ -898,15 +857,9 @@ export function App() {
       await refreshRelayFiles(true);
       await refreshEnvConflicts(true);
     }
-    if (next === "relayEnvironment") await refreshRelayEnvironment(true);
     if (next === "sessions") {
       await refreshSettings(true);
       await refreshLocalSessions(true);
-    }
-    if (next === "context") {
-      await refreshSettings(true);
-      await refreshRelayFiles(true);
-      await refreshLiveContextEntries(true);
     }
     if (next === "settings") await refreshSettings(true);
   };
@@ -963,18 +916,6 @@ export function App() {
     return !!result && isSuccessStatus(result.status) && result.configured;
   };
 
-  const saveLaunchMode = async (launchMode: LaunchMode, silent = false, baseSettings: BackendSettings = settingsForm) => {
-    const next = { ...baseSettings, launchMode };
-    setSettingsForm(next);
-    const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
-    if (result) {
-      setSettings(result);
-      setSettingsForm(normalizeSettings(result.settings));
-      if (!silent) showNotice(t("Codex增强模式"), result.message, result.status);
-    }
-    return result;
-  };
-
   const applyPureApiInjection = async (silent = false) => {
     const settingsResult = await run(() => call<SettingsResult>("save_settings", { settings: settingsForm }));
     if (settingsResult) {
@@ -1017,42 +958,6 @@ export function App() {
     }
   };
 
-  const upsertContextEntry = async (next: BackendSettings, kind: ContextKind, id: string, tomlBody: string) => {
-    const result = await run(() =>
-      call<ContextEntriesResult>("upsert_context_entry", {
-        request: { settings: next, kind, id, tomlBody },
-      }),
-    );
-    if (!result) return null;
-    let normalized = normalizeSettings(result.settings);
-    const saveResult = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
-    if (saveResult) {
-      setSettings(saveResult);
-      normalized = normalizeSettings(saveResult.settings);
-    }
-    setSettingsForm(normalized);
-    if (!isSuccessStatus(result.status)) showResultNotice(t("工具与插件"), result);
-    return normalized;
-  };
-
-  const deleteContextEntry = async (next: BackendSettings, kind: ContextKind, id: string) => {
-    const result = await run(() =>
-      call<ContextEntriesResult>("delete_context_entry", {
-        request: { settings: next, kind, id },
-      }),
-    );
-    if (!result) return null;
-    let normalized = normalizeSettings(result.settings);
-    const saveResult = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
-    if (saveResult) {
-      setSettings(saveResult);
-      normalized = normalizeSettings(saveResult.settings);
-    }
-    setSettingsForm(normalized);
-    if (!isSuccessStatus(result.status)) showResultNotice(t("工具与插件"), result);
-    return normalized;
-  };
-
   const extractRelayCommonConfig = async (configContents: string) => {
     const result = await run(() =>
       call<ExtractRelayCommonConfigResult>("extract_relay_common_config", {
@@ -1074,29 +979,10 @@ export function App() {
     return result ?? null;
   };
 
-  const testStepwiseSettings = async (settings: BackendSettings) => {
-    const result = await run(() => call<StepwiseTestResult>("test_stepwise_settings", { settings }));
-    if (result) showNotice("Stepwise 测试", result.message, result.status);
-  };
-
   const fetchRelayProfileModels = async (profile: RelayProfile) => {
     const result = await run(() => call<RelayProfileModelsResult>("fetch_relay_profile_models", { profile }));
     if (result) showNotice(t("模型列表"), result.message, result.status);
     return result && isSuccessStatus(result.status) ? result.models : null;
-  };
-
-  const switchOfficialMode = async () => {
-    const switched = await clearRelayInjection(true);
-    if (!switched) return;
-    const result = await saveLaunchMode("relay", true);
-    if (result) showNotice(t("官方登录模式"), t("已切回官方登录；Codex增强已设为兼容增强。"), result.status);
-  };
-
-  const switchPureApiMode = async () => {
-    const switched = await applyPureApiInjection(true);
-    if (!switched) return;
-    const result = await saveLaunchMode("patch", true);
-    if (result) showNotice(t("纯 API 模式"), t("已切换到纯 API；Codex增强已设为完整增强。"), result.status);
   };
 
   const switchRelayProfile = async (next: BackendSettings, previousActiveRelayId = settingsForm.activeRelayId) => {
@@ -1156,7 +1042,7 @@ export function App() {
         message: result.message,
         settings: selectedSettings,
         settings_path: result.settingsPath,
-        user_scripts: result.user_scripts as UserScriptInventory,
+        user_scripts: result.userScripts as UserScriptInventory,
       });
       setSettingsForm(selectedSettings);
       setRelay({
@@ -1253,18 +1139,6 @@ export function App() {
     window.localStorage.setItem("codex-plus-theme", theme);
   }, [theme]);
 
-  const saveCodexAppPath = async (appPath: string) => {
-    const next = { ...settingsForm, codexAppPath: appPath };
-    const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
-    if (result) {
-      setSettings(result);
-      const normalized = normalizeSettings(result.settings);
-      setSettingsForm(normalized);
-      setLaunchForm((current) => ({ ...current, appPath: normalized.codexAppPath }));
-    }
-    return result;
-  };
-
   const actions = useMemo(
     () => ({
       refreshCurrent: () => navigate(route),
@@ -1272,86 +1146,10 @@ export function App() {
       saveSettingsValue,
       refreshSettings,
       resetSettings,
-      chooseCodexAppPath: async (mode: "folder" | "file") => {
-        let selected: unknown;
-        try {
-          selected = await open(
-            mode === "folder"
-              ? { directory: true, multiple: false, title: t("选择 Codex 应用目录") }
-              : {
-                  directory: false,
-                  multiple: false,
-                  title: t("选择 Codex.exe 或 Codex.app"),
-                  filters: [{ name: t("Codex 应用"), extensions: ["exe", "app"] }],
-                },
-          );
-        } catch (error) {
-          // Surface plugin failures (e.g. missing capability permission) so the
-          // buttons no longer appear unresponsive — see #345.
-          const message = error instanceof Error ? error.message : String(error);
-          showNotice(t("Codex 应用路径"), tf("打开选择器失败：{0}", [message]), "failed");
-          return;
-        }
-        if (typeof selected === "string" && selected.trim()) {
-          const result = await saveCodexAppPath(selected.trim());
-          if (result) {
-            showNotice(t("Codex 应用路径"), t("应用路径已保存，之后启动会自动复用。"), result.status);
-          }
-        }
-      },
-      clearCodexAppPath: async () => {
-        const next = { ...settingsForm, codexAppPath: "" };
-        const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
-        if (result) {
-          setSettings(result);
-          setSettingsForm(normalizeSettings(result.settings));
-          setLaunchForm((current) => ({ ...current, appPath: "" }));
-          showNotice(t("Codex 应用路径"), t("已清除保存路径，后续启动会回到自动探测。"), result.status);
-        }
-      },
-      chooseImageOverlayPath: async () => {
-        let selected: unknown;
-        try {
-          selected = await open({
-            directory: false,
-            multiple: false,
-            title: t("选择覆盖图片"),
-            filters: [{ name: t("图片"), extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp"] }],
-          });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          showNotice(t("图片覆盖层"), tf("打开选择器失败：{0}", [message]), "failed");
-          return;
-        }
-        if (typeof selected === "string" && selected.trim()) {
-          setSettingsForm((current) => ({
-            ...current,
-            codexAppImageOverlayEnabled: true,
-            codexAppImageOverlayPath: selected.trim(),
-          }));
-        }
-      },
-      saveManualCodexAppPath: async () => {
-        const appPath = launchForm.appPath.trim();
-        if (!appPath) {
-          showNotice(t("Codex 应用路径"), t("请先填写或选择应用路径。"), "failed");
-          return;
-        }
-        const result = await saveCodexAppPath(appPath);
-        if (result) {
-          showNotice(t("Codex 应用路径"), t("应用路径已保存，之后启动会自动复用。"), result.status);
-        }
-      },
-      setLaunchMode: async (launchMode: LaunchMode) => {
-        await saveLaunchMode(launchMode);
-      },
       refreshRelay,
       refreshRelayFiles,
       refreshEnvConflicts,
-      refreshRelayEnvironment,
       removeEnvConflicts,
-      refreshLiveContextEntries,
-      syncLiveContextEntries,
       refreshLocalSessions,
       deleteLocalSession,
       deleteLocalSessions,
@@ -1360,21 +1158,16 @@ export function App() {
       applyPureApiInjection,
       clearRelayInjection,
       saveRelayFile,
-      upsertContextEntry,
-      deleteContextEntry,
       extractRelayCommonConfig,
       testRelayProfile,
       diagnoseRelayProfile,
-      testStepwiseSettings,
       fetchRelayProfileModels,
       switchRelayProfile,
       relaySwitching,
-      switchOfficialMode,
-      switchPureApiMode,
       showMessage: async (title: string, message: string, status?: Status) => showNotice(title, message, status),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, launchForm, settingsForm, settings, theme, relayFiles, localSessions, envConflicts, relayEnvironment],
+    [route, settingsForm, settings, theme, relayFiles, localSessions, envConflicts, relaySwitching],
   );
 
   return (
@@ -1448,23 +1241,11 @@ export function App() {
               actions={actions}
             />
           ) : null}
-          {route === "relayEnvironment" ? (
-            <RelayEnvironmentScreen result={relayEnvironment} actions={actions} />
-          ) : null}
           {route === "sessions" ? (
             <SessionsScreen
               settings={settings}
               form={settingsForm}
               sessions={localSessions}
-              onFormChange={setSettingsForm}
-              actions={actions}
-            />
-          ) : null}
-          {route === "context" ? (
-            <ContextScreen
-              form={settingsForm}
-              liveEntries={liveContextEntries}
-              relayFiles={relayFiles}
               onFormChange={setSettingsForm}
               actions={actions}
             />
@@ -1507,18 +1288,10 @@ type Actions = {
   saveSettingsValue: (settings: BackendSettings, silent?: boolean) => Promise<void>;
   refreshSettings: (silent?: boolean) => Promise<BackendSettings | null>;
   resetSettings: () => Promise<void>;
-  chooseCodexAppPath: (mode: "folder" | "file") => Promise<void>;
-  clearCodexAppPath: () => Promise<void>;
-  chooseImageOverlayPath: () => Promise<void>;
-  saveManualCodexAppPath: () => Promise<void>;
-  setLaunchMode: (launchMode: LaunchMode) => Promise<void>;
   refreshRelay: () => Promise<void>;
   refreshRelayFiles: () => Promise<RelayFilesResult | null>;
   refreshEnvConflicts: (silent?: boolean) => Promise<EnvConflictsResult | null>;
-  refreshRelayEnvironment: (silent?: boolean) => Promise<RelayEnvironmentResult | null>;
   removeEnvConflicts: (names: string[]) => Promise<void>;
-  refreshLiveContextEntries: () => Promise<LiveContextEntriesResult | null>;
-  syncLiveContextEntries: (settings: BackendSettings, silent?: boolean) => Promise<LiveContextEntriesResult | null>;
   refreshLocalSessions: () => Promise<LocalSessionsResult | null>;
   deleteLocalSession: (session: LocalSession) => Promise<void>;
   deleteLocalSessions: (sessions: LocalSession[]) => Promise<void>;
@@ -1527,100 +1300,16 @@ type Actions = {
   applyPureApiInjection: () => Promise<boolean>;
   clearRelayInjection: () => Promise<boolean>;
   saveRelayFile: (kind: "config" | "auth", contents: string, silent?: boolean) => Promise<void>;
-  upsertContextEntry: (
-    settings: BackendSettings,
-    kind: ContextKind,
-    id: string,
-    tomlBody: string,
-  ) => Promise<BackendSettings | null>;
-  deleteContextEntry: (settings: BackendSettings, kind: ContextKind, id: string) => Promise<BackendSettings | null>;
   extractRelayCommonConfig: (configContents: string) => Promise<ExtractRelayCommonConfigResult | null>;
   testRelayProfile: (profile: RelayProfile) => Promise<void>;
   diagnoseRelayProfile: (profile: RelayProfile) => Promise<ProviderDoctorResult | null>;
-  testStepwiseSettings: (settings: BackendSettings) => Promise<void>;
   fetchRelayProfileModels: (profile: RelayProfile) => Promise<string[] | null>;
   switchRelayProfile: (settings: BackendSettings, previousActiveRelayId?: string) => Promise<void>;
   relaySwitching: boolean;
-  switchOfficialMode: () => Promise<void>;
-  switchPureApiMode: () => Promise<void>;
   showMessage: (title: string, message: string, status?: Status) => Promise<void>;
   toggleTheme: () => void;
 };
 
-
-function RelayEnvironmentScreen({ result, actions }: { result: RelayEnvironmentResult | null; actions: Actions }) {
-  const proxyVariables = result?.proxyEnvironment.variables ?? [];
-  const proxyVariableLabels = proxyVariables.map((item) => {
-    const source = item.source === "user" ? t("用户环境") : item.source === "system" ? t("系统环境") : t("进程环境");
-    return tf("{0}（{1}）", [item.name, source]);
-  });
-  const checks = [
-    {
-      id: "clash-verge-tun",
-      title: t("Clash Verge Rev TUN 模式"),
-      passed: result ? !result.clashVergeTun.enabled : false,
-      detail: result
-        ? result.clashVergeTun.enabled
-          ? tf("检测到 TUN 模式已开启，请在 Clash Verge Rev 中关闭。配置：{0}", [result.clashVergeTun.configPath || t("未记录路径")])
-          : result.clashVergeTun.configPath
-            ? tf("TUN 模式已关闭。配置：{0}", [result.clashVergeTun.configPath])
-            : t("未发现 Clash Verge Rev 配置，按未开启处理。")
-        : t("等待检测。"),
-    },
-    {
-      id: "proxy-environment",
-      title: t("系统代理环境变量"),
-      passed: result ? proxyVariables.length === 0 : false,
-      detail: result
-        ? proxyVariables.length
-          ? tf("检测到代理环境变量：{0}。请清理后重新启动 Codex++。", [proxyVariableLabels.join(t("、"))])
-          : t("未检测到 HTTP_PROXY、HTTPS_PROXY、ALL_PROXY、NO_PROXY 或 FTP_PROXY。")
-        : t("等待检测。"),
-    },
-    {
-      id: "codex-dotenv",
-      title: t("Codex .env 文件"),
-      passed: result ? !result.codexEnvFile.exists : false,
-      detail: result
-        ? result.codexEnvFile.exists
-          ? tf("检测到可能干扰供应商配置的 .env 文件：{0}", [result.codexEnvFile.path])
-          : tf("未发现 .env 文件：{0}", [result.codexEnvFile.path])
-        : t("等待检测。"),
-    },
-  ];
-  const allPassed = Boolean(result) && checks.every((check) => check.passed);
-
-  return (
-    <Panel>
-      <CardHead
-        title={t("中转站环境配置检测")}
-        detail={result ? (allPassed ? t("三项检测全部通过") : t("检测到需要处理的环境问题")) : t("正在读取本机环境")}
-      />
-      <CardContent>
-        <div className="relay-environment-checks">
-          {checks.map((check) => (
-            <div className={`relay-environment-check ${result ? (check.passed ? "ok" : "failed") : "pending"}`} key={check.id}>
-              <div className="relay-environment-check-icon">
-                {result ? (check.passed ? <CheckCircle2 className="h-5 w-5" /> : <ShieldAlert className="h-5 w-5" />) : <RefreshCw className="h-5 w-5" />}
-              </div>
-              <div className="relay-environment-check-copy">
-                <strong>{check.title}</strong>
-                <span>{check.detail}</span>
-              </div>
-              <Badge status={result ? (check.passed ? "ok" : "failed") : "not_checked"} />
-            </div>
-          ))}
-        </div>
-        <Toolbar>
-          <Button onClick={() => void actions.refreshRelayEnvironment()}>
-            <RefreshCw className="h-4 w-4" />
-            {t("重新检测")}
-          </Button>
-        </Toolbar>
-      </CardContent>
-    </Panel>
-  );
-}
 
 function RelayScreen({
   settings: _settings,
@@ -2007,114 +1696,6 @@ function SettingsScreen({
               placeholder={t("例如 gpt-5.4-mini")}
             />
           </Field>
-          <div className="settings-block stepwise-settings-block">
-            <div className="section-title">Stepwise</div>
-            <div className="stepwise-settings-section">{t("连接")}</div>
-            <div className="form-row">
-              <Field label="Base URL">
-                <Input
-                  value={form.codexAppStepwiseBaseUrl}
-                  onChange={(event) => onFormChange({ ...form, codexAppStepwiseBaseUrl: event.currentTarget.value })}
-                  placeholder="https://api.example.com/v1"
-                />
-              </Field>
-              <Field label="Model">
-                <Input
-                  value={form.codexAppStepwiseModel}
-                  onChange={(event) => onFormChange({ ...form, codexAppStepwiseModel: event.currentTarget.value })}
-                  placeholder={t("例如 gpt-5.4-mini")}
-                />
-              </Field>
-            </div>
-            <Field label="API Key">
-              <Input
-                type="password"
-                value={form.codexAppStepwiseApiKey}
-                onChange={(event) => onFormChange({ ...form, codexAppStepwiseApiKey: event.currentTarget.value })}
-              />
-            </Field>
-            <details className="stepwise-advanced">
-              <summary>{t("高级参数")}</summary>
-              <div className="form-row">
-                <Field label={t("API Key 环境变量")}>
-                  <Input
-                    value={form.codexAppStepwiseApiKeyEnv}
-                    onChange={(event) => onFormChange({ ...form, codexAppStepwiseApiKeyEnv: event.currentTarget.value })}
-                  />
-                </Field>
-                <Field label={t("最多建议数")}>
-                  <Input
-                    max={6}
-                    min={0}
-                    type="number"
-                    value={form.codexAppStepwiseMaxItems}
-                    onChange={(event) =>
-                      onFormChange({ ...form, codexAppStepwiseMaxItems: clampNumber(Number(event.currentTarget.value), 0, 6) })
-                    }
-                  />
-                </Field>
-              </div>
-              <div className="form-row">
-                <Field label={t("超时毫秒")}>
-                  <Input
-                    min={1000}
-                    type="number"
-                    value={form.codexAppStepwiseTimeoutMs}
-                    onChange={(event) =>
-                      onFormChange({ ...form, codexAppStepwiseTimeoutMs: clampNumber(Number(event.currentTarget.value), 1000, 60000) })
-                    }
-                  />
-                </Field>
-                <Field label={t("最大输入字符")}>
-                  <Input
-                    min={1000}
-                    type="number"
-                    value={form.codexAppStepwiseMaxInputChars}
-                    onChange={(event) =>
-                      onFormChange({ ...form, codexAppStepwiseMaxInputChars: clampNumber(Number(event.currentTarget.value), 1000, 24000) })
-                    }
-                  />
-                </Field>
-              </div>
-              <Field label={t("最大输出 tokens")}>
-                <Input
-                  min={100}
-                  type="number"
-                  value={form.codexAppStepwiseMaxOutputTokens}
-                  onChange={(event) =>
-                    onFormChange({ ...form, codexAppStepwiseMaxOutputTokens: clampNumber(Number(event.currentTarget.value), 100, 4000) })
-                  }
-                />
-              </Field>
-            </details>
-            <div className="toolbar stepwise-settings-actions">
-              <Button variant="secondary" onClick={() => void actions.testStepwiseSettings(form)}>{t("测试连接")}</Button>
-              <Button onClick={() => void actions.saveSettings()}>{t("保存设置")}</Button>
-            </div>
-          </div>
-          <Toolbar>
-            <Button onClick={() => void actions.saveSettings()}>{t("保存设置")}</Button>
-          </Toolbar>
-        </CardContent>
-      </Panel>
-      <Panel>
-        <CardHead title={t("Codex 启动参数")} detail={t("启动 Codex App 时追加到默认 CDP 参数后。留空则保持默认启动行为。")} />
-        <CardContent>
-          <Field label={t("额外参数")}>
-            <Textarea
-              className="launch-args-input"
-              placeholder="--force_high_performance_gpu"
-              spellCheck={false}
-              value={codexExtraArgsToInput(form.codexExtraArgs)}
-              onChange={(event) =>
-                onFormChange({
-                  ...form,
-                  codexExtraArgs: inputToCodexExtraArgs(event.currentTarget.value),
-                })
-              }
-            />
-          </Field>
-          <p className="field-hint">{t("每行一个参数，例如 --force_high_performance_gpu。不需要填写 open 或 --args。")}</p>
           <Toolbar>
             <Button onClick={() => void actions.saveSettings()}>{t("保存设置")}</Button>
           </Toolbar>
@@ -2404,34 +1985,6 @@ function RelayProfileDetail({
   );
 }
 
-function ContextScreen({
-  form,
-  liveEntries,
-  relayFiles,
-  onFormChange,
-  actions,
-}: {
-  form: BackendSettings;
-  liveEntries: CodexContextEntries | null;
-  relayFiles: RelayFilesResult | null;
-  onFormChange: (value: BackendSettings) => void;
-  actions: Actions;
-}) {
-  return (
-    <Panel fill>
-      <CardHead title={t("Codex 工具与插件")} detail={t("独立管理 Codex 的 MCP、Skills、Plugins；切换任意供应商都会带上。")} />
-      <CardContent>
-        <RelayContextManager
-          form={normalizeSettings(form)}
-          liveEntries={liveEntries}
-          relayFiles={relayFiles}
-          onFormChange={onFormChange}
-          actions={actions}
-        />
-      </CardContent>
-    </Panel>
-  );
-}
 
 function RelayProfileEditor({
   profile,
@@ -2751,7 +2304,7 @@ function RelayProfileEditor({
       {showApiFields && profile.protocol === "chatCompletions" ? (
         <div className="hint-line relay-protocol-hint">
           <MessageCircle className="h-4 w-4" />
-          <span>{t("此上游会通过本地 127.0.0.1:57321 转成 Responses API，需要从 Codex++ 启动 Codex。")}</span>
+          <span>{t("此上游依赖本地 127.0.0.1:57321 协议代理转成 Responses API；Codex-- 不提供该代理，选择此协议后 Codex 将无法请求，请慎用。")}</span>
         </div>
       ) : null}
       <div className="hint-line relay-protocol-hint">
@@ -2911,188 +2464,6 @@ function AggregateRelayProfileEditor({
   );
 }
 
-function RelayContextManager({
-  form,
-  liveEntries,
-  relayFiles,
-  onFormChange,
-  actions,
-}: {
-  form: BackendSettings;
-  liveEntries: CodexContextEntries | null;
-  relayFiles: RelayFilesResult | null;
-  onFormChange: (value: BackendSettings) => void;
-  actions: Actions;
-}) {
-  const entries = contextEntriesWithLiveEntries(form, liveEntries);
-  const [activeKind, setActiveKind] = useState<ContextKind>("mcp");
-  const [editor, setEditor] = useState<{ kind: ContextKind; entry?: CodexContextEntry } | null>(null);
-  const visibleEntries = contextEntriesByKind(entries, activeKind);
-  const label = contextKindLabel(activeKind);
-
-  const saveEntry = async (kind: ContextKind, id: string, tomlBody: string) => {
-    const next = await actions.upsertContextEntry(form, kind, id, tomlBody);
-    if (!next) return;
-    onFormChange(next);
-    setEditor(null);
-  };
-
-  const toggleContextEntryEnabled = async (entry: CodexContextEntry) => {
-    const nextBody = setContextEntryEnabled(entry.tomlBody, !entry.enabled);
-    const next = await actions.upsertContextEntry(form, entry.kind, entry.id, nextBody);
-    if (!next) return;
-    onFormChange(next);
-    const syncResult = await actions.syncLiveContextEntries(next, true);
-    if (syncResult && isSuccessStatus(syncResult.status)) {
-      void actions.refreshRelayFiles();
-    }
-  };
-
-  const deleteEntry = async (entry: CodexContextEntry) => {
-    const next = await actions.deleteContextEntry(form, entry.kind, entry.id);
-    if (!next) return;
-    onFormChange(next);
-  };
-
-  return (
-    <div className="relay-context-panel">
-      <div className="relay-context-head">
-        <div>
-          <strong>{t("Codex 工具与插件")}</strong>
-          <span>{t("MCP、Skills、Plugins 作为全局配置独立管理，切换任意供应商都会合并。")}</span>
-        </div>
-        <div className="relay-context-head-actions">
-          <Button onClick={() => setEditor({ kind: activeKind })} size="sm" variant="secondary">
-            <Plus className="h-4 w-4" />
-            {t("新增")}{label}
-          </Button>
-        </div>
-      </div>
-      <div className="segmented">
-        {contextKindOptions.map((option) => (
-          <button
-            className={activeKind === option.kind ? "active" : ""}
-            key={option.kind}
-            onClick={() => setActiveKind(option.kind)}
-            type="button"
-          >
-            <span>{option.label}</span>
-            <small>{contextEntriesByKind(entries, option.kind).length}</small>
-          </button>
-        ))}
-      </div>
-      <div className="relay-context-summary">
-        {t("当前共有")} {visibleEntries.length} {t("个")}{label}{t("；这些条目独立于供应商保存，会写入所有供应商切换后的 config.toml。")}
-      </div>
-      <div className="relay-context-list">
-        {visibleEntries.length ? (
-          visibleEntries.map((entry) => (
-            <div className="relay-context-row" key={`${entry.kind}-${entry.id}`}>
-              <strong className="context-title">{entry.title || entry.id}</strong>
-              <div className="relay-context-actions">
-                <button
-                  aria-checked={entry.enabled}
-                  aria-label={`contextEnabledSwitch-${entry.kind}-${entry.id}`}
-                  className={`context-enabled-switch ${entry.enabled ? "active" : ""}`}
-                  onClick={() => void toggleContextEntryEnabled(entry)}
-                  role="switch"
-                  title={entry.enabled ? t("禁用此扩展项") : t("启用此扩展项")}
-                  type="button"
-                >
-                  <span className="context-switch-track" aria-hidden="true">
-                    <span className="context-switch-thumb" />
-                  </span>
-                </button>
-                <Button onClick={() => setEditor({ kind: entry.kind, entry })} size="icon" title={t("编辑扩展项")} variant="ghost">
-                  <Edit3 className="h-4 w-4" />
-                </Button>
-                <Button
-                  className="relay-context-delete"
-                  onClick={() => void deleteEntry(entry)}
-                  size="icon"
-                  title={t("删除扩展项")}
-                  variant="ghost"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
-          ))
-        ) : (
-          <div className="empty">{t("暂无")}{label}{t("，可以从通用配置文件或这里新增。")}</div>
-        )}
-      </div>
-      {editor ? (
-        <ContextEntryEditor
-          entry={editor.entry}
-          kind={editor.kind}
-          onCancel={() => setEditor(null)}
-          onSave={(kind, id, tomlBody) => void saveEntry(kind, id, tomlBody)}
-        />
-      ) : null}
-    </div>
-  );
-}
-
-function ContextEntryEditor({
-  kind,
-  entry,
-  onCancel,
-  onSave,
-}: {
-  kind: ContextKind;
-  entry?: CodexContextEntry;
-  onCancel: () => void;
-  onSave: (kind: ContextKind, id: string, tomlBody: string) => void;
-}) {
-  const [draftKind, setDraftKind] = useState<ContextKind>(entry?.kind ?? kind);
-  const [id, setId] = useState(entry?.id ?? "");
-  const [tomlBody, setTomlBody] = useState(entry?.tomlBody ?? "");
-  const canSave = id.trim().length > 0;
-
-  return (
-    <div className="context-editor">
-      <div className="context-editor-fields">
-        <Field label={t("类型")}>
-          <select
-            className="field-select"
-            disabled={!!entry}
-            value={draftKind}
-            onChange={(event) => setDraftKind(event.currentTarget.value as ContextKind)}
-          >
-            {contextKindOptions.map((option) => (
-              <option key={option.kind} value={option.kind}>{option.label}</option>
-            ))}
-          </select>
-        </Field>
-        <Field label="ID">
-          <Input
-            disabled={!!entry}
-            value={id}
-            onChange={(event) => setId(event.currentTarget.value.trim())}
-            placeholder={t("例如 context7")}
-          />
-        </Field>
-      </div>
-      <Field label={t("TOML 配置体")}>
-        <Textarea
-          className="context-editor-textarea"
-          value={tomlBody}
-          onChange={(event) => setTomlBody(event.currentTarget.value)}
-          placeholder={t("只填写表头下面的内容，例如：\ncommand = \"npx\"\nargs = [\"-y\", \"@upstash/context7-mcp\"]")}
-          spellCheck={false}
-        />
-      </Field>
-      <Toolbar>
-        <Button disabled={!canSave} onClick={() => onSave(draftKind, id.trim(), tomlBody)} size="sm">
-          <Save className="h-4 w-4" />
-          {t("保存扩展项")}
-        </Button>
-        <Button onClick={onCancel} size="sm" variant="secondary">{t("取消")}</Button>
-      </Toolbar>
-    </div>
-  );
-}
 
 function SyncedTextarea({
   value,
@@ -3474,11 +2845,9 @@ function routeTitle(route: Route) {
 function routeSubtitle(route: Route) {
   const subtitles: Record<Route, string> = {
     relay: t("管理 API 供应商、协议、Key 与配置文件"),
-    relayEnvironment: t("排查可能干扰中转站配置的本机环境"),
     sessions: t("查看、删除和修复 Codex 本地会话"),
-    context: t("独立管理 MCP、Skills、Plugins"),
-    about: t("版本信息、项目链接、GitHub Release 更新、日志与诊断"),
-    settings: t("主题和启动参数"),
+    about: t("版本信息与上游项目链接"),
+    settings: t("界面主题与测试模型"),
   };
   return subtitles[route];
 }
@@ -3489,9 +2858,6 @@ const contextKindOptions: Array<{ kind: ContextKind; label: string; tableName: s
   { kind: "plugin", label: t("插件"), tableName: "plugins" },
 ];
 
-function contextKindLabel(kind: ContextKind) {
-  return contextKindOptions.find((option) => option.kind === kind)?.label ?? t("扩展项");
-}
 
 function contextEntriesFromSettings(settings: BackendSettings): CodexContextEntries {
   const commonConfig = normalizeDuplicateTomlTables(settings.relayContextConfigContents || "");
@@ -3502,37 +2868,6 @@ function contextEntriesFromSettings(settings: BackendSettings): CodexContextEntr
   };
 }
 
-function contextEntriesWithLiveEntries(settings: BackendSettings, liveEntries: CodexContextEntries | null): CodexContextEntries {
-  const commonEntries = contextEntriesFromSettings(settings);
-  if (!liveEntries) return commonEntries;
-  const liveByKind: Record<ContextKind, Map<string, CodexContextEntry>> = {
-    mcp: new Map(liveEntries.mcpServers.map((entry) => [entry.id, entry])),
-    skill: new Map(liveEntries.skills.map((entry) => [entry.id, entry])),
-    plugin: new Map(liveEntries.plugins.map((entry) => [entry.id, entry])),
-  };
-  return {
-    mcpServers: mergeLiveContextEntries(commonEntries.mcpServers, liveByKind.mcp),
-    skills: mergeLiveContextEntries(commonEntries.skills, liveByKind.skill),
-    plugins: mergeLiveContextEntries(commonEntries.plugins, liveByKind.plugin),
-  };
-}
-
-function mergeLiveContextEntries(entries: CodexContextEntry[], liveEntries: Map<string, CodexContextEntry>): CodexContextEntry[] {
-  const uniqueEntries = dedupeContextEntryList(entries);
-  const merged = uniqueEntries.map((entry) => {
-    const live = liveEntries.get(entry.id);
-    return withLiveEntryState(entry, live);
-  });
-  const knownIds = new Set(uniqueEntries.map((entry) => entry.id));
-  for (const liveEntry of liveEntries.values()) {
-    if (!knownIds.has(liveEntry.id)) merged.push(liveEntry);
-  }
-  return merged;
-}
-
-function withLiveEntryState(entry: CodexContextEntry, live?: CodexContextEntry): CodexContextEntry {
-  return live ? { ...entry, enabled: live.enabled } : { ...entry, enabled: false };
-}
 
 function contextEntriesForProfile(settings: BackendSettings, profile: RelayProfile): CodexContextEntries {
   return filterContextEntriesBySelection(contextEntriesFromSettings(settings), profile.contextSelection);
@@ -3657,20 +2992,6 @@ function contextEntryEnabled(tomlBody: string) {
   return !tomlBody.split(/\r?\n/).some((line) => /^\s*enabled\s*=\s*false\s*(#.*)?$/i.test(line));
 }
 
-function setContextEntryEnabled(tomlBody: string, enabled: boolean) {
-  const lines = tomlBody.trimEnd().split(/\r?\n/);
-  const nextValue = `enabled = ${enabled ? "true" : "false"}`;
-  let replaced = false;
-  const next = lines.map((line) => {
-    if (/^\s*enabled\s*=/.test(line)) {
-      replaced = true;
-      return nextValue;
-    }
-    return line;
-  });
-  if (!replaced) next.unshift(nextValue);
-  return ensureTrailingNewline(next.join("\n").trimEnd());
-}
 
 function ensureTrailingNewline(value: string) {
   return value.trim() ? `${value}\n` : "";
@@ -4017,7 +3338,6 @@ function tomlKey(key: string): string {
 }
 
 
-
 function contextSelectionForAllEntries(settings: BackendSettings): RelayContextSelection {
   const entries = contextEntriesFromSettings(settings);
   return {
@@ -4148,13 +3468,6 @@ function normalizeImageOverlayFitMode(value: string | undefined): ImageOverlayFi
     : "fit";
 }
 
-function codexExtraArgsToInput(args: string[] | undefined) {
-  return (args ?? []).join("\n");
-}
-
-function inputToCodexExtraArgs(value: string) {
-  return value === "" ? [] : value.split(/\r?\n/);
-}
 
 function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = emptyContextSelection()): RelayProfile {
   const legacyMixedApi = profile.relayMode === "mixedApi";
@@ -4289,14 +3602,14 @@ function relayProfileModeHelp(profile: RelayProfile): string {
   }
   if (profile.relayMode === "official") {
     if (profile.officialMixApiKey) {
-      return t("此供应商会保留官方登录模式，并把请求混入当前 API Key；Codex增强仍使用兼容模式。");
+      return t("此供应商会保留官方登录模式，并把请求混入当前 API Key。");
     }
     return t("此供应商会切回官方登录模式，使用 ChatGPT 官方账号，不写入 API Key。");
   }
   if (profile.relayMode === "pureApi") {
     return t("此供应商会同时写入 config.toml 和 auth.json；API Key 也会注入到 provider bearer token。");
   }
-  return t("此供应商会保留官方登录模式，并把请求混入当前 API Key；Codex增强仍使用兼容模式。");
+  return t("此供应商会保留官方登录模式，并把请求混入当前 API Key。");
 }
 
 

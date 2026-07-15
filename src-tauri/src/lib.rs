@@ -23,6 +23,7 @@ pub fn run() {
     let Some(_guard) = acquire_single_instance_guard() else {
         return;
     };
+    commands::scrub_managed_context_store();
     let run_result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
@@ -41,7 +42,6 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::backend_version,
             commands::load_settings,
             commands::save_settings,
             commands::list_local_sessions,
@@ -51,27 +51,18 @@ pub fn run() {
             commands::relay_status,
             commands::read_relay_files,
             commands::check_env_conflicts,
-            commands::check_relay_environment,
             commands::remove_env_conflicts,
             commands::save_relay_file,
             commands::write_diagnostic_event,
             commands::backfill_relay_profile_from_live,
-            commands::list_context_entries,
-            commands::read_live_context_entries,
-            commands::sync_live_context_entries,
-            commands::upsert_context_entry,
-            commands::delete_context_entry,
             commands::extract_relay_common_config,
             commands::test_relay_profile,
             commands::diagnose_relay_profile,
-            commands::test_stepwise_settings,
             commands::fetch_relay_profile_models,
             commands::switch_relay_profile,
             commands::apply_relay_injection,
             commands::apply_pure_api_injection,
             commands::clear_relay_injection,
-            manager_exit_app,
-            manager_hide_to_tray,
             update_tray_labels
         ])
         .run(tauri::generate_context!());
@@ -147,17 +138,6 @@ fn register_main_window_events<R: tauri::Runtime>(window: tauri::WebviewWindow<R
         }
         _ => {}
     });
-}
-
-#[tauri::command]
-fn manager_exit_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
-    APP_EXITING.store(true, Ordering::SeqCst);
-    app.exit(0);
-}
-
-#[tauri::command]
-fn manager_hide_to_tray<R: tauri::Runtime>(window: tauri::WebviewWindow<R>) {
-    let _ = window.hide();
 }
 
 #[tauri::command]
