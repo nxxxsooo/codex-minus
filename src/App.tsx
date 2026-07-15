@@ -15,47 +15,38 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   ArrowLeft,
   Bell,
   CheckCircle2,
-  CircleArrowUp,
   Copy,
   Download,
   Edit3,
   GripVertical,
   Info,
   ExternalLink,
-  Hammer,
   KeyRound,
   Languages,
-  LayoutDashboard,
   MessageCircle,
-  FileCode2,
   Moon,
   Network,
-  Power,
-  PowerOff,
   Plus,
   RefreshCw,
-  Rocket,
   Save,
   Settings,
   ShieldCheck,
   ShieldAlert,
-  Star,
   Stethoscope,
   Sun,
   TestTube,
   Trash2,
-  Wrench,
   type LucideIcon,
 } from "lucide-react";
 import { ProviderPresetSelector } from "@/components/ProviderPresetSelector";
 import type { PresetPatch } from "@/components/ProviderPresetSelector";
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 import { Badge as UiBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -63,7 +54,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { isGitHubRepositoryHomepage } from "./github-repository";
 import {
   mergeModelWindowRows,
   modelWindowRowsFromProfile,
@@ -72,7 +62,6 @@ import {
 } from "./model-windows";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 
-const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
 
 type Status = "ok" | "failed" | "not_implemented" | "not_checked" | string;
 
@@ -264,7 +253,6 @@ type RelayProtocol = "responses" | "chatCompletions";
 type RelayMode = "official" | "mixedApi" | "pureApi" | "aggregate";
 const PROTOCOL_PROXY_BASE_URL = "http://127.0.0.1:57321/v1";
 const CHAT_UPSTREAM_BASE_URL_KEY = "codex_plus_chat_base_url";
-const SCRIPT_MARKET_REPOSITORY_URL = "https://github.com/BigPizzaV3/CodexPlusPlusScriptMarket";
 
 const emptyContextSelection = (): RelayContextSelection => ({
   mcpServers: [],
@@ -603,70 +591,18 @@ type ScriptMarketResult = CommandResult<{
   user_scripts: UserScriptInventory;
 }>;
 
-function providerSyncProgressMessage(result: CommandResult<ProviderSyncPayload>): string {
-  const changed = result.changedSessionFiles ?? 0;
-  const rows = result.sqliteRowsUpdated ?? 0;
-  const target = result.targetProvider || t("当前 provider");
-  const skipped = result.skippedLockedRolloutFiles?.length ?? 0;
-  const skippedText = skipped ? tf("，跳过 {0} 个占用文件", [skipped]) : "";
-  return tf("已同步到 {0}：修复 {1} 个会话文件，更新 {2} 行索引{3}。", [target, changed, rows, skippedText]);
-}
-
-const providerSyncSourceLabels: Record<ProviderSyncTargetSource, string> = {
-  config: t("配置"),
-  rollout: t("会话"),
-  sqlite: t("索引"),
-  manual: t("手动"),
-};
-
-function providerSyncTargetLabel(target: ProviderSyncTargetOption): string {
-  const labels = target.sources.map((source) => providerSyncSourceLabels[source]).filter(Boolean);
-  const current = target.isCurrentProvider ? [t("当前")] : [];
-  return [...labels, ...current].join(" / ") || t("发现");
-}
-
-function syncMarketInstalledState(current: ScriptMarketResult | null, userScripts: UserScriptInventory): ScriptMarketResult | null {
-  if (!current) return current;
-  const installed = new Map(
-    (userScripts.scripts ?? [])
-      .filter((script) => script.market_id)
-      .map((script) => [script.market_id || "", script.version || ""]),
-  );
-  return {
-    ...current,
-    user_scripts: userScripts,
-    market: {
-      ...current.market,
-      scripts: current.market.scripts.map((script) => {
-        const installedVersion = installed.get(script.id) || "";
-        return {
-          ...script,
-          installed: Boolean(installedVersion),
-          installedVersion,
-          updateAvailable: Boolean(installedVersion) && installedVersion !== script.version,
-        };
-      }),
-    },
-  };
-}
 
 type StartupResult = CommandResult<{
   showUpdate: boolean;
 }>;
 
-type Route = "overview" | "relay" | "relayEnvironment" | "sessions" | "context" | "enhance" | "zedRemote" | "userScripts" | "recommendations" | "maintenance" | "about" | "settings";
+type Route = "relay" | "relayEnvironment" | "sessions" | "context" | "about" | "settings";
 type Theme = "dark" | "light";
 
 const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string }> = [
-  { id: "overview", label: t("概览"), icon: LayoutDashboard },
   { id: "relay", label: t("供应商配置"), icon: KeyRound },
   { id: "sessions", label: t("会话管理"), icon: MessageCircle },
   { id: "context", label: t("工具与插件"), icon: Network },
-  { id: "enhance", label: t("Codex增强"), icon: Hammer },
-  { id: "zedRemote", label: t("Zed 远程项目"), icon: ExternalLink },
-  { id: "userScripts", label: t("脚本市场"), icon: FileCode2 },
-  { id: "recommendations", label: t("推荐内容"), icon: ExternalLink },
-  { id: "maintenance", label: t("安装维护"), icon: Wrench },
   { id: "about", label: t("关于"), icon: Info },
   { id: "settings", label: t("设置"), icon: Settings },
   { id: "relayEnvironment", label: t("中转站环境配置检测"), icon: ShieldCheck },
@@ -764,55 +700,19 @@ export function App() {
     cancelText: string;
     resolve: (confirmed: boolean) => void;
   } | null>(null);
-  const [overview, setOverview] = useState<OverviewResult | null>(null);
   const [settings, setSettings] = useState<SettingsResult | null>(null);
   const [relay, setRelay] = useState<RelayResult | null>(null);
   const [relayFiles, setRelayFiles] = useState<RelayFilesResult | null>(null);
   const [envConflicts, setEnvConflicts] = useState<EnvConflictsResult | null>(null);
   const [relayEnvironment, setRelayEnvironment] = useState<RelayEnvironmentResult | null>(null);
-  const [ccsProviders, setCcsProviders] = useState<CcsProvidersResult | null>(null);
-  const [pendingProviderImport, setPendingProviderImport] = useState<ProviderImportRequest | null>(null);
   const [localSessions, setLocalSessions] = useState<LocalSessionsResult | null>(null);
-  const [zedRemoteProjects, setZedRemoteProjects] = useState<ZedRemoteProjectsResult | null>(null);
   const [liveContextEntries, setLiveContextEntries] = useState<CodexContextEntries | null>(null);
-  const [logs, setLogs] = useState<LogsResult | null>(null);
-  const [diagnostics, setDiagnostics] = useState<DiagnosticsResult | null>(null);
-  const [watcher, setWatcher] = useState<WatcherResult | null>(null);
-  const [update, setUpdate] = useState<UpdateResult | null>(null);
-  const [updateInstallProgress, setUpdateInstallProgress] = useState<TaskProgress>({
-    active: false,
-    percent: 0,
-    message: t("尚未运行安装包更新。"),
-  });
-  const [ads, setAds] = useState<AdsResult | null>(null);
-  const [scriptMarket, setScriptMarket] = useState<ScriptMarketResult | null>(null);
   const [launchForm, setLaunchForm] = useState({
     appPath: "",
     debugPort: "9229",
     helperPort: "57321",
   });
-  const prevLaunchStatusRef = useRef<string | null>(null);
   const [settingsForm, setSettingsForm] = useState<BackendSettings>({ ...defaultSettings });
-  const [providerSyncProgress, setProviderSyncProgress] = useState<ProviderSyncProgress>({
-    active: false,
-    percent: 0,
-    message: t("尚未运行历史会话修复。"),
-    result: null,
-  });
-  const [pluginMarketplaceProgress, setPluginMarketplaceProgress] = useState<TaskProgress>({
-    active: false,
-    percent: 0,
-    message: t("尚未运行插件市场修复。"),
-  });
-  const [remotePluginMarketplace, setRemotePluginMarketplace] = useState<RemotePluginMarketplaceResult | null>(null);
-  const [remotePluginMarketplaceProgress, setRemotePluginMarketplaceProgress] = useState<TaskProgress>({
-    active: false,
-    percent: 0,
-    message: t("尚未检查官方远端插件缓存。"),
-  });
-  const [providerSyncTargets, setProviderSyncTargets] = useState<ProviderSyncTargetsResult | null>(null);
-  const [selectedProviderSyncTarget, setSelectedProviderSyncTarget] = useState("");
-  const [removeOwnedData, setRemoveOwnedData] = useState(false);
   const [relaySwitching, setRelaySwitching] = useState(false);
 
   const call = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
@@ -830,21 +730,6 @@ export function App() {
     }
   };
 
-  const refreshOverview = async (silent = false) => {
-    const result = await run(() => call<OverviewResult>("load_overview"));
-    if (result) {
-      // 崩溃检测：进程从运行状态变为停止/失败 → 弹出通知
-      const prev = prevLaunchStatusRef.current;
-      const current = result.latest_launch?.status;
-      if (prev && prev === "running" && current && (current === "stopped" || current === "failed" || current === "crashed")) {
-        showNotice(t("Codex 意外停止"), tf("进程状态：{0}。是否要重新启动？", [current]), "failed");
-      }
-      prevLaunchStatusRef.current = current ?? null;
-      setOverview(result);
-      if (!silent) showResultNotice(t("概览已检查"), result, { silentSuccess: true });
-    }
-  };
-
   const refreshSettings = async (silent = false) => {
     const result = await run(() => call<SettingsResult>("load_settings"));
     if (result) {
@@ -859,45 +744,6 @@ export function App() {
       return normalized;
     }
     return null;
-  };
-
-  const refreshScriptMarket = async (silent = false) => {
-    const result = await run(() => call<ScriptMarketResult>("refresh_script_market"));
-    if (result) {
-      setScriptMarket(result);
-      setSettings((current) => (current ? { ...current, user_scripts: result.user_scripts } : current));
-      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("脚本市场"), result, { silentSuccess: true });
-    }
-  };
-
-  const installMarketScript = async (id: string) => {
-    const result = await run(() => call<ScriptMarketResult>("install_market_script", { id }));
-    if (result) {
-      setScriptMarket(result);
-      setSettings((current) => (current ? { ...current, user_scripts: result.user_scripts } : current));
-      showResultNotice(t("脚本市场"), result);
-    }
-  };
-
-  const setUserScriptEnabled = async (key: string, enabled: boolean) => {
-    const result = await run(() => call<SettingsResult>("set_user_script_enabled", { key, enabled }));
-    if (result) {
-      setSettings(result);
-      setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-      showResultNotice(t("本地脚本"), result);
-    }
-  };
-
-  const deleteUserScript = async (key: string) => {
-    const script = settings?.user_scripts?.scripts?.find((item) => item.key === key);
-    const name = script?.name || key;
-    if (!window.confirm(tf("删除脚本“{0}”？此操作会移除本地脚本文件。", [name]))) return;
-    const result = await run(() => call<SettingsResult>("delete_user_script", { key }));
-    if (result) {
-      setSettings(result);
-      setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-      showResultNotice(t("本地脚本"), result);
-    }
   };
 
   const refreshRelay = async (silent = false) => {
@@ -950,53 +796,6 @@ export function App() {
     }
   };
 
-  const refreshCcsProviders = async (silent = false) => {
-    const result = await run(() => call<CcsProvidersResult>("load_ccs_providers"));
-    if (result) {
-      setCcsProviders(result);
-      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("cc-switch 导入"), result, { silentSuccess: true });
-    }
-    return result;
-  };
-
-  const importCcsProviders = async () => {
-    const result = await run(() => call<SettingsResult>("import_ccs_providers"));
-    if (result) {
-      setSettings(result);
-      setSettingsForm(normalizeSettings(result.settings));
-      showResultNotice(t("cc-switch 导入"), result);
-      await refreshCcsProviders(true);
-    }
-  };
-
-  const refreshPendingProviderImport = async (silent = true) => {
-    const result = await run(() => call<PendingProviderImportResult>("load_pending_provider_import"));
-    if (result) {
-      setPendingProviderImport(result.pending);
-      if (!silent && !isSuccessStatus(result.status)) showResultNotice(t("Codex++ 导入"), result, { silentSuccess: true });
-    }
-    return result;
-  };
-
-  const confirmPendingProviderImport = async () => {
-    const result = await run(() => call<SettingsResult>("confirm_pending_provider_import"));
-    if (result) {
-      setPendingProviderImport(null);
-      setSettings(result);
-      setSettingsForm(normalizeSettings(result.settings));
-      showResultNotice(t("Codex++ 导入"), result);
-      await refreshCcsProviders(true);
-    }
-  };
-
-  const dismissPendingProviderImport = async () => {
-    const result = await run(() => call<PendingProviderImportResult>("dismiss_pending_provider_import"));
-    if (result) {
-      setPendingProviderImport(null);
-      showResultNotice(t("Codex++ 导入"), result, { silentSuccess: true });
-    }
-  };
-
   const refreshLocalSessions = async (silent = false) => {
     const result = await run(() => call<LocalSessionsResult>("list_local_sessions"));
     if (result) {
@@ -1004,44 +803,6 @@ export function App() {
       if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("会话管理"), result, { silentSuccess: true });
     }
     return result;
-  };
-
-  const refreshZedRemoteProjects = async (silent = false) => {
-    const result = await run(() => call<ZedRemoteProjectsResult>("list_zed_remote_projects"));
-    if (result) {
-      setZedRemoteProjects(result);
-      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("Zed 远程项目"), result, { silentSuccess: true });
-    }
-    return result;
-  };
-
-  const openZedRemoteProject = async (
-    project: ZedRemoteProject,
-    strategy: ZedOpenStrategy = settingsForm.zedRemoteOpenStrategy || "addToFocusedWorkspace",
-  ) => {
-    const result = await run(() =>
-      call<ZedRemoteOpenResult>("open_zed_remote", {
-        payload: {
-          ssh: project.ssh,
-          hostId: project.hostId,
-          path: project.path,
-          strategy,
-          remember: settingsForm.zedRemoteProjectRegistryEnabled !== false,
-        },
-      }),
-    );
-    if (result) {
-      showResultNotice(t("Zed 远程打开"), result);
-      await refreshZedRemoteProjects(true);
-    }
-  };
-
-  const forgetZedRemoteProject = async (project: ZedRemoteProject) => {
-    const result = await run(() => call<ZedRemoteProjectsResult>("forget_zed_remote_project", { id: project.id }));
-    if (result) {
-      setZedRemoteProjects(result);
-      showResultNotice(t("Zed 远程项目"), result);
-    }
   };
 
   const requestDeleteLocalSession = (session: LocalSession) =>
@@ -1129,49 +890,18 @@ export function App() {
     return result;
   };
 
-  const refreshLogs = async (silent = false) => {
-    const result = await run(() => call<LogsResult>("read_latest_logs", { request: { lines: 240 } }));
-    if (result) {
-      setLogs(result);
-      if (!silent) showResultNotice(t("日志已刷新"), result, { silentSuccess: true });
-    }
-  };
-
-  const refreshDiagnostics = async (silent = false) => {
-    const result = await run(() => call<DiagnosticsResult>("copy_diagnostics"));
-    if (result) {
-      setDiagnostics(result);
-      if (!silent) showResultNotice(t("诊断已生成"), result, { silentSuccess: true });
-    }
-  };
-
-  const refreshWatcher = async (silent = false) => {
-    const result = await run(() => call<WatcherResult>("load_watcher_state"));
-    if (result) {
-      setWatcher(result);
-      if (!silent) showResultNotice(t("Watcher 状态"), result, { silentSuccess: true });
-    }
-  };
-
   const navigate = async (next: Route) => {
     setRoute(next);
-    if (next === "overview") await refreshOverview(true);
     if (next === "relay") {
       await refreshSettings(true);
       await refreshRelay(true);
       await refreshRelayFiles(true);
       await refreshEnvConflicts(true);
-      await refreshCcsProviders(true);
     }
     if (next === "relayEnvironment") await refreshRelayEnvironment(true);
     if (next === "sessions") {
       await refreshSettings(true);
       await refreshLocalSessions(true);
-      await refreshProviderSyncTargets(true);
-    }
-    if (next === "zedRemote") {
-      await refreshSettings(true);
-      await refreshZedRemoteProjects(true);
     }
     if (next === "context") {
       await refreshSettings(true);
@@ -1179,245 +909,8 @@ export function App() {
       await refreshLiveContextEntries(true);
     }
     if (next === "settings") await refreshSettings(true);
-    if (next === "userScripts") {
-      await refreshSettings(true);
-      await refreshScriptMarket(true);
-    }
-    if (next === "recommendations") await refreshAds(true);
-    if (next === "about") {
-      await refreshOverview(true);
-      await refreshLogs(true);
-      await refreshDiagnostics(true);
-    }
-    if (next === "maintenance") {
-      await refreshOverview(true);
-      await refreshWatcher(true);
-    }
   };
 
-  const launch = async () => {
-    const result = await launchCommand("launch_codex_plus");
-    if (result) {
-      showNotice(t("启动任务"), result.message, result.status);
-      await refreshOverview(true);
-    }
-  };
-
-  const restart = async () => {
-    const result = await launchCommand("restart_codex_plus");
-    if (result) {
-      showNotice(t("重启 Codex++"), result.message, result.status);
-      await refreshOverview(true);
-    }
-  };
-
-  const launchCommand = async (command: "launch_codex_plus" | "restart_codex_plus") => {
-    const result = await run(() =>
-      call<CommandResult<Record<string, unknown>>>(command, {
-        request: {
-          appPath: launchForm.appPath,
-          debugPort: numberOrDefault(launchForm.debugPort, 9229),
-          helperPort: numberOrDefault(launchForm.helperPort, 57321),
-        },
-      }),
-    );
-    return result;
-  };
-
-  const repairPluginMarketplace = async () => {
-    if (pluginMarketplaceProgress.active) return;
-    setPluginMarketplaceProgress({ active: true, percent: 8, message: t("正在检查本地插件市场…") });
-    const progressTimer = window.setInterval(() => {
-      setPluginMarketplaceProgress((current) => {
-        if (!current.active) return current;
-        const nextPercent = Math.min(92, current.percent + 9);
-        const message =
-          nextPercent < 28
-            ? t("正在连接 openai/plugins…")
-            : nextPercent < 62
-              ? t("正在下载插件市场快照…")
-              : nextPercent < 84
-                ? t("正在解压并校验插件文件…")
-                : t("正在写入 Codex 配置…");
-        return { ...current, percent: nextPercent, message };
-      });
-    }, 500);
-    try {
-      const result = await run(() => call<PluginMarketplaceRepairResult>("repair_plugin_marketplace"));
-      if (result) {
-        setPluginMarketplaceProgress({
-          active: false,
-          percent: 100,
-          message: result.message,
-        });
-        showNotice(t("插件市场修复"), result.message, result.status);
-      } else {
-        setPluginMarketplaceProgress({
-          active: false,
-          percent: 100,
-          message: t("插件市场修复失败，请查看错误提示后重试。"),
-        });
-      }
-    } finally {
-      window.clearInterval(progressTimer);
-    }
-  };
-
-  const refreshRemotePluginMarketplace = async (silent = false) => {
-    const result = await run(() => call<RemotePluginMarketplaceResult>("remote_plugin_marketplace_status"));
-    if (result) {
-      setRemotePluginMarketplace(result);
-      if (!silent) {
-        setRemotePluginMarketplaceProgress({
-          active: false,
-          percent: 100,
-          message: result.message,
-        });
-      }
-      if (!silent) showNotice(t("官方远端插件缓存"), result.message, result.status);
-    }
-    return result;
-  };
-
-  const repairRemotePluginMarketplace = async () => {
-    if (remotePluginMarketplaceProgress.active) return;
-    setRemotePluginMarketplaceProgress({
-      active: true,
-      percent: 18,
-      message: t("正在检查内置官方远端插件缓存…"),
-    });
-    const progressTimer = window.setInterval(() => {
-      setRemotePluginMarketplaceProgress((current) => {
-        if (!current.active) return current;
-        const nextPercent = Math.min(92, current.percent + 18);
-        const message =
-          nextPercent < 50
-            ? t("正在释放内置远端插件快照…")
-            : nextPercent < 78
-              ? t("正在注册官方远端插件市场…")
-              : t("正在刷新官方远端插件缓存状态…");
-        return { ...current, percent: nextPercent, message };
-      });
-    }, 450);
-    try {
-      const result = await run(() => call<RemotePluginMarketplaceResult>("repair_remote_plugin_marketplace"));
-      if (result) {
-        setRemotePluginMarketplace(result);
-        setRemotePluginMarketplaceProgress({
-          active: false,
-          percent: 100,
-          message: result.message,
-        });
-        showNotice(t("官方远端插件缓存"), result.message, result.status);
-      } else {
-        setRemotePluginMarketplaceProgress({
-          active: false,
-          percent: 100,
-          message: t("官方远端插件缓存修复失败，请查看错误提示后重试。"),
-        });
-      }
-    } finally {
-      window.clearInterval(progressTimer);
-    }
-  };
-
-  const installEntrypoints = async () => {
-    const result = await run(() => call<InstallResult>("install_entrypoints"));
-    if (result) {
-      showNotice(t("入口安装"), result.message, result.status);
-      await refreshOverview(true);
-    }
-  };
-
-  const uninstallEntrypoints = async () => {
-    const result = await run(() =>
-      call<InstallResult>("uninstall_entrypoints", {
-        options: { removeOwnedData },
-      }),
-    );
-    if (result) {
-      showNotice(t("入口卸载"), result.message, result.status);
-      await refreshOverview(true);
-    }
-  };
-
-  const repairShortcuts = async () => {
-    const result = await run(() => call<InstallResult>("repair_shortcuts"));
-    if (result) {
-      showNotice(t("快捷方式修复"), result.message, result.status);
-      await refreshOverview(true);
-    }
-  };
-
-  const watcherAction = async (command: string) => {
-    const result = await run(() => call<WatcherResult>(command));
-    if (result) {
-      setWatcher(result);
-      showNotice(t("Watcher 操作"), result.message, result.status);
-    }
-  };
-
-  const checkUpdate = async (silent = false) => {
-    const result = await run(() => call<UpdateResult>("check_update"));
-    if (result) {
-      setUpdate(result);
-      if (!silent || result.updateAvailable) {
-        showNotice(t("GitHub Release 检查"), result.message, result.status);
-      }
-    }
-  };
-
-  const performUpdate = async () => {
-    if (updateInstallProgress.active) return;
-    const release =
-      update?.latestVersion && update.assetName && update.assetUrl
-        ? {
-            version: update.latestVersion,
-            url: "",
-            body: update.releaseSummary ?? "",
-            asset_name: update.assetName,
-            asset_url: update.assetUrl,
-          }
-        : null;
-    setUpdateInstallProgress({
-      active: true,
-      percent: 8,
-      message: t("正在准备安装包下载…"),
-    });
-    const progressTimer = window.setInterval(() => {
-      setUpdateInstallProgress((current) => {
-        if (!current.active) return current;
-        const nextPercent = Math.min(92, current.percent + 10);
-        const message =
-          nextPercent < 32
-            ? t("正在获取 GitHub Release 信息…")
-            : nextPercent < 72
-              ? t("正在下载安装包…")
-              : t("正在启动安装包…");
-        return { ...current, percent: nextPercent, message };
-      });
-    }, 500);
-    try {
-      const result = await run(() => call<UpdateResult>("perform_update", { release }));
-      if (result) {
-        setUpdate(result);
-        setUpdateInstallProgress({
-          active: false,
-          percent: result.progress ?? 100,
-          message: result.message,
-        });
-        showNotice(t("更新安装"), result.message, result.status);
-      } else {
-        setUpdateInstallProgress({
-          active: false,
-          percent: 100,
-          message: t("安装包更新失败，请查看错误提示后重试。"),
-        });
-      }
-    } finally {
-      window.clearInterval(progressTimer);
-    }
-  };
 
   const saveSettings = async () => {
     const next = normalizeSettings(settingsForm);
@@ -1446,95 +939,6 @@ export function App() {
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
       showNotice(t("设置重置"), result.message, result.status);
-    }
-  };
-
-  const resetImageOverlaySettings = async () => {
-    const result = await run(() => call<SettingsResult>("reset_image_overlay_settings"));
-    if (result) {
-      setSettings(result);
-      setSettingsForm(normalizeSettings(result.settings));
-      showNotice(t("图片覆盖层"), result.message, result.status);
-    }
-  };
-
-  const refreshAds = async (silent = false) => {
-    const result = await run(() => call<AdsResult>("load_ads"));
-    if (result) {
-      setAds(result);
-      if (!silent) showResultNotice(t("推荐内容"), result, { silentSuccess: true });
-    }
-  };
-
-  const refreshProviderSyncTargets = async (silent = false) => {
-    const result = await run(() => call<ProviderSyncTargetsResult>("load_provider_sync_targets"));
-    if (result) {
-      setProviderSyncTargets(result);
-      const targets = result.targets ?? [];
-      const saved = settingsForm.providerSyncLastSelectedProvider;
-      const preferred =
-        targets.find((target) => target.id === saved)?.id ||
-        targets.find((target) => target.isCurrentProvider)?.id ||
-        targets[0]?.id ||
-        "openai";
-      setSelectedProviderSyncTarget((current) => (targets.some((target) => target.id === current) ? current : preferred));
-      if (!silent && !isSuccessStatus(result.status)) showNotice(t("Provider 同步目标"), result.message, result.status);
-    }
-    return result;
-  };
-
-  const syncProvidersNow = async () => {
-    if (providerSyncProgress.active) return;
-    setProviderSyncProgress({
-      active: true,
-      percent: 12,
-      message: selectedProviderSyncTarget ? tf("正在同步到 {0}…", [selectedProviderSyncTarget]) : t("正在扫描历史会话与索引…"),
-      result: null,
-    });
-    const progressTimer = window.setInterval(() => {
-      setProviderSyncProgress((current) => {
-        if (!current.active) return current;
-        return {
-          ...current,
-          percent: Math.min(88, current.percent + 8),
-          message: current.percent < 40 ? t("正在检查会话 provider 标记…") : t("正在写入修复与备份…"),
-        };
-      });
-    }, 350);
-    try {
-      const targetProvider = selectedProviderSyncTarget || undefined;
-      const result = await run(() =>
-        call<CommandResult<ProviderSyncPayload>>("sync_providers_now", { targetProvider }),
-      );
-      if (result) {
-        setProviderSyncProgress({
-          active: false,
-          percent: 100,
-          message: providerSyncProgressMessage(result),
-          result,
-        });
-        if (targetProvider) {
-          const next = {
-            ...settingsForm,
-            providerSyncLastSelectedProvider: targetProvider,
-            providerSyncSavedProviders: Array.from(
-              new Set([...(settingsForm.providerSyncSavedProviders ?? []), targetProvider]),
-            ).sort(),
-          };
-          setSettingsForm(next);
-        }
-        await refreshProviderSyncTargets(true);
-        showNotice(t("历史会话修复"), result.message, result.status);
-      } else {
-        setProviderSyncProgress({
-          active: false,
-          percent: 100,
-          message: t("历史会话修复失败，请查看错误提示后重试。"),
-          result: null,
-        });
-      }
-    } finally {
-      window.clearInterval(progressTimer);
     }
   };
 
@@ -1802,13 +1206,6 @@ export function App() {
     return normalized;
   };
 
-  const copyText = async (text: string, message: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch (error) {
-      showNotice(t("复制失败"), stringifyError(error), "failed");
-    }
-  };
 
   const openExternalUrl = async (url: string) => {
     const result = await run(() => call<CommandResult<Record<string, unknown>>>("open_external_url", { url }));
@@ -1821,13 +1218,6 @@ export function App() {
     setNotice({ title, message: t(message), status });
   };
 
-  const exitManagerApp = async () => {
-    await call<void>("manager_exit_app");
-  };
-
-  const hideManagerToTray = async () => {
-    await call<void>("manager_hide_to_tray");
-  };
 
   const showResultNotice = (
     title: string,
@@ -1840,20 +1230,10 @@ export function App() {
 
   useEffect(() => {
     void (async () => {
-      const startup = await run(() => call<StartupResult>("startup_options"));
-      if (startup?.showUpdate) {
-        setRoute("about");
-        void checkUpdate(false);
-      } else {
-        void checkUpdate(true);
-      }
-      await refreshOverview(true);
       await refreshSettings(true);
       await refreshRelay(true);
+      await refreshRelayFiles(true);
       await refreshEnvConflicts(true);
-      await refreshProviderSyncTargets(true);
-      await refreshPendingProviderImport(true);
-      await refreshRemotePluginMarketplace(true);
     })();
   }, []);
 
@@ -1862,16 +1242,9 @@ export function App() {
       void invoke("update_tray_labels", {
         showLabel: "Show window",
         quitLabel: "Quit",
-        windowTitle: "Codex++ Manager",
+        windowTitle: "Codex-- Manager",
       });
     }
-  }, []);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      void refreshPendingProviderImport(true);
-    }, 1200);
-    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -1888,7 +1261,6 @@ export function App() {
       const normalized = normalizeSettings(result.settings);
       setSettingsForm(normalized);
       setLaunchForm((current) => ({ ...current, appPath: normalized.codexAppPath }));
-      await refreshOverview(true);
     }
     return result;
   };
@@ -1896,21 +1268,10 @@ export function App() {
   const actions = useMemo(
     () => ({
       refreshCurrent: () => navigate(route),
-      launch,
-      restart,
-      repairPluginMarketplace,
-      refreshRemotePluginMarketplace,
-      repairRemotePluginMarketplace,
-      installEntrypoints,
-      uninstallEntrypoints,
-      repairShortcuts,
-      checkUpdate,
-      performUpdate,
       saveSettings,
       saveSettingsValue,
       refreshSettings,
       resetSettings,
-      resetImageOverlaySettings,
       chooseCodexAppPath: async (mode: "folder" | "file") => {
         let selected: unknown;
         try {
@@ -1946,7 +1307,6 @@ export function App() {
           setSettingsForm(normalizeSettings(result.settings));
           setLaunchForm((current) => ({ ...current, appPath: "" }));
           showNotice(t("Codex 应用路径"), t("已清除保存路径，后续启动会回到自动探测。"), result.status);
-          await refreshOverview(true);
         }
       },
       chooseImageOverlayPath: async () => {
@@ -1982,12 +1342,6 @@ export function App() {
           showNotice(t("Codex 应用路径"), t("应用路径已保存，之后启动会自动复用。"), result.status);
         }
       },
-      syncProvidersNow,
-      refreshProviderSyncTargets,
-      setProviderSyncTarget: (provider: string) => {
-        setSelectedProviderSyncTarget(provider);
-        setSettingsForm((current) => ({ ...current, providerSyncLastSelectedProvider: provider }));
-      },
       setLaunchMode: async (launchMode: LaunchMode) => {
         await saveLaunchMode(launchMode);
       },
@@ -1996,21 +1350,11 @@ export function App() {
       refreshEnvConflicts,
       refreshRelayEnvironment,
       removeEnvConflicts,
-      refreshCcsProviders,
-      importCcsProviders,
       refreshLiveContextEntries,
       syncLiveContextEntries,
-      refreshAds,
-      refreshScriptMarket,
-      installMarketScript,
-      setUserScriptEnabled,
-      deleteUserScript,
       refreshLocalSessions,
       deleteLocalSession,
       deleteLocalSessions,
-      refreshZedRemoteProjects,
-      openZedRemoteProject,
-      forgetZedRemoteProject,
       openExternalUrl,
       applyRelayInjection,
       applyPureApiInjection,
@@ -2027,27 +1371,11 @@ export function App() {
       relaySwitching,
       switchOfficialMode,
       switchPureApiMode,
-      refreshLogs,
-      refreshDiagnostics,
       showMessage: async (title: string, message: string, status?: Status) => showNotice(title, message, status),
-      copyLogs: () => copyText(logs?.text ?? "", t("日志已复制。")),
-      copyDiagnostics: () => copyText(diagnostics?.report ?? "", t("诊断报告已复制。")),
-      goLogs: () => navigate("about"),
-      checkHealth: async () => {
-        await refreshOverview(true);
-        await refreshRelay(true);
-        await refreshWatcher(true);
-        showNotice(t("检查完成"), t("已刷新 Codex 应用、入口和 Watcher 状态。"), "ok");
-      },
-      installWatcher: () => watcherAction("install_watcher"),
-      uninstallWatcher: () => watcherAction("uninstall_watcher"),
-      enableWatcher: () => watcherAction("enable_watcher"),
-      disableWatcher: () => watcherAction("disable_watcher"),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, launchForm, settingsForm, settings, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, zedRemoteProjects, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders],
+    [route, launchForm, settingsForm, settings, theme, relayFiles, localSessions, envConflicts, relayEnvironment],
   );
-  const hasUpdate = update?.updateAvailable === true;
 
   return (
     <div className={`shell ${theme}`}>
@@ -2055,20 +1383,7 @@ export function App() {
         <div className="brand">
           <div className="brand-copy">
             <div className="brand-title-row">
-              <div className="brand-title">Codex++</div>
-              {hasUpdate ? (
-                <button
-                  className="update-dot"
-                  onClick={() => {
-                    setRoute("about");
-                    void checkUpdate(false);
-                  }}
-                  title={tf("发现新版本 {0}", [update?.latestVersion ?? ""])}
-                  type="button"
-                >
-                  <CircleArrowUp className="h-4 w-4" aria-hidden="true" />
-                </button>
-              ) : null}
+              <div className="brand-title">Codex--</div>
             </div>
             <div className="brand-subtitle">{t("管理控制台")}</div>
           </div>
@@ -2117,29 +1432,17 @@ export function App() {
             >
               {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </Button>
-            <Button onClick={() => void actions.restart()} title={t("重启 Codex++")} variant="outline">
-              <Rocket className="h-4 w-4" />
-              {t("重启 Codex++")}
-            </Button>
             <Button onClick={() => void actions.refreshCurrent()} size="icon" title={t("刷新当前页面")} variant="outline">
               <RefreshCw className="h-4 w-4" />
             </Button>
           </div>
         </header>
         <section className="screen" key={route}>
-          {route === "overview" ? (
-            <OverviewScreen
-              overview={overview}
-              pluginMarketplaceProgress={pluginMarketplaceProgress}
-              actions={actions}
-            />
-          ) : null}
           {route === "relay" ? (
             <RelayScreen
               settings={settings}
               relayFiles={relayFiles}
               envConflicts={envConflicts}
-              ccsProviders={ccsProviders}
               form={settingsForm}
               onFormChange={setSettingsForm}
               actions={actions}
@@ -2153,9 +1456,6 @@ export function App() {
               settings={settings}
               form={settingsForm}
               sessions={localSessions}
-              providerSyncProgress={providerSyncProgress}
-              providerSyncTargets={providerSyncTargets}
-              selectedProviderSyncTarget={selectedProviderSyncTarget}
               onFormChange={setSettingsForm}
               actions={actions}
             />
@@ -2169,42 +1469,8 @@ export function App() {
               actions={actions}
             />
           ) : null}
-          {route === "enhance" ? (
-            <EnhanceScreen
-              form={settingsForm}
-              pluginMarketplaceProgress={pluginMarketplaceProgress}
-              remotePluginMarketplace={remotePluginMarketplace}
-              remotePluginMarketplaceProgress={remotePluginMarketplaceProgress}
-              onFormChange={setSettingsForm}
-              actions={actions}
-            />
-          ) : null}
-          {route === "zedRemote" ? (
-            <ZedRemoteScreen projects={zedRemoteProjects} form={settingsForm} onFormChange={setSettingsForm} actions={actions} />
-          ) : null}
-          {route === "userScripts" ? <UserScriptsScreen settings={settings} market={scriptMarket} actions={actions} /> : null}
-          {route === "recommendations" ? <RecommendationsScreen ads={ads} actions={actions} /> : null}
-          {route === "maintenance" ? (
-            <MaintenanceScreen
-              overview={overview}
-              watcher={watcher}
-              settings={settings}
-              launchForm={launchForm}
-              onLaunchFormChange={setLaunchForm}
-              removeOwnedData={removeOwnedData}
-              onRemoveOwnedDataChange={setRemoveOwnedData}
-              actions={actions}
-            />
-          ) : null}
           {route === "about" ? (
-            <AboutScreen
-              overview={overview}
-              update={update}
-              updateInstallProgress={updateInstallProgress}
-              logs={logs}
-              diagnostics={diagnostics}
-              actions={actions}
-            />
+            <AboutScreen actions={actions} />
           ) : null}
           {route === "settings" ? (
             <SettingsScreen settings={settings} theme={theme} form={settingsForm} onFormChange={setSettingsForm} actions={actions} />
@@ -2231,62 +1497,31 @@ export function App() {
           }}
         />
       ) : null}
-      {pendingProviderImport ? (
-        <PendingProviderImportDialog
-          request={pendingProviderImport}
-          onConfirm={() => void confirmPendingProviderImport()}
-          onDismiss={() => void dismissPendingProviderImport()}
-        />
-      ) : null}
     </div>
   );
 }
 
 type Actions = {
   refreshCurrent: () => Promise<void>;
-  launch: () => Promise<void>;
-  restart: () => Promise<void>;
-  repairPluginMarketplace: () => Promise<void>;
-  refreshRemotePluginMarketplace: (silent?: boolean) => Promise<RemotePluginMarketplaceResult | null>;
-  repairRemotePluginMarketplace: () => Promise<void>;
-  installEntrypoints: () => Promise<void>;
-  uninstallEntrypoints: () => Promise<void>;
-  repairShortcuts: () => Promise<void>;
-  checkUpdate: () => Promise<void>;
-  performUpdate: () => Promise<void>;
   saveSettings: () => Promise<void>;
   saveSettingsValue: (settings: BackendSettings, silent?: boolean) => Promise<void>;
   refreshSettings: (silent?: boolean) => Promise<BackendSettings | null>;
   resetSettings: () => Promise<void>;
-  resetImageOverlaySettings: () => Promise<void>;
   chooseCodexAppPath: (mode: "folder" | "file") => Promise<void>;
   clearCodexAppPath: () => Promise<void>;
   chooseImageOverlayPath: () => Promise<void>;
   saveManualCodexAppPath: () => Promise<void>;
-  syncProvidersNow: () => Promise<void>;
-  refreshProviderSyncTargets: (silent?: boolean) => Promise<ProviderSyncTargetsResult | null>;
-  setProviderSyncTarget: (provider: string) => void;
   setLaunchMode: (launchMode: LaunchMode) => Promise<void>;
   refreshRelay: () => Promise<void>;
   refreshRelayFiles: () => Promise<RelayFilesResult | null>;
   refreshEnvConflicts: (silent?: boolean) => Promise<EnvConflictsResult | null>;
   refreshRelayEnvironment: (silent?: boolean) => Promise<RelayEnvironmentResult | null>;
   removeEnvConflicts: (names: string[]) => Promise<void>;
-  refreshCcsProviders: (silent?: boolean) => Promise<CcsProvidersResult | null>;
-  importCcsProviders: () => Promise<void>;
   refreshLiveContextEntries: () => Promise<LiveContextEntriesResult | null>;
   syncLiveContextEntries: (settings: BackendSettings, silent?: boolean) => Promise<LiveContextEntriesResult | null>;
-  refreshAds: () => Promise<void>;
-  refreshScriptMarket: () => Promise<void>;
-  installMarketScript: (id: string) => Promise<void>;
-  setUserScriptEnabled: (key: string, enabled: boolean) => Promise<void>;
-  deleteUserScript: (key: string) => Promise<void>;
   refreshLocalSessions: () => Promise<LocalSessionsResult | null>;
   deleteLocalSession: (session: LocalSession) => Promise<void>;
   deleteLocalSessions: (sessions: LocalSession[]) => Promise<void>;
-  refreshZedRemoteProjects: () => Promise<ZedRemoteProjectsResult | null>;
-  openZedRemoteProject: (project: ZedRemoteProject, strategy?: ZedOpenStrategy) => Promise<void>;
-  forgetZedRemoteProject: (project: ZedRemoteProject) => Promise<void>;
   openExternalUrl: (url: string) => Promise<void>;
   applyRelayInjection: () => Promise<boolean>;
   applyPureApiInjection: () => Promise<boolean>;
@@ -2308,123 +1543,10 @@ type Actions = {
   relaySwitching: boolean;
   switchOfficialMode: () => Promise<void>;
   switchPureApiMode: () => Promise<void>;
-  refreshLogs: () => Promise<void>;
-  refreshDiagnostics: () => Promise<void>;
   showMessage: (title: string, message: string, status?: Status) => Promise<void>;
-  copyLogs: () => Promise<void>;
-  copyDiagnostics: () => Promise<void>;
-  goLogs: () => Promise<void>;
-  installWatcher: () => Promise<void>;
-  uninstallWatcher: () => Promise<void>;
-  enableWatcher: () => Promise<void>;
-  disableWatcher: () => Promise<void>;
   toggleTheme: () => void;
-  checkHealth: () => Promise<void>;
 };
 
-function OverviewScreen({
-  overview,
-  pluginMarketplaceProgress,
-  actions,
-}: {
-  overview: OverviewResult | null;
-  pluginMarketplaceProgress: TaskProgress;
-  actions: Actions;
-}) {
-  const health = healthItems(overview);
-  return (
-    <>
-      <Panel className="jojocode-overview">
-        <CardContent>
-          <div className="jojocode-overview-layout">
-            <div className="jojocode-overview-main">
-              <div className="jojocode-overview-mark">
-                <Network className="h-5 w-5" />
-              </div>
-              <div>
-                <span className="eyebrow">{t("官方中转站")}</span>
-                <h2>JOJO Code</h2>
-                <p>
-                  {t("Codex++ 官方中转站，主打稳定接入和划算价格，支持 GPT-5.6 全系列、Fable 5、Sonnet 5、GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力。")}
-                </p>
-              </div>
-            </div>
-            <div className="jojocode-overview-side">
-              <div className="jojocode-model-tags">
-                <span>GPT-5.6 全系列</span>
-                <span>Fable 5</span>
-                <span>Sonnet 5</span>
-                <span>GPT-5.5</span>
-                <span>GPT-5.4</span>
-                <span>Opus 4.8</span>
-                <span>Opus 4.7</span>
-                <span>gpt-image-2</span>
-              </div>
-              <Button onClick={() => void actions.openExternalUrl("https://jojocode.com/")}>
-                <ExternalLink className="h-4 w-4" />
-                {t("打开 JOJO Code")}
-              </Button>
-            </div>
-          </div>
-        </CardContent>
-      </Panel>
-      <Panel>
-        <CardHead title={t("健康检查")} detail={t("概览只展示关键问题，具体配置在对应页面处理")} />
-        <CardContent>
-          <div className="health-grid">
-            <div className={`health-item ${overview?.codex_version ? "ok" : "needs-fix"}`}>
-              {overview?.codex_version ? <CheckCircle2 className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
-              <div>
-                <strong>{t("Codex 版本")}</strong>
-                <span>{overview?.codex_version ?? t("未检测到 Codex 应用版本。")}</span>
-              </div>
-              <Badge status={overview?.codex_version ? "ok" : "not_checked"} />
-            </div>
-            {health.map((item) => (
-              <div className={`health-item ${item.ok ? "ok" : "needs-fix"}`} key={item.title}>
-                {item.ok ? <CheckCircle2 className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
-                <div>
-                  <strong>{item.title}</strong>
-                  <span>{item.detail}</span>
-                </div>
-                <Badge status={item.status} />
-              </div>
-            ))}
-          </div>
-          <Toolbar>
-            <Button onClick={() => void actions.checkHealth()}>
-              <RefreshCw className="h-4 w-4" />
-              {t("检查")}
-            </Button>
-            <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>
-              <Wrench className="h-4 w-4" />
-              {t("修复入口")}
-            </Button>
-            <Button disabled={pluginMarketplaceProgress.active} variant="secondary" onClick={() => void actions.repairPluginMarketplace()}>
-              {pluginMarketplaceProgress.active ? t("正在修复…") : t("修复插件市场")}
-            </Button>
-          </Toolbar>
-          <TaskProgressBox progress={pluginMarketplaceProgress} title={t("插件市场修复进度")} />
-        </CardContent>
-      </Panel>
-      <Panel>
-        <CardHead title={t("最近启动")} detail={overview?.logs_path ?? t("暂无状态文件")} />
-        <CardContent>
-          <LatestLaunch status={overview?.latest_launch ?? null} />
-          <Toolbar>
-            <Button onClick={() => void actions.launch()}>
-              <Rocket className="h-4 w-4" />
-              {t("启动 Codex++")}
-            </Button>
-            <Button variant="secondary" onClick={() => void actions.goLogs()}>
-              {t("打开关于")}
-            </Button>
-          </Toolbar>
-        </CardContent>
-      </Panel>
-    </>
-  );
-}
 
 function RelayEnvironmentScreen({ result, actions }: { result: RelayEnvironmentResult | null; actions: Actions }) {
   const proxyVariables = result?.proxyEnvironment.variables ?? [];
@@ -2504,7 +1626,6 @@ function RelayScreen({
   settings: _settings,
   relayFiles,
   envConflicts,
-  ccsProviders,
   form,
   onFormChange,
   actions,
@@ -2512,7 +1633,6 @@ function RelayScreen({
   settings: SettingsResult | null;
   relayFiles: RelayFilesResult | null;
   envConflicts: EnvConflictsResult | null;
-  ccsProviders: CcsProvidersResult | null;
   form: BackendSettings;
   onFormChange: (value: BackendSettings) => void;
   actions: Actions;
@@ -2520,7 +1640,6 @@ function RelayScreen({
   const normalized = normalizeSettings(form);
   const [detailProfileId, setDetailProfileId] = useState<string | null>(null);
   const [newProfileDraft, setNewProfileDraft] = useState<RelayProfile | null>(null);
-  const [thirdPartyImportOpen, setThirdPartyImportOpen] = useState(false);
   const detailProfile = newProfileDraft || (detailProfileId
     ? normalized.relayProfiles.find((profile) => profile.id === detailProfileId) || null
     : null);
@@ -2557,10 +1676,6 @@ function RelayScreen({
       void actions.refreshRelayFiles();
     }
   }, [detailProfileId, newProfileDraft, normalized.activeRelayId]);
-  const openThirdPartyImport = () => {
-    setThirdPartyImportOpen((open) => !open);
-    if (!ccsProviders) void actions.refreshCcsProviders(true);
-  };
 
   if (detailProfile) {
     return (
@@ -2622,37 +1737,6 @@ function RelayScreen({
               <Plus className="h-4 w-4" />
               {t("添加聚合供应商")}
             </Button>
-            <div className="third-party-import">
-              <Button
-                onClick={openThirdPartyImport}
-                variant="secondary"
-              >
-                <Download className="h-4 w-4" />
-                {t("从第三方导入")}
-              </Button>
-              {thirdPartyImportOpen ? (
-                <div className="third-party-import-menu">
-                  <button
-                    disabled={!ccsProviders?.providers.length}
-                    onClick={() => {
-                      setThirdPartyImportOpen(false);
-                      void actions.importCcsProviders();
-                    }}
-                    type="button"
-                  >
-                    <strong>ccswitch</strong>
-                    <span>{ccsProviderSummary(ccsProviders)}</span>
-                  </button>
-                  <button
-                    onClick={() => void actions.refreshCcsProviders()}
-                    type="button"
-                  >
-                    <RefreshCw className="h-4 w-4" />
-                    {t("刷新列表")}
-                  </button>
-                </div>
-              ) : null}
-            </div>
           </div>
           <RelayProfileList
             form={normalized}
@@ -2714,385 +1798,17 @@ function envConflictSourceLabel(source: string): string {
   return source || t("环境变量");
 }
 
-function EnhanceScreen({
-  form,
-  pluginMarketplaceProgress,
-  remotePluginMarketplace,
-  remotePluginMarketplaceProgress,
-  onFormChange,
-  actions,
-}: {
-  form: BackendSettings;
-  pluginMarketplaceProgress: TaskProgress;
-  remotePluginMarketplace: RemotePluginMarketplaceResult | null;
-  remotePluginMarketplaceProgress: TaskProgress;
-  onFormChange: (value: BackendSettings) => void;
-  actions: Actions;
-}) {
-  const setEnhanceFlag = (key: keyof BackendSettings, value: boolean) => onFormChange({ ...form, [key]: value });
-  const setPersistedEnhanceFlag = (key: keyof BackendSettings, value: boolean) => {
-    const next = { ...form, [key]: value };
-    onFormChange(next);
-    void actions.saveSettingsValue(next, true);
-  };
-  const masterEnabled = form.enhancementsEnabled;
-  const patchMode = form.launchMode === "patch";
-  const remoteMarketplaceStatus = remotePluginMarketplace?.marketplaceRoot
-    ? remotePluginMarketplace.configRegistered
-      ? t("已注册")
-      : t("已缓存未注册")
-    : t("未发现缓存");
-  const remoteMarketplaceSummary = remotePluginMarketplace?.marketplaceRoot
-    ? tf("已缓存 {0} 个插件 / {1} 个技能。", [
-        String(remotePluginMarketplace.pluginCount),
-        String(remotePluginMarketplace.skillCount),
-      ])
-    : t("未发现本地缓存；点击按钮会从 Codex++ 内置快照释放并注册，无需官方账号预缓存。");
-  return (
-    <>
-      <Panel className="enhance-panel">
-        <CardHead title={t("Codex增强")} detail={t("会话删除、导出、项目移动和用户脚本等界面能力")} />
-        <CardContent>
-          <label className="switch-row">
-            <input
-              checked={form.enhancementsEnabled}
-              onChange={(event) => onFormChange({ ...form, enhancementsEnabled: event.currentTarget.checked })}
-              type="checkbox"
-            />
-            <span>
-              <strong>{t("启用 Codex增强")}</strong>
-              <small>{t("关闭后会停用删除、导出、项目移动、插件相关和菜单位置增强。")}</small>
-            </span>
-            <ToggleVisual />
-          </label>
-          <label className="switch-row">
-            <input
-              checked={form.computerUseGuardEnabled}
-              onChange={(event) => onFormChange({ ...form, computerUseGuardEnabled: event.currentTarget.checked })}
-              type="checkbox"
-            />
-            <span>
-              <strong>{t("启用 Windows Computer Use Guard")}</strong>
-              <small>{t("默认关闭；开启后启动 Codex 时会自动保留官方 Computer Use 插件所需的 config.toml、bundled 插件和 notify 配置。")}</small>
-            </span>
-            <ToggleVisual />
-          </label>
-          <ModeSelector launchMode={form.launchMode} actions={actions} />
-          {form.launchMode === "relay" ? (
-            <div className="hint-line">
-              <ShieldCheck className="h-4 w-4" />
-              <span>{t("当前为兼容增强模式，插件市场解锁不会启用；其他页面功能仍可用。")}</span>
-            </div>
-          ) : null}
-          <div className="enhance-feature-groups">
-            <FeatureGroup title={t("插件与模型")} detail={t("管理插件市场、模型列表和服务档位相关增强。")}>
-              <FeatureToggle title={t("插件市场解锁")} detail={t("API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。")} checked={form.codexAppPluginMarketplaceUnlock} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginMarketplaceUnlock", value)} />
-              <FeatureToggle title={t("插件列表全量展示")} detail={t("进入插件页后自动连续展开“更多”，尽量一次显示完整插件列表。")} checked={form.codexAppPluginAutoExpand} disabled={!masterEnabled || !patchMode} onChange={(value) => setEnhanceFlag("codexAppPluginAutoExpand", value)} />
-              <FeatureToggle title={t("模型白名单解锁")} detail={t("从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。")} checked={form.codexAppModelWhitelistUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppModelWhitelistUnlock", value)} />
-              <FeatureToggle title={t("Fast 按钮")} detail={t("显示服务模式切换按钮；Fast 仅支持 gpt-5.4 / gpt-5.5，其他模型按 Standard 发送。")} checked={form.codexAppServiceTierControls} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppServiceTierControls", value)} />
-              <div className="feature-action-row">
-                <div>
-                  <strong>{t("官方远端插件缓存")}</strong>
-                  <small>{t("使用 Codex++ 内置快照补齐远端插件，API 模式也可显示和安装 Product Design 插件。")}</small>
-                  <small>{remoteMarketplaceSummary}</small>
-                </div>
-                <Badge status={remotePluginMarketplace?.configRegistered ? "ok" : "not_checked"} />
-                <Button
-                  disabled={remotePluginMarketplaceProgress.active}
-                  onClick={() => void actions.repairRemotePluginMarketplace()}
-                  variant="secondary"
-                >
-                  {remotePluginMarketplaceProgress.active ? t("正在处理…") : t("释放并注册内置缓存")}
-                </Button>
-                <Button
-                  disabled={remotePluginMarketplaceProgress.active}
-                  onClick={() => void actions.refreshRemotePluginMarketplace()}
-                  variant="outline"
-                >
-                  {t("刷新")}
-                </Button>
-                <span className="feature-action-status">{remoteMarketplaceStatus}</span>
-              </div>
-            </FeatureGroup>
-            <FeatureGroup title={t("对话与输入")} detail={t("调整会话管理、输入行为和对话阅读体验。")}>
-              <FeatureToggle title={t("会话删除")} detail={t("在会话列表悬停显示删除按钮，并支持撤销。")} checked={form.codexAppSessionDelete} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionDelete", value)} />
-              <FeatureToggle title={t("Markdown 导出")} detail={t("在会话列表显示导出按钮，导出带时间戳的 Markdown。")} checked={form.codexAppMarkdownExport} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppMarkdownExport", value)} />
-              <FeatureToggle title={t("粘贴修复")} detail={t("从 Word 等富文本粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。")} checked={form.codexAppPasteFix} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppPasteFix", value)} />
-              <FeatureToggle title={t("会话项目移动")} detail={t("把会话移动到普通对话或其他本地项目。")} checked={form.codexAppProjectMove} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppProjectMove", value)} />
-              <FeatureToggle title={t("会话 ID 标识")} detail={t("在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。")} checked={form.codexAppThreadIdBadge} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadIdBadge", value)} />
-              <FeatureToggle title={t("对话居中宽度")} detail={t("把主对话和输入框限制到固定最大宽度，适合大屏阅读。")} checked={form.codexAppConversationView} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationView", value)} />
-              <FeatureToggle title={t("切换对话保留位置")} detail={t("切换 thread 时恢复上一次浏览位置。")} checked={form.codexAppThreadScrollRestore} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadScrollRestore", value)} />
-            </FeatureGroup>
-            <FeatureGroup title="Stepwise" detail={t("基于当前对话生成下一步建议，使用独立 API 配置。")}>
-              <FeatureToggle title="Stepwise" detail={t("在 Codex 页面显示可拖动的后续建议浮层；建议由单独配置的 Stepwise API 生成。")} checked={form.codexAppStepwiseEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppStepwiseEnabled", value)} />
-              <FeatureToggle title={t("Stepwise 直接发送")} detail={t("点击建议后自动发送；关闭时只填入输入框。")} checked={form.codexAppStepwiseDirectSend} disabled={!masterEnabled || !form.codexAppStepwiseEnabled} onChange={(value) => setEnhanceFlag("codexAppStepwiseDirectSend", value)} />
-            </FeatureGroup>
-            <FeatureGroup title={t("界面与启动")} detail={t("控制语言、启动速度和 Codex 原生界面调整。")}>
-              {isWindowsPlatform ? <FeatureToggle title={t("桌宠跟随真实鼠标")} detail={t("仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。")} checked={form.codexAppPetRealMouseLook} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppPetRealMouseLook", value)} /> : null}
-              <FeatureToggle title={t("强制中文界面")} detail={t("强制启用 Codex App 内置 zh-CN 语言包，避免 Statsig/VPN 不通时回退英文。需重启 Codex 才能完整生效。")} checked={form.codexAppForceChineseLocale} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppForceChineseLocale", value)} />
-              <FeatureToggle title={t("快速启动")} detail={t("默认关闭；无 VPN 时可开启，让 Statsig 初始化快速失败，减少启动时长。需重启 Codex 才生效。")} checked={form.codexAppFastStartup} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppFastStartup", value)} />
-              <FeatureToggle title={t("原生菜单栏位置")} detail={t("把 Codex++ 菜单插入 Codex 顶部原生菜单栏。")} checked={form.codexAppNativeMenuPlacement} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppNativeMenuPlacement", value)} />
-              <FeatureToggle title={t("原生菜单汉化")} detail={t("启动时通过本地主进程调试端口汉化 Codex 原生菜单；不修改安装包。需重启 Codex 才生效。")} checked={form.codexAppNativeMenuLocalization} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppNativeMenuLocalization", value)} />
-            </FeatureGroup>
-            <FeatureGroup title={t("远程项目")} detail={t("连接 Zed Remote 和 upstream worktree 辅助能力。")}>
-              <FeatureToggle title="Zed Remote open" detail={t("远程 SSH 文件引用可直接用 Zed Remote Development 打开。")} checked={form.codexAppZedRemoteOpen} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppZedRemoteOpen", value)} />
-              <FeatureToggle title={t("Zed 项目记录")} detail={t("维护 Codex++ 自己的远程项目最近列表。")} checked={form.zedRemoteProjectRegistryEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteProjectRegistryEnabled", value)} />
-              <FeatureToggle title={t("同步 Zed settings")} detail={t("高级选项，默认关闭；当前实现不主动改写 Zed settings。")} checked={form.zedRemoteSyncToZedSettings} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteSyncToZedSettings", value)} />
-              <FeatureToggle title="Upstream worktree" detail={t("从最新 upstream 分支创建 Git worktree。")} checked={form.codexAppUpstreamWorktreeCreate} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppUpstreamWorktreeCreate", value)} />
-            </FeatureGroup>
-          </div>
-          <div className="hint-line">
-            <Wrench className="h-4 w-4" />
-            <span>{t("新机器没有本地插件市场时，可从 openai/plugins 初始化到当前 CODEX_HOME。")}</span>
-            <Button disabled={pluginMarketplaceProgress.active} variant="secondary" onClick={() => void actions.repairPluginMarketplace()}>
-              {pluginMarketplaceProgress.active ? t("正在修复…") : t("修复插件市场")}
-            </Button>
-          </div>
-          <TaskProgressBox progress={pluginMarketplaceProgress} title={t("插件市场修复进度")} />
-          <TaskProgressBox progress={remotePluginMarketplaceProgress} title={t("官方远端插件缓存进度")} />
-          <div className="zed-remote-settings">
-            <Field label={t("Zed 默认打开策略")}>
-              <select
-                className="select-input"
-                disabled={!masterEnabled}
-                onChange={(event) => onFormChange({ ...form, zedRemoteOpenStrategy: event.currentTarget.value as ZedOpenStrategy })}
-                value={form.zedRemoteOpenStrategy}
-              >
-                <option value="addToFocusedWorkspace">{t("加入当前工作区")}</option>
-                <option value="reuseWindow">{t("复用窗口")}</option>
-                <option value="newWindow">{t("新窗口")}</option>
-                <option value="default">{t("Zed 默认行为")}</option>
-              </select>
-            </Field>
-          </div>
-          <div className="hint-line">
-            <Info className="h-4 w-4" />
-            <span>{t("如果使用官方模式或官方混入 API 模式，通常不需要开启插件市场解锁。")}</span>
-          </div>
-          <Toolbar>
-            <Button onClick={() => void actions.saveSettings()}>{t("保存增强设置")}</Button>
-          </Toolbar>
-        </CardContent>
-      </Panel>
-    </>
-  );
-}
-
-function ZedRemoteScreen({
-  projects,
-  form,
-  onFormChange,
-  actions,
-}: {
-  projects: ZedRemoteProjectsResult | null;
-  form: BackendSettings;
-  onFormChange: (value: BackendSettings) => void;
-  actions: Actions;
-}) {
-  const allProjects = projects?.projects ?? [];
-  const currentProjects = allProjects.filter((project) => project.isCurrent);
-  const currentIds = new Set(currentProjects.map((project) => project.id));
-  const recentProjects = allProjects.filter((project) => !currentIds.has(project.id) && (project.source === "recent" || project.lastOpenedAtMs));
-  const recentIds = new Set(recentProjects.map((project) => project.id));
-  const discoveredProjects = allProjects.filter((project) => !currentIds.has(project.id) && !recentIds.has(project.id));
-  const copyUrl = async (project: ZedRemoteProject) => {
-    try {
-      await navigator.clipboard.writeText(project.url);
-      await actions.showMessage("Zed Remote URL", t("ssh:// URL 已复制。"), "ok");
-    } catch (error) {
-      await actions.showMessage(t("复制失败"), stringifyError(error), "failed");
-    }
-  };
-  return (
-    <>
-      <Panel>
-        <CardHead title={t("Zed 远程项目")} detail={tf("{0} 个 Codex++ 可识别项目，默认策略：{1}", [allProjects.length, zedStrategyLabel(form.zedRemoteOpenStrategy)])} />
-        <CardContent>
-          <div className="metric-list">
-            <Metric label="Current" value={String(currentProjects.length)} />
-            <Metric label="Recent" value={String(recentProjects.length)} />
-            <Metric label="Discovered" value={String(discoveredProjects.length)} />
-          </div>
-          <div className="zed-remote-settings">
-            <Field label={t("默认打开策略")}>
-              <select
-                className="select-input"
-                onChange={(event) => onFormChange({ ...form, zedRemoteOpenStrategy: event.currentTarget.value as ZedOpenStrategy })}
-                value={form.zedRemoteOpenStrategy}
-              >
-                <option value="addToFocusedWorkspace">{t("加入当前工作区")}</option>
-                <option value="reuseWindow">{t("复用窗口")}</option>
-                <option value="newWindow">{t("新窗口")}</option>
-                <option value="default">{t("Zed 默认行为")}</option>
-              </select>
-            </Field>
-            <label className="switch-row compact">
-              <input
-                checked={form.zedRemoteProjectRegistryEnabled}
-                onChange={(event) => onFormChange({ ...form, zedRemoteProjectRegistryEnabled: event.currentTarget.checked })}
-                type="checkbox"
-              />
-              <span>
-                <strong>{t("记录最近打开")}</strong>
-                <small>{t("保存到 Codex++ state，不改写 Zed settings。")}</small>
-              </span>
-              <ToggleVisual />
-            </label>
-          </div>
-          <Toolbar>
-            <Button onClick={() => void actions.refreshZedRemoteProjects()}>
-              <RefreshCw className="h-4 w-4" />
-              {t("刷新项目")}
-            </Button>
-            <Button variant="secondary" onClick={() => void actions.saveSettingsValue(form, false)}>
-              <Save className="h-4 w-4" />
-              {t("保存策略")}
-            </Button>
-          </Toolbar>
-        </CardContent>
-      </Panel>
-      <ZedRemoteProjectSection title="Current" projects={currentProjects} actions={actions} onCopyUrl={copyUrl} />
-      <ZedRemoteProjectSection title="Recent" projects={recentProjects} actions={actions} onCopyUrl={copyUrl} />
-      <ZedRemoteProjectSection title="Discovered from Codex" projects={discoveredProjects} actions={actions} onCopyUrl={copyUrl} />
-    </>
-  );
-}
-
-function ZedRemoteProjectSection({
-  title,
-  projects,
-  actions,
-  onCopyUrl,
-}: {
-  title: string;
-  projects: ZedRemoteProject[];
-  actions: Actions;
-  onCopyUrl: (project: ZedRemoteProject) => Promise<void>;
-}) {
-  return (
-    <Panel>
-      <CardHead title={title} detail={tf("{0} 个项目", [projects.length])} />
-      <CardContent>
-        {projects.length ? (
-          <div className="zed-remote-project-list">
-            {projects.map((project) => (
-              <div className="zed-remote-project-row" key={project.id}>
-                <div className="zed-remote-project-main">
-                  <div>
-                    <strong>{project.label}</strong>
-                    <span>{zedRemoteHostLabel(project)}</span>
-                  </div>
-                  <code>{project.path}</code>
-                  <small>
-                    {zedRemoteSourceLabel(project.source)}
-                    {project.lastOpenedAtMs ? ` · ${formatTime(project.lastOpenedAtMs)}` : ""}
-                  </small>
-                </div>
-                <div className="zed-remote-project-actions">
-                  <Button onClick={() => void actions.openZedRemoteProject(project, "addToFocusedWorkspace")} size="sm">
-                    <ExternalLink className="h-4 w-4" />
-                    {t("加入当前工作区")}
-                  </Button>
-                  <Button onClick={() => void actions.openZedRemoteProject(project, "reuseWindow")} size="sm" variant="outline">
-                    {t("复用窗口")}
-                  </Button>
-                  <Button onClick={() => void actions.openZedRemoteProject(project, "newWindow")} size="sm" variant="outline">
-                    {t("新窗口")}
-                  </Button>
-                  <Button onClick={() => void onCopyUrl(project)} size="icon" title={t("复制 ssh:// URL")} variant="ghost">
-                    <Copy className="h-4 w-4" />
-                  </Button>
-                  {project.source === "recent" ? (
-                    <Button onClick={() => void actions.forgetZedRemoteProject(project)} size="icon" title={t("移除最近记录")} variant="ghost">
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  ) : null}
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="empty">{t("暂无项目。")}</div>
-        )}
-      </CardContent>
-    </Panel>
-  );
-}
-
-function UserScriptsScreen({ settings, market, actions }: { settings: SettingsResult | null; market: ScriptMarketResult | null; actions: Actions }) {
-  const inventory = settings?.user_scripts;
-  const scripts = inventory?.scripts ?? [];
-  const marketScripts = market?.market.scripts ?? [];
-  const installedCount = marketScripts.filter((script) => script.installed).length;
-  return (
-    <>
-      <Panel>
-        <CardHead title={t("脚本市场")} detail={tf("{0} 个市场脚本，已安装 {1} 个，本地整体 {2}", [marketScripts.length, installedCount, inventory?.enabled === false ? t("关闭") : t("开启")])} />
-        <CardContent>
-          <div className="metric-list">
-            <Metric label={t("市场状态")} value={market?.market.message ?? t("尚未刷新")} />
-            <Metric label={t("远程脚本")} value={tf("{0} 个", [marketScripts.length])} />
-            <Metric label={t("已安装")} value={tf("{0} 个", [installedCount])} />
-            <Metric label={t("本地整体")} value={inventory?.enabled === false ? t("关闭") : t("开启")} />
-          </div>
-          <Toolbar>
-            <Button onClick={() => void actions.refreshScriptMarket()}>
-              <RefreshCw className="h-4 w-4" />
-              {t("刷新市场")}
-            </Button>
-            <Button onClick={() => void actions.openExternalUrl(SCRIPT_MARKET_REPOSITORY_URL)} variant="secondary">
-              <ExternalLink className="h-4 w-4" />
-              {t("投稿")}
-            </Button>
-            <Button onClick={() => void actions.refreshCurrent()} variant="secondary">
-              <RefreshCw className="h-4 w-4" />
-              {t("刷新本地")}
-            </Button>
-          </Toolbar>
-        </CardContent>
-      </Panel>
-      <Panel>
-        <CardHead title={t("市场脚本")} detail={market?.market.updatedAt ? tf("清单更新时间：{0}", [market.market.updatedAt]) : t("从 GitHub 静态清单加载")} />
-        <CardContent>
-          {marketScripts.length ? (
-            <div className="script-market-grid">
-              {marketScripts.map((script) => (
-                <MarketScriptCard key={script.id} script={script} actions={actions} />
-              ))}
-            </div>
-          ) : (
-            <div className="empty">{market?.status === "failed" ? market.message : t("点击刷新市场加载远程脚本。")}</div>
-          )}
-        </CardContent>
-      </Panel>
-      <Panel>
-        <CardHead title={t("本地脚本")} detail={t("内置、手动和市场安装脚本；可在这里启停或删除用户脚本")} />
-        <CardContent>
-          <div className="table">
-            {scripts.length ? scripts.map((script) => <ScriptRow key={script.key} script={script} actions={actions} />) : <div className="empty">{t("未发现用户脚本。")}</div>}
-          </div>
-        </CardContent>
-      </Panel>
-    </>
-  );
-}
 
 function SessionsScreen({
   settings,
   form,
   sessions,
-  providerSyncProgress,
-  providerSyncTargets,
-  selectedProviderSyncTarget,
   onFormChange,
   actions,
 }: {
   settings: SettingsResult | null;
   form: BackendSettings;
   sessions: LocalSessionsResult | null;
-  providerSyncProgress: ProviderSyncProgress;
-  providerSyncTargets: ProviderSyncTargetsResult | null;
-  selectedProviderSyncTarget: string;
   onFormChange: (value: BackendSettings) => void;
   actions: Actions;
 }) {
@@ -3157,68 +1873,16 @@ function SessionsScreen({
             <Metric label={t("已归档")} value={tf("{0} 个", [archivedCount])} />
             <Metric label={t("数据库")} value={sessions?.dbPath ?? "~/.codex/sqlite/*.db"} />
           </div>
-          <div className="form-row">
-            <Field label={t("同步目标")}>
-              <select
-                className="select-input"
-                disabled={providerSyncProgress.active || !(providerSyncTargets?.targets ?? []).length}
-                value={selectedProviderSyncTarget}
-                onChange={(event) => actions.setProviderSyncTarget(event.currentTarget.value)}
-              >
-                {(providerSyncTargets?.targets ?? []).map((target) => (
-                  <option key={target.id} value={target.id}>
-                    {target.id}{t("（")}{providerSyncTargetLabel(target)}{t("）")}
-                  </option>
-                ))}
-                {!(providerSyncTargets?.targets ?? []).length ? <option value="">{t("当前配置 provider")}</option> : null}
-              </select>
-            </Field>
-          </div>
           <Toolbar>
             <Button onClick={() => void actions.refreshLocalSessions()}>
               <RefreshCw className="h-4 w-4" />
               {t("刷新会话")}
             </Button>
-            <Button disabled={providerSyncProgress.active} onClick={() => void actions.syncProvidersNow()} variant="outline">
-              <RefreshCw className="h-4 w-4" />
-              {providerSyncProgress.active ? t("正在修复…") : t("立刻修复历史会话")}
-            </Button>
           </Toolbar>
-          <div className="provider-sync-progress" data-active={providerSyncProgress.active}>
-            <div className="provider-sync-progress-head">
-              <strong>{providerSyncProgress.active ? t("正在修复历史会话") : t("历史会话修复进度")}</strong>
-              <span>{providerSyncProgress.percent}%</span>
-            </div>
-            <div
-              aria-valuemax={100}
-              aria-valuemin={0}
-              aria-valuenow={providerSyncProgress.percent}
-              className="provider-sync-progress-bar"
-              role="progressbar"
-            >
-              <div className="provider-sync-progress-fill" style={{ width: `${providerSyncProgress.percent}%` }} />
-            </div>
-            <small>{providerSyncProgress.message}</small>
-          </div>
           <div className="hint-line">
             <Info className="h-4 w-4" />
             <span>{t("删除会创建本地备份；如果 Codex App 正在使用该会话，建议先关闭对应会话窗口再操作。")}</span>
           </div>
-          <label className="switch-row">
-            <input
-              checked={form.providerSyncEnabled}
-              onChange={(event) => onFormChange({ ...form, providerSyncEnabled: event.currentTarget.checked })}
-              type="checkbox"
-            />
-            <span>
-              <strong>{t("启动前自动修复历史会话")}</strong>
-              <small>{t("开启后，通过 Codex++ 启动 Codex 前自动整理一次旧对话的归属标记。")}</small>
-            </span>
-            <ToggleVisual />
-          </label>
-          <Toolbar>
-            <Button onClick={() => void actions.saveSettings()}>{t("保存自动修复设置")}</Button>
-          </Toolbar>
         </CardContent>
       </Panel>
       <Panel>
@@ -3284,228 +1948,29 @@ function SessionsScreen({
   );
 }
 
-function RecommendationsScreen({ ads, actions }: { ads: AdsResult | null; actions: Actions }) {
-  const items = (ads?.ads ?? []).filter((ad) => !isExpiredAd(ad));
-  const sponsors = items.filter((ad) => ad.type === "sponsor");
-  const normal = items.filter((ad) => ad.type === "normal");
-  return (
-    <>
-      <Panel>
-        <CardHead title={t("推荐内容")} detail={t("与 Codex 内插件菜单使用同一个远端广告源")} />
-        <CardContent>
-          <div className="recommend-hero">
-            <div>
-              <strong>{ads ? tf("已加载 {0} 条推荐", [items.length]) : t("尚未加载推荐内容")}</strong>
-              <span>{t("内容来自 BigPizzaV3/Ad-List，分为赞助商推荐和普通推荐。")}</span>
-            </div>
-            <Button onClick={() => void actions.refreshAds()}>
-              <RefreshCw className="h-4 w-4" />
-              {t("刷新推荐")}
-            </Button>
-          </div>
-        </CardContent>
-      </Panel>
-      <Panel>
-        <CardHead title={t("赞助商推荐")} detail={tf("{0} 条", [sponsors.length])} />
-        <CardContent>
-          <AdGrid actions={actions} ads={sponsors} empty={t("暂无赞助商推荐。")} />
-        </CardContent>
-      </Panel>
-      <Panel>
-        <CardHead title={t("普通推荐")} detail={tf("{0} 条", [normal.length])} />
-        <CardContent>
-          <AdGrid actions={actions} ads={normal} empty={t("暂无普通推荐。")} />
-        </CardContent>
-      </Panel>
-    </>
-  );
-}
-
-function MaintenanceScreen({
-  overview,
-  watcher,
-  settings,
-  launchForm,
-  onLaunchFormChange,
-  removeOwnedData,
-  onRemoveOwnedDataChange,
-  actions,
-}: {
-  overview: OverviewResult | null;
-  watcher: WatcherResult | null;
-  settings: SettingsResult | null;
-  launchForm: { appPath: string; debugPort: string; helperPort: string };
-  onLaunchFormChange: (next: { appPath: string; debugPort: string; helperPort: string }) => void;
-  removeOwnedData: boolean;
-  onRemoveOwnedDataChange: (value: boolean) => void;
-  actions: Actions;
-}) {
-  const savedCodexAppPath = settings?.settings.codexAppPath ?? "";
-  return (
-    <>
-      <Panel>
-        <CardHead title={t("检查与修复")} detail={t("检查入口、Codex 应用和 Watcher 状态")} />
-        <CardContent>
-          <div className="status-table">
-            <StatusRow title={t("Codex 应用")} status={overview?.codex_app.status} path={overview?.codex_app.path} />
-            <StatusRow title={t("静默启动入口")} status={overview?.silent_shortcut.status} path={overview?.silent_shortcut.path} />
-            <StatusRow title={t("管理控制台入口")} status={overview?.management_shortcut.status} path={overview?.management_shortcut.path} />
-            <StatusRow title={t("Watcher 自动接管")} status={watcher?.enabled ? "ok" : "disabled"} path={watcher?.disabled_flag} />
-          </div>
-          <Toolbar>
-            <Button onClick={() => void actions.checkHealth()}>{t("检查")}</Button>
-            <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>{t("修复快捷方式")}</Button>
-          </Toolbar>
-        </CardContent>
-      </Panel>
-      <Panel>
-        <CardHead title={t("入口管理")} detail={t("快捷方式写入系统实际桌面位置，不使用写死桌面路径")} />
-        <CardContent>
-          <label className="check-row">
-            <input checked={removeOwnedData} onChange={(event) => onRemoveOwnedDataChange(event.currentTarget.checked)} type="checkbox" />
-            <span>{t("卸载时移除 Codex++ 托管数据")}</span>
-          </label>
-          <Toolbar>
-            <Button onClick={() => void actions.installEntrypoints()}>{t("安装入口")}</Button>
-            <Button variant="secondary" onClick={() => void actions.uninstallEntrypoints()}>{t("卸载入口")}</Button>
-            <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>{t("修复入口")}</Button>
-          </Toolbar>
-        </CardContent>
-      </Panel>
-      <Panel>
-        <CardHead title={t("自动接管")} detail={t("Watcher 用于保持 Codex++ 接管状态")} />
-        <CardContent>
-          <Toolbar>
-            <Button variant="secondary" onClick={() => void actions.installWatcher()}>{t("安装 watcher")}</Button>
-            <Button variant="secondary" onClick={() => void actions.uninstallWatcher()}>{t("移除 watcher")}</Button>
-            <Button variant="secondary" onClick={() => void actions.enableWatcher()}>{t("启用")}</Button>
-            <Button variant="secondary" onClick={() => void actions.disableWatcher()}>{t("禁用")}</Button>
-          </Toolbar>
-        </CardContent>
-      </Panel>
-      <Panel>
-        <CardHead title={t("Codex 应用路径")} detail={t("免安装版或解包版只需要选择一次，之后静默启动会自动复用")} />
-        <CardContent>
-          <div className="status-table">
-            <StatusRow title={t("保存路径")} status={savedCodexAppPath ? "ok" : "not_checked"} path={savedCodexAppPath || null} />
-            <StatusRow title={t("当前识别")} status={overview?.codex_app.status} path={overview?.codex_app.path} />
-          </div>
-          <Field label={t("保存的应用路径")}>
-            <Input
-              value={settings?.settings.codexAppPath ?? ""}
-              placeholder={t("选择 Codex.exe、Codex.app、app 目录或解包目录")}
-              readOnly
-            />
-          </Field>
-          <Toolbar>
-            <Button onClick={() => void actions.chooseCodexAppPath("folder")}>{t("选择应用目录")}</Button>
-            <Button variant="secondary" onClick={() => void actions.chooseCodexAppPath("file")}>{t("选择 Codex.exe")}</Button>
-            <Button variant="secondary" onClick={() => void actions.clearCodexAppPath()}>{t("清除保存路径")}</Button>
-          </Toolbar>
-        </CardContent>
-      </Panel>
-      <Panel>
-        <CardHead title={t("手动启动")} detail={t("应用路径留空时使用已保存路径；没有保存路径时使用自动探测")} />
-        <CardContent>
-          <Field label={t("应用路径覆盖")}>
-            <Input
-              value={launchForm.appPath}
-              onChange={(event) => onLaunchFormChange({ ...launchForm, appPath: event.currentTarget.value })}
-              placeholder={savedCodexAppPath || t("例如 C:\\Program Files\\WindowsApps\\OpenAI.Codex...\\app")}
-            />
-          </Field>
-          <div className="form-row">
-            <Field label={t("Debug 端口")}>
-              <Input
-                value={launchForm.debugPort}
-                onChange={(event) => onLaunchFormChange({ ...launchForm, debugPort: event.currentTarget.value })}
-              />
-            </Field>
-            <Field label={t("Helper 端口")}>
-              <Input
-                value={launchForm.helperPort}
-                onChange={(event) => onLaunchFormChange({ ...launchForm, helperPort: event.currentTarget.value })}
-              />
-            </Field>
-          </div>
-          <Toolbar>
-            <Button onClick={() => void actions.launch()}>{t("启动 Codex++")}</Button>
-            <Button variant="secondary" onClick={() => void actions.saveManualCodexAppPath()}>
-              {t("保存为默认路径")}
-            </Button>
-          </Toolbar>
-        </CardContent>
-      </Panel>
-    </>
-  );
-}
 
 function AboutScreen({
-  overview,
-  update,
-  updateInstallProgress,
-  logs,
-  diagnostics,
   actions,
 }: {
-  overview: OverviewResult | null;
-  update: UpdateResult | null;
-  updateInstallProgress: TaskProgress;
-  logs: LogsResult | null;
-  diagnostics: DiagnosticsResult | null;
   actions: Actions;
 }) {
   return (
     <>
       <Panel>
-        <CardHead title={t("关于 Codex++")} detail={t("本地 Codex 增强、管理工具和安装包维护")} />
+        <CardHead title={t("关于 Codex--")} detail={t("极简版 Codex++ 管理工具：供应商切换、会话管理、配置体检")} />
         <CardContent>
           <div className="metric-list">
-            <Metric label={t("Codex++ 版本")} value={overview?.current_version ?? update?.currentVersion ?? "-"} />
-            <Metric label={t("Codex 版本")} value={overview?.codex_version ?? t("未检测到")} />
-            <Metric label={t("项目地址")} value="github.com/BigPizzaV3/CodexPlusPlus" />
+            <Metric label={t("Codex-- 版本")} value="0.1.0" />
+            <Metric label={t("上游项目")} value="github.com/BigPizzaV3/CodexPlusPlus" />
           </div>
           <Toolbar>
             <Button onClick={() => void actions.openExternalUrl("https://github.com/BigPizzaV3/CodexPlusPlus")} variant="secondary">
               <ExternalLink className="h-4 w-4" />
-              {t("打开项目主页")}
-            </Button>
-            <Button onClick={() => void actions.openExternalUrl("https://github.com/BigPizzaV3/CodexPlusPlus/issues")} variant="secondary">
-              <ExternalLink className="h-4 w-4" />
-              {t("反馈问题")}
-            </Button>
-            <Button onClick={() => void actions.openExternalUrl("https://discord.gg/y96kX7A76v")} variant="secondary">
-              <MessageCircle className="h-4 w-4" />
-              Discord
-            </Button>
-            <Button onClick={() => void actions.openExternalUrl("https://t.me/CodexPlusPlus")} variant="secondary">
-              <MessageCircle className="h-4 w-4" />
-              Telegram
+              {t("打开上游项目主页")}
             </Button>
           </Toolbar>
         </CardContent>
       </Panel>
-      <Panel>
-        <CardHead title={t("GitHub Release 更新")} detail={tf("当前版本 {0}", [overview?.current_version ?? update?.currentVersion ?? "-"])} />
-        <CardContent>
-          <div className="metric-list">
-            <Metric label={t("状态")} value={update?.status ?? "not_checked"} />
-            <Metric label={t("最新版本")} value={update?.latestVersion ?? t("未检查")} />
-            <Metric label={t("资源")} value={update?.assetName ?? "-"} />
-            <Metric label={t("进度")} value={`${update?.progress ?? 0}%`} />
-          </div>
-          <Textarea className="log-view" readOnly value={update?.releaseSummary || update?.message || t("尚未检查 GitHub Release；更新会下载并启动安装包。")} />
-          <TaskProgressBox completedTitle={t("上次更新结果")} progress={updateInstallProgress} title={t("安装包更新进度")} />
-          <Toolbar>
-            <Button onClick={() => void actions.checkUpdate()}>{t("检查更新")}</Button>
-            <Button disabled={updateInstallProgress.active} variant="secondary" onClick={() => void actions.performUpdate()}>
-              {updateInstallProgress.active ? t("正在下载安装包…") : t("下载并运行安装包")}
-            </Button>
-          </Toolbar>
-        </CardContent>
-      </Panel>
-      <LogsPanel logs={logs} actions={actions} />
-      <DiagnosticsPanel diagnostics={diagnostics} actions={actions} />
     </>
   );
 }
@@ -3627,69 +2092,8 @@ function SettingsScreen({
               <Button onClick={() => void actions.saveSettings()}>{t("保存设置")}</Button>
             </div>
           </div>
-          <div className="settings-block">
-            <label className="check-row">
-              <input
-                checked={form.codexAppImageOverlayEnabled}
-                onChange={(event) =>
-                  onFormChange({ ...form, codexAppImageOverlayEnabled: event.currentTarget.checked })
-                }
-                type="checkbox"
-              />
-              <span>{t("启用 Codex 图片覆盖层")}</span>
-            </label>
-            <div className="form-row">
-              <Field label={t("覆盖图片")}>
-                <Input
-                  value={form.codexAppImageOverlayPath}
-                  onChange={(event) => onFormChange({ ...form, codexAppImageOverlayPath: event.currentTarget.value })}
-                  placeholder={t("选择 png / jpg / webp / gif / bmp")}
-                />
-              </Field>
-              <Toolbar>
-                <Button variant="secondary" onClick={() => void actions.chooseImageOverlayPath()}>
-                  {t("选择图片")}
-                </Button>
-              </Toolbar>
-            </div>
-            <Field label={tf("透明度 {0}%", [form.codexAppImageOverlayOpacity])}>
-              <Input
-                min={1}
-                max={100}
-                type="range"
-                value={form.codexAppImageOverlayOpacity}
-                onChange={(event) =>
-                  onFormChange({
-                    ...form,
-                    codexAppImageOverlayOpacity: clampNumber(Number(event.currentTarget.value), 1, 100),
-                  })
-                }
-              />
-            </Field>
-            <Field label={t("背景适配方式")}>
-              <select
-                className="select-input"
-                value={form.codexAppImageOverlayFitMode}
-                onChange={(event) =>
-                  onFormChange({
-                    ...form,
-                    codexAppImageOverlayFitMode: event.currentTarget.value as ImageOverlayFitMode,
-                  })
-                }
-              >
-                <option value="fill">{t("填充")}</option>
-                <option value="fit">{t("适应")}</option>
-                <option value="stretch">{t("拉伸")}</option>
-                <option value="tile">{t("平铺")}</option>
-                <option value="center">{t("居中")}</option>
-              </select>
-            </Field>
-          </div>
           <Toolbar>
             <Button onClick={() => void actions.saveSettings()}>{t("保存设置")}</Button>
-            <Button variant="secondary" onClick={() => void actions.resetImageOverlaySettings()}>
-              {t("重置背景")}
-            </Button>
           </Toolbar>
         </CardContent>
       </Panel>
@@ -3717,52 +2121,6 @@ function SettingsScreen({
         </CardContent>
       </Panel>
     </>
-  );
-}
-
-function LogsPanel({ logs, actions }: { logs: LogsResult | null; actions: Actions }) {
-  const lines = splitLogLines(logs?.text ?? "");
-  return (
-    <Panel>
-      <CardHead title={t("最近日志")} detail={logs?.path ?? ""} />
-      <CardContent>
-        <div className="log-lines">
-          {lines.length ? (
-            lines.map((line, index) => (
-              <div className="log-line" key={`${index}-${line.slice(0, 12)}`}>
-                <span>{index + 1}</span>
-                <code>{line || " "}</code>
-              </div>
-            ))
-          ) : (
-            <div className="empty">{t("暂无日志。")}</div>
-          )}
-        </div>
-        <Toolbar>
-          <Button onClick={() => void actions.refreshLogs()}>{t("刷新")}</Button>
-          <Button variant="secondary" onClick={() => void actions.copyLogs()}>
-            {t("复制")}
-          </Button>
-        </Toolbar>
-      </CardContent>
-    </Panel>
-  );
-}
-
-function DiagnosticsPanel({ diagnostics, actions }: { diagnostics: DiagnosticsResult | null; actions: Actions }) {
-  return (
-    <Panel>
-      <CardHead title={t("诊断报告")} detail={t("包含版本、路径、设置和平台信息")} />
-      <CardContent>
-        <Textarea className="log-view tall" readOnly value={diagnostics?.report ?? t("尚未生成诊断报告。")} />
-        <Toolbar>
-          <Button onClick={() => void actions.refreshDiagnostics()}>{t("重新生成")}</Button>
-          <Button variant="secondary" onClick={() => void actions.copyDiagnostics()}>
-            {t("复制报告")}
-          </Button>
-        </Toolbar>
-      </CardContent>
-    </Panel>
   );
 }
 
@@ -3936,58 +2294,6 @@ function SortableRelayProfileCard({
           </Button>
         </span>
       </span>
-    </div>
-  );
-}
-
-function MarketScriptCard({ script, actions }: { script: ScriptMarketItem; actions: Actions }) {
-  const status = script.updateAvailable ? t("可更新") : script.installed ? tf("已安装 {0}", [script.installedVersion]) : t("未安装");
-  const isGitHubHomepage = script.homepage ? isGitHubRepositoryHomepage(script.homepage) : false;
-  const githubSupportLabel = isGitHubHomepage ? tf("在 GitHub 上支持作者：{0}", [script.name]) : undefined;
-  return (
-    <div className="script-market-card">
-      <div className="script-market-title">
-        <div>
-          <strong>{script.name}</strong>
-          <span>{script.author || t("未知作者")}</span>
-        </div>
-        <UiBadge variant={script.updateAvailable ? "default" : script.installed ? "secondary" : "outline"}>{status}</UiBadge>
-      </div>
-      <p className="script-market-description">{script.description || t("暂无描述。")}</p>
-      <div className="script-market-tags">
-        <span className="script-market-tag">v{script.version}</span>
-        {script.tags.map((tag) => (
-          <span className="script-market-tag" key={tag}>{tag}</span>
-        ))}
-      </div>
-      <div className="script-market-actions">
-        <Button onClick={() => void actions.installMarketScript(script.id)} size="sm">
-          <Download className="h-4 w-4" />
-          {script.updateAvailable ? t("更新") : script.installed ? t("重新安装") : t("安装")}
-        </Button>
-        {script.homepage ? (
-          <Button
-            aria-label={githubSupportLabel}
-            onClick={() => void actions.openExternalUrl(script.homepage)}
-            size="sm"
-            title={githubSupportLabel}
-            variant="secondary"
-          >
-            {isGitHubHomepage ? (
-              <>
-                <Star className="h-4 w-4" />
-                Star
-                <ExternalLink className="h-3 w-3" />
-              </>
-            ) : (
-              <>
-                <ExternalLink className="h-4 w-4" />
-                {t("主页")}
-              </>
-            )}
-          </Button>
-        ) : null}
-      </div>
     </div>
   );
 }
@@ -5044,82 +3350,6 @@ function providerDoctorSteps(
   });
 }
 
-function ModeSelector({ launchMode, actions }: { launchMode: LaunchMode; actions: Actions }) {
-  return (
-    <div className="mode-grid">
-      <button
-        className={`mode-option ${launchMode === "relay" ? "active" : ""}`}
-        onClick={() => void actions.setLaunchMode("relay")}
-        type="button"
-      >
-        <strong>{t("兼容增强")}</strong>
-        <span>{t("适合官方登录或官方混入 API Key；保留会话删除、导出、项目移动和用户脚本，关闭插件市场相关增强。")}</span>
-      </button>
-      <button
-        className={`mode-option ${launchMode === "patch" ? "active" : ""}`}
-        onClick={() => void actions.setLaunchMode("patch")}
-        type="button"
-      >
-        <strong>{t("完整增强")}</strong>
-        <span>{t("适合纯 API；启用插件市场、会话删除导出、项目移动等全部页面能力。")}</span>
-      </button>
-    </div>
-  );
-}
-
-function FeatureItem({ title, detail, enabled }: { title: string; detail: string; enabled: boolean }) {
-  return (
-    <div className="feature-item">
-      <div>
-        <strong>{title}</strong>
-        <span>{detail}</span>
-      </div>
-      <Badge status={enabled ? "ok" : "disabled"} />
-    </div>
-  );
-}
-
-function FeatureGroup({ title, detail, children }: { title: string; detail: string; children: ReactNode }) {
-  return (
-    <section className="feature-group">
-      <div className="feature-group-head">
-        <strong>{title}</strong>
-        <small>{detail}</small>
-      </div>
-      <div className="feature-switch-grid">{children}</div>
-    </section>
-  );
-}
-
-function FeatureToggle({
-  title,
-  detail,
-  checked,
-  disabled = false,
-  onChange,
-}: {
-  title: string;
-  detail: string;
-  checked: boolean;
-  disabled?: boolean;
-  onChange: (value: boolean) => void;
-}) {
-  return (
-    <label className={`feature-toggle ${disabled ? "disabled" : ""}`}>
-      <input
-        checked={checked}
-        disabled={disabled}
-        onChange={(event) => onChange(event.currentTarget.checked)}
-        type="checkbox"
-      />
-      <span>
-        <strong>{title}</strong>
-        <small>{detail}</small>
-      </span>
-      <ToggleVisual />
-    </label>
-  );
-}
 
 function ToggleVisual() {
   return (
@@ -5129,30 +3359,6 @@ function ToggleVisual() {
   );
 }
 
-function formatBytes(bytes: number) {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB"];
-  let value = bytes;
-  let index = 0;
-  while (value >= 1024 && index < units.length - 1) {
-    value /= 1024;
-    index += 1;
-  }
-  return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
-}
-
-function GuideList({ items }: { items: string[] }) {
-  return (
-    <div className="guide-list">
-      {items.map((item, index) => (
-        <div className="guide-step" key={item}>
-          <span>{index + 1}</span>
-          <p>{item}</p>
-        </div>
-      ))}
-    </div>
-  );
-}
 
 function NoticeDialog({
   notice,
@@ -5214,65 +3420,6 @@ function ConfirmDialog({
   );
 }
 
-function PendingProviderImportDialog({
-  request,
-  onConfirm,
-  onDismiss,
-}: {
-  request: ProviderImportRequest;
-  onConfirm: () => void;
-  onDismiss: () => void;
-}) {
-  return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="modal-card provider-import-modal">
-        <div className="modal-head">
-          <div>
-            <h2>{t("导入 Codex++ 供应商")}</h2>
-            <p>{t("检测到来自网页的供应商配置导入请求，确认后会写入本机 Codex++ 管理工具。")}</p>
-          </div>
-          <button className="toast-close" onClick={onDismiss} type="button">×</button>
-        </div>
-        <div className="metric-list">
-          <Metric label={t("名称")} value={request.name || t("未命名供应商")} />
-          <Metric label="Base URL" value={request.baseUrl || t("未填写")} />
-          <Metric label={t("协议")} value={providerImportWireApiLabel(request.wireApi)} />
-          <Metric label={t("模式")} value={providerImportRelayModeLabel(request.relayMode)} />
-          <Metric label="API Key" value={maskSecret(request.apiKey)} />
-        </div>
-        <Toolbar>
-          <Button onClick={onConfirm}>
-            <Download className="h-4 w-4" />
-            {t("确认导入")}
-          </Button>
-          <Button onClick={onDismiss} variant="secondary">{t("取消")}</Button>
-        </Toolbar>
-      </div>
-    </div>
-  );
-}
-
-function TaskProgressBox({ progress, title, completedTitle = t("上次修复结果") }: { progress: TaskProgress; title: string; completedTitle?: string }) {
-  if (!progress.active && progress.percent <= 0) return null;
-  return (
-    <div className="provider-sync-progress task-progress" data-active={progress.active}>
-      <div className="provider-sync-progress-head">
-        <strong>{progress.active ? title : completedTitle}</strong>
-        <span>{progress.percent}%</span>
-      </div>
-      <div
-        aria-valuemax={100}
-        aria-valuemin={0}
-        aria-valuenow={progress.percent}
-        className="provider-sync-progress-bar"
-        role="progressbar"
-      >
-        <div className="provider-sync-progress-fill" style={{ width: `${progress.percent}%` }} />
-      </div>
-      <small>{progress.message}</small>
-    </div>
-  );
-}
 
 function Panel({ children, fill = false, className = "" }: { children: React.ReactNode; fill?: boolean; className?: string }) {
   return (
@@ -5304,32 +3451,11 @@ function Field({ label, children, className = "" }: { label: string; children: R
   );
 }
 
-function StatusRow({ title, status = "unknown", path }: { title: string; status?: string; path?: string | null }) {
-  return (
-    <div className="status-row">
-      <span>{title}</span>
-      <Badge status={status} />
-      <code>{path || t("未记录路径")}</code>
-    </div>
-  );
-}
 
 function Badge({ status }: { status: string }) {
   return <UiBadge className={statusClass(status)} variant="secondary">{statusLabel(status)}</UiBadge>;
 }
 
-function LatestLaunch({ status }: { status: LaunchStatus | null }) {
-  if (!status) return <div className="empty">{t("暂无启动状态。")}</div>;
-  return (
-    <div className="metric-list">
-      <Metric label={t("状态")} value={status.status} />
-      <Metric label={t("消息")} value={status.message} />
-      <Metric label="Debug" value={String(status.debug_port ?? "-")} />
-      <Metric label="Helper" value={String(status.helper_port ?? "-")} />
-      <Metric label={t("时间")} value={formatTime(status.started_at_ms)} />
-    </div>
-  );
-}
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
@@ -5340,64 +3466,6 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ScriptRow({ script, actions }: { script: NonNullable<UserScriptInventory["scripts"]>[number]; actions: Actions }) {
-  const source = script.market_id ? tf("市场 · {0}", [script.version || t("未知版本")]) : script.source === "builtin" ? t("内置") : t("用户");
-  const canDelete = script.source === "user";
-  return (
-    <div className="table-row">
-      <span>{script.name}</span>
-      <span>{source}</span>
-      <span>{script.enabled ? t("启用") : t("关闭")}</span>
-      <span>{script.status}</span>
-      <div className="script-row-actions">
-        <Button onClick={() => void actions.setUserScriptEnabled(script.key, !script.enabled)} size="sm" variant="secondary">
-          {script.enabled ? <PowerOff className="h-4 w-4" /> : <Power className="h-4 w-4" />}
-          {script.enabled ? t("禁用") : t("启用")}
-        </Button>
-        {canDelete ? (
-          <Button onClick={() => void actions.deleteUserScript(script.key)} size="sm" variant="outline">
-            <Trash2 className="h-4 w-4" />
-            {t("删除")}
-          </Button>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-function AdGrid({ ads, empty, actions }: { ads: AdItem[]; empty: string; actions: Actions }) {
-  if (!ads.length) return <div className="empty">{empty}</div>;
-  return (
-    <div className="ad-grid">
-      {ads.map((ad) => (
-        <button className="ad-card" key={ad.id || `${ad.type}-${ad.title}`} onClick={() => void actions.openExternalUrl(ad.url)} type="button">
-          {ad.image ? <img alt="" className="ad-image" src={ad.image} /> : null}
-          <div>
-            <strong>{ad.title}</strong>
-            <p>{ad.description}</p>
-          </div>
-          {ad.highlights?.length ? (
-            <div className="ad-tags">
-              {ad.highlights.map((item) => (
-                <span key={item}>{item}</span>
-              ))}
-            </div>
-          ) : null}
-          <span className="ad-link">
-            {t("打开")}
-            <ExternalLink className="h-4 w-4" />
-          </span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function isExpiredAd(ad: AdItem) {
-  if (!ad.expires_at) return false;
-  const expiresAt = Date.parse(ad.expires_at);
-  return Number.isFinite(expiresAt) && expiresAt < Date.now();
-}
 
 function routeTitle(route: Route) {
   return routes.find((item) => item.id === route)?.label ?? t("概览");
@@ -5405,16 +3473,10 @@ function routeTitle(route: Route) {
 
 function routeSubtitle(route: Route) {
   const subtitles: Record<Route, string> = {
-    overview: t("检查问题、启动与快速修复"),
     relay: t("管理 API 供应商、协议、Key 与配置文件"),
     relayEnvironment: t("排查可能干扰中转站配置的本机环境"),
     sessions: t("查看、删除和修复 Codex 本地会话"),
     context: t("独立管理 MCP、Skills、Plugins"),
-    enhance: t("会话删除、导出、项目移动和脚本能力"),
-    zedRemote: t("管理 Codex SSH 项目并加入 Zed workspace"),
-    userScripts: t("内置和用户自定义脚本清单"),
-    recommendations: t("赞助商推荐与普通推荐"),
-    maintenance: t("入口安装、修复、Watcher 与手动启动"),
     about: t("版本信息、项目链接、GitHub Release 更新、日志与诊断"),
     settings: t("主题和启动参数"),
   };
@@ -5484,17 +3546,6 @@ function contextEntriesFromConfig(configContents: string): CodexContextEntries {
   };
 }
 
-function mergeContextEntries(primary: CodexContextEntries, secondary: CodexContextEntries): CodexContextEntries {
-  return {
-    mcpServers: mergeContextEntryList(primary.mcpServers, secondary.mcpServers),
-    skills: mergeContextEntryList(primary.skills, secondary.skills),
-    plugins: mergeContextEntryList(primary.plugins, secondary.plugins),
-  };
-}
-
-function mergeContextEntryList(primary: CodexContextEntry[], secondary: CodexContextEntry[]): CodexContextEntry[] {
-  return dedupeContextEntryList([...primary, ...secondary]);
-}
 
 function dedupeContextEntryList(entries: CodexContextEntry[]): CodexContextEntry[] {
   const byId = new Map<string, CodexContextEntry>();
@@ -5625,12 +3676,6 @@ function ensureTrailingNewline(value: string) {
   return value.trim() ? `${value}\n` : "";
 }
 
-function unquoteTomlKey(key: string) {
-  if (key.length >= 2 && ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'")))) {
-    return key.slice(1, -1);
-  }
-  return key;
-}
 
 function contextEntriesByKind(entries: CodexContextEntries, kind: ContextKind): CodexContextEntry[] {
   if (kind === "mcp") return dedupeContextEntryList(entries.mcpServers);
@@ -5762,11 +3807,6 @@ function relativeContextSubtableToAbsolute(line: string, tableName: string, id: 
   return `[${tableName}.${tomlKey(id)}.${tomlKey(subtable)}]`;
 }
 
-function syncLiveConfigContextState(liveConfigContents: string, settings: BackendSettings): string {
-  const entries = contextEntriesFromSettings(settings);
-  const withoutManaged = stripContextEntriesFromConfig(liveConfigContents, entries);
-  return joinTomlSectionsRootFirst([withoutManaged, selectedContextConfigToml(entries)]);
-}
 
 function relayCombinedCommonConfig(settings: BackendSettings): string {
   return joinTomlSectionsRootFirst([settings.relayCommonConfigContents || "", settings.relayContextConfigContents || ""]);
@@ -5976,35 +4016,7 @@ function tomlKey(key: string): string {
   return /^[A-Za-z0-9_-]+$/.test(key) ? key : `"${tomlString(key)}"`;
 }
 
-function contextSelectionIds(selection: RelayContextSelection, kind: ContextKind): string[] {
-  if (kind === "mcp") return selection.mcpServers;
-  if (kind === "skill") return selection.skills;
-  return selection.plugins;
-}
 
-function setContextSelectionId(selection: RelayContextSelection, kind: ContextKind, id: string, checked: boolean): RelayContextSelection {
-  const next = {
-    mcpServers: [...selection.mcpServers],
-    skills: [...selection.skills],
-    plugins: [...selection.plugins],
-  };
-  const list = contextSelectionIds(next, kind);
-  const normalizedId = id.trim();
-  const exists = list.includes(normalizedId);
-  if (checked && normalizedId && !exists) list.push(normalizedId);
-  if (!checked && exists) list.splice(list.indexOf(normalizedId), 1);
-  return next;
-}
-
-function removeContextSelectionFromSettings(settings: BackendSettings, kind: ContextKind, id: string): BackendSettings {
-  return {
-    ...settings,
-    relayProfiles: settings.relayProfiles.map((profile) => ({
-      ...profile,
-      contextSelection: setContextSelectionId(profile.contextSelection, kind, id, false),
-    })),
-  };
-}
 
 function contextSelectionForAllEntries(settings: BackendSettings): RelayContextSelection {
   const entries = contextEntriesFromSettings(settings);
@@ -6059,28 +4071,6 @@ function truncateSessionDeletePreview(value: string) {
   return normalized.length > 20 ? `${normalized.slice(0, 20)}...` : normalized;
 }
 
-function healthItems(overview: OverviewResult | null) {
-  return [
-    {
-      title: t("Codex 应用"),
-      status: overview?.codex_app.status ?? "not_checked",
-      ok: overview?.codex_app.status === "found",
-      detail: overview?.codex_app.path || t("尚未检查 Codex 应用路径。"),
-    },
-    {
-      title: t("静默启动入口"),
-      status: overview?.silent_shortcut.status ?? "not_checked",
-      ok: overview?.silent_shortcut.status === "installed",
-      detail: overview?.silent_shortcut.path || t("缺少 Codex++ 静默启动快捷方式时可在安装维护页修复。"),
-    },
-    {
-      title: t("管理工具入口"),
-      status: overview?.management_shortcut.status ?? "not_checked",
-      ok: overview?.management_shortcut.status === "installed",
-      detail: overview?.management_shortcut.path || t("缺少管理工具快捷方式时可在安装维护页修复。"),
-    },
-  ];
-}
 
 function normalizeSettings(settings: BackendSettings): BackendSettings {
   const backendAggregates = new Map(
@@ -6252,12 +4242,6 @@ function relayProtocolLabel(protocol: RelayProtocol): string {
   return protocol === "chatCompletions" ? t("Chat Completions 转 Responses") : "Responses API";
 }
 
-function ccsProviderSummary(result: CcsProvidersResult | null): string {
-  if (!result) return t("读取 ~/.cc-switch/cc-switch.db");
-  if (!isSuccessStatus(result.status)) return result.message || t("读取 cc-switch 供应商失败。");
-  const count = result.providers.length;
-  return count ? tf("发现 {0} 个 Codex 供应商", [count]) : t("未发现可导入供应商");
-}
 
 function normalizeRelayMode(mode: RelayMode | undefined): RelayMode {
   if (mode === "aggregate") return mode;
@@ -6289,28 +4273,6 @@ function relayModeLabel(mode: RelayMode): string {
   return t("官方登录");
 }
 
-function providerImportWireApiLabel(value: string): string {
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "chat" || normalized === "chat_completions" || normalized === "chat-completions") {
-    return "Chat Completions";
-  }
-  return "Responses";
-}
-
-function providerImportRelayModeLabel(value: string): string {
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "official") return t("官方登录");
-  if (normalized === "mixedapi" || normalized === "mixed-api" || normalized === "mixed_api") return t("混入 API");
-  if (normalized === "aggregate") return t("聚合供应商");
-  return t("纯 API");
-}
-
-function maskSecret(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return t("未填写");
-  if (trimmed.length <= 10) return `${trimmed.slice(0, 2)}…${trimmed.slice(-2)}`;
-  return `${trimmed.slice(0, 6)}…${trimmed.slice(-4)}`;
-}
 
 function relayProfileConfigBrief(profile: RelayProfile): string {
   if (isAggregateRelayProfile(profile)) {
@@ -6337,28 +4299,6 @@ function relayProfileModeHelp(profile: RelayProfile): string {
   return t("此供应商会保留官方登录模式，并把请求混入当前 API Key；Codex增强仍使用兼容模式。");
 }
 
-function relayProfileReadinessText(profile: RelayProfile, relay: RelayResult | null): string {
-  if (isAggregateRelayProfile(profile)) {
-    const aggregate = normalizeAggregateConfig(profile.aggregate, []);
-    return tf("聚合供应商已配置为{0}，包含 {1} 个成员；真实对话会走本地代理轮转。", [aggregateStrategyLabel(aggregate.strategy), aggregate.members.length]);
-  }
-  if (profile.relayMode === "official") {
-    if (profile.officialMixApiKey) {
-      const hasApiFields = profile.baseUrl.trim() && profile.apiKey.trim();
-      if (!relay?.authenticated && !hasApiFields) return t("当前未登录官方账号，也未配置混入 API 的 Base URL / Key。");
-      if (!relay?.authenticated) return t("当前未登录官方账号；官方登录混入 API Key 需要先登录官方账号。");
-      if (!hasApiFields) return t("当前还没有填写混入 API 的 Base URL / Key。");
-      return tf("官方登录已就绪：{0}，会混入当前 API Key。", [relay.accountLabel || t("已登录")]);
-    }
-    return relay?.authenticated
-      ? tf("官方账号已登录：{0}。", [relay.accountLabel || relay.authSource || t("已检测")])
-      : t("当前未登录官方账号；切到官方登录模式后仍需要先在 Codex/ChatGPT 登录。");
-  }
-  const hasFiles = profile.configContents.trim() && profile.authContents.trim();
-  if (!hasFiles) return t("当前供应商还没有完整 config.toml / API Key 存档。");
-  if (relay && !relay.configured) return t("纯 API 配置未完整写入：请检查此供应商是否有 OPENAI_API_KEY，且 config.toml 是否包含 model_provider / provider / base_url。");
-  return t("纯 API 就绪：会同时写入 config.toml 和 auth.json。");
-}
 
 function relayProfileSwitchCommand(profile: RelayProfile): "clear_relay_injection" | "apply_relay_injection" | "apply_pure_api_injection" {
   if (isAggregateRelayProfile(profile)) return "apply_relay_injection";
@@ -7054,53 +4994,12 @@ function aggregateRelayProfileValidation(profile: RelayProfile): string | null {
   return aggregate.members.length >= 1 ? null : t("聚合供应商至少需要勾选 1 个已填写 Base URL / Key 的 API 供应商。");
 }
 
-function numberOrDefault(value: string, fallback: number) {
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function splitLogLines(text: string) {
-  return text.trimEnd().split(/\r?\n/).filter((line, index, lines) => line.length > 0 || index < lines.length - 1);
-}
-
-function zedStrategyLabel(strategy: ZedOpenStrategy) {
-  if (strategy === "reuseWindow") return t("复用窗口");
-  if (strategy === "newWindow") return t("新窗口");
-  if (strategy === "default") return t("Zed 默认行为");
-  return t("加入当前工作区");
-}
-
-function zedRemoteHostLabel(project: ZedRemoteProject) {
-  const user = project.ssh.user ? `${project.ssh.user}@` : "";
-  const port = project.ssh.port ? `:${project.ssh.port}` : "";
-  return `${user}${project.ssh.host}${port}`;
-}
-
-function zedRemoteSourceLabel(source: string) {
-  if (source === "currentThread") return t("当前会话");
-  if (source === "codexRemoteProject") return "Codex remote project";
-  if (source === "threadWorkspaceHint") return "Thread workspace hint";
-  if (source === "sqliteThreadCwd") return "SQLite cwd";
-  if (source === "recent") return t("最近打开");
-  return source || t("未知来源");
-}
 
 function formatTime(value: number) {
   if (!value) return "-";
   return new Date(value).toLocaleString("zh-CN");
 }
 
-function formatDuration(startedAtMs: number): string {
-  if (!startedAtMs) return "-";
-  const elapsed = Date.now() - startedAtMs;
-  if (elapsed < 0) return formatTime(startedAtMs);
-  const mins = Math.floor(elapsed / 60000);
-  if (mins < 1) return t("刚刚启动");
-  if (mins < 60) return tf("已运行 {0} 分钟", [mins]);
-  const hours = Math.floor(mins / 60);
-  const remainMins = mins % 60;
-  return tf("已运行 {0} 小时 {1} 分钟", [hours, remainMins]);
-}
 
 function stringifyError(error: unknown) {
   if (error instanceof Error) return error.message;
@@ -7113,10 +5012,9 @@ function loadInitialTheme(): Theme {
 }
 
 function loadInitialRoute(): Route {
-  if (typeof window === "undefined") return "overview";
-  const params = new URLSearchParams(window.location.search);
-  if (params.get("showUpdate") === "1" || window.location.hash === "#about") {
+  if (typeof window === "undefined") return "relay";
+  if (window.location.hash === "#about") {
     return "about";
   }
-  return "overview";
+  return "relay";
 }
