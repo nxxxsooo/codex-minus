@@ -852,14 +852,15 @@ export function App() {
   const navigate = async (next: Route) => {
     setRoute(next);
     if (next === "relay") {
-      await refreshSettings(true);
-      await refreshRelay(true);
-      await refreshRelayFiles(true);
-      await refreshEnvConflicts(true);
+      await Promise.all([
+        refreshSettings(true),
+        refreshRelay(true),
+        refreshRelayFiles(true),
+        refreshEnvConflicts(true),
+      ]);
     }
     if (next === "sessions") {
-      await refreshSettings(true);
-      await refreshLocalSessions(true);
+      await Promise.all([refreshSettings(true), refreshLocalSessions(true)]);
     }
     if (next === "settings") await refreshSettings(true);
   };
@@ -1115,12 +1116,12 @@ export function App() {
   };
 
   useEffect(() => {
-    void (async () => {
-      await refreshSettings(true);
-      await refreshRelay(true);
-      await refreshRelayFiles(true);
-      await refreshEnvConflicts(true);
-    })();
+    void Promise.all([
+      refreshSettings(true),
+      refreshRelay(true),
+      refreshRelayFiles(true),
+      refreshEnvConflicts(true),
+    ]);
   }, []);
 
   useEffect(() => {
