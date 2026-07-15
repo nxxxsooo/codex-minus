@@ -26,7 +26,6 @@ import {
   Edit3,
   GripVertical,
   Info,
-  ExternalLink,
   KeyRound,
   Languages,
   MessageCircle,
@@ -595,14 +594,12 @@ type StartupResult = CommandResult<{
   showUpdate: boolean;
 }>;
 
-type Route = "relay" | "sessions" | "about" | "settings";
+type Route = "relay" | "sessions";
 type Theme = "dark" | "light";
 
 const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string }> = [
   { id: "relay", label: t("供应商配置"), icon: KeyRound },
   { id: "sessions", label: t("会话管理"), icon: MessageCircle },
-  { id: "about", label: t("关于"), icon: Info },
-  { id: "settings", label: t("设置"), icon: Settings },
 ];
 
 const defaultSettings: BackendSettings = {
@@ -862,7 +859,6 @@ export function App() {
     if (next === "sessions") {
       await Promise.all([refreshSettings(true), refreshLocalSessions(true)]);
     }
-    if (next === "settings") await refreshSettings(true);
   };
 
 
@@ -887,14 +883,6 @@ export function App() {
     }
   };
 
-  const resetSettings = async () => {
-    const result = await run(() => call<SettingsResult>("reset_settings"));
-    if (result) {
-      setSettings(result);
-      setSettingsForm(normalizeSettings(result.settings));
-      showNotice(t("设置重置"), result.message, result.status);
-    }
-  };
 
   const applyRelayInjection = async (silent = false) => {
     const settingsResult = await run(() => call<SettingsResult>("save_settings", { settings: settingsForm }));
@@ -1146,7 +1134,6 @@ export function App() {
       saveSettings,
       saveSettingsValue,
       refreshSettings,
-      resetSettings,
       refreshRelay,
       refreshRelayFiles,
       refreshEnvConflicts,
@@ -1204,7 +1191,7 @@ export function App() {
         </nav>
       </aside>
       <main className="workspace">
-        <header className="topbar" key={`topbar-${route}`}>
+        <header className="topbar">
           <div>
             <h1>{routeTitle(route)}</h1>
             <p>{routeSubtitle(route)}</p>
@@ -1231,8 +1218,8 @@ export function App() {
             </Button>
           </div>
         </header>
-        <section className="screen" key={route}>
-          {route === "relay" ? (
+        <section className="screen">
+          <div className={route === "relay" ? undefined : "hidden"}>
             <RelayScreen
               settings={settings}
               relayFiles={relayFiles}
@@ -1241,8 +1228,8 @@ export function App() {
               onFormChange={setSettingsForm}
               actions={actions}
             />
-          ) : null}
-          {route === "sessions" ? (
+          </div>
+          <div className={route === "sessions" ? undefined : "hidden"}>
             <SessionsScreen
               settings={settings}
               form={settingsForm}
@@ -1250,13 +1237,7 @@ export function App() {
               onFormChange={setSettingsForm}
               actions={actions}
             />
-          ) : null}
-          {route === "about" ? (
-            <AboutScreen actions={actions} />
-          ) : null}
-          {route === "settings" ? (
-            <SettingsScreen settings={settings} theme={theme} form={settingsForm} onFormChange={setSettingsForm} actions={actions} />
-          ) : null}
+          </div>
         </section>
       </main>
       {notice ? (
@@ -1288,7 +1269,6 @@ type Actions = {
   saveSettings: () => Promise<void>;
   saveSettingsValue: (settings: BackendSettings, silent?: boolean) => Promise<void>;
   refreshSettings: (silent?: boolean) => Promise<BackendSettings | null>;
-  resetSettings: () => Promise<void>;
   refreshRelay: () => Promise<void>;
   refreshRelayFiles: () => Promise<RelayFilesResult | null>;
   refreshEnvConflicts: (silent?: boolean) => Promise<EnvConflictsResult | null>;
@@ -1427,6 +1407,16 @@ function RelayScreen({
               <Plus className="h-4 w-4" />
               {t("添加聚合供应商")}
             </Button>
+          </div>
+          <div className="form-row">
+            <Field label={t("供应商测试模型")}>
+              <Input
+                value={form.relayTestModel}
+                onChange={(event) => onFormChange({ ...form, relayTestModel: event.currentTarget.value })}
+                onBlur={() => void actions.saveSettingsValue(normalizeSettings(form), true)}
+                placeholder={t("例如 gpt-5.4-mini")}
+              />
+            </Field>
           </div>
           <RelayProfileList
             form={normalized}
@@ -1638,73 +1628,6 @@ function SessionsScreen({
   );
 }
 
-
-function AboutScreen({
-  actions,
-}: {
-  actions: Actions;
-}) {
-  return (
-    <>
-      <Panel>
-        <CardHead title={t("关于 Codex--")} detail={t("极简版 Codex++ 管理工具：供应商切换、会话管理、配置体检")} />
-        <CardContent>
-          <div className="metric-list">
-            <Metric label={t("Codex-- 版本")} value="0.1.0" />
-            <Metric label={t("上游项目")} value="github.com/BigPizzaV3/CodexPlusPlus" />
-          </div>
-          <Toolbar>
-            <Button onClick={() => void actions.openExternalUrl("https://github.com/BigPizzaV3/CodexPlusPlus")} variant="secondary">
-              <ExternalLink className="h-4 w-4" />
-              {t("打开上游项目主页")}
-            </Button>
-          </Toolbar>
-        </CardContent>
-      </Panel>
-    </>
-  );
-}
-
-function SettingsScreen({
-  settings,
-  theme,
-  form,
-  onFormChange,
-  actions,
-}: {
-  settings: SettingsResult | null;
-  theme: Theme;
-  form: BackendSettings;
-  onFormChange: (value: BackendSettings) => void;
-  actions: Actions;
-}) {
-  return (
-    <>
-      <Panel>
-        <CardHead title={t("基础设置")} detail={settings?.settings_path ?? ""} />
-        <CardContent>
-          <div className="theme-row">
-            <div>
-              <strong>{t("界面主题")}</strong>
-              <span>{t("当前为")}{theme === "dark" ? t("深色") : t("浅色")}{t("模式。")}</span>
-            </div>
-            <Button variant="secondary" onClick={actions.toggleTheme}>{t("切换主题")}</Button>
-          </div>
-          <Field label={t("供应商测试模型")}>
-            <Input
-              value={form.relayTestModel}
-              onChange={(event) => onFormChange({ ...form, relayTestModel: event.currentTarget.value })}
-              placeholder={t("例如 gpt-5.4-mini")}
-            />
-          </Field>
-          <Toolbar>
-            <Button onClick={() => void actions.saveSettings()}>{t("保存设置")}</Button>
-          </Toolbar>
-        </CardContent>
-      </Panel>
-    </>
-  );
-}
 
 function RelayProfileList({
   form,
@@ -2847,8 +2770,6 @@ function routeSubtitle(route: Route) {
   const subtitles: Record<Route, string> = {
     relay: t("管理 API 供应商、协议、Key 与配置文件"),
     sessions: t("查看、删除和修复 Codex 本地会话"),
-    about: t("版本信息与上游项目链接"),
-    settings: t("界面主题与测试模型"),
   };
   return subtitles[route];
 }
@@ -4326,9 +4247,5 @@ function loadInitialTheme(): Theme {
 }
 
 function loadInitialRoute(): Route {
-  if (typeof window === "undefined") return "relay";
-  if (window.location.hash === "#about") {
-    return "about";
-  }
   return "relay";
 }

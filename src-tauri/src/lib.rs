@@ -47,7 +47,6 @@ pub fn run() {
             commands::list_local_sessions,
             commands::delete_local_session,
             commands::open_external_url,
-            commands::reset_settings,
             commands::relay_status,
             commands::read_relay_files,
             commands::check_env_conflicts,

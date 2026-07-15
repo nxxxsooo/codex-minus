@@ -759,23 +759,6 @@ pub fn open_external_url(url: String) -> CommandResult<Value> {
 }
 
 
-#[tauri::command]
-pub fn reset_settings() -> CommandResult<SettingsPayload> {
-    let settings = BackendSettings::default();
-    match SettingsStore::default().save(&settings) {
-        Ok(()) => settings_payload("设置已重置为默认值。", "设置重置后重新读取失败"),
-        Err(error) => failed(
-            &format!("重置设置失败：{error}"),
-            SettingsPayload {
-                settings,
-                settings_path: codex_plus_core::paths::default_settings_path()
-                    .to_string_lossy()
-                    .to_string(),
-                user_scripts: user_script_inventory(),
-            },
-        ),
-    }
-}
 
 
 #[tauri::command]
