@@ -26,10 +26,13 @@
     }
   },
   "bundle": {
-    "active": false,
-    "targets": "all",
+    "active": true,
+    "targets": [
+      "app"
+    ],
     "icon": [
-      "icons/icon.ico"
+      "icons/icon.icns",
+      "icons/icon.png"
     ]
   }
 }
