@@ -342,12 +342,24 @@ pub struct StartupPayload {
 
 
 #[tauri::command]
-pub fn load_settings() -> CommandResult<SettingsPayload> {
+pub async fn load_settings() -> CommandResult<SettingsPayload> {
+    tauri::async_runtime::spawn_blocking(|| load_settings_blocking())
+        .await
+        .expect("blocking command panicked")
+}
+
+fn load_settings_blocking() -> CommandResult<SettingsPayload> {
     settings_payload("设置已加载。", "设置读取失败")
 }
 
 #[tauri::command]
-pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload> {
+pub async fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload> {
+    tauri::async_runtime::spawn_blocking(move || save_settings_blocking(settings))
+        .await
+        .expect("blocking command panicked")
+}
+
+fn save_settings_blocking(settings: BackendSettings) -> CommandResult<SettingsPayload> {
     let settings = normalize_settings_before_save(settings);
     match SettingsStore::default().save(&settings) {
         Ok(()) => settings_payload("设置已保存。", "设置保存后重新读取失败"),
@@ -366,7 +378,13 @@ pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload
 
 
 #[tauri::command]
-pub fn list_local_sessions() -> CommandResult<LocalSessionsPayload> {
+pub async fn list_local_sessions() -> CommandResult<LocalSessionsPayload> {
+    tauri::async_runtime::spawn_blocking(|| list_local_sessions_blocking())
+        .await
+        .expect("blocking command panicked")
+}
+
+fn list_local_sessions_blocking() -> CommandResult<LocalSessionsPayload> {
     let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
     let db_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
     let mut sessions = Vec::new();
@@ -415,7 +433,13 @@ pub fn list_local_sessions() -> CommandResult<LocalSessionsPayload> {
 
 
 #[tauri::command]
-pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult<DeleteResult> {
+pub async fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult<DeleteResult> {
+    tauri::async_runtime::spawn_blocking(move || delete_local_session_blocking(request))
+        .await
+        .expect("blocking command panicked")
+}
+
+fn delete_local_session_blocking(request: DeleteLocalSessionRequest) -> CommandResult<DeleteResult> {
     let session_id = request.session_id.trim();
     if session_id.is_empty() {
         return failed(
@@ -762,7 +786,13 @@ pub fn open_external_url(url: String) -> CommandResult<Value> {
 
 
 #[tauri::command]
-pub fn relay_status() -> CommandResult<RelayPayload> {
+pub async fn relay_status() -> CommandResult<RelayPayload> {
+    tauri::async_runtime::spawn_blocking(|| relay_status_blocking())
+        .await
+        .expect("blocking command panicked")
+}
+
+fn relay_status_blocking() -> CommandResult<RelayPayload> {
     let status = codex_plus_core::relay_config::default_relay_status();
     let message = if status.authenticated {
         "已检测到 ChatGPT 登录状态。"
@@ -773,7 +803,13 @@ pub fn relay_status() -> CommandResult<RelayPayload> {
 }
 
 #[tauri::command]
-pub fn read_relay_files() -> CommandResult<RelayFilesPayload> {
+pub async fn read_relay_files() -> CommandResult<RelayFilesPayload> {
+    tauri::async_runtime::spawn_blocking(|| read_relay_files_blocking())
+        .await
+        .expect("blocking command panicked")
+}
+
+fn read_relay_files_blocking() -> CommandResult<RelayFilesPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     match relay_files_payload_from_home(&home) {
         Ok(payload) => ok("配置文件内容已读取。", payload),
@@ -790,7 +826,13 @@ pub fn read_relay_files() -> CommandResult<RelayFilesPayload> {
 }
 
 #[tauri::command]
-pub fn check_env_conflicts() -> CommandResult<EnvConflictsPayload> {
+pub async fn check_env_conflicts() -> CommandResult<EnvConflictsPayload> {
+    tauri::async_runtime::spawn_blocking(|| check_env_conflicts_blocking())
+        .await
+        .expect("blocking command panicked")
+}
+
+fn check_env_conflicts_blocking() -> CommandResult<EnvConflictsPayload> {
     let conflicts = codex_plus_core::env_conflicts::detect_env_conflicts();
     let message = if conflicts.is_empty() {
         "未检测到会覆盖 Codex 供应商配置的 OPENAI 环境变量。"
@@ -830,7 +872,13 @@ pub fn remove_env_conflicts(
 }
 
 #[tauri::command]
-pub fn save_relay_file(request: SaveRelayFileRequest) -> CommandResult<RelayFilesPayload> {
+pub async fn save_relay_file(request: SaveRelayFileRequest) -> CommandResult<RelayFilesPayload> {
+    tauri::async_runtime::spawn_blocking(move || save_relay_file_blocking(request))
+        .await
+        .expect("blocking command panicked")
+}
+
+fn save_relay_file_blocking(request: SaveRelayFileRequest) -> CommandResult<RelayFilesPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     match save_relay_file_in_home(&home, &request.kind, &request.contents)
         .and_then(|_| relay_files_payload_from_home(&home))
@@ -857,12 +905,16 @@ pub struct RelayProfileSwitchRequest {
 }
 
 #[tauri::command]
-pub fn switch_relay_profile(
+pub async fn switch_relay_profile(
     request: RelayProfileSwitchRequest,
 ) -> CommandResult<RelaySwitchPayload> {
-    let result = with_context_tables_protected(|| switch_relay_profile_unguarded(request));
-    scrub_managed_context_store();
-    result
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = with_context_tables_protected(|| switch_relay_profile_unguarded(request));
+        scrub_managed_context_store();
+        result
+    })
+    .await
+    .expect("blocking command panicked")
 }
 
 fn switch_relay_profile_unguarded(
@@ -1325,8 +1377,10 @@ fn provider_doctor_recommendation(checks: &[ProviderDoctorCheck]) -> String {
 }
 
 #[tauri::command]
-pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
-    with_context_tables_protected(apply_relay_injection_unguarded)
+pub async fn apply_relay_injection() -> CommandResult<RelayPayload> {
+    tauri::async_runtime::spawn_blocking(|| with_context_tables_protected(apply_relay_injection_unguarded))
+        .await
+        .expect("blocking command panicked")
 }
 
 fn apply_relay_injection_unguarded() -> CommandResult<RelayPayload> {
@@ -1464,8 +1518,10 @@ fn apply_aggregate_relay_injection_to_home(home: &Path) -> CommandResult<RelayPa
 }
 
 #[tauri::command]
-pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
-    with_context_tables_protected(apply_pure_api_injection_unguarded)
+pub async fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
+    tauri::async_runtime::spawn_blocking(|| with_context_tables_protected(apply_pure_api_injection_unguarded))
+        .await
+        .expect("blocking command panicked")
 }
 
 fn apply_pure_api_injection_unguarded() -> CommandResult<RelayPayload> {
@@ -1569,8 +1625,10 @@ fn apply_pure_api_injection_unguarded() -> CommandResult<RelayPayload> {
 }
 
 #[tauri::command]
-pub fn clear_relay_injection() -> CommandResult<RelayPayload> {
-    with_context_tables_protected(clear_relay_injection_unguarded)
+pub async fn clear_relay_injection() -> CommandResult<RelayPayload> {
+    tauri::async_runtime::spawn_blocking(|| with_context_tables_protected(clear_relay_injection_unguarded))
+        .await
+        .expect("blocking command panicked")
 }
 
 fn clear_relay_injection_unguarded() -> CommandResult<RelayPayload> {
@@ -1971,6 +2029,149 @@ fn default_log_lines() -> usize {
     200
 }
 
+
+#[tauri::command]
+pub async fn load_provider_sync_targets() -> CommandResult<Value> {
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    let result =
+        tauri::async_runtime::spawn_blocking(|| codex_plus_data::load_provider_sync_targets(None))
+            .await
+            .map_err(|error| anyhow::anyhow!("provider target discovery task failed: {error}"));
+    match result {
+        Ok(mut targets) => {
+            let manual = settings
+                .provider_sync_manual_providers
+                .iter()
+                .chain(settings.provider_sync_saved_providers.iter())
+                .filter_map(|value| {
+                    let trimmed = value.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                })
+                .collect::<Vec<_>>();
+            merge_manual_provider_sync_targets(&mut targets, &manual, &settings);
+            ok(
+                "Provider 同步目标已加载。",
+                serde_json::to_value(targets).unwrap_or_else(|_| json!({})),
+            )
+        }
+        Err(error) => failed(&format!("Provider 同步目标加载失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
+pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResult<Value> {
+    let target_provider = target_provider
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let target_for_settings = target_provider.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_data::run_provider_sync_with_target(None, target_provider.as_deref())
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("provider sync task failed: {error}"));
+    match result {
+        Ok(sync) => {
+            if is_success_sync_status(&sync.status) {
+                persist_provider_sync_selection(
+                    target_for_settings
+                        .as_deref()
+                        .unwrap_or(&sync.target_provider),
+                );
+            }
+            ok(
+                &format!(
+                    "供应商已同步一次：{} 个会话文件，{} 行索引，跳过 {} 个占用文件。",
+                    sync.changed_session_files,
+                    sync.sqlite_rows_updated,
+                    sync.skipped_locked_rollout_files.len()
+                ),
+                json!({
+                    "syncStatus": sync.status,
+                    "targetProvider": sync.target_provider,
+                    "changedSessionFiles": sync.changed_session_files,
+                    "skippedLockedRolloutFiles": sync.skipped_locked_rollout_files,
+                    "sqliteRowsUpdated": sync.sqlite_rows_updated,
+                    "sqliteProviderRowsUpdated": sync.sqlite_provider_rows_updated,
+                    "sqliteUserEventRowsUpdated": sync.sqlite_user_event_rows_updated,
+                    "sqliteCwdRowsUpdated": sync.sqlite_cwd_rows_updated,
+                    "updatedWorkspaceRoots": sync.updated_workspace_roots,
+                    "encryptedContentWarning": sync.encrypted_content_warning,
+                    "backupDir": sync.backup_dir,
+                    "syncMessage": sync.message,
+                }),
+            )
+        }
+        Err(error) => failed(&format!("供应商同步失败：{error}"), json!({})),
+    }
+}
+
+fn merge_manual_provider_sync_targets(
+    targets: &mut codex_plus_data::ProviderSyncTargetList,
+    manual: &[String],
+    settings: &BackendSettings,
+) {
+    for id in manual {
+        if let Some(existing) = targets.targets.iter_mut().find(|target| target.id == *id) {
+            if !existing
+                .sources
+                .contains(&codex_plus_data::ProviderSyncTargetSource::Manual)
+            {
+                existing
+                    .sources
+                    .push(codex_plus_data::ProviderSyncTargetSource::Manual);
+                existing.sources.sort();
+            }
+            existing.is_manual = settings.provider_sync_manual_providers.contains(id);
+            existing.is_saved = settings.provider_sync_saved_providers.contains(id);
+        } else {
+            targets
+                .targets
+                .push(codex_plus_data::ProviderSyncTargetOption {
+                    id: id.clone(),
+                    sources: vec![codex_plus_data::ProviderSyncTargetSource::Manual],
+                    is_current_provider: *id == targets.current_provider,
+                    is_manual: settings.provider_sync_manual_providers.contains(id),
+                    is_saved: settings.provider_sync_saved_providers.contains(id),
+                });
+        }
+    }
+    targets.targets.sort_by(|left, right| {
+        right
+            .is_current_provider
+            .cmp(&left.is_current_provider)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+}
+
+fn is_success_sync_status(status: &codex_plus_data::ProviderSyncStatus) -> bool {
+    matches!(status, codex_plus_data::ProviderSyncStatus::Synced)
+}
+
+fn persist_provider_sync_selection(provider: &str) {
+    let trimmed = provider.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let store = SettingsStore::default();
+    let mut settings = store.load().unwrap_or_default();
+    settings.provider_sync_last_selected_provider = trimmed.to_string();
+    if !settings
+        .provider_sync_saved_providers
+        .iter()
+        .any(|item| item == trimmed)
+    {
+        settings
+            .provider_sync_saved_providers
+            .push(trimmed.to_string());
+    }
+    settings.provider_sync_saved_providers =
+        normalize_provider_sync_provider_list(settings.provider_sync_saved_providers);
+    let _ = store.save(&settings);
+}
 
 #[cfg(test)]
 mod context_guard_tests {

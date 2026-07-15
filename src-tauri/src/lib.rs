@@ -59,6 +59,8 @@ pub fn run() {
             commands::diagnose_relay_profile,
             commands::fetch_relay_profile_models,
             commands::switch_relay_profile,
+            commands::load_provider_sync_targets,
+            commands::sync_providers_now,
             commands::apply_relay_injection,
             commands::apply_pure_api_injection,
             commands::clear_relay_injection,

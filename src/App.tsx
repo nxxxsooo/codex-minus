@@ -510,6 +510,28 @@ type ProviderSyncProgress = {
   result: CommandResult<ProviderSyncPayload> | null;
 };
 
+function providerSyncProgressMessage(result: CommandResult<ProviderSyncPayload>): string {
+  const changed = result.changedSessionFiles ?? 0;
+  const rows = result.sqliteRowsUpdated ?? 0;
+  const target = result.targetProvider || t("当前 provider");
+  const skipped = result.skippedLockedRolloutFiles?.length ?? 0;
+  const skippedText = skipped ? tf("，跳过 {0} 个占用文件", [skipped]) : "";
+  return tf("已同步到 {0}：修复 {1} 个会话文件，更新 {2} 行索引{3}。", [target, changed, rows, skippedText]);
+}
+
+const providerSyncSourceLabels: Record<ProviderSyncTargetSource, string> = {
+  config: t("配置"),
+  rollout: t("会话"),
+  sqlite: t("索引"),
+  manual: t("手动"),
+};
+
+function providerSyncTargetLabel(target: ProviderSyncTargetOption): string {
+  const labels = target.sources.map((source) => providerSyncSourceLabels[source]).filter(Boolean);
+  const current = target.isCurrentProvider ? [t("当前")] : [];
+  return [...labels, ...current].join(" / ") || t("发现");
+}
+
 type TaskProgress = {
   active: boolean;
   percent: number;
@@ -699,6 +721,14 @@ export function App() {
   const [relayFiles, setRelayFiles] = useState<RelayFilesResult | null>(null);
   const [envConflicts, setEnvConflicts] = useState<EnvConflictsResult | null>(null);
   const [localSessions, setLocalSessions] = useState<LocalSessionsResult | null>(null);
+  const [providerSyncProgress, setProviderSyncProgress] = useState<ProviderSyncProgress>({
+    active: false,
+    percent: 0,
+    message: "",
+    result: null,
+  });
+  const [providerSyncTargets, setProviderSyncTargets] = useState<ProviderSyncTargetsResult | null>(null);
+  const [selectedProviderSyncTarget, setSelectedProviderSyncTarget] = useState("");
   const [settingsForm, setSettingsForm] = useState<BackendSettings>({ ...defaultSettings });
   const [relaySwitching, setRelaySwitching] = useState(false);
 
@@ -779,6 +809,79 @@ export function App() {
     return result;
   };
 
+  const refreshProviderSyncTargets = async (silent = false) => {
+    const result = await run(() => call<ProviderSyncTargetsResult>("load_provider_sync_targets"));
+    if (result) {
+      setProviderSyncTargets(result);
+      const targets = result.targets ?? [];
+      const saved = settingsForm.providerSyncLastSelectedProvider;
+      const preferred =
+        targets.find((target) => target.id === saved)?.id ||
+        targets.find((target) => target.isCurrentProvider)?.id ||
+        targets[0]?.id ||
+        "openai";
+      setSelectedProviderSyncTarget((current) => (targets.some((target) => target.id === current) ? current : preferred));
+      if (!silent && !isSuccessStatus(result.status)) showNotice(t("Provider 同步目标"), result.message, result.status);
+    }
+    return result;
+  };
+
+  const syncProvidersNow = async () => {
+    if (providerSyncProgress.active) return;
+    setProviderSyncProgress({
+      active: true,
+      percent: 12,
+      message: selectedProviderSyncTarget ? tf("正在同步到 {0}…", [selectedProviderSyncTarget]) : t("正在扫描历史会话与索引…"),
+      result: null,
+    });
+    const progressTimer = window.setInterval(() => {
+      setProviderSyncProgress((current) => {
+        if (!current.active) return current;
+        return {
+          ...current,
+          percent: Math.min(88, current.percent + 8),
+          message: current.percent < 40 ? t("正在检查会话 provider 标记…") : t("正在写入修复与备份…"),
+        };
+      });
+    }, 350);
+    try {
+      const targetProvider = selectedProviderSyncTarget || undefined;
+      const result = await run(() =>
+        call<CommandResult<ProviderSyncPayload>>("sync_providers_now", { targetProvider }),
+      );
+      if (result) {
+        setProviderSyncProgress({
+          active: false,
+          percent: 100,
+          message: providerSyncProgressMessage(result),
+          result,
+        });
+        if (targetProvider) {
+          const next = {
+            ...settingsForm,
+            providerSyncLastSelectedProvider: targetProvider,
+            providerSyncSavedProviders: Array.from(
+              new Set([...(settingsForm.providerSyncSavedProviders ?? []), targetProvider]),
+            ).sort(),
+          };
+          setSettingsForm(next);
+        }
+        await refreshProviderSyncTargets(true);
+        await refreshLocalSessions(true);
+        showNotice(t("历史会话修复"), result.message, result.status);
+      } else {
+        setProviderSyncProgress({
+          active: false,
+          percent: 100,
+          message: t("历史会话修复失败，请查看错误提示后重试。"),
+          result: null,
+        });
+      }
+    } finally {
+      window.clearInterval(progressTimer);
+    }
+  };
+
   const requestDeleteLocalSession = (session: LocalSession) =>
     call<DeleteLocalSessionResult>("delete_local_session", {
       request: { sessionId: session.id, title: session.title, dbPath: session.dbPath },
@@ -857,7 +960,7 @@ export function App() {
       ]);
     }
     if (next === "sessions") {
-      await Promise.all([refreshSettings(true), refreshLocalSessions(true)]);
+      await Promise.all([refreshSettings(true), refreshLocalSessions(true), refreshProviderSyncTargets(true)]);
     }
   };
 
@@ -1141,6 +1244,12 @@ export function App() {
       refreshLocalSessions,
       deleteLocalSession,
       deleteLocalSessions,
+      syncProvidersNow,
+      refreshProviderSyncTargets,
+      setProviderSyncTarget: (provider: string) => {
+        setSelectedProviderSyncTarget(provider);
+        setSettingsForm((current) => ({ ...current, providerSyncLastSelectedProvider: provider }));
+      },
       openExternalUrl,
       applyRelayInjection,
       applyPureApiInjection,
@@ -1155,7 +1264,7 @@ export function App() {
       showMessage: async (title: string, message: string, status?: Status) => showNotice(title, message, status),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, settingsForm, settings, theme, relayFiles, localSessions, envConflicts, relaySwitching],
+    [route, settingsForm, settings, theme, relayFiles, localSessions, envConflicts, relaySwitching, providerSyncProgress.active, selectedProviderSyncTarget],
   );
 
   return (
@@ -1234,6 +1343,9 @@ export function App() {
               settings={settings}
               form={settingsForm}
               sessions={localSessions}
+              providerSyncProgress={providerSyncProgress}
+              providerSyncTargets={providerSyncTargets}
+              selectedProviderSyncTarget={selectedProviderSyncTarget}
               onFormChange={setSettingsForm}
               actions={actions}
             />
@@ -1274,6 +1386,9 @@ type Actions = {
   refreshEnvConflicts: (silent?: boolean) => Promise<EnvConflictsResult | null>;
   removeEnvConflicts: (names: string[]) => Promise<void>;
   refreshLocalSessions: () => Promise<LocalSessionsResult | null>;
+  syncProvidersNow: () => Promise<void>;
+  refreshProviderSyncTargets: (silent?: boolean) => Promise<ProviderSyncTargetsResult | null>;
+  setProviderSyncTarget: (provider: string) => void;
   deleteLocalSession: (session: LocalSession) => Promise<void>;
   deleteLocalSessions: (sessions: LocalSession[]) => Promise<void>;
   openExternalUrl: (url: string) => Promise<void>;
@@ -1479,16 +1594,24 @@ function envConflictSourceLabel(source: string): string {
 }
 
 
+const SESSION_LIST_PAGE_SIZE = 100;
+
 function SessionsScreen({
   settings,
   form,
   sessions,
+  providerSyncProgress,
+  providerSyncTargets,
+  selectedProviderSyncTarget,
   onFormChange,
   actions,
 }: {
   settings: SettingsResult | null;
   form: BackendSettings;
   sessions: LocalSessionsResult | null;
+  providerSyncProgress: ProviderSyncProgress;
+  providerSyncTargets: ProviderSyncTargetsResult | null;
+  selectedProviderSyncTarget: string;
   onFormChange: (value: BackendSettings) => void;
   actions: Actions;
 }) {
@@ -1498,6 +1621,8 @@ function SessionsScreen({
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set());
   const [selectionMode, setSelectionMode] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(SESSION_LIST_PAGE_SIZE);
+  const visibleItems = useMemo(() => items.slice(0, visibleCount), [items, visibleCount]);
   const selectedSessions = useMemo(() => items.filter((session) => selectedSessionIds.has(session.id)), [items, selectedSessionIds]);
   const selectedCount = selectedSessions.length;
   const allSelected = items.length > 0 && selectedCount === items.length;
@@ -1553,15 +1678,52 @@ function SessionsScreen({
             <Metric label={t("已归档")} value={tf("{0} 个", [archivedCount])} />
             <Metric label={t("数据库")} value={sessions?.dbPath ?? "~/.codex/sqlite/*.db"} />
           </div>
+          <div className="form-row">
+            <Field label={t("同步目标")}>
+              <select
+                className="select-input"
+                disabled={providerSyncProgress.active || !(providerSyncTargets?.targets ?? []).length}
+                value={selectedProviderSyncTarget}
+                onChange={(event) => actions.setProviderSyncTarget(event.currentTarget.value)}
+              >
+                {(providerSyncTargets?.targets ?? []).map((target) => (
+                  <option key={target.id} value={target.id}>
+                    {target.id}{t("（")}{providerSyncTargetLabel(target)}{t("）")}
+                  </option>
+                ))}
+                {!(providerSyncTargets?.targets ?? []).length ? <option value="">{t("当前配置 provider")}</option> : null}
+              </select>
+            </Field>
+          </div>
           <Toolbar>
             <Button onClick={() => void actions.refreshLocalSessions()}>
               <RefreshCw className="h-4 w-4" />
               {t("刷新会话")}
             </Button>
+            <Button disabled={providerSyncProgress.active} onClick={() => void actions.syncProvidersNow()} variant="outline">
+              <RefreshCw className="h-4 w-4" />
+              {providerSyncProgress.active ? t("正在修复…") : t("立刻修复历史会话")}
+            </Button>
           </Toolbar>
+          <div className="provider-sync-progress" data-active={providerSyncProgress.active}>
+            <div className="provider-sync-progress-head">
+              <strong>{providerSyncProgress.active ? t("正在修复历史会话") : t("历史会话修复进度")}</strong>
+              <span>{providerSyncProgress.percent}%</span>
+            </div>
+            <div
+              aria-valuemax={100}
+              aria-valuemin={0}
+              aria-valuenow={providerSyncProgress.percent}
+              className="provider-sync-progress-bar"
+              role="progressbar"
+            >
+              <div className="provider-sync-progress-fill" style={{ width: `${providerSyncProgress.percent}%` }} />
+            </div>
+            <small>{providerSyncProgress.message}</small>
+          </div>
           <div className="hint-line">
             <Info className="h-4 w-4" />
-            <span>{t("删除会创建本地备份；如果 Codex App 正在使用该会话，建议先关闭对应会话窗口再操作。")}</span>
+            <span>{t("修复会把历史会话的 provider 标记同步到所选目标；删除会创建本地备份；如果 Codex App 正在使用该会话，建议先关闭对应会话窗口再操作。")}</span>
           </div>
         </CardContent>
       </Panel>
@@ -1586,7 +1748,7 @@ function SessionsScreen({
                 </div>
               </div>
               <div className="session-list">
-                {items.map((session) => {
+                {visibleItems.map((session) => {
                   const selected = selectedSessionIds.has(session.id);
                   return (
                     <div className="session-row" data-selection-mode={selectionMode} data-selected={selected} key={session.id}>
@@ -1618,6 +1780,13 @@ function SessionsScreen({
                   );
                 })}
               </div>
+              {items.length > visibleCount ? (
+                <Toolbar>
+                  <Button variant="outline" onClick={() => setVisibleCount((current) => current + SESSION_LIST_PAGE_SIZE)}>
+                    {tf("显示更多（已显示 {0} / {1}）", [visibleItems.length, items.length])}
+                  </Button>
+                </Toolbar>
+              ) : null}
             </>
           ) : (
             <div className="empty">{t("未读取到本地会话，或当前 SQLite 会话库不存在。")}</div>
