@@ -6,6 +6,20 @@
 
 ## Changelog
 
+### 2026-07-16 (late)
+
+- **deploy**: published to GitHub as public repo https://github.com/nxxxsooo/codex-minus
+  - why: local-only repo; AGPL derivative is fine to publish openly
+  - verified: push succeeded, repo visible as PUBLIC
+  - refs: none
+- **chore**: rewrote git history with git-filter-repo to drop node_modules / src-tauri/target / dist blobs committed before .gitignore existed
+  - why: history carried 255MB of build artifacts; unacceptable clone size for a public repo. No remote/collaborators existed, so hash rewrite was free
+  - verified: .git 255MB → 1.2MB, all 9 commits preserved; pre-rewrite backup at /tmp/codex-minus-git-backup
+  - refs: none
+- **chore**: added AGPL-3.0 LICENSE full text
+  - why: Cargo.toml declared AGPL-3.0-only but license text was missing; required for public distribution of a derivative work
+  - refs: LICENSE
+
 ### 2026-07-16
 
 - **docs**: added AGENTS.md (constraints: pinned-rev upstream deps, context 保护罩, dead 57321 protocol path, toml_edit implicit-table gotcha) and this BOARD.md
