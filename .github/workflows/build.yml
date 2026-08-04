@@ -68,14 +68,12 @@ jobs:
         shell: bash
         run: |
           cd src-tauri/target/aarch64-apple-darwin/release/bundle/macos
-          APP_BUNDLE=$(ls *.app 2>/dev/null | head -1)
-          if [ -n "$APP_BUNDLE" ]; then
-            zip -r "Codex--Manager_${GITHUB_REF_NAME#v}_aarch64.app.zip" "$APP_BUNDLE"
-            ls -lh "Codex--Manager_${GITHUB_REF_NAME#v}_aarch64.app.zip"
-          else
-            echo "::error::No .app bundle found"
-            exit 1
-          fi
+          for f in *.app/Contents/Info.plist; do
+            [ -f "$f" ] || { echo "::error::No .app bundle found"; exit 1; }
+          done
+          APP_NAME="Codex-- Manager.app"
+          zip -r "Codex--Manager_${GITHUB_REF_NAME#v}_aarch64.app.zip" "$APP_NAME"
+          ls -lh "Codex--Manager_${GITHUB_REF_NAME#v}_aarch64.app.zip"
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
