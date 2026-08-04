@@ -1,66 +1,107 @@
-# Codex-- Manager (codex-minus)
+<p align="right"><a href="README.en.md">English</a></p>
 
-极度精简版 [Codex++](https://github.com/BigPizzaV3/CodexPlusPlus) 管理工具。**无渲染注入**，只保留：
+<p align="center">
+  <img src="docs/assets/codex-minus-hero.webp" alt="Codex-- Manager 供应商配置界面" width="960">
+</p>
 
-- **供应商切换**（API 混 OAuth / 中转 profile，写 `~/.codex/config.toml` + `auth.json`，带切换前 backfill 与失败回滚）
-- **本地会话管理**（活动 / 已归档分页、原生归档与恢复、删除前自动备份）
-- **供应商兼容性检查**（切换后读取实际 `model_provider`，只检查活动会话）
-- **环境变量冲突检测**（OPENAI_* 覆盖供应商配置时提示，位于供应商页）
-- **Context 保护罩（本 fork 新增）**：切换/注入供应商时快照 `config.toml` 的
-  `mcp_servers` / `skills` / `plugins` 三张表并在写入后原样回植；启动时自动销毁
-  settings 里的 managed context 副本。上游「工具与插件」管理功能因为会用残缺副本
-  覆盖真实 MCP 配置（2026-07-15 事故根因）而被整体移除。
+<h1 align="center">Codex-- Manager</h1>
+
+<p align="center">安全切换供应商，整理本地会话，不交出你的 Context 配置。</p>
+
+<p align="center">
+  <a href="https://github.com/nxxxsooo/codex-minus/releases/latest"><img alt="GitHub Release" src="https://img.shields.io/github/v/release/nxxxsooo/codex-minus?style=flat-square&color=197547"></a>
+  <img alt="macOS arm64" src="https://img.shields.io/badge/macOS-arm64-202720?style=flat-square&logo=apple&logoColor=white">
+  <a href="LICENSE"><img alt="AGPL-3.0-only" src="https://img.shields.io/badge/license-AGPL--3.0--only-197547?style=flat-square"></a>
+</p>
+
+Codex-- Manager 是 [Codex++ Manager](https://github.com/BigPizzaV3/CodexPlusPlus) 的精简 fork，只保留供应商切换、本地会话生命周期和配置诊断。没有渲染注入、launcher、市场或自动更新器。
+
+## 下载
+
+当前公开版本仅支持 Apple Silicon（`arm64`）。
+
+- [下载 Codex-- Manager v0.1.0](https://github.com/nxxxsooo/codex-minus/releases/download/v0.1.0/Codex--Manager_0.1.0_aarch64.app.zip)
+- [下载 SHA256SUMS](https://github.com/nxxxsooo/codex-minus/releases/download/v0.1.0/SHA256SUMS)
+- [查看项目页面](https://mjshao.fun/codex-minus/)
+
+```bash
+shasum -a 256 -c SHA256SUMS
+```
+
+校验后解压，将 `Codex-- Manager.app` 移入 `/Applications`。当前版本采用 ad-hoc 签名，尚未使用 Developer ID 签名或 Apple 公证。首次启动如被 macOS 拦截，请在「系统设置 → 隐私与安全性」中选择「仍要打开」。
+
+## 为什么需要它
+
+供应商切换只应该改供应商配置。Codex-- 会在每条写入路径执行前快照 `~/.codex/config.toml` 中的三张 Context 表，并在上游写入结束后把原始 TOML 内容逐字回植：
+
+```toml
+[mcp_servers]
+[skills]
+[plugins]
+```
+
+这层保护来自一次真实事故：旧的 managed context 副本在供应商切换时覆盖了有效 MCP 配置。Codex-- 删除了该管理功能，并用 Rust 测试固定保护契约。
+
+## 功能范围
+
+### 供应商切换
+
+- 管理 OAuth、API Key 和混合认证的中转 profile。
+- 写入 `config.toml` 与 `auth.json`，失败时回滚。
+- 切换后读取实际 `model_provider`，相同 provider 不触发会话扫描。
+- 检查可能覆盖供应商配置的 `OPENAI_*` 环境变量。
+
+### 会话生命周期
+
+- 分页查看活动与已归档会话。
+- 通过目标 Codex CLI 执行原生 `archive` 与 `unarchive`。
+- 自动归档默认保留最近 30 天，首次启用前必须确认候选预览。
+- 自动检查在界面可用后异步执行，最多每 24 小时完成一次。
+- 删除会话前创建本地备份。
+
+### Context 保护
+
+- 供应商切换、应用和清除路径都经过 `with_context_tables_protected`。
+- 不保存或合并 managed context 副本。
+- 不恢复上游「工具与插件」管理页面。
+
+## 更新与卸载
+
+更新时先退出 Codex-- Manager，再下载最新版覆盖 `/Applications/Codex-- Manager.app`。应用不包含自动更新器，GitHub Release 不会自动更新本机副本。
+
+用户设置位于 `~/.codex-session-delete/`，覆盖应用不会删除。卸载应用时可单独决定是否保留该目录。
+
+## 已知限制
+
+- 当前没有 Intel 构建、Developer ID 签名或 Apple 公证。
+- 「Chat Completions 协议」和「聚合供应商」依赖上游 launcher 提供的 `127.0.0.1:57321` 代理，本项目不包含该代理，请勿使用。
+- 固定的上游 revision 尚未提供 active-only provider-sync 写入范围，因此「适配到当前 provider」保持禁用，不会回退到全历史改写。
+- 会话归档用于整理，不会压缩数据或释放磁盘空间。
 
 ## 架构
 
-`codex-plus-core` / `codex-plus-data` 以 git 依赖原样引用上游（pin 到 rev），本仓库只有薄壳：
-裁剪后的 Tauri 后端（`src-tauri/`）+ 裁剪后的 React 前端（`src/`）。
-上游修 config 格式/会话 schema 兼容时，改 Cargo.toml 里的 rev 即可跟进，无 rebase 成本。
-
-已删除：渲染注入、launcher、启动/重启 Codex、自动更新、watcher、广告、脚本市场、
-插件市场、全历史 provider sync 与目标选择器、CC Switch 导入、Zed remote、维护页、工具与插件（context）管理、
-中转站环境检测页、Stepwise 配置、启动参数面板、图片覆盖层。
-
-已知限制：「Chat Completions 协议」与「聚合供应商」依赖上游 launcher 起的本地
-57321 协议代理，codex-minus 不提供——这两种 profile 切换后 Codex 无法请求，UI 保留
-（未改上游供应商逻辑），请勿使用。
-
-## 会话生命周期
-
-- 自动归档默认保留最近 30 天，首次启用前会显示候选数量、截止时间和目标位置并要求确认。
-- 归档位置是 Codex 原生的 `$CODEX_HOME/archived_sessions`；归档不压缩、不复制，也不释放磁盘空间。
-- 归档与恢复只调用目标 Codex / ChatGPT 应用内置的 `codex archive` / `codex unarchive`，不直接移动 rollout 或修改 SQLite。
-- 自动检查在界面可用后异步执行，最多每 24 小时完成一次；若无法确认目标客户端空闲，会安全延后。手动归档同样要求目标客户端已关闭，恢复操作不受此限制。
-- 生命周期设置存放在 `~/.codex-session-delete/session-lifecycle.json`，旧的 provider 目标设置仍可读取但不再参与行为决策。
-
-## 供应商与会话
-
-供应商切换成功后，以最终 `config.toml` 的 `model_provider` 为准。身份未变化时不会扫描会话；身份变化时只统计活动会话的不匹配标记，不遍历归档 rollout。
-
-当前固定的上游 revision 尚未提供 active-only provider-sync 写入范围，因此「适配到当前 provider」会保持禁用，并明确显示原因。Codex-- 不会退回全历史扫描，也不会在本仓库复制上游修复逻辑；待上游提供范围参数后再升级固定 revision 开放写入。
-
-当前只承诺缩小 Codex-- 自身的会话载荷和供应商检查范围，不宣称归档一定会加快 ChatGPT / Codex 客户端启动；外部客户端效果需以独立基准为准。
-
-## 安装与更新
-
-当前 GitHub Release 只提供 Apple Silicon（`arm64`）版 macOS 应用：
-
-1. 从 [Releases](https://github.com/nxxxsooo/codex-minus/releases/latest) 下载 `Codex--Manager_<version>_aarch64.app.zip` 和 `SHA256SUMS`。
-2. 用 `shasum -a 256 -c SHA256SUMS` 校验下载文件，解压后将 `Codex-- Manager.app` 移入 `/Applications`。
-3. 首次启动若 macOS 提示无法验证开发者，请在「系统设置 → 隐私与安全性」中确认「仍要打开」。当前版本采用 ad-hoc 签名，尚未使用 Developer ID 签名或 Apple 公证。
-
-更新现有安装时，退出 Codex-- Manager，下载最新版并覆盖 `/Applications/Codex-- Manager.app`。供应商与会话生命周期设置保存在 `~/.codex-session-delete/`，覆盖应用不会删除这些设置。本项目不包含自动更新器，GitHub Release 也不会自动更新本机应用。
+- 前端：React 19、Vite、TypeScript。
+- 桌面与后端：Tauri 2、Rust。
+- 上游逻辑：`codex-plus-core` 与 `codex-plus-data`，固定到明确 git revision，不在本仓库 vendoring。
+- 应用标识：`fun.mjshao.codex-minus`。
+- 状态目录：`~/.codex-session-delete/`。
 
 ## 开发
 
 ```bash
 npm install
-npm run dev      # tauri dev
-npm run build    # tauri build（产物为 macOS .app bundle）
-npm run check    # TypeScript 检查
+npm run check
+npm run vite:build
 cd src-tauri && cargo test
+npm run build
 ```
+
+完整 Tauri 构建会生成 `src-tauri/target/release/bundle/macos/Codex-- Manager.app`。
+
+## 版本说明
+
+当前 `master` 的公开页面与 README 在 `v0.1.0` 应用 tag 之后补充。`v0.1.0` macOS 二进制及其 SHA-256 未发生变化。
 
 ## License
 
-AGPL-3.0-only（继承上游）。
+AGPL-3.0-only，继承上游项目许可。
