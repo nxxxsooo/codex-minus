@@ -11,6 +11,7 @@
 <p align="center">
   <a href="https://github.com/nxxxsooo/codex-minus/releases/latest"><img alt="GitHub Release" src="https://img.shields.io/github/v/release/nxxxsooo/codex-minus?style=flat-square&color=197547"></a>
   <img alt="macOS arm64" src="https://img.shields.io/badge/macOS-arm64-202720?style=flat-square&logo=apple&logoColor=white">
+  <img alt="Windows x86_64" src="https://img.shields.io/badge/Windows-x86__64-0078D4?style=flat-square&logo=windows&logoColor=white">
   <a href="LICENSE"><img alt="AGPL-3.0-only" src="https://img.shields.io/badge/license-AGPL--3.0--only-197547?style=flat-square"></a>
 </p>
 
@@ -18,13 +19,18 @@ Codex-- Manager is a trimmed fork of [Codex++ Manager](https://github.com/BigPiz
 
 ## Download
 
-The current public build supports Apple Silicon (`arm64`) only.
+Supports Apple Silicon (`arm64`) and Windows (`x86_64`).
 
-- [Download Codex-- Manager v0.1.0](https://github.com/nxxxsooo/codex-minus/releases/download/v0.1.0/Codex--Manager_0.1.0_aarch64.app.zip)
-- [Download SHA256SUMS](https://github.com/nxxxsooo/codex-minus/releases/download/v0.1.0/SHA256SUMS)
+| Platform | Architecture | Format | Latest Release |
+|----------|-------------|--------|----------------|
+| macOS    | arm64       | .app.zip | [v0.2.0](https://github.com/nxxxsooo/codex-minus/releases/latest) |
+| Windows  | x86_64      | .msi / .exe | [v0.2.0](https://github.com/nxxxsooo/codex-minus/releases/latest) |
+
+- [Go to the Release page](https://github.com/nxxxsooo/codex-minus/releases)
 - [Open the project website](https://mjshao.fun/codex-minus/)
 
 ```bash
+# Verify macOS
 shasum -a 256 -c SHA256SUMS
 ```
 
@@ -74,6 +80,7 @@ User settings live under `~/.codex-session-delete/` and survive app replacement.
 ## Known limitations
 
 - There is no Intel build, Developer ID signature, or Apple notarization yet.
+- Windows builds are produced by CI and have not been manually tested on a real Windows machine.
 - Chat Completions and aggregator profiles depend on the upstream launcher's proxy at `127.0.0.1:57321`. Codex-- does not ship that proxy, so these profiles should not be used.
 - The pinned upstream revision does not expose active-only provider-sync writes. Adapt to current provider remains disabled and never falls back to rewriting full history.
 - Archiving organizes sessions but does not compress data or free disk space.
@@ -96,7 +103,10 @@ cd src-tauri && cargo test
 npm run build
 ```
 
-The full Tauri build generates `src-tauri/target/release/bundle/macos/Codex-- Manager.app`.
+The full Tauri build generates:
+
+- macOS: `src-tauri/target/release/bundle/macos/Codex-- Manager.app`
+- Windows: `src-tauri/target/release/bundle/msi/*.msi` or `src-tauri/target/release/bundle/nsis/*.exe`
 
 ## Version note
 

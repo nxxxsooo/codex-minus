@@ -1,0 +1,217 @@
+# Build Codex-- Manager for macOS (arm64) and Windows (x86_64)
+#
+# Triggered by:
+#   - push/PR to main
+#   - tags matching v*
+#
+# macOS: builds aarch64 .app bundle (ad-hoc signed)
+# Windows: builds x86_64 .msi + .exe (NSIS) installers
+
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+
+jobs:
+  # ─── macOS (aarch64) ───────────────────────────────────────────────────
+  macos:
+    name: macOS arm64
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: package-lock.json
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Build frontend
+        run: npm run vite:build
+
+      - name: Run Rust tests
+        working-directory: src-tauri
+        run: cargo test --target aarch64-apple-darwin
+
+      - name: Build Tauri macOS bundle
+        run: npx tauri build --bundles app --target aarch64-apple-darwin
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ""
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Codex--Manager-macOS-arm64
+          path: src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
+          compression-level: 0
+          if-no-files-found: error
+
+  # ─── Windows (x86_64) ─────────────────────────────────────────────────
+  windows:
+    name: Windows x86_64
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: package-lock.json
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Build frontend
+        run: npm run vite:build
+
+      - name: Run Rust tests
+        working-directory: src-tauri
+        run: cargo test --target x86_64-pc-windows-msvc
+
+      - name: Build Tauri Windows bundle (MSI + NSIS)
+        run: npx tauri build --bundles msi,nsis --target x86_64-pc-windows-msvc
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ""
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+
+      - name: Upload Windows MSI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Codex--Manager-Windows-x86_64
+          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+          compression-level: 0
+          if-no-files-found: warn
+
+      - name: Upload Windows NSIS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Codex--Manager-Windows-x86_64-NSIS
+          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          compression-level: 0
+          if-no-files-found: warn
+
+  # ─── Release (tag push only) ──────────────────────────────────────────
+  release:
+    name: Create Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          cd artifacts
+          mkdir -p dist
+
+          # macOS: zip the .app bundle
+          MAC_DIR="Codex--Manager-macOS-arm64"
+          if [ -d "$MAC_DIR" ]; then
+            cd "$MAC_DIR"
+            APP_BUNDLE=$(ls *.app 2>/dev/null | head -1)
+            if [ -n "$APP_BUNDLE" ]; then
+              zip -r "../dist/Codex--Manager_${GITHUB_REF_NAME#v}_aarch64.app.zip" "$APP_BUNDLE"
+            fi
+            cd ..
+          fi
+
+          # Windows: copy installers
+          WIN_MSI_DIR="Codex--Manager-Windows-x86_64"
+          if [ -d "$WIN_MSI_DIR" ]; then
+            cp "$WIN_MSI_DIR"/*.msi dist/ 2>/dev/null || true
+          fi
+
+          WIN_NSIS_DIR="Codex--Manager-Windows-x86_64-NSIS"
+          if [ -d "$WIN_NSIS_DIR" ]; then
+            cp "$WIN_NSIS_DIR"/*.exe dist/ 2>/dev/null || true
+          fi
+
+          # Generate checksums
+          cd dist
+          # Use sha256sum on Linux, shasum on macOS
+          sha256sum * > SHA256SUMS 2>/dev/null || shasum -a 256 * > SHA256SUMS 2>/dev/null || true
+          ls -lh
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Codex-- Manager ${{ github.ref_name }}
+          body: |
+            ## Codex-- Manager ${{ github.ref_name }}
+
+            ### 下载
+
+            | 平台 | 架构 | 格式 |
+            |------|------|------|
+            | macOS | arm64 | .app.zip |
+            | Windows | x86_64 | .msi |
+            | Windows | x86_64 | .exe (NSIS) |
+
+            各平台的安装包与本页面的 `SHA256SUMS` 已作为附件附加到本 Release。
+
+            ### 校验
+
+            ```bash
+            # macOS
+            shasum -a 256 -c SHA256SUMS
+            ```
+
+            ### 安装说明
+
+            **macOS**: 解压后将 `Codex-- Manager.app` 移入 `/Applications`。首次启动如被拦截，在「系统设置 → 隐私与安全性」中选择「仍要打开」。
+
+            **Windows**: 运行 `.msi` 或 `.exe` 安装程序，按提示完成安装。
+          files: |
+            artifacts/dist/*
+          fail_on_unmatched_files: false

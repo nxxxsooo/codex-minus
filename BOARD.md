@@ -8,6 +8,11 @@
 
 ### 2026-08-04
 
+- **infra**: added Windows x86_64 build target and cross-platform CI/CD
+  - why: make Codex-- Manager available to Windows users; the existing codebase was macOS-only
+  - verified: tauri.conf.json targets include `msi` and `nsis`; windows-app-manifest relaxed from `requireAdministrator` to `asInvoker`; CI workflow builds both macOS (aarch64) and Windows (x86_64), runs Rust tests on both, and attaches artifacts to tagged releases
+  - refs: `.github/workflows/build.yml`, `src-tauri/tauri.conf.json`, `src-tauri/windows-app-manifest.xml`
+
 - **launch**: published the bilingual public project surface with real application imagery, install guidance, portfolio entry, and a dedicated landing page
   - why: make the first release understandable and verifiable outside the repository while keeping the presentation faithful to the shipped macOS app
   - verified: GitHub README renders at desktop and mobile widths in light and dark modes; `mjshao.fun/codex-minus` and `mjshao.fun/work/codex-minus` are live from portfolio commit `6cf99bb`; the landing passed HTML validation, responsive browser QA, and Lighthouse scores of 98 performance with 100 accessibility, best practices, and SEO

@@ -11,6 +11,7 @@
 <p align="center">
   <a href="https://github.com/nxxxsooo/codex-minus/releases/latest"><img alt="GitHub Release" src="https://img.shields.io/github/v/release/nxxxsooo/codex-minus?style=flat-square&color=197547"></a>
   <img alt="macOS arm64" src="https://img.shields.io/badge/macOS-arm64-202720?style=flat-square&logo=apple&logoColor=white">
+  <img alt="Windows x86_64" src="https://img.shields.io/badge/Windows-x86__64-0078D4?style=flat-square&logo=windows&logoColor=white">
   <a href="LICENSE"><img alt="AGPL-3.0-only" src="https://img.shields.io/badge/license-AGPL--3.0--only-197547?style=flat-square"></a>
 </p>
 
@@ -18,13 +19,18 @@ Codex-- Manager 是 [Codex++ Manager](https://github.com/BigPizzaV3/CodexPlusPlu
 
 ## 下载
 
-当前公开版本仅支持 Apple Silicon（`arm64`）。
+支持 Apple Silicon（`arm64`）和 Windows（`x86_64`）。
 
-- [下载 Codex-- Manager v0.1.0](https://github.com/nxxxsooo/codex-minus/releases/download/v0.1.0/Codex--Manager_0.1.0_aarch64.app.zip)
-- [下载 SHA256SUMS](https://github.com/nxxxsooo/codex-minus/releases/download/v0.1.0/SHA256SUMS)
+| 平台 | 架构 | 格式 | 最新版本 |
+|------|------|------|----------|
+| macOS | arm64 | .app.zip | [v0.2.0](https://github.com/nxxxsooo/codex-minus/releases/latest) |
+| Windows | x86_64 | .msi / .exe | [v0.2.0](https://github.com/nxxxsooo/codex-minus/releases/latest) |
+
+- [前往 Release 页面下载](https://github.com/nxxxsooo/codex-minus/releases)
 - [查看项目页面](https://mjshao.fun/codex-minus/)
 
 ```bash
+# 校验 macOS
 shasum -a 256 -c SHA256SUMS
 ```
 
@@ -74,6 +80,7 @@ shasum -a 256 -c SHA256SUMS
 ## 已知限制
 
 - 当前没有 Intel 构建、Developer ID 签名或 Apple 公证。
+- Windows 构建通过 CI 自动生成，未在本地进行 Windows 实机测试。
 - 「Chat Completions 协议」和「聚合供应商」依赖上游 launcher 提供的 `127.0.0.1:57321` 代理，本项目不包含该代理，请勿使用。
 - 固定的上游 revision 尚未提供 active-only provider-sync 写入范围，因此「适配到当前 provider」保持禁用，不会回退到全历史改写。
 - 会话归档用于整理，不会压缩数据或释放磁盘空间。
@@ -96,7 +103,10 @@ cd src-tauri && cargo test
 npm run build
 ```
 
-完整 Tauri 构建会生成 `src-tauri/target/release/bundle/macos/Codex-- Manager.app`。
+完整 Tauri 构建会生成：
+
+- macOS: `src-tauri/target/release/bundle/macos/Codex-- Manager.app`
+- Windows: `src-tauri/target/release/bundle/msi/*.msi` 或 `src-tauri/target/release/bundle/nsis/*.exe`
 
 ## 版本说明
 
