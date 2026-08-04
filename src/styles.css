@@ -2663,6 +2663,30 @@ body {
   gap: 8px;
 }
 
+.session-policy-row {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(140px, 220px);
+  gap: 12px;
+  align-items: end;
+}
+
+.session-policy-row .feature-toggle {
+  min-height: 56px;
+  margin: 0;
+}
+
+.session-view-tabs {
+  width: min(100%, 360px);
+  margin-bottom: 12px;
+}
+
+.session-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .session-list-toolbar {
   display: flex;
   align-items: center;
@@ -2686,7 +2710,7 @@ body {
 
 .session-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(180px, auto) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, auto) minmax(170px, auto);
   gap: 12px;
   align-items: center;
   border: 1px solid hsl(var(--border));
@@ -2699,7 +2723,7 @@ body {
 }
 
 .session-row[data-selection-mode="true"] {
-  grid-template-columns: auto minmax(0, 1fr) minmax(180px, auto) auto;
+  grid-template-columns: auto minmax(0, 1fr) minmax(150px, auto) minmax(170px, auto);
 }
 
 .session-row:hover {
@@ -3056,6 +3080,7 @@ body {
 
   .grid.two,
   .form-row,
+  .session-policy-row,
   .feature-switch-grid,
   .relay-fields,
   .segmented,
@@ -3121,8 +3146,13 @@ body {
 
   .session-row[data-selection-mode="true"] .session-main,
   .session-row[data-selection-mode="true"] .session-meta,
+  .session-row[data-selection-mode="true"] .session-row-actions,
   .session-row[data-selection-mode="true"] .session-delete-button {
     grid-column: 2;
+  }
+
+  .session-row-actions {
+    justify-content: flex-start;
   }
 
   .zed-remote-project-row {

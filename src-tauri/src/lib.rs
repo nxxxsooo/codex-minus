@@ -46,6 +46,12 @@ pub fn run() {
             commands::save_settings,
             commands::list_local_sessions,
             commands::delete_local_session,
+            commands::load_session_lifecycle_settings,
+            commands::save_session_lifecycle_settings,
+            commands::preview_session_archive,
+            commands::archive_local_session,
+            commands::restore_local_session,
+            commands::run_session_archive_maintenance,
             commands::open_external_url,
             commands::relay_status,
             commands::read_relay_files,
@@ -59,8 +65,8 @@ pub fn run() {
             commands::diagnose_relay_profile,
             commands::fetch_relay_profile_models,
             commands::switch_relay_profile,
-            commands::load_provider_sync_targets,
-            commands::sync_providers_now,
+            commands::scan_provider_compatibility,
+            commands::adapt_active_sessions_to_current_provider,
             commands::apply_relay_injection,
             commands::apply_pure_api_injection,
             commands::clear_relay_injection,
@@ -181,10 +187,7 @@ pub fn focus_existing_manager_window() {
             if process.process_id == current_process_id {
                 continue;
             }
-            if process
-                .exe_file
-                .eq_ignore_ascii_case("codex-minus.exe")
-            {
+            if process.exe_file.eq_ignore_ascii_case("codex-minus.exe") {
                 let _ = codex_plus_core::windows_activate_process_window(process.process_id);
                 break;
             }

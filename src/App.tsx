@@ -19,6 +19,8 @@ import { } from "@tauri-apps/api/event";
 import { } from "@tauri-apps/plugin-dialog";
 import {
   ArrowLeft,
+  Archive,
+  ArchiveRestore,
   Bell,
   CheckCircle2,
   Copy,
@@ -316,6 +318,65 @@ type LocalSessionsResult = CommandResult<{
   dbPath: string;
   dbPaths: string[];
   sessions: LocalSession[];
+  activeCount: number;
+  archivedCount: number;
+  archived: boolean;
+  nextCursor: string | null;
+  pageSize: number;
+  elapsedMs: number;
+}>;
+
+type SessionLifecycleSettingsResult = CommandResult<{
+  archiveEnabled: boolean;
+  firstRunReviewed: boolean;
+  retentionDays: number;
+  lastCompletedAtMs: number | null;
+}>;
+
+type ArchivePreviewResult = CommandResult<{
+  retentionDays: number;
+  cutoffAtMs: number;
+  candidateCount: number;
+  missingTimestampCount: number;
+  destination: string;
+  capability: {
+    available: boolean;
+    cliPath: string | null;
+    message: string;
+  };
+}>;
+
+type ArchiveMaintenanceResult = CommandResult<{
+  due: boolean;
+  deferred: boolean;
+  cutoffAtMs: number;
+  candidateCount: number;
+  archivedCount: number;
+  skippedCount: number;
+  failedCount: number;
+  elapsedMs: number;
+  lastCompletedAtMs: number | null;
+}>;
+
+type SessionLifecycleOperationResult = CommandResult<{
+  sessionId: string;
+  archived: boolean;
+  currentProvider: string;
+  sessionProvider: string;
+  providerMismatch: boolean;
+}>;
+
+type ProviderCompatibilityResult = CommandResult<{
+  currentProvider: string;
+  activeCount: number;
+  mismatchCount: number;
+  missingProviderCount: number;
+  scanGeneration: string;
+  encryptedContentWarning: string | null;
+  adaptationAvailable: boolean;
+  adaptationMessage: string;
+  scanElapsedMs: number;
+  archivedRolloutsTraversed: number;
 }>;
 
 type ZedRemoteProject = {
@@ -370,6 +431,9 @@ type RelaySwitchResult = CommandResult<{
   settingsPath: string;
   userScripts: unknown;
   relay: RelayPayload;
+  previousProvider: string;
+  currentProvider: string;
+  providerChanged: boolean;
 }>;
 
 type SettingsBackfillResult = CommandResult<{
@@ -472,65 +536,6 @@ type RemoveEnvConflictsResult = CommandResult<{
   backupPath: string | null;
   remaining: EnvConflict[];
 }>;
-
-type ProviderSyncPayload = {
-  syncStatus?: string;
-  targetProvider?: string;
-  changedSessionFiles?: number;
-  skippedLockedRolloutFiles?: string[];
-  sqliteRowsUpdated?: number;
-  sqliteProviderRowsUpdated?: number;
-  sqliteUserEventRowsUpdated?: number;
-  sqliteCwdRowsUpdated?: number;
-  updatedWorkspaceRoots?: number;
-  encryptedContentWarning?: string | null;
-};
-
-type ProviderSyncTargetSource = "config" | "rollout" | "sqlite" | "manual";
-
-type ProviderSyncTargetOption = {
-  id: string;
-  sources: ProviderSyncTargetSource[];
-  isCurrentProvider: boolean;
-  isManual: boolean;
-  isSaved: boolean;
-};
-
-type ProviderSyncTargetsPayload = {
-  currentProvider: string;
-  targets: ProviderSyncTargetOption[];
-};
-
-type ProviderSyncTargetsResult = CommandResult<ProviderSyncTargetsPayload>;
-
-type ProviderSyncProgress = {
-  active: boolean;
-  percent: number;
-  message: string;
-  result: CommandResult<ProviderSyncPayload> | null;
-};
-
-function providerSyncProgressMessage(result: CommandResult<ProviderSyncPayload>): string {
-  const changed = result.changedSessionFiles ?? 0;
-  const rows = result.sqliteRowsUpdated ?? 0;
-  const target = result.targetProvider || t("当前 provider");
-  const skipped = result.skippedLockedRolloutFiles?.length ?? 0;
-  const skippedText = skipped ? tf("，跳过 {0} 个占用文件", [skipped]) : "";
-  return tf("已同步到 {0}：修复 {1} 个会话文件，更新 {2} 行索引{3}。", [target, changed, rows, skippedText]);
-}
-
-const providerSyncSourceLabels: Record<ProviderSyncTargetSource, string> = {
-  config: t("配置"),
-  rollout: t("会话"),
-  sqlite: t("索引"),
-  manual: t("手动"),
-};
-
-function providerSyncTargetLabel(target: ProviderSyncTargetOption): string {
-  const labels = target.sources.map((source) => providerSyncSourceLabels[source]).filter(Boolean);
-  const current = target.isCurrentProvider ? [t("当前")] : [];
-  return [...labels, ...current].join(" / ") || t("发现");
-}
 
 type TaskProgress = {
   active: boolean;
@@ -721,14 +726,13 @@ export function App() {
   const [relayFiles, setRelayFiles] = useState<RelayFilesResult | null>(null);
   const [envConflicts, setEnvConflicts] = useState<EnvConflictsResult | null>(null);
   const [localSessions, setLocalSessions] = useState<LocalSessionsResult | null>(null);
-  const [providerSyncProgress, setProviderSyncProgress] = useState<ProviderSyncProgress>({
-    active: false,
-    percent: 0,
-    message: "",
-    result: null,
-  });
-  const [providerSyncTargets, setProviderSyncTargets] = useState<ProviderSyncTargetsResult | null>(null);
-  const [selectedProviderSyncTarget, setSelectedProviderSyncTarget] = useState("");
+  const [sessionArchiveView, setSessionArchiveView] = useState(false);
+  const [sessionLifecycle, setSessionLifecycle] = useState<SessionLifecycleSettingsResult | null>(null);
+  const [archivePreview, setArchivePreview] = useState<ArchivePreviewResult | null>(null);
+  const [archiveMaintenance, setArchiveMaintenance] = useState<ArchiveMaintenanceResult | null>(null);
+  const [archiveMaintenanceRunning, setArchiveMaintenanceRunning] = useState(false);
+  const [providerCompatibility, setProviderCompatibility] = useState<ProviderCompatibilityResult | null>(null);
+  const [providerCompatibilityLoading, setProviderCompatibilityLoading] = useState(false);
   const [settingsForm, setSettingsForm] = useState<BackendSettings>({ ...defaultSettings });
   const [relaySwitching, setRelaySwitching] = useState(false);
 
@@ -800,85 +804,153 @@ export function App() {
     }
   };
 
-  const refreshLocalSessions = async (silent = false) => {
-    const result = await run(() => call<LocalSessionsResult>("list_local_sessions"));
+  const refreshLocalSessions = async (
+    silent = false,
+    archived = sessionArchiveView,
+    cursor?: string,
+  ) => {
+    const result = await run(() =>
+      call<LocalSessionsResult>("list_local_sessions", {
+        request: { archived, cursor, pageSize: SESSION_LIST_PAGE_SIZE },
+      }),
+    );
     if (result) {
-      setLocalSessions(result);
+      setSessionArchiveView(archived);
+      setLocalSessions((current) =>
+        cursor && current?.archived === archived
+          ? { ...result, sessions: [...current.sessions, ...result.sessions] }
+          : result,
+      );
       if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("会话管理"), result, { silentSuccess: true });
     }
     return result;
   };
 
-  const refreshProviderSyncTargets = async (silent = false) => {
-    const result = await run(() => call<ProviderSyncTargetsResult>("load_provider_sync_targets"));
+  const refreshSessionLifecycle = async (silent = false) => {
+    const result = await run(() => call<SessionLifecycleSettingsResult>("load_session_lifecycle_settings"));
     if (result) {
-      setProviderSyncTargets(result);
-      const targets = result.targets ?? [];
-      const saved = settingsForm.providerSyncLastSelectedProvider;
-      const preferred =
-        targets.find((target) => target.id === saved)?.id ||
-        targets.find((target) => target.isCurrentProvider)?.id ||
-        targets[0]?.id ||
-        "openai";
-      setSelectedProviderSyncTarget((current) => (targets.some((target) => target.id === current) ? current : preferred));
-      if (!silent && !isSuccessStatus(result.status)) showNotice(t("Provider 同步目标"), result.message, result.status);
+      setSessionLifecycle(result);
+      if (!silent && !isSuccessStatus(result.status)) showNotice(t("自动归档"), result.message, result.status);
     }
     return result;
   };
 
-  const syncProvidersNow = async () => {
-    if (providerSyncProgress.active) return;
-    setProviderSyncProgress({
-      active: true,
-      percent: 12,
-      message: selectedProviderSyncTarget ? tf("正在同步到 {0}…", [selectedProviderSyncTarget]) : t("正在扫描历史会话与索引…"),
-      result: null,
+  const refreshArchivePreview = async (retentionDays?: number, silent = false) => {
+    const result = await run(() =>
+      call<ArchivePreviewResult>("preview_session_archive", {
+        request: { retentionDays: retentionDays ?? sessionLifecycle?.retentionDays ?? 30 },
+      }),
+    );
+    if (result) {
+      setArchivePreview(result);
+      if (!silent && !isSuccessStatus(result.status)) showNotice(t("归档预览"), result.message, result.status);
+    }
+    return result;
+  };
+
+  const saveSessionLifecycle = async (next: SessionLifecycleSettingsResult) => {
+    const result = await run(() =>
+      call<SessionLifecycleSettingsResult>("save_session_lifecycle_settings", {
+        settings: {
+          archiveEnabled: next.archiveEnabled,
+          firstRunReviewed: next.firstRunReviewed,
+          retentionDays: next.retentionDays,
+          lastCompletedAtMs: next.lastCompletedAtMs,
+        },
+      }),
+    );
+    if (result) {
+      setSessionLifecycle(result);
+      showNotice(t("自动归档"), result.message, result.status);
+    }
+    return result;
+  };
+
+  const enableSessionArchiving = async (retentionDays: number) => {
+    const preview = await refreshArchivePreview(retentionDays, true);
+    if (!preview) return;
+    if (!preview.capability.available) {
+      showNotice(t("原生归档不可用"), preview.capability.message, "failed");
+      return;
+    }
+    const confirmed = window.confirm(
+      tf("将自动归档 {0} 天未活动的会话。当前有 {1} 个候选，会移动到：\n{2}\n\n归档可恢复，不会释放磁盘空间。是否启用？", [
+        retentionDays,
+        preview.candidateCount,
+        preview.destination,
+      ]),
+    );
+    if (!confirmed) return;
+    const saved = await saveSessionLifecycle({
+      status: "ok",
+      message: "",
+      archiveEnabled: true,
+      firstRunReviewed: true,
+      retentionDays,
+      lastCompletedAtMs: sessionLifecycle?.lastCompletedAtMs ?? null,
     });
-    const progressTimer = window.setInterval(() => {
-      setProviderSyncProgress((current) => {
-        if (!current.active) return current;
-        return {
-          ...current,
-          percent: Math.min(88, current.percent + 8),
-          message: current.percent < 40 ? t("正在检查会话 provider 标记…") : t("正在写入修复与备份…"),
-        };
-      });
-    }, 350);
+    if (saved && isSuccessStatus(saved.status)) await runArchiveMaintenance();
+  };
+
+  const runArchiveMaintenance = async () => {
+    if (archiveMaintenanceRunning) return null;
+    setArchiveMaintenanceRunning(true);
     try {
-      const targetProvider = selectedProviderSyncTarget || undefined;
-      const result = await run(() =>
-        call<CommandResult<ProviderSyncPayload>>("sync_providers_now", { targetProvider }),
-      );
+      const result = await run(() => call<ArchiveMaintenanceResult>("run_session_archive_maintenance"));
       if (result) {
-        setProviderSyncProgress({
-          active: false,
-          percent: 100,
-          message: providerSyncProgressMessage(result),
-          result,
-        });
-        if (targetProvider) {
-          const next = {
-            ...settingsForm,
-            providerSyncLastSelectedProvider: targetProvider,
-            providerSyncSavedProviders: Array.from(
-              new Set([...(settingsForm.providerSyncSavedProviders ?? []), targetProvider]),
-            ).sort(),
-          };
-          setSettingsForm(next);
+        setArchiveMaintenance(result);
+        await Promise.all([refreshSessionLifecycle(true), refreshLocalSessions(true, sessionArchiveView)]);
+        if (!isSuccessStatus(result.status) && result.status !== "not_checked") {
+          showNotice(t("自动归档"), result.message, result.status);
         }
-        await refreshProviderSyncTargets(true);
-        await refreshLocalSessions(true);
-        showNotice(t("历史会话修复"), result.message, result.status);
-      } else {
-        setProviderSyncProgress({
-          active: false,
-          percent: 100,
-          message: t("历史会话修复失败，请查看错误提示后重试。"),
-          result: null,
-        });
       }
+      return result;
     } finally {
-      window.clearInterval(progressTimer);
+      setArchiveMaintenanceRunning(false);
+    }
+  };
+
+  const archiveOrRestoreSession = async (session: LocalSession, archived: boolean) => {
+    if (archived && !window.confirm(tf("归档会话「{0}」？归档后可随时恢复。", [session.title || session.id]))) return;
+    const result = await run(() =>
+      call<SessionLifecycleOperationResult>(archived ? "archive_local_session" : "restore_local_session", {
+        request: { sessionId: session.id },
+      }),
+    );
+    if (result) {
+      await Promise.all([refreshLocalSessions(true, sessionArchiveView), refreshProviderCompatibility(true)]);
+      const mismatch = !archived && result.providerMismatch
+        ? tf(" 会话原 provider 为 {0}，当前为 {1}；由于上游 active-only 写入尚不可用，已保留原标记。", [result.sessionProvider, result.currentProvider])
+        : "";
+      showNotice(archived ? t("归档会话") : t("恢复会话"), `${result.message}${mismatch}`, result.status);
+    }
+  };
+
+  const refreshProviderCompatibility = async (silent = false) => {
+    if (providerCompatibilityLoading) return null;
+    setProviderCompatibilityLoading(true);
+    try {
+      const result = await run(() => call<ProviderCompatibilityResult>("scan_provider_compatibility"));
+      if (result) {
+        setProviderCompatibility(result);
+        if (!silent && !isSuccessStatus(result.status)) showNotice(t("供应商兼容性"), result.message, result.status);
+      }
+      return result;
+    } finally {
+      setProviderCompatibilityLoading(false);
+    }
+  };
+
+  const adaptActiveSessions = async () => {
+    if (!providerCompatibility) return;
+    const result = await run(() =>
+      call<ProviderCompatibilityResult>("adapt_active_sessions_to_current_provider", {
+        scanGeneration: providerCompatibility.scanGeneration,
+      }),
+    );
+    if (result) {
+      setProviderCompatibility(result);
+      showNotice(t("适配活动会话"), result.message, result.status);
     }
   };
 
@@ -960,7 +1032,12 @@ export function App() {
       ]);
     }
     if (next === "sessions") {
-      await Promise.all([refreshSettings(true), refreshLocalSessions(true), refreshProviderSyncTargets(true)]);
+      await Promise.all([
+        refreshSettings(true),
+        refreshLocalSessions(true, sessionArchiveView),
+        refreshSessionLifecycle(true),
+        refreshProviderCompatibility(true),
+      ]);
     }
   };
 
@@ -1158,7 +1235,11 @@ export function App() {
         targetRelayId: currentSelected.id,
         launchMode: selectedSettings.launchMode,
         status: result.status,
+        previousProvider: result.previousProvider,
+        currentProvider: result.currentProvider,
+        providerChanged: result.providerChanged,
       });
+      if (result.providerChanged) await refreshProviderCompatibility(true);
     } finally {
       setRelaySwitching(false);
     }
@@ -1213,6 +1294,17 @@ export function App() {
       refreshRelayFiles(true),
       refreshEnvConflicts(true),
     ]);
+    const scheduleMaintenance = () => {
+      void refreshSessionLifecycle(true).then((result) => {
+        if (result?.archiveEnabled) void runArchiveMaintenance();
+      });
+    };
+    const maintenanceTimer = window.setTimeout(scheduleMaintenance, 1500);
+    const maintenanceInterval = window.setInterval(scheduleMaintenance, 15 * 60 * 1000);
+    return () => {
+      window.clearTimeout(maintenanceTimer);
+      window.clearInterval(maintenanceInterval);
+    };
   }, []);
 
   useEffect(() => {
@@ -1244,12 +1336,14 @@ export function App() {
       refreshLocalSessions,
       deleteLocalSession,
       deleteLocalSessions,
-      syncProvidersNow,
-      refreshProviderSyncTargets,
-      setProviderSyncTarget: (provider: string) => {
-        setSelectedProviderSyncTarget(provider);
-        setSettingsForm((current) => ({ ...current, providerSyncLastSelectedProvider: provider }));
-      },
+      refreshSessionLifecycle,
+      refreshArchivePreview,
+      saveSessionLifecycle,
+      enableSessionArchiving,
+      runArchiveMaintenance,
+      archiveOrRestoreSession,
+      refreshProviderCompatibility,
+      adaptActiveSessions,
       openExternalUrl,
       applyRelayInjection,
       applyPureApiInjection,
@@ -1264,7 +1358,21 @@ export function App() {
       showMessage: async (title: string, message: string, status?: Status) => showNotice(title, message, status),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, settingsForm, settings, theme, relayFiles, localSessions, envConflicts, relaySwitching, providerSyncProgress.active, selectedProviderSyncTarget],
+    [
+      route,
+      settingsForm,
+      settings,
+      theme,
+      relayFiles,
+      localSessions,
+      envConflicts,
+      relaySwitching,
+      sessionArchiveView,
+      sessionLifecycle,
+      archiveMaintenanceRunning,
+      providerCompatibility,
+      providerCompatibilityLoading,
+    ],
   );
 
   return (
@@ -1340,13 +1448,14 @@ export function App() {
           </div>
           <div className={route === "sessions" ? undefined : "hidden"}>
             <SessionsScreen
-              settings={settings}
-              form={settingsForm}
               sessions={localSessions}
-              providerSyncProgress={providerSyncProgress}
-              providerSyncTargets={providerSyncTargets}
-              selectedProviderSyncTarget={selectedProviderSyncTarget}
-              onFormChange={setSettingsForm}
+              archiveView={sessionArchiveView}
+              lifecycle={sessionLifecycle}
+              archivePreview={archivePreview}
+              archiveMaintenance={archiveMaintenance}
+              archiveMaintenanceRunning={archiveMaintenanceRunning}
+              providerCompatibility={providerCompatibility}
+              providerCompatibilityLoading={providerCompatibilityLoading}
               actions={actions}
             />
           </div>
@@ -1385,10 +1494,15 @@ type Actions = {
   refreshRelayFiles: () => Promise<RelayFilesResult | null>;
   refreshEnvConflicts: (silent?: boolean) => Promise<EnvConflictsResult | null>;
   removeEnvConflicts: (names: string[]) => Promise<void>;
-  refreshLocalSessions: () => Promise<LocalSessionsResult | null>;
-  syncProvidersNow: () => Promise<void>;
-  refreshProviderSyncTargets: (silent?: boolean) => Promise<ProviderSyncTargetsResult | null>;
-  setProviderSyncTarget: (provider: string) => void;
+  refreshLocalSessions: (silent?: boolean, archived?: boolean, cursor?: string) => Promise<LocalSessionsResult | null>;
+  refreshSessionLifecycle: (silent?: boolean) => Promise<SessionLifecycleSettingsResult | null>;
+  refreshArchivePreview: (retentionDays?: number, silent?: boolean) => Promise<ArchivePreviewResult | null>;
+  saveSessionLifecycle: (settings: SessionLifecycleSettingsResult) => Promise<SessionLifecycleSettingsResult | null>;
+  enableSessionArchiving: (retentionDays: number) => Promise<void>;
+  runArchiveMaintenance: () => Promise<ArchiveMaintenanceResult | null>;
+  archiveOrRestoreSession: (session: LocalSession, archived: boolean) => Promise<void>;
+  refreshProviderCompatibility: (silent?: boolean) => Promise<ProviderCompatibilityResult | null>;
+  adaptActiveSessions: () => Promise<void>;
   deleteLocalSession: (session: LocalSession) => Promise<void>;
   deleteLocalSessions: (sessions: LocalSession[]) => Promise<void>;
   openExternalUrl: (url: string) => Promise<void>;
@@ -1597,35 +1711,38 @@ function envConflictSourceLabel(source: string): string {
 const SESSION_LIST_PAGE_SIZE = 100;
 
 function SessionsScreen({
-  settings,
-  form,
   sessions,
-  providerSyncProgress,
-  providerSyncTargets,
-  selectedProviderSyncTarget,
-  onFormChange,
+  archiveView,
+  lifecycle,
+  archivePreview,
+  archiveMaintenance,
+  archiveMaintenanceRunning,
+  providerCompatibility,
+  providerCompatibilityLoading,
   actions,
 }: {
-  settings: SettingsResult | null;
-  form: BackendSettings;
   sessions: LocalSessionsResult | null;
-  providerSyncProgress: ProviderSyncProgress;
-  providerSyncTargets: ProviderSyncTargetsResult | null;
-  selectedProviderSyncTarget: string;
-  onFormChange: (value: BackendSettings) => void;
+  archiveView: boolean;
+  lifecycle: SessionLifecycleSettingsResult | null;
+  archivePreview: ArchivePreviewResult | null;
+  archiveMaintenance: ArchiveMaintenanceResult | null;
+  archiveMaintenanceRunning: boolean;
+  providerCompatibility: ProviderCompatibilityResult | null;
+  providerCompatibilityLoading: boolean;
   actions: Actions;
 }) {
   const items = sessions?.sessions ?? [];
-  const activeCount = items.filter((item) => !item.archived).length;
-  const archivedCount = items.length - activeCount;
+  const activeCount = sessions?.activeCount ?? 0;
+  const archivedCount = sessions?.archivedCount ?? 0;
+  const [retentionDays, setRetentionDays] = useState(lifecycle?.retentionDays ?? 30);
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set());
   const [selectionMode, setSelectionMode] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
-  const [visibleCount, setVisibleCount] = useState(SESSION_LIST_PAGE_SIZE);
-  const visibleItems = useMemo(() => items.slice(0, visibleCount), [items, visibleCount]);
   const selectedSessions = useMemo(() => items.filter((session) => selectedSessionIds.has(session.id)), [items, selectedSessionIds]);
   const selectedCount = selectedSessions.length;
   const allSelected = items.length > 0 && selectedCount === items.length;
+
+  useEffect(() => setRetentionDays(lifecycle?.retentionDays ?? 30), [lifecycle?.retentionDays]);
 
   useEffect(() => {
     const itemIds = new Set(items.map((session) => session.id));
@@ -1634,6 +1751,11 @@ function SessionsScreen({
       return next.size === current.size ? current : next;
     });
   }, [items]);
+
+  useEffect(() => {
+    setSelectedSessionIds(new Set());
+    setSelectionMode(false);
+  }, [archiveView]);
 
   const toggleSessionSelection = (sessionId: string, checked: boolean) => {
     setSelectedSessionIds((current) => {
@@ -1667,69 +1789,143 @@ function SessionsScreen({
     }
   };
 
+  const toggleArchivePolicy = async (enabled: boolean) => {
+    if (enabled) {
+      await actions.enableSessionArchiving(retentionDays);
+      return;
+    }
+    await actions.saveSessionLifecycle({
+      status: "ok",
+      message: "",
+      archiveEnabled: false,
+      firstRunReviewed: lifecycle?.firstRunReviewed ?? false,
+      retentionDays,
+      lastCompletedAtMs: lifecycle?.lastCompletedAtMs ?? null,
+    });
+  };
+
+  const saveRetentionDays = async () => {
+    await actions.saveSessionLifecycle({
+      status: "ok",
+      message: "",
+      archiveEnabled: lifecycle?.archiveEnabled ?? false,
+      firstRunReviewed: lifecycle?.firstRunReviewed ?? false,
+      retentionDays,
+      lastCompletedAtMs: lifecycle?.lastCompletedAtMs ?? null,
+    });
+    await actions.refreshArchivePreview(retentionDays, true);
+  };
+
   return (
     <>
       <Panel>
-        <CardHead title={t("会话管理")} detail={t("读取 Codex 本地 SQLite 会话库，会删除数据库记录和对应 rollout 文件")} />
+        <CardHead title={t("会话生命周期")} detail={t("活动会话与原生归档")} />
         <CardContent>
           <div className="metric-list">
-            <Metric label={t("会话总数")} value={tf("{0} 个", [items.length])} />
-            <Metric label={t("未归档")} value={tf("{0} 个", [activeCount])} />
+            <Metric label={t("活动会话")} value={tf("{0} 个", [activeCount])} />
             <Metric label={t("已归档")} value={tf("{0} 个", [archivedCount])} />
+            <Metric label={t("自动归档")} value={lifecycle?.archiveEnabled ? t("已启用") : t("未启用")} />
+            <Metric label={t("上次检查")} value={lifecycle?.lastCompletedAtMs ? formatTime(lifecycle.lastCompletedAtMs) : t("尚未执行")} />
             <Metric label={t("数据库")} value={sessions?.dbPath ?? "~/.codex/sqlite/*.db"} />
           </div>
-          <div className="form-row">
-            <Field label={t("同步目标")}>
-              <select
-                className="select-input"
-                disabled={providerSyncProgress.active || !(providerSyncTargets?.targets ?? []).length}
-                value={selectedProviderSyncTarget}
-                onChange={(event) => actions.setProviderSyncTarget(event.currentTarget.value)}
-              >
-                {(providerSyncTargets?.targets ?? []).map((target) => (
-                  <option key={target.id} value={target.id}>
-                    {target.id}{t("（")}{providerSyncTargetLabel(target)}{t("）")}
-                  </option>
-                ))}
-                {!(providerSyncTargets?.targets ?? []).length ? <option value="">{t("当前配置 provider")}</option> : null}
-              </select>
+          <div className="session-policy-row">
+            <label className="feature-toggle">
+              <input
+                checked={lifecycle?.archiveEnabled ?? false}
+                onChange={(event) => void toggleArchivePolicy(event.currentTarget.checked)}
+                type="checkbox"
+              />
+              <span>
+                <strong>{t("定期归档旧会话")}</strong>
+                <small>{tf("超过 {0} 天未活动", [retentionDays])}</small>
+              </span>
+              <span className="toggle-switch-visual" aria-hidden="true"><span className="toggle-switch-thumb" /></span>
+            </label>
+            <Field label={t("保留天数")}>
+              <Input
+                max={3650}
+                min={1}
+                onChange={(event) => setRetentionDays(Math.max(1, Math.min(3650, Number(event.currentTarget.value) || 1)))}
+                type="number"
+                value={retentionDays}
+              />
             </Field>
           </div>
           <Toolbar>
-            <Button onClick={() => void actions.refreshLocalSessions()}>
-              <RefreshCw className="h-4 w-4" />
-              {t("刷新会话")}
+            <Button onClick={() => void actions.refreshArchivePreview(retentionDays)} variant="outline">
+              <Archive className="h-4 w-4" />
+              {t("预览")}
             </Button>
-            <Button disabled={providerSyncProgress.active} onClick={() => void actions.syncProvidersNow()} variant="outline">
+            <Button onClick={() => void saveRetentionDays()} variant="outline">
+              <Save className="h-4 w-4" />
+              {t("保存策略")}
+            </Button>
+            <Button disabled={!lifecycle?.archiveEnabled || archiveMaintenanceRunning} onClick={() => void actions.runArchiveMaintenance()}>
               <RefreshCw className="h-4 w-4" />
-              {providerSyncProgress.active ? t("正在修复…") : t("立刻修复历史会话")}
+              {archiveMaintenanceRunning ? t("检查中…") : t("立即检查")}
             </Button>
           </Toolbar>
-          <div className="provider-sync-progress" data-active={providerSyncProgress.active}>
-            <div className="provider-sync-progress-head">
-              <strong>{providerSyncProgress.active ? t("正在修复历史会话") : t("历史会话修复进度")}</strong>
-              <span>{providerSyncProgress.percent}%</span>
+          {archivePreview ? (
+            <div className="hint-line">
+              <Info className="h-4 w-4" />
+              <span>{tf("截止 {0}，候选 {1} 个；位置：{2}。{3}", [formatTime(archivePreview.cutoffAtMs), archivePreview.candidateCount, archivePreview.destination, t(archivePreview.capability.message)])}</span>
             </div>
-            <div
-              aria-valuemax={100}
-              aria-valuemin={0}
-              aria-valuenow={providerSyncProgress.percent}
-              className="provider-sync-progress-bar"
-              role="progressbar"
-            >
-              <div className="provider-sync-progress-fill" style={{ width: `${providerSyncProgress.percent}%` }} />
+          ) : null}
+          {archiveMaintenance ? (
+            <div className="hint-line">
+              <CheckCircle2 className="h-4 w-4" />
+              <span>{tf("候选 {0}，已归档 {1}，跳过 {2}，失败 {3}。", [archiveMaintenance.candidateCount, archiveMaintenance.archivedCount, archiveMaintenance.skippedCount, archiveMaintenance.failedCount])}</span>
             </div>
-            <small>{providerSyncProgress.message}</small>
-          </div>
-          <div className="hint-line">
-            <Info className="h-4 w-4" />
-            <span>{t("修复会把历史会话的 provider 标记同步到所选目标；删除会创建本地备份；如果 Codex App 正在使用该会话，建议先关闭对应会话窗口再操作。")}</span>
-          </div>
+          ) : null}
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title={t("本地会话")} detail={items.length ? t("按更新时间倒序显示") : t("点击刷新会话读取本地数据库")} />
+        <CardHead title={t("供应商兼容性")} detail={providerCompatibility?.currentProvider ?? t("读取当前配置")} />
         <CardContent>
+          <div className="metric-list">
+            <Metric label={t("当前 provider")} value={providerCompatibility?.currentProvider ?? t("未检查")} />
+            <Metric label={t("活动会话")} value={tf("{0} 个", [providerCompatibility?.activeCount ?? 0])} />
+            <Metric label={t("需要适配")} value={tf("{0} 个", [providerCompatibility?.mismatchCount ?? 0])} />
+          </div>
+          <Toolbar>
+            <Button disabled={providerCompatibilityLoading} onClick={() => void actions.refreshProviderCompatibility()} variant="outline">
+              <RefreshCw className="h-4 w-4" />
+              {providerCompatibilityLoading ? t("检查中…") : t("重新检查")}
+            </Button>
+            <Button
+              disabled={!providerCompatibility?.adaptationAvailable || !providerCompatibility.mismatchCount}
+              onClick={() => void actions.adaptActiveSessions()}
+              variant="outline"
+            >
+              <RefreshCw className="h-4 w-4" />
+              {t("适配到当前 provider")}
+            </Button>
+          </Toolbar>
+          {providerCompatibility ? (
+            <div className="hint-line">
+              <Info className="h-4 w-4" />
+              <span>{providerCompatibility.mismatchCount ? t(providerCompatibility.adaptationMessage) : t("活动会话的 provider 已兼容当前配置。")}</span>
+            </div>
+          ) : null}
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead title={t("本地会话")} detail={items.length ? t("按更新时间倒序显示") : t("当前列表为空")} />
+        <CardContent>
+          <div className="session-view-tabs segmented" role="tablist">
+            <button className={!archiveView ? "active" : ""} onClick={() => void actions.refreshLocalSessions(true, false)} role="tab" type="button">
+              {t("活动")} <small>{activeCount}</small>
+            </button>
+            <button className={archiveView ? "active" : ""} onClick={() => void actions.refreshLocalSessions(true, true)} role="tab" type="button">
+              {t("已归档")} <small>{archivedCount}</small>
+            </button>
+          </div>
+          <Toolbar>
+            <Button onClick={() => void actions.refreshLocalSessions(false, archiveView)} variant="outline">
+              <RefreshCw className="h-4 w-4" />
+              {t("刷新")}
+            </Button>
+          </Toolbar>
           {items.length ? (
             <>
               <div className="session-list-toolbar">
@@ -1748,7 +1944,7 @@ function SessionsScreen({
                 </div>
               </div>
               <div className="session-list">
-                {visibleItems.map((session) => {
+                {items.map((session) => {
                   const selected = selectedSessionIds.has(session.id);
                   return (
                     <div className="session-row" data-selection-mode={selectionMode} data-selected={selected} key={session.id}>
@@ -1772,24 +1968,30 @@ function SessionsScreen({
                         <span>{session.modelProvider || t("provider 未记录")}</span>
                         <span>{formatTime(session.updatedAtMs ?? 0)}</span>
                       </div>
-                      <Button className="session-delete-button" variant="outline" onClick={() => void actions.deleteLocalSession(session)}>
-                        <Trash2 className="h-4 w-4" />
-                        {t("删除")}
-                      </Button>
+                      <div className="session-row-actions">
+                        <Button variant="outline" onClick={() => void actions.archiveOrRestoreSession(session, !archiveView)}>
+                          {archiveView ? <ArchiveRestore className="h-4 w-4" /> : <Archive className="h-4 w-4" />}
+                          {archiveView ? t("恢复") : t("归档")}
+                        </Button>
+                        <Button className="session-delete-button" variant="outline" onClick={() => void actions.deleteLocalSession(session)}>
+                          <Trash2 className="h-4 w-4" />
+                          {t("删除")}
+                        </Button>
+                      </div>
                     </div>
                   );
                 })}
               </div>
-              {items.length > visibleCount ? (
+              {sessions?.nextCursor ? (
                 <Toolbar>
-                  <Button variant="outline" onClick={() => setVisibleCount((current) => current + SESSION_LIST_PAGE_SIZE)}>
-                    {tf("显示更多（已显示 {0} / {1}）", [visibleItems.length, items.length])}
+                  <Button variant="outline" onClick={() => void actions.refreshLocalSessions(true, archiveView, sessions.nextCursor ?? undefined)}>
+                    {tf("显示更多（已显示 {0} 个）", [items.length])}
                   </Button>
                 </Toolbar>
               ) : null}
             </>
           ) : (
-            <div className="empty">{t("未读取到本地会话，或当前 SQLite 会话库不存在。")}</div>
+            <div className="empty">{archiveView ? t("没有已归档会话。") : t("没有活动会话。")}</div>
           )}
         </CardContent>
       </Panel>

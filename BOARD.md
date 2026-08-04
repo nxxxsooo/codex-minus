@@ -6,6 +6,21 @@
 
 ## Changelog
 
+### 2026-07-25
+
+- **feat**: added consented 30-day session lifecycle management with active / archived cursor pagination, target-matched Codex native archive and restore, delayed 24-hour maintenance, per-operation postcondition checks, and a dedicated private settings sidecar
+  - why: keep the active session set manageable without inventing archive semantics or touching real session state directly
+  - verified: 12 Rust tests, TypeScript check, Vite production build, full Tauri macOS bundle build, mocked Tauri browser QA in Chinese and English at desktop and mobile widths, and a real target-CLI archive / unarchive round trip in a disposable `CODEX_HOME`
+  - refs: OpenSpec `streamline-session-lifecycle`, `src-tauri/src/commands.rs`, `src/App.tsx`
+- **fix**: replaced independent provider target selection and full-history repair with effective-provider identity tracking plus read-only active-session mismatch scanning
+  - why: provider repair belongs to a successful switch and must scale with active mismatches, not archived history
+  - verified: same-provider switch payload reports no provider change; compatibility diagnostics report zero archived rollout traversal; legacy target fields remain tolerant but ignored
+  - refs: OpenSpec `streamline-session-lifecycle`
+- **safety**: added a fail-closed capability gate for provider adaptation because pinned upstream provider-sync has no active-only scope
+  - why: the project constraint forbids vendoring provider logic, and falling back to the upstream full-history operation would reintroduce the original repair-time problem
+  - verified: old full-history commands are absent from the Tauri command registry and frontend
+  - refs: `src-tauri/src/lib.rs`, upstream pin `59a2f90`
+
 ### 2026-07-16 (late)
 
 - **deploy**: published to GitHub as public repo https://github.com/nxxxsooo/codex-minus

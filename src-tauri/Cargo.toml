@@ -3,7 +3,7 @@ name = "codex-minus"
 version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-only"
-repository = "https://github.com/BigPizzaV3/CodexPlusPlus"
+repository = "https://github.com/nxxxsooo/codex-minus"
 description = "Trimmed Codex++ Manager: relay profile switching, session repair, config doctor. No renderer injection."
 
 [lib]
