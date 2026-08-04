@@ -8,6 +8,11 @@
 
 ### 2026-08-04
 
+- **release**: published Codex-- Manager `v0.2.0` with Windows x86_64 support
+  - why: make the manager available on Windows; the only release was macOS-only v0.1.0
+  - verified: CI built and released macOS .app.zip (6.7 MB), Windows .msi (6.2 MB), and Windows .exe (4.3 MB) with SHA256SUMS; landing page, portfolio, and README all updated to reflect dual-platform; all 12 Rust tests pass on both platforms
+  - refs: https://github.com/nxxxsooo/codex-minus/releases/tag/v0.2.0, `.github/workflows/build.yml`
+
 - **infra**: added Windows x86_64 build target and cross-platform CI/CD
   - why: make Codex-- Manager available to Windows users; the existing codebase was macOS-only
   - verified: tauri.conf.json targets include `msi` and `nsis`; windows-app-manifest relaxed from `requireAdministrator` to `asInvoker`; CI workflow builds both macOS (aarch64) and Windows (x86_64), runs Rust tests on both, and attaches artifacts to tagged releases
