@@ -3156,6 +3156,8 @@ mod session_lifecycle_tests {
         let app = Path::new("/Applications/ChatGPT.app");
         let expected = if cfg!(target_os = "macos") {
             app.join("Contents/Resources/codex")
+        } else if cfg!(windows) {
+            app.join("codex.exe")
         } else {
             app.join("codex")
         };
