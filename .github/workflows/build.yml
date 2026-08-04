@@ -64,12 +64,24 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ""
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
 
+      - name: Package macOS .app.zip
+        shell: bash
+        run: |
+          cd src-tauri/target/aarch64-apple-darwin/release/bundle/macos
+          APP_BUNDLE=$(ls *.app 2>/dev/null | head -1)
+          if [ -n "$APP_BUNDLE" ]; then
+            zip -r "Codex--Manager_${GITHUB_REF_NAME#v}_aarch64.app.zip" "$APP_BUNDLE"
+            ls -lh "Codex--Manager_${GITHUB_REF_NAME#v}_aarch64.app.zip"
+          else
+            echo "::error::No .app bundle found"
+            exit 1
+          fi
+
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
           name: Codex--Manager-macOS-arm64
-          path: src-tauri/target/aarch64-apple-darwin/release/bundle/macos/
-          compression-level: 0
+          path: src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Codex--Manager_*.app.zip
           if-no-files-found: error
 
   # ─── Windows (x86_64) ─────────────────────────────────────────────────
@@ -155,16 +167,10 @@ jobs:
           cd artifacts
           mkdir -p dist
 
-          # macOS: zip the .app bundle (artifact is a directory containing the .app)
+          # macOS: copy the pre-built .app.zip
           MAC_DIR="Codex--Manager-macOS-arm64"
           if [ -d "$MAC_DIR" ]; then
-            APP_BUNDLE=$(ls "$MAC_DIR"/*.app 2>/dev/null | head -1)
-            if [ -n "$APP_BUNDLE" ]; then
-              APP_NAME=$(basename "$APP_BUNDLE")
-              cd "$MAC_DIR"
-              zip -r "../dist/Codex--Manager_${GITHUB_REF_NAME#v}_aarch64.app.zip" "$APP_NAME"
-              cd ..
-            fi
+            cp "$MAC_DIR"/Codex--Manager_*.app.zip dist/ 2>/dev/null || true
           fi
 
           # Windows: copy installers
