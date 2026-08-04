@@ -68,7 +68,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Codex--Manager-macOS-arm64
-          path: src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
+          path: src-tauri/target/aarch64-apple-darwin/release/bundle/macos/
           compression-level: 0
           if-no-files-found: error
 
@@ -155,15 +155,16 @@ jobs:
           cd artifacts
           mkdir -p dist
 
-          # macOS: zip the .app bundle
+          # macOS: zip the .app bundle (artifact is a directory containing the .app)
           MAC_DIR="Codex--Manager-macOS-arm64"
           if [ -d "$MAC_DIR" ]; then
-            cd "$MAC_DIR"
-            APP_BUNDLE=$(ls *.app 2>/dev/null | head -1)
+            APP_BUNDLE=$(ls "$MAC_DIR"/*.app 2>/dev/null | head -1)
             if [ -n "$APP_BUNDLE" ]; then
-              zip -r "../dist/Codex--Manager_${GITHUB_REF_NAME#v}_aarch64.app.zip" "$APP_BUNDLE"
+              APP_NAME=$(basename "$APP_BUNDLE")
+              cd "$MAC_DIR"
+              zip -r "../dist/Codex--Manager_${GITHUB_REF_NAME#v}_aarch64.app.zip" "$APP_NAME"
+              cd ..
             fi
-            cd ..
           fi
 
           # Windows: copy installers
