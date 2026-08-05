@@ -6,6 +6,13 @@
 
 ## Changelog
 
+### 2026-08-05
+
+- **launch**: announced Codex-- Manager to the FIT product group and directly notified Eva
+  - why: introduce the simplified Codex++ workflow to the FIT team as a lower-friction, less lag-prone option for provider switching and session management
+  - verified: the FIT Mingjian bot delivered the message to `AI产品数据库（飞特卡车配件）`, message `om_x100b681d61edccacc4c327205b074a4`; the user confirmed it was visible
+  - refs: https://mjshao.fun/codex-minus/
+
 ### 2026-08-04
 
 - **release**: published Codex-- Manager `v0.2.0` with Windows x86_64 support
