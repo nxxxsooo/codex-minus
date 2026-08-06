@@ -1,7 +1,7 @@
 # Build Codex-- Manager for macOS (arm64) and Windows (x86_64)
 #
 # Triggered by:
-#   - push/PR to main
+#   - push/PR to master
 #   - tags matching v*
 #
 # macOS: builds aarch64 .app bundle (ad-hoc signed)
@@ -11,10 +11,10 @@ name: Build
 
 on:
   push:
-    branches: [main]
+    branches: [master]
     tags: ["v*"]
   pull_request:
-    branches: [main]
+    branches: [master]
 
 env:
   CARGO_TERM_COLOR: always
@@ -49,7 +49,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+          save-if: ${{ github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/') }}
 
       - name: Build frontend
         run: npm run vite:build
@@ -117,7 +117,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+          save-if: ${{ github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/') }}
 
       - name: Build frontend
         run: npm run vite:build
@@ -170,6 +170,7 @@ jobs:
         shell: bash
         run: |
           cd artifacts
+          shopt -s nullglob
           mkdir -p dist
 
           # macOS: copy the pre-built .app.zip
@@ -180,17 +181,16 @@ jobs:
 
           # Windows: copy installers
           WIN_MSI_DIR="Codex--Manager-Windows-x86_64"
-          if [ -d "$WIN_MSI_DIR" ]; then
-            cp "$WIN_MSI_DIR"/*.msi dist/ 2>/dev/null || true
-          fi
+          MSI_SOURCES=( "$WIN_MSI_DIR"/*.msi )
+          [ "${#MSI_SOURCES[@]}" -eq 1 ] || { echo "::error::Expected one Windows MSI artifact"; exit 1; }
+          cp "${MSI_SOURCES[0]}" "dist/Codex--Manager_${GITHUB_REF_NAME#v}_x64.msi"
 
           WIN_NSIS_DIR="Codex--Manager-Windows-x86_64-NSIS"
-          if [ -d "$WIN_NSIS_DIR" ]; then
-            cp "$WIN_NSIS_DIR"/*.exe dist/ 2>/dev/null || true
-          fi
+          EXE_SOURCES=( "$WIN_NSIS_DIR"/*.exe )
+          [ "${#EXE_SOURCES[@]}" -eq 1 ] || { echo "::error::Expected one Windows NSIS artifact"; exit 1; }
+          cp "${EXE_SOURCES[0]}" "dist/Codex--Manager_${GITHUB_REF_NAME#v}_x64-setup.exe"
 
           cd dist
-          shopt -s nullglob
           MAC_FILES=( *.app.zip )
           MSI_FILES=( *.msi )
           EXE_FILES=( *.exe )

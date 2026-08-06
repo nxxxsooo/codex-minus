@@ -6,6 +6,17 @@
 
 ## Changelog
 
+### 2026-08-06
+
+- **release**: published Codex-- Manager `v0.3.0` for macOS arm64 and Windows x86_64, refreshed the GitHub project surface, and deployed the matching project and portfolio pages
+  - why: ship managed model catalogs as one coherent, verifiable release across the application, documentation, downloads, and public product surfaces
+  - verified: GitHub Actions run `31065157585` passed macOS and Windows tests and builds; the published `.app.zip`, `.msi`, and NSIS `.exe` all pass the downloaded `SHA256SUMS`, the released macOS bundle reports `0.3.0` and passes strict deep signature verification, and the live GitHub README, landing page, portfolio page, and WebP product image return the updated content
+  - refs: https://github.com/nxxxsooo/codex-minus/releases/tag/v0.3.0, https://mjshao.fun/codex-minus/, https://mjshao.fun/work/codex-minus
+- **fix/release**: normalized release asset names before checksum generation and aligned CI branch filters with the repository's `master` default branch
+  - why: GitHub rewrites spaces in uploaded asset names, which made the first Windows checksum entries unresolvable, while the stale `main` filter skipped ordinary default-branch CI
+  - verified: the corrected release has exactly one macOS archive, one MSI, one NSIS installer, and one checksum file with matching names and hashes; workflow YAML and shell packaging paths parse cleanly
+  - refs: `.github/workflows/build.yml`, release `v0.3.0`
+
 ### 2026-08-05
 
 - **feat/safety**: added managed official and per-provider model catalogs with native-official, official-plus-custom, custom-only, and explicit external-ownership modes; provider `/v1/models` is evidence only, while OAuth refreshes use a verified official target CLI in an isolated non-refreshable home
