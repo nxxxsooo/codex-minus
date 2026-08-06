@@ -55,11 +55,20 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  mergeModelWindowRows,
   modelWindowRowsFromProfile,
   serializeModelWindowRows,
   type ModelWindowRow,
 } from "./model-windows";
+import {
+  addCatalogCandidate,
+  adoptionPreviewSummary,
+  catalogDiffSummary,
+  catalogRefreshGate,
+  defaultCatalogMode,
+  profileCatalogFlags,
+  providerEvidenceState,
+  validateCatalogDraft,
+} from "./model-catalog-ui";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 
 
@@ -300,7 +309,12 @@ type RelayFilesResult = CommandResult<{
   configPath: string;
   authPath: string;
   configContents: string;
-  authContents: string;
+  authStatus: {
+    authenticated: boolean;
+    source: string;
+    accountLabel: string | null;
+    actionRequired: string | null;
+  };
 }>;
 
 type LocalSession = {
@@ -436,10 +450,6 @@ type RelaySwitchResult = CommandResult<{
   providerChanged: boolean;
 }>;
 
-type SettingsBackfillResult = CommandResult<{
-  settings: BackendSettings;
-}>;
-
 type RelayProfileTestResult = CommandResult<{
   httpStatus: number;
   endpoint: string;
@@ -454,6 +464,78 @@ type StepwiseTestResult = CommandResult<{
 type RelayProfileModelsResult = CommandResult<{
   models: string[];
   endpoint: string;
+}>;
+
+type CatalogMode = "native-official" | "official-plus-custom" | "custom-only" | "external";
+type OfficialCatalogOverride = {
+  visible: boolean | null;
+  contextWindow: number | null;
+  order: number | null;
+};
+type CustomCatalogModel = {
+  slug: string;
+  displayName: string;
+  contextWindow: number;
+  visible: boolean;
+  order: number;
+  templateProvenance: string;
+};
+type CatalogOverlay = {
+  official: Record<string, OfficialCatalogOverride>;
+  custom: CustomCatalogModel[];
+};
+type OfficialModelSummary = {
+  slug: string;
+  displayName: string;
+  visible: boolean;
+  contextWindow: number | null;
+};
+type ProfileCatalogSummary = {
+  profileId: string;
+  mode: CatalogMode;
+  managedAvailable: boolean;
+  externalPointer: string | null;
+  generatedPath: string | null;
+  effectiveHash: string | null;
+  restartRequired: boolean;
+  actionRequired: string | null;
+  officialOverrideCount: number;
+  customCount: number;
+  providerEvidenceAtMs: number | null;
+  providerReportedCount: number;
+  customCandidates: string[];
+  providerReportedSlugs: string[];
+  overlay: CatalogOverlay;
+};
+type ModelCatalogStatusResult = CommandResult<{
+  statePath: string;
+  source: string;
+  targetClientVersion: string | null;
+  targetCliPath: string | null;
+  targetTrusted: boolean;
+  refreshAvailable: boolean;
+  lastSuccessfulRefreshAtMs: number | null;
+  visibleCount: number;
+  totalCount: number;
+  freshness: "missing" | "current" | "stale" | "scope-stale" | string;
+  credentialAction: string | null;
+  diff: {
+    added: string[];
+    updated: string[];
+    removed: string[];
+    collisions: string[];
+  };
+  officialModels: OfficialModelSummary[];
+  profiles: ProfileCatalogSummary[];
+}>;
+
+type AdoptionPreviewResult = CommandResult<{
+  profileId: string;
+  sourcePath: string;
+  officialOverrideCount: number;
+  customModels: CustomCatalogModel[];
+  collisions: string[];
+  committed: boolean;
 }>;
 
 type ProviderDoctorCheck = {
@@ -724,6 +806,8 @@ export function App() {
   const [settings, setSettings] = useState<SettingsResult | null>(null);
   const [, setRelay] = useState<RelayResult | null>(null);
   const [relayFiles, setRelayFiles] = useState<RelayFilesResult | null>(null);
+  const [modelCatalog, setModelCatalog] = useState<ModelCatalogStatusResult | null>(null);
+  const [modelCatalogLoading, setModelCatalogLoading] = useState(false);
   const [envConflicts, setEnvConflicts] = useState<EnvConflictsResult | null>(null);
   const [localSessions, setLocalSessions] = useState<LocalSessionsResult | null>(null);
   const [sessionArchiveView, setSessionArchiveView] = useState(false);
@@ -777,6 +861,60 @@ export function App() {
       setRelayFiles(result);
       if (!silent) showResultNotice(t("配置文件"), result, { silentSuccess: true });
     }
+    return result;
+  };
+
+  const refreshModelCatalog = async (silent = false) => {
+    if (modelCatalogLoading) return null;
+    setModelCatalogLoading(true);
+    try {
+      const result = await run(() => call<ModelCatalogStatusResult>("model_catalog_status"));
+      if (result) {
+        setModelCatalog(result);
+        if (!silent && !isSuccessStatus(result.status)) showNotice(t("模型目录"), result.message, result.status);
+      }
+      return result;
+    } finally {
+      setModelCatalogLoading(false);
+    }
+  };
+
+  const refreshOfficialModelCatalog = async () => {
+    if (modelCatalogLoading) return null;
+    setModelCatalogLoading(true);
+    try {
+      const result = await run(() => call<ModelCatalogStatusResult>("refresh_official_model_catalog"));
+      if (result) {
+        setModelCatalog(result);
+        showNotice(t("官方模型目录"), result.message, result.status);
+      }
+      return result;
+    } finally {
+      setModelCatalogLoading(false);
+    }
+  };
+
+  const saveProfileCatalog = async (profileId: string, mode: CatalogMode, overlay: CatalogOverlay) => {
+    const result = await run(() =>
+      call<ModelCatalogStatusResult>("save_profile_catalog", {
+        request: { profileId, mode, overlay },
+      }),
+    );
+    if (result) {
+      setModelCatalog(result);
+      if (!isSuccessStatus(result.status)) showNotice(t("模型目录"), result.message, result.status);
+    }
+    return !!result && isSuccessStatus(result.status);
+  };
+
+  const adoptExternalModelCatalog = async (profileId: string, commit = false) => {
+    const result = await run(() =>
+      call<AdoptionPreviewResult>("adopt_external_model_catalog", {
+        request: { profileId, commit },
+      }),
+    );
+    if (result && commit && isSuccessStatus(result.status)) await refreshModelCatalog(true);
+    if (result && (!isSuccessStatus(result.status) || commit)) showNotice(t("采用外部目录"), result.message, result.status);
     return result;
   };
 
@@ -1029,6 +1167,7 @@ export function App() {
         refreshRelay(true),
         refreshRelayFiles(true),
         refreshEnvConflicts(true),
+        refreshModelCatalog(true),
       ]);
     }
     if (next === "sessions") {
@@ -1079,7 +1218,7 @@ export function App() {
     const result = await run(() => call<RelayResult>("apply_relay_injection"));
     if (result) {
       setRelay(result);
-      await refreshRelayFiles(true);
+      await Promise.all([refreshRelayFiles(true), refreshModelCatalog(true)]);
       if (!silent || !isSuccessStatus(result.status)) showNotice(t("官方混入 API Key"), result.message, result.status);
     }
     return !!result && isSuccessStatus(result.status) && result.configured;
@@ -1100,7 +1239,7 @@ export function App() {
     const result = await run(() => call<RelayResult>("apply_pure_api_injection"));
     if (result) {
       setRelay(result);
-      await refreshRelayFiles(true);
+      await Promise.all([refreshRelayFiles(true), refreshModelCatalog(true)]);
       if (!silent || !isSuccessStatus(result.status)) showNotice(t("纯 API 模式"), result.message, result.status);
     }
     return !!result && isSuccessStatus(result.status) && result.configured;
@@ -1110,21 +1249,10 @@ export function App() {
     const result = await run(() => call<RelayResult>("clear_relay_injection"));
     if (result) {
       setRelay(result);
-      await refreshRelayFiles(true);
+      await Promise.all([refreshRelayFiles(true), refreshModelCatalog(true)]);
       if (!silent || !isSuccessStatus(result.status)) showNotice(t("官方登录模式"), result.message, result.status);
     }
     return !!result && isSuccessStatus(result.status) && !result.configured;
-  };
-
-  const saveRelayFile = async (kind: "config" | "auth", contents: string, silent = false) => {
-    const result = await run(() => call<RelayFilesResult>("save_relay_file", { request: { kind, contents } }));
-    if (result) {
-      setRelayFiles(result);
-      if (!silent || !isSuccessStatus(result.status)) {
-        showNotice(kind === "config" ? "config.toml" : "auth.json", result.message, result.status);
-      }
-      await refreshRelay(true);
-    }
   };
 
   const extractRelayCommonConfig = async (configContents: string) => {
@@ -1151,6 +1279,7 @@ export function App() {
   const fetchRelayProfileModels = async (profile: RelayProfile) => {
     const result = await run(() => call<RelayProfileModelsResult>("fetch_relay_profile_models", { profile }));
     if (result) showNotice(t("模型列表"), result.message, result.status);
+    if (result && isSuccessStatus(result.status)) await refreshModelCatalog(true);
     return result && isSuccessStatus(result.status) ? result.models : null;
   };
 
@@ -1161,7 +1290,7 @@ export function App() {
     }
     let switchSettings = normalizeSettings(next);
     if (!switchSettings.relayProfilesEnabled) {
-      showNotice(t("供应商配置已关闭"), t("当前不会写入 Codex config.toml / auth.json。打开供应商配置总开关后再切换。"), "failed");
+      showNotice(t("供应商配置已关闭"), t("当前不会写入 Codex live 配置。打开供应商配置总开关后再切换。"), "failed");
       return;
     }
     const targetBeforeSnapshot = activeRelayProfile(switchSettings);
@@ -1182,7 +1311,6 @@ export function App() {
       showNotice(t("供应商配置可能不正确"), validationError, "failed");
       return;
     }
-    switchSettings = await snapshotActiveRelayFilesBeforeSwitch(switchSettings, previousActiveRelayId);
     const selectedAfterSave = activeRelayProfile(switchSettings);
     const command = relayProfileSwitchCommand(selectedAfterSave);
 
@@ -1219,7 +1347,7 @@ export function App() {
         message: result.message,
         ...result.relay,
       });
-      await refreshRelayFiles(true);
+      await Promise.all([refreshRelayFiles(true), refreshModelCatalog(true)]);
       if (!isSuccessStatus(result.status)) {
         logDiagnostic("switchRelayProfile.apply_failed", {
           targetRelayId: selectedAfterSave.id,
@@ -1245,24 +1373,32 @@ export function App() {
     }
   };
 
-  const snapshotActiveRelayFilesBeforeSwitch = async (
-    next: BackendSettings,
-    previousActiveRelayId: string,
-  ): Promise<BackendSettings> => {
-    const profileId = previousActiveRelayId.trim();
-    if (!profileId) return next;
+  const saveActiveRelayProfile = async (next: BackendSettings) => {
+    const normalized = normalizeSettings(next);
     const result = await run(() =>
-      call<SettingsBackfillResult>("backfill_relay_profile_from_live", {
-        request: { settings: next, profileId },
+      call<RelaySwitchResult>("save_active_relay_profile", {
+        request: {
+          settings: normalized,
+          previousActiveRelayId: normalized.activeRelayId,
+        },
       }),
     );
-    if (!result) return next;
-    const normalized = normalizeSettings(result.settings);
+    if (!result) return false;
+    const selectedSettings = normalizeSettings(result.settings);
+    setSettings({
+      status: result.status,
+      message: result.message,
+      settings: selectedSettings,
+      settings_path: result.settingsPath,
+      user_scripts: result.userScripts as UserScriptInventory,
+    });
+    setSettingsForm(selectedSettings);
+    setRelay({ status: result.status, message: result.message, ...result.relay });
+    await Promise.all([refreshRelayFiles(true), refreshModelCatalog(true)]);
     if (!isSuccessStatus(result.status)) {
-      showNotice(t("供应商切换"), result.message, result.status);
-      return next;
+      showNotice(t("保存供应商"), result.message, result.status);
     }
-    return normalized;
+    return isSuccessStatus(result.status);
   };
 
 
@@ -1293,6 +1429,7 @@ export function App() {
       refreshRelay(true),
       refreshRelayFiles(true),
       refreshEnvConflicts(true),
+      refreshModelCatalog(true),
     ]);
     const scheduleMaintenance = () => {
       void refreshSessionLifecycle(true).then((result) => {
@@ -1331,6 +1468,10 @@ export function App() {
       refreshSettings,
       refreshRelay,
       refreshRelayFiles,
+      refreshModelCatalog,
+      refreshOfficialModelCatalog,
+      saveProfileCatalog,
+      adoptExternalModelCatalog,
       refreshEnvConflicts,
       removeEnvConflicts,
       refreshLocalSessions,
@@ -1348,12 +1489,12 @@ export function App() {
       applyRelayInjection,
       applyPureApiInjection,
       clearRelayInjection,
-      saveRelayFile,
       extractRelayCommonConfig,
       testRelayProfile,
       diagnoseRelayProfile,
       fetchRelayProfileModels,
       switchRelayProfile,
+      saveActiveRelayProfile,
       relaySwitching,
       showMessage: async (title: string, message: string, status?: Status) => showNotice(title, message, status),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
@@ -1366,6 +1507,7 @@ export function App() {
       relayFiles,
       localSessions,
       envConflicts,
+      modelCatalogLoading,
       relaySwitching,
       sessionArchiveView,
       sessionLifecycle,
@@ -1440,6 +1582,8 @@ export function App() {
             <RelayScreen
               settings={settings}
               relayFiles={relayFiles}
+              modelCatalog={modelCatalog}
+              modelCatalogLoading={modelCatalogLoading}
               envConflicts={envConflicts}
               form={settingsForm}
               onFormChange={setSettingsForm}
@@ -1492,6 +1636,10 @@ type Actions = {
   refreshSettings: (silent?: boolean) => Promise<BackendSettings | null>;
   refreshRelay: () => Promise<void>;
   refreshRelayFiles: () => Promise<RelayFilesResult | null>;
+  refreshModelCatalog: (silent?: boolean) => Promise<ModelCatalogStatusResult | null>;
+  refreshOfficialModelCatalog: () => Promise<ModelCatalogStatusResult | null>;
+  saveProfileCatalog: (profileId: string, mode: CatalogMode, overlay: CatalogOverlay) => Promise<boolean>;
+  adoptExternalModelCatalog: (profileId: string, commit?: boolean) => Promise<AdoptionPreviewResult | null>;
   refreshEnvConflicts: (silent?: boolean) => Promise<EnvConflictsResult | null>;
   removeEnvConflicts: (names: string[]) => Promise<void>;
   refreshLocalSessions: (silent?: boolean, archived?: boolean, cursor?: string) => Promise<LocalSessionsResult | null>;
@@ -1509,12 +1657,12 @@ type Actions = {
   applyRelayInjection: () => Promise<boolean>;
   applyPureApiInjection: () => Promise<boolean>;
   clearRelayInjection: () => Promise<boolean>;
-  saveRelayFile: (kind: "config" | "auth", contents: string, silent?: boolean) => Promise<void>;
   extractRelayCommonConfig: (configContents: string) => Promise<ExtractRelayCommonConfigResult | null>;
   testRelayProfile: (profile: RelayProfile) => Promise<void>;
   diagnoseRelayProfile: (profile: RelayProfile) => Promise<ProviderDoctorResult | null>;
   fetchRelayProfileModels: (profile: RelayProfile) => Promise<string[] | null>;
   switchRelayProfile: (settings: BackendSettings, previousActiveRelayId?: string) => Promise<void>;
+  saveActiveRelayProfile: (settings: BackendSettings) => Promise<boolean>;
   relaySwitching: boolean;
   showMessage: (title: string, message: string, status?: Status) => Promise<void>;
   toggleTheme: () => void;
@@ -1524,6 +1672,8 @@ type Actions = {
 function RelayScreen({
   settings: _settings,
   relayFiles,
+  modelCatalog,
+  modelCatalogLoading,
   envConflicts,
   form,
   onFormChange,
@@ -1531,6 +1681,8 @@ function RelayScreen({
 }: {
   settings: SettingsResult | null;
   relayFiles: RelayFilesResult | null;
+  modelCatalog: ModelCatalogStatusResult | null;
+  modelCatalogLoading: boolean;
   envConflicts: EnvConflictsResult | null;
   form: BackendSettings;
   onFormChange: (value: BackendSettings) => void;
@@ -1543,6 +1695,9 @@ function RelayScreen({
     ? normalized.relayProfiles.find((profile) => profile.id === detailProfileId) || null
     : null);
   const isNewProfile = !!newProfileDraft;
+  const catalogProfile = detailProfile
+    ? modelCatalog?.profiles.find((item) => item.profileId === detailProfile.id) ?? null
+    : null;
   const saveRelaySettings = async (next: BackendSettings) => {
     onFormChange(next);
     await actions.saveSettingsValue(next, true);
@@ -1581,6 +1736,8 @@ function RelayScreen({
       <RelayProfileDetail
         profile={detailProfile}
         relayFiles={!isNewProfile && detailProfile.id === normalized.activeRelayId ? relayFiles : null}
+        modelCatalog={modelCatalog}
+        catalogProfile={catalogProfile}
         form={normalized}
         isNew={isNewProfile}
         onBack={() => {
@@ -1599,6 +1756,11 @@ function RelayScreen({
 
   return (
     <>
+      <OfficialCatalogStatusBand
+        loading={modelCatalogLoading}
+        status={modelCatalog}
+        onRefresh={() => void actions.refreshOfficialModelCatalog()}
+      />
       <Panel>
         <CardHead title={t("供应商列表")} detail={tf("{0} 个供应商配置；可拖动排序，点编辑进入详情", [normalized.relayProfiles.length])} />
         <CardContent>
@@ -1614,7 +1776,7 @@ function RelayScreen({
             />
             <span>
               <strong>{t("启用供应商配置切换")}</strong>
-              <small>{t("关闭后本工具不会在手动切换时写入 Codex 的 config.toml / auth.json；启动 Codex 时始终不会自动改这些文件。")}</small>
+              <small>{t("关闭后本工具不会在手动切换时写入 Codex 的 live provider 配置；auth.json 始终由官方客户端管理。")}</small>
             </span>
             <ToggleVisual />
           </label>
@@ -1660,6 +1822,275 @@ function RelayScreen({
   );
 }
 
+function OfficialCatalogStatusBand({
+  status,
+  loading,
+  onRefresh,
+}: {
+  status: ModelCatalogStatusResult | null;
+  loading: boolean;
+  onRefresh: () => void;
+}) {
+  const refreshGate = catalogRefreshGate({
+    refreshAvailable: status?.refreshAvailable ?? false,
+    credentialAction: status?.credentialAction ?? null,
+    loading,
+  });
+  const freshnessLabel = status
+    ? ({
+        current: t("当前"),
+        stale: t("待刷新"),
+        "scope-stale": t("范围已变化"),
+        missing: t("尚未建立"),
+      }[status.freshness] ?? status.freshness)
+    : t("加载中");
+  return (
+    <section className="catalog-status-band" aria-busy={loading}>
+      <div className="catalog-status-main">
+        <span className={`catalog-status-icon ${status?.freshness === "current" ? "good" : "warn"}`}>
+          {status?.freshness === "current" ? <ShieldCheck className="h-4 w-4" /> : <ShieldAlert className="h-4 w-4" />}
+        </span>
+        <div>
+          <strong>{t("官方模型目录")}</strong>
+          <span>
+            {status?.targetClientVersion || t("未找到目标版本")} · {freshnessLabel} · {status?.visibleCount ?? 0}/{status?.totalCount ?? 0}
+          </span>
+        </div>
+      </div>
+      <div className="catalog-status-meta">
+        <span>{status?.lastSuccessfulRefreshAtMs ? formatTime(status.lastSuccessfulRefreshAtMs) : t("暂无成功刷新")}</span>
+        {status?.credentialAction ? <span className="catalog-action-required">{status.credentialAction}</span> : null}
+        {status && (status.diff.added.length || status.diff.updated.length || status.diff.removed.length) ? (
+          <span title={catalogDiffSummary(status.diff)}>{tf("新增 {0} · 更新 {1} · 移除 {2}", [status.diff.added.length, status.diff.updated.length, status.diff.removed.length])}</span>
+        ) : null}
+      </div>
+      <Button
+        disabled={refreshGate.disabled}
+        onClick={onRefresh}
+        size="sm"
+        title={status?.credentialAction || (!status?.refreshAvailable ? t("目标 CLI 未通过能力或信任校验") : t("刷新官方目录"))}
+        variant="secondary"
+      >
+        <RefreshCw className={`h-4 w-4 ${loading ? "spin" : ""}`} />
+        {loading ? t("刷新中") : t("刷新")}
+      </Button>
+    </section>
+  );
+}
+
+function CatalogProfileEditor({
+  catalog,
+  profile,
+  summary,
+  actions,
+}: {
+  catalog: ModelCatalogStatusResult | null;
+  profile: RelayProfile;
+  summary: ProfileCatalogSummary | null;
+  actions: Actions;
+}) {
+  const fallbackMode = defaultCatalogMode(profile.relayMode, profile.officialMixApiKey) as CatalogMode;
+  const [mode, setMode] = useState<CatalogMode>(summary?.mode ?? fallbackMode);
+  const [overlay, setOverlay] = useState<CatalogOverlay>(summary?.overlay ?? { official: {}, custom: [] });
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    setMode(summary?.mode ?? fallbackMode);
+    setOverlay(summary?.overlay ?? { official: {}, custom: [] });
+  }, [summary, fallbackMode]);
+
+  if (!summary?.managedAvailable) {
+    return (
+      <section className="catalog-profile-editor unavailable">
+        <div className="catalog-editor-head">
+          <div>
+            <strong>{t("模型目录")}</strong>
+            <span>{summary?.actionRequired || t("此供应商模式不支持托管模型目录。")}</span>
+          </div>
+          <UiBadge variant="outline">{t("不可用")}</UiBadge>
+        </div>
+      </section>
+    );
+  }
+
+  const officialModels = catalog?.officialModels ?? [];
+  const reported = new Set(summary?.providerReportedSlugs ?? []);
+  const catalogFlags = profileCatalogFlags(summary ?? { restartRequired: false, actionRequired: null });
+  const draftError = validateCatalogDraft(
+    overlay,
+    mode,
+    codexModelFromConfig(profile.configContents) || profile.model,
+    officialModels.map((model) => model.slug),
+  );
+  const setOfficialOverride = (slug: string, patch: Partial<OfficialCatalogOverride>) => {
+    const current = overlay.official[slug] ?? { visible: null, contextWindow: null, order: null };
+    const next = { ...current, ...patch };
+    const official = { ...overlay.official };
+    if (next.visible === null && next.contextWindow === null && next.order === null) delete official[slug];
+    else official[slug] = next;
+    setOverlay({ ...overlay, official });
+  };
+  const updateCustom = (index: number, patch: Partial<CustomCatalogModel>) => {
+    setOverlay({
+      ...overlay,
+      custom: overlay.custom.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item)),
+    });
+  };
+  const addCustom = (slug = "") => {
+    if (slug) {
+      setOverlay(addCatalogCandidate(overlay, slug));
+      return;
+    }
+    setOverlay({ ...overlay, custom: [...overlay.custom, { slug: "", displayName: "", contextWindow: 272000, visible: true, order: overlay.custom.length, templateProvenance: "user-created" }] });
+  };
+  const save = async () => {
+    setSaving(true);
+    try {
+      await actions.saveProfileCatalog(profile.id, mode, overlay);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const adopt = async () => {
+    const preview = await actions.adoptExternalModelCatalog(profile.id, false);
+    if (!preview || !isSuccessStatus(preview.status)) return;
+    const adoption = adoptionPreviewSummary(preview);
+    if (!adoption.adoptable) {
+      await actions.showMessage(t("采用外部目录"), t("外部目录包含重复或冲突模型，需先修复后再采用。"), "failed");
+      return;
+    }
+    const confirmed = window.confirm(
+      tf("采用外部目录 {0}？\n\n官方覆盖：{1}\n自定义模型：{2}\n冲突：{3}", [
+        preview.sourcePath,
+        preview.officialOverrideCount,
+        preview.customModels.length,
+        preview.collisions.length,
+      ]),
+    );
+    if (confirmed) await actions.adoptExternalModelCatalog(profile.id, true);
+  };
+
+  return (
+    <section className="catalog-profile-editor">
+      <div className="catalog-editor-head">
+        <div>
+          <strong>{t("模型目录")}</strong>
+          <span>{summary?.generatedPath || summary?.externalPointer || t("使用 Codex 原生动态目录")}</span>
+        </div>
+        <div className="catalog-editor-actions">
+          {catalogFlags.restart ? <UiBadge variant="secondary">{t("需重启 Codex")}</UiBadge> : null}
+          <Button disabled={saving || !!draftError} onClick={() => void save()} size="sm" title={draftError || undefined}>
+            <Save className="h-4 w-4" />
+            {saving ? t("保存中") : t("保存目录")}
+          </Button>
+        </div>
+      </div>
+      <div className="segmented catalog-mode-control">
+        {([
+          ["native-official", t("官方原生")],
+          ["official-plus-custom", t("官方 + 自定义")],
+          ["custom-only", t("仅自定义")],
+          ...(summary?.externalPointer || summary?.mode === "external" ? [["external", t("外部目录")]] : []),
+        ] as Array<[CatalogMode, string]>).map(([value, label]) => (
+          <button className={mode === value ? "active" : ""} key={value} onClick={() => setMode(value)} type="button">
+            {label}
+          </button>
+        ))}
+      </div>
+      {catalogFlags.partialFailure || draftError ? <div className="catalog-inline-error">{summary?.actionRequired || catalogDraftErrorLabel(draftError)}</div> : null}
+      {mode === "external" ? (
+        <div className="catalog-external-row">
+          <span>{summary?.externalPointer || t("未识别外部目录指针")}</span>
+          <Button disabled={!summary?.externalPointer} onClick={() => void adopt()} size="sm" variant="secondary">
+            <Download className="h-4 w-4" />
+            {t("预览并采用")}
+          </Button>
+        </div>
+      ) : null}
+      {mode === "official-plus-custom" ? (
+        <div className="catalog-official-list">
+          <div className="catalog-list-head">
+            <strong>{t("官方清单")}</strong>
+            <span>{tf("{0} 个完整官方条目", [officialModels.length])}</span>
+          </div>
+          <div className="catalog-model-row catalog-model-row-head">
+            <span>{t("模型")}</span><span>{t("供应商证据")}</span><span>{t("可见")}</span><span>{t("上下文")}</span><span>{t("顺序")}</span><span />
+          </div>
+          {officialModels.map((model, index) => {
+            const value = overlay.official[model.slug];
+            return (
+              <div className="catalog-model-row" key={model.slug}>
+                <span className="catalog-model-name"><strong>{model.displayName}</strong><small>{model.slug}</small></span>
+                <UiBadge variant={reported.has(model.slug) ? "secondary" : "outline"}>{providerEvidenceState(model.slug, [...reported]) === "reported" ? t("已报告") : t("未报告")}</UiBadge>
+                <input
+                  checked={value?.visible ?? model.visible}
+                  onChange={(event) => setOfficialOverride(model.slug, { visible: event.currentTarget.checked === model.visible ? null : event.currentTarget.checked })}
+                  type="checkbox"
+                />
+                <Input
+                  inputMode="numeric"
+                  value={value?.contextWindow ?? ""}
+                  onChange={(event) => setOfficialOverride(model.slug, { contextWindow: positiveNumberOrNull(event.currentTarget.value) })}
+                  placeholder={model.contextWindow ? String(model.contextWindow) : t("默认")}
+                />
+                <Input
+                  inputMode="numeric"
+                  value={value?.order ?? ""}
+                  onChange={(event) => setOfficialOverride(model.slug, { order: integerOrNull(event.currentTarget.value) })}
+                  placeholder={String(index)}
+                />
+                <Button
+                  disabled={!value}
+                  onClick={() => {
+                    const official = { ...overlay.official };
+                    delete official[model.slug];
+                    setOverlay({ ...overlay, official });
+                  }}
+                  size="icon"
+                  title={t("清除覆盖")}
+                  variant="ghost"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+      {mode === "official-plus-custom" || mode === "custom-only" ? (
+        <div className="catalog-custom-list">
+          <div className="catalog-list-head">
+            <div><strong>{t("自定义模型")}</strong><span>{t("使用保守模板，不声明官方后端专属能力")}</span></div>
+            <Button onClick={() => addCustom()} size="sm" variant="secondary"><Plus className="h-4 w-4" />{t("添加")}</Button>
+          </div>
+          {summary?.customCandidates.length ? (
+            <div className="catalog-candidates">
+              {summary.customCandidates.map((slug) => (
+                <button key={slug} onClick={() => addCustom(slug)} type="button"><Plus className="h-3 w-3" />{slug}</button>
+              ))}
+            </div>
+          ) : null}
+          {overlay.custom.map((model, index) => (
+            <div className="catalog-custom-row" key={`${model.slug}-${index}`}>
+              <Input value={model.slug} onChange={(event) => updateCustom(index, { slug: event.currentTarget.value })} placeholder="model-id" />
+              <Input value={model.displayName} onChange={(event) => updateCustom(index, { displayName: event.currentTarget.value })} placeholder={t("显示名")} />
+              <Input inputMode="numeric" value={model.contextWindow} onChange={(event) => updateCustom(index, { contextWindow: positiveNumberOrDefault(event.currentTarget.value, 272000) })} />
+              <label className="catalog-visible-toggle"><input checked={model.visible} onChange={(event) => updateCustom(index, { visible: event.currentTarget.checked })} type="checkbox" /><span>{t("可见")}</span></label>
+              <Input inputMode="numeric" value={model.order} onChange={(event) => updateCustom(index, { order: integerOrDefault(event.currentTarget.value, index) })} />
+              <Button onClick={() => setOverlay({ ...overlay, custom: overlay.custom.filter((_, itemIndex) => itemIndex !== index) })} size="icon" title={t("删除模型")} variant="ghost"><Trash2 className="h-4 w-4" /></Button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {profile.relayMode !== "official" || profile.officialMixApiKey ? (
+        <div className="catalog-evidence-row">
+          <span>{summary?.providerEvidenceAtMs ? tf("供应商证据更新于 {0}", [formatTime(summary.providerEvidenceAtMs)]) : t("尚未获取供应商模型证据")}</span>
+          <Button onClick={() => void actions.fetchRelayProfileModels(profile)} size="sm" variant="secondary"><RefreshCw className="h-4 w-4" />{t("刷新供应商证据")}</Button>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function EnvConflictNotice({
   envConflicts,
   actions,
@@ -1677,7 +2108,7 @@ function EnvConflictNotice({
       </div>
       <div className="env-conflict-body">
         <strong>{t("检测到 OPENAI 环境变量")}</strong>
-        <p>{t("这些变量可能覆盖当前供应商写入的 config.toml / auth.json；CODEX_HOME 不会被清理。")}</p>
+        <p>{t("这些变量可能覆盖当前供应商的 provider 路由；CODEX_HOME 不会被清理。")}</p>
         <div className="env-conflict-tags">
           {conflicts.map((conflict) => (
             <span key={`${conflict.source}-${conflict.name}`}>
@@ -2177,6 +2608,8 @@ function SortableRelayProfileCard({
 function RelayProfileDetail({
   profile,
   relayFiles,
+  modelCatalog,
+  catalogProfile,
   form,
   isNew = false,
   onBack,
@@ -2186,6 +2619,8 @@ function RelayProfileDetail({
 }: {
   profile: RelayProfile;
   relayFiles: RelayFilesResult | null;
+  modelCatalog: ModelCatalogStatusResult | null;
+  catalogProfile: ProfileCatalogSummary | null;
   form: BackendSettings;
   isNew?: boolean;
   onBack: () => void;
@@ -2207,13 +2642,13 @@ function RelayProfileDetail({
             ? {
               ...profile,
               configContents: relayFiles.configContents,
-              authContents: relayFiles.authContents,
+              authContents: "",
             }
             : profile,
         );
     setDraft(nextDraft);
     setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || ""));
-  }, [profile.id, profile.modelList, profile.modelWindows, profileUsesLiveFiles, isActive, isNew, relayFiles?.configContents, relayFiles?.authContents]);
+  }, [profile.id, profile.modelList, profile.modelWindows, profileUsesLiveFiles, isActive, isNew, relayFiles?.configContents]);
   const validationError = isAggregateRelayProfile(draft) ? aggregateRelayProfileValidation(draft) : null;
   const draftWithModelRows = () => {
     const serializedRows = serializeModelWindowRows(modelWindowRows);
@@ -2226,14 +2661,11 @@ function RelayProfileDetail({
     const next = isNew
       ? addRelayProfile(form, normalizedDraft)
       : updateRelayProfile(form, profile.id, normalizedDraft);
-    await onFormChange(next);
-    if (isActive && relayProfileUsesLiveFiles(normalizedDraft)) {
-      await actions.saveRelayFile(
-        "config",
-        effectiveRelayConfigPreview(normalizedDraft, form, normalizedDraft),
-        true,
-      );
-      await actions.saveRelayFile("auth", normalizedDraft.authContents, true);
+    if (isActive) {
+      const saved = await actions.saveActiveRelayProfile(next);
+      if (!saved) return;
+    } else {
+      await onFormChange(next);
     }
     onSaved?.();
   };
@@ -2264,12 +2696,21 @@ function RelayProfileDetail({
         </Toolbar>
       </div>
         <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={setDraft} onSwitch={switchDraft} actions={actions} modelWindowRows={modelWindowRows} setModelWindowRows={setModelWindowRows} />
+      {isNew || isAggregateRelayProfile(draft) ? null : (
+        <CatalogProfileEditor
+          catalog={modelCatalog}
+          profile={draft}
+          summary={catalogProfile}
+          actions={actions}
+        />
+      )}
       {isAggregateRelayProfile(draft) ? null : (
       <RelayFileEditors
         contextProfile={profile}
         profile={draft}
         form={form}
         isActive={isActive}
+        authStatus={relayFiles?.authStatus ?? null}
         profileId={profile.id}
         onFormChange={onFormChange}
         onProfileChange={setDraft}
@@ -2318,18 +2759,6 @@ function RelayProfileEditor({
   const showApiFields = profile.relayMode !== "official" || profile.officialMixApiKey;
   const updateDraft = (patch: Partial<RelayProfile>) => {
     onProfileChange(applyRelayProfilePatchToFiles(profile, patch, { allowGenerateFiles: isNew }));
-  };
-  const updateModelWindowRow = (index: number, patch: Partial<ModelWindowRow>) => {
-    setModelWindowRows(
-      modelWindowRows.map((row, rowIndex) => (rowIndex === index ? { ...row, ...patch } : row)),
-    );
-  };
-  const removeModelWindowRow = (index: number) => {
-    const nextRows = modelWindowRows.filter((_, rowIndex) => rowIndex !== index);
-    setModelWindowRows(nextRows.length ? nextRows : [{ model: "", window: "" }]);
-  };
-  const addModelWindowRows = (rows: ModelWindowRow[]) => {
-    setModelWindowRows(mergeModelWindowRows(modelWindowRows, rows));
   };
   const runProviderDoctor = async () => {
     setDoctorOpen(true);
@@ -2517,74 +2946,6 @@ function RelayProfileEditor({
             </div>
             <span>{doctorResult?.summary ?? t("点击后会打开诊断弹框，按步骤检查供应商。")}</span>
           </div>
-        ) : null}
-        {showApiFields ? (
-          <Field className="relay-field-model-list" label={t("模型列表")}>
-            <div className="relay-model-row-editor">
-              <div className="relay-model-row relay-model-row-head">
-                <span>{t("模型名称")}</span>
-                <span>{t("上下文窗口")}</span>
-                <span />
-              </div>
-              {modelWindowRows.map((row, index) => (
-                <div className="relay-model-row" key={index}>
-                  <Input
-                    value={row.model}
-                    onChange={(event) => updateModelWindowRow(index, { model: event.currentTarget.value })}
-                    placeholder="deepseek/deepseek-v4-flash"
-                  />
-                  <Input
-                    value={row.window}
-                    onChange={(event) => updateModelWindowRow(index, { window: event.currentTarget.value })}
-                    placeholder="1M"
-                  />
-                  <Button
-                    aria-label={t("删除模型")}
-                    onClick={() => removeModelWindowRow(index)}
-                    size="icon"
-                    title={t("删除模型")}
-                    type="button"
-                    variant="ghost"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </div>
-              ))}
-            </div>
-            <div className="relay-model-list-tools">
-              <Button
-                onClick={() => setModelWindowRows([...modelWindowRows, { model: "", window: "" }])}
-                size="sm"
-                type="button"
-                variant="secondary"
-              >
-                <Plus className="h-4 w-4" />
-                {t("添加模型")}
-              </Button>
-              <Button
-                onClick={async () => {
-                  const serializedRows = serializeModelWindowRows(modelWindowRows);
-                  const models = await actions.fetchRelayProfileModels({
-                    ...profile,
-                    modelList: serializedRows.modelList,
-                    modelWindows: serializedRows.modelWindows,
-                  });
-                  if (models?.length) {
-                    addModelWindowRows(models.map((model) => ({ model, window: "" })));
-                  }
-                }}
-                size="sm"
-                type="button"
-                variant="secondary"
-              >
-                <Download className="h-4 w-4" />
-                {t("从上游获取")}
-              </Button>
-            </div>
-            <p className="field-hint">
-              {t("每行一个模型；上下文窗口可填")} <code>1M</code>{t("、")}<code>200K</code> {t("或")} <code>1000000</code>{t("，留空表示使用 Codex 默认长度。")}
-            </p>
-          </Field>
         ) : null}
         {showApiFields ? (
           <Field className="relay-field-user-agent" label="User-Agent">
@@ -2806,6 +3167,7 @@ function RelayFileEditors({
   profile,
   form,
   isActive,
+  authStatus,
   profileId,
   onFormChange,
   onProfileChange,
@@ -2815,6 +3177,7 @@ function RelayFileEditors({
   profile: RelayProfile;
   form: BackendSettings;
   isActive: boolean;
+  authStatus: RelayFilesResult["authStatus"] | null;
   profileId: string;
   onFormChange: (value: BackendSettings) => void;
   onProfileChange: (value: RelayProfile) => void;
@@ -2893,15 +3256,14 @@ function RelayFileEditors({
       <div className="relay-file-panel">
         <div className="relay-file-head">
           <div>
-            <strong>auth.json</strong>
-            <span>{isActive ? t("当前使用中：打开时从 ~/.codex/auth.json 回填，保存后会作为此供应商 auth 存档") : t("切换到此供应商时会写入 ~/.codex/auth.json")}</span>
+            <strong>{t("官方认证")}</strong>
+            <span>{t("登录与令牌刷新由官方 Codex/ChatGPT 客户端管理；供应商切换不会写入 auth.json。")}</span>
           </div>
         </div>
-        <SyncedTextarea
-          className="relay-file-textarea"
-          value={profile.authContents}
-          onValueChange={(value) => onProfileChange(deriveRelayProfileFromFiles({ ...profile, authContents: value }))}
-        />
+        <div className="relay-file-auth-status">
+          <strong>{authStatus?.authenticated ? t("已登录") : t("需要登录")}</strong>
+          <span>{authStatus?.accountLabel || authStatus?.actionRequired || t("仅活动供应商显示实时认证状态。")}</span>
+        </div>
       </div>
     </div>
   );
@@ -3804,7 +4166,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     officialMixApiKey,
     testModel: profile.testModel || "",
     configContents: relayMode === "official" && !officialMixApiKey ? "" : profile.configContents || "",
-    authContents: relayMode === "official" && !officialMixApiKey ? buildOfficialRelayAuthJson(profile.authContents || "") : profile.authContents || "",
+    authContents: "",
     useCommonConfig: profile.useCommonConfig !== false,
     contextSelection: profile.contextSelectionInitialized
       ? normalizeContextSelection(profile.contextSelection)
@@ -3900,7 +4262,7 @@ function relayProfileModeHelp(profile: RelayProfile): string {
     return t("此供应商会切回官方登录模式，使用 ChatGPT 官方账号，不写入 API Key。");
   }
   if (profile.relayMode === "pureApi") {
-    return t("此供应商会同时写入 config.toml 和 auth.json；API Key 也会注入到 provider bearer token。");
+    return t("此供应商只把 API Key 写入 owner-only 的 provider bearer 配置，并明确不要求 ChatGPT 认证。");
   }
   return t("此供应商会保留官方登录模式，并把请求混入当前 API Key。");
 }
@@ -3922,19 +4284,20 @@ function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {
     return {
       ...profile,
       configContents: profile.officialMixApiKey ? buildRelayConfigToml(profile, { includeBearerToken: true }) : "",
-      authContents: profile.authContents || "",
+      authContents: "",
     };
   }
+  const pureApi = profile.relayMode === "pureApi";
   return {
     ...profile,
-    configContents: buildRelayConfigToml(profile, { includeBearerToken: false }),
-    authContents: buildRelayAuthJson(profile),
+    configContents: buildRelayConfigToml(profile, { includeBearerToken: true, requiresOpenaiAuth: !pureApi }),
+    authContents: "",
   };
 }
 
 function buildRelayConfigToml(
   profile: Pick<RelayProfile, "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol">,
-  options: { includeBearerToken: boolean },
+  options: { includeBearerToken: boolean; requiresOpenaiAuth?: boolean },
 ): string {
   const baseUrl = profile.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : profile.baseUrl.trim();
   const apiKey = profile.apiKey.trim();
@@ -3948,28 +4311,11 @@ function buildRelayConfigToml(
     "[model_providers.custom]",
     'name = "custom"',
     'wire_api = "responses"',
-    "requires_openai_auth = true",
+    `requires_openai_auth = ${options.requiresOpenaiAuth ?? true}`,
     `base_url = "${tomlString(baseUrl)}"`,
     options.includeBearerToken && apiKey ? `experimental_bearer_token = "${tomlString(apiKey)}"` : null,
     "",
   ].filter((line): line is string => line !== null).join("\n");
-}
-
-function buildRelayAuthJson(profile: Pick<RelayProfile, "apiKey">): string {
-  return `${JSON.stringify({ OPENAI_API_KEY: profile.apiKey.trim() }, null, 2)}\n`;
-}
-
-function buildOfficialRelayAuthJson(contents: string): string {
-  const trimmed = contents.trim();
-  if (!trimmed) return "";
-  try {
-    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "";
-    delete parsed.OPENAI_API_KEY;
-    return `${JSON.stringify(parsed, null, 2)}\n`;
-  } catch {
-    return "";
-  }
 }
 
 function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
@@ -3977,7 +4323,6 @@ function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
     return normalizeAggregateRelayProfile(profile, null);
   }
   const configContents = profile.configContents || "";
-  const authContents = profile.relayMode === "official" ? buildOfficialRelayAuthJson(profile.authContents || "") : profile.authContents || "";
   const configBaseUrl = codexBaseUrlFromConfig(configContents);
   const chatUpstreamBaseUrl = rootTomlStringValue(configContents, CHAT_UPSTREAM_BASE_URL_KEY);
   const isProxyConfig = configBaseUrl === PROTOCOL_PROXY_BASE_URL;
@@ -3992,13 +4337,11 @@ function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
     model,
     baseUrl: upstreamBaseUrl,
     upstreamBaseUrl,
-    apiKey: profile.relayMode === "official"
-      ? configApiKey || profile.apiKey || ""
-      : codexApiKeyFromAuth(authContents) || configApiKey || "",
+    apiKey: configApiKey || profile.apiKey || "",
     contextWindow: codexTopLevelIntFromConfig(configContents, "model_context_window"),
     autoCompactLimit: codexTopLevelIntFromConfig(configContents, "model_auto_compact_token_limit"),
     configContents,
-    authContents,
+    authContents: "",
   };
 }
 
@@ -4012,9 +4355,8 @@ function applyRelayProfilePatchToFiles(
     return normalizeAggregateRelayProfile(next, null);
   }
   const shouldHaveFiles =
-    next.relayMode !== "official" || next.officialMixApiKey || next.configContents.trim() || next.authContents.trim();
-  const needsAuthFile = next.relayMode === "pureApi";
-  if (options.allowGenerateFiles && shouldHaveFiles && (!next.configContents.trim() || (needsAuthFile && !next.authContents.trim()))) {
+    next.relayMode !== "official" || next.officialMixApiKey || next.configContents.trim();
+  if (options.allowGenerateFiles && shouldHaveFiles && !next.configContents.trim()) {
     next = withGeneratedRelayFiles(next);
   }
 
@@ -4025,12 +4367,8 @@ function applyRelayProfilePatchToFiles(
     next.configContents = setRootTomlStringKey(next.configContents, "model", slug);
   }
   if ("apiKey" in patch) {
-    if (next.relayMode === "pureApi") {
-      next.authContents = setAuthOpenAiApiKey(next.authContents, patch.apiKey || "");
-      next.configContents = removeCodexExperimentalBearerToken(next.configContents);
-    } else {
-      next.configContents = setCodexExperimentalBearerToken(next.configContents, patch.apiKey || "");
-    }
+    next.configContents = setCodexExperimentalBearerToken(next.configContents, patch.apiKey || "");
+    if (next.relayMode === "pureApi") next.configContents = setCodexProviderRequiresOpenaiAuth(next.configContents, false);
   }
   if ("baseUrl" in patch) {
     next.upstreamBaseUrl = patch.baseUrl || "";
@@ -4056,12 +4394,13 @@ function applyRelayProfilePatchToFiles(
   if ("relayMode" in patch || "officialMixApiKey" in patch) {
     if (next.relayMode === "official" && !next.officialMixApiKey) {
       next.configContents = "";
-      next.authContents = buildOfficialRelayAuthJson(next.authContents);
-    } else if (options.allowGenerateFiles && (!next.configContents.trim() || (next.relayMode === "pureApi" && !next.authContents.trim()))) {
+      next.authContents = "";
+    } else if (options.allowGenerateFiles && !next.configContents.trim()) {
       next = withGeneratedRelayFiles(next);
     }
   }
 
+  next.authContents = "";
   return deriveRelayProfileFromFiles(next);
 }
 
@@ -4122,15 +4461,6 @@ function codexProviderStringFromConfig(contents: string, key: string): string {
   return matches.length === 1 ? matches[0] : "";
 }
 
-function codexApiKeyFromAuth(contents: string): string {
-  try {
-    const parsed = JSON.parse(contents || "{}") as { OPENAI_API_KEY?: unknown };
-    return typeof parsed.OPENAI_API_KEY === "string" ? parsed.OPENAI_API_KEY : "";
-  } catch {
-    return "";
-  }
-}
-
 function codexTopLevelIntFromConfig(contents: string, key: string): string {
   const topLevel = splitTomlRootAndTables(contents).root;
   const pattern = new RegExp(`^\\s*${key}\\s*=\\s*(\\d+)\\s*(?:#.*)?$`);
@@ -4159,18 +4489,6 @@ function tomlStringAssignmentValue(line: string, key: string): string | null {
   const match = new RegExp(`^\\s*${key}\\s*=\\s*([\"'])(.*)\\1\\s*(?:#.*)?$`).exec(line.trim());
   if (!match) return null;
   return match[2].replace(/\\(["'\\])/g, "$1");
-}
-
-function setAuthOpenAiApiKey(contents: string, apiKey: string): string {
-  let parsed: Record<string, unknown> = {};
-  try {
-    const value = JSON.parse(contents || "{}");
-    if (value && typeof value === "object" && !Array.isArray(value)) parsed = value as Record<string, unknown>;
-  } catch {
-    parsed = {};
-  }
-  parsed.OPENAI_API_KEY = apiKey.trim();
-  return `${JSON.stringify(parsed, null, 2)}\n`;
 }
 
 function setRootTomlStringKey(contents: string, key: string, value: string): string {
@@ -4215,6 +4533,16 @@ function setCodexExperimentalBearerToken(contents: string, apiKey: string): stri
   return trimmed
     ? setCodexProviderStringKey(contents, "experimental_bearer_token", trimmed)
     : removeCodexExperimentalBearerToken(contents);
+}
+
+function setCodexProviderRequiresOpenaiAuth(contents: string, required: boolean): string {
+  const provider = rootTomlStringValue(contents, "model_provider") || "custom";
+  let next = contents;
+  if (!rootTomlStringValue(next, "model_provider")) {
+    next = setRootTomlStringKey(next, "model_provider", provider);
+  }
+  next = ensureCodexProviderDefaults(next, provider);
+  return setTomlSectionBoolKey(next, `model_providers.${provider}`, "requires_openai_auth", required);
 }
 
 function removeCodexExperimentalBearerToken(contents: string): string {
@@ -4297,23 +4625,11 @@ function relayProfileSwitchValidation(profile: RelayProfile): string | null {
   if (!profile.configContents.trim()) {
     return tf("供应商「{0}」缺少独立 config.toml，已停止切换，避免继续显示上一套配置文件。请先在该供应商详情里保存 config.toml。", [profile.name || profile.id]);
   }
-  if (profile.relayMode !== "official" || !authJsonHasOpenAiApiKey(profile.authContents)) return null;
-  return t("官方混合 API 不应在 auth.json 中保存 OPENAI_API_KEY。请清理此供应商的 auth.json 后再切换。");
+  return null;
 }
 
 function relayProfileUsesLiveFiles(profile: RelayProfile): boolean {
   return profile.relayMode !== "official" || profile.officialMixApiKey;
-}
-
-function authJsonHasOpenAiApiKey(contents: string): boolean {
-  const trimmed = contents.trim();
-  if (!trimmed) return false;
-  try {
-    const value = JSON.parse(trimmed);
-    return !!value && typeof value === "object" && typeof value.OPENAI_API_KEY === "string" && value.OPENAI_API_KEY.trim().length > 0;
-  } catch {
-    return /"OPENAI_API_KEY"\s*:/.test(trimmed);
-  }
 }
 
 function tomlString(value: string): string {
@@ -4438,7 +4754,7 @@ function addRelayProfile(settings: BackendSettings, profile: RelayProfile): Back
   const nextWithFiles = isAggregateRelayProfile(profile)
     ? normalizeAggregateRelayProfile(profile, settings)
     : deriveRelayProfileFromFiles(
-        profile.configContents.trim() || profile.authContents.trim() ? profile : withGeneratedRelayFiles(profile),
+        profile.configContents.trim() ? profile : withGeneratedRelayFiles(profile),
       );
   const activeId = settings.relayProfiles.some((item) => item.id === settings.activeRelayId)
     ? settings.activeRelayId
@@ -4604,6 +4920,33 @@ function aggregateRelayProfileValidation(profile: RelayProfile): string | null {
 function formatTime(value: number) {
   if (!value) return "-";
   return new Date(value).toLocaleString("zh-CN");
+}
+
+function positiveNumberOrNull(value: string): number | null {
+  const parsed = Number.parseInt(value.replace(/[^\d]/g, ""), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function integerOrNull(value: string): number | null {
+  if (!value.trim()) return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function positiveNumberOrDefault(value: string, fallback: number): number {
+  return positiveNumberOrNull(value) ?? fallback;
+}
+
+function integerOrDefault(value: string, fallback: number): number {
+  return integerOrNull(value) ?? fallback;
+}
+
+function catalogDraftErrorLabel(error: string | null): string {
+  if (error === "empty-custom-slug") return t("自定义模型 slug 不能为空。");
+  if (error === "duplicate-custom-slug") return t("自定义模型 slug 不能重复。");
+  if (error === "invalid-context-window") return t("上下文窗口必须是正整数。");
+  if (error === "invalid-default-model") return t("当前默认模型不在有效目录中，请先调整目录或默认模型。");
+  return "";
 }
 
 

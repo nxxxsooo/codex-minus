@@ -417,16 +417,20 @@ dependencies = [
 
 [[package]]
 name = "codex-minus"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
+ "chrono",
  "codex-plus-core",
  "codex-plus-data",
  "directories",
  "rusqlite",
+ "semver",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

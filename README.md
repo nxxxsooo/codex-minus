@@ -6,7 +6,7 @@
 
 <h1 align="center">Codex-- Manager</h1>
 
-<p align="center">安全切换供应商，整理本地会话，不交出你的 Context 配置。</p>
+<p align="center">安全切换供应商，管理模型目录，不交出你的 OAuth 与 Context。</p>
 
 <p align="center">
   <a href="https://github.com/nxxxsooo/codex-minus/releases/latest"><img alt="GitHub Release" src="https://img.shields.io/github/v/release/nxxxsooo/codex-minus?style=flat-square&color=197547"></a>
@@ -15,7 +15,7 @@
   <a href="LICENSE"><img alt="AGPL-3.0-only" src="https://img.shields.io/badge/license-AGPL--3.0--only-197547?style=flat-square"></a>
 </p>
 
-Codex-- Manager 是 [Codex++ Manager](https://github.com/BigPizzaV3/CodexPlusPlus) 的精简 fork，只保留供应商切换、本地会话生命周期和配置诊断。没有渲染注入、launcher、市场或自动更新器。
+Codex-- Manager 是 [Codex++ Manager](https://github.com/BigPizzaV3/CodexPlusPlus) 的精简 fork，只保留供应商切换、模型目录、本地会话生命周期和配置诊断。没有渲染注入、launcher、市场或自动更新器。
 
 ## 下载
 
@@ -23,8 +23,8 @@ Codex-- Manager 是 [Codex++ Manager](https://github.com/BigPizzaV3/CodexPlusPlu
 
 | 平台 | 架构 | 格式 | 最新版本 |
 |------|------|------|----------|
-| macOS | arm64 | .app.zip | [v0.2.0](https://github.com/nxxxsooo/codex-minus/releases/latest) |
-| Windows | x86_64 | .msi / .exe | [v0.2.0](https://github.com/nxxxsooo/codex-minus/releases/latest) |
+| macOS | arm64 | .app.zip | [v0.3.0](https://github.com/nxxxsooo/codex-minus/releases/latest) |
+| Windows | x86_64 | .msi / .exe | [v0.3.0](https://github.com/nxxxsooo/codex-minus/releases/latest) |
 
 - [前往 Release 页面下载](https://github.com/nxxxsooo/codex-minus/releases)
 - [查看项目页面](https://mjshao.fun/codex-minus/)
@@ -52,10 +52,21 @@ shasum -a 256 -c SHA256SUMS
 
 ### 供应商切换
 
-- 管理 OAuth、API Key 和混合认证的中转 profile。
-- 写入 `config.toml` 与 `auth.json`，失败时回滚。
+- ChatGPT OAuth 始终由官方 Codex/ChatGPT 客户端管理；供应商 profile 不保存、回填或应用 `authContents`。
+- 纯 API 与混合供应商的 API Key 只写入 owner-only settings 和 `config.toml` 的 provider bearer 配置；供应商操作绝不写 live `auth.json`。
+- settings、provider config、模型目录与 live 指针通过一个可恢复事务提交，失败时恢复完整上一代。
 - 切换后读取实际 `model_provider`，相同 provider 不触发会话扫描。
 - 检查可能覆盖供应商配置的 `OPENAI_*` 环境变量。
+
+### 模型目录
+
+- Codex 在未配置静态 `model_catalog_json` 时，OAuth 或 API provider 都可能通过各自的 `/models` 路径更新共享 `models_cache.json`；混合模式会走当前 custom provider，因此该 live cache 具有 provider 歧义，不能作为官方基线。
+- 官方清单只通过配置目标应用内、经过平台签名验证的 Codex CLI 刷新，不使用 `PATH` 中的任意 `codex`，也不把供应商 `/v1/models` 当作官方来源。
+- 刷新在 owner-only 临时 `CODEX_HOME` 中运行，只投影当前 access/ID token；refresh token 为空，临时认证不会回写 live 状态。
+- 每个非聚合供应商可选择「官方原生」「官方 + 自定义」「仅自定义」或「外部目录」。外部文件只读，必须显式预览并采用后才转为 manager ownership。
+- 官方条目保留目标 CLI 返回的全部字段与隐藏模型；overlay 只管理可见性、顺序、上下文窗口和自定义模型。
+- 供应商 `/v1/models` 仅作为有时间戳的「已报告／未报告」证据和自定义候选；遗漏不会隐藏官方模型。
+- 托管目录写入 `~/.codex/model-catalogs/codex-minus-<profile>-<hash>.json`。活动静态目录变化后会提示重启 Codex，不会自动结束或重启官方客户端。
 
 ### 会话生命周期
 
@@ -67,7 +78,8 @@ shasum -a 256 -c SHA256SUMS
 
 ### Context 保护
 
-- 供应商切换、应用和清除路径都经过 `with_context_tables_protected`。
+- 供应商切换、应用、清除、活动保存和目录指针写入都经过统一 coordinator 与失败即关闭的 Context 事务。
+- 写前快照、TOML 解析、回植、写后校验或恢复任一失败时，命令整体失败，不会报告伪成功。
 - 不保存或合并 managed context 副本。
 - 不恢复上游「工具与插件」管理页面。
 
@@ -81,6 +93,8 @@ shasum -a 256 -c SHA256SUMS
 
 - 当前没有 Intel 构建、Developer ID 签名或 Apple 公证。
 - Windows 构建通过 CI 自动生成，未在本地进行 Windows 实机测试。
+- Credential-bearing 官方目录刷新当前验证下限为内嵌 `codex-cli 0.147.0-alpha.1`；已验证 macOS OpenAI Team ID `2DC432GLL2`。不支持 keyring-only 或无法安全读取的认证存储。
+- Windows 已实现 Authenticode/OpenAI publisher gate，但尚未完成 Windows 实机 OAuth 刷新验证。
 - 「Chat Completions 协议」和「聚合供应商」依赖上游 launcher 提供的 `127.0.0.1:57321` 代理，本项目不包含该代理，请勿使用。
 - 固定的上游 revision 尚未提供 active-only provider-sync 写入范围，因此「适配到当前 provider」保持禁用，不会回退到全历史改写。
 - 会话归档用于整理，不会压缩数据或释放磁盘空间。
@@ -107,10 +121,6 @@ npm run build
 
 - macOS: `src-tauri/target/release/bundle/macos/Codex-- Manager.app`
 - Windows: `src-tauri/target/release/bundle/msi/*.msi` 或 `src-tauri/target/release/bundle/nsis/*.exe`
-
-## 版本说明
-
-当前 `master` 的公开页面与 README 在 `v0.1.0` 应用 tag 之后补充。`v0.1.0` macOS 二进制及其 SHA-256 未发生变化。
 
 ## License
 

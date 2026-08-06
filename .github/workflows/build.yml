@@ -64,6 +64,13 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ""
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
 
+      - name: Ad-hoc sign and verify macOS bundle
+        shell: bash
+        run: |
+          APP="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Codex-- Manager.app"
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
       - name: Package macOS .app.zip
         shell: bash
         run: |
@@ -182,10 +189,15 @@ jobs:
             cp "$WIN_NSIS_DIR"/*.exe dist/ 2>/dev/null || true
           fi
 
-          # Generate checksums
           cd dist
-          # Use sha256sum on Linux, shasum on macOS
-          sha256sum * > SHA256SUMS 2>/dev/null || shasum -a 256 * > SHA256SUMS 2>/dev/null || true
+          shopt -s nullglob
+          MAC_FILES=( *.app.zip )
+          MSI_FILES=( *.msi )
+          EXE_FILES=( *.exe )
+          [ "${#MAC_FILES[@]}" -eq 1 ] || { echo "::error::Expected one macOS app archive"; exit 1; }
+          [ "${#MSI_FILES[@]}" -eq 1 ] || { echo "::error::Expected one Windows MSI"; exit 1; }
+          [ "${#EXE_FILES[@]}" -eq 1 ] || { echo "::error::Expected one Windows NSIS installer"; exit 1; }
+          sha256sum "${MAC_FILES[@]}" "${MSI_FILES[@]}" "${EXE_FILES[@]}" > SHA256SUMS
           ls -lh
 
       - name: Create Release
@@ -219,4 +231,4 @@ jobs:
             **Windows**: 运行 `.msi` 或 `.exe` 安装程序，按提示完成安装。
           files: |
             artifacts/dist/*
-          fail_on_unmatched_files: false
+          fail_on_unmatched_files: true

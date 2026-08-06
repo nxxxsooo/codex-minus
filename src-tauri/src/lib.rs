@@ -1,4 +1,6 @@
 pub mod commands;
+mod live_state;
+mod model_catalog;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -65,11 +67,16 @@ pub fn run() {
             commands::diagnose_relay_profile,
             commands::fetch_relay_profile_models,
             commands::switch_relay_profile,
+            commands::save_active_relay_profile,
             commands::scan_provider_compatibility,
             commands::adapt_active_sessions_to_current_provider,
             commands::apply_relay_injection,
             commands::apply_pure_api_injection,
             commands::clear_relay_injection,
+            model_catalog::model_catalog_status,
+            model_catalog::refresh_official_model_catalog,
+            model_catalog::save_profile_catalog,
+            model_catalog::adopt_external_model_catalog,
             update_tray_labels
         ])
         .run(tauri::generate_context!());

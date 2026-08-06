@@ -4,6 +4,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use anyhow::Context;
 use codex_plus_core::models::{DeleteResult, SessionRef};
 use codex_plus_core::settings::{
     BackendSettings, RelayContextSelection, RelayProfile, SettingsStore,
@@ -12,6 +13,8 @@ use codex_plus_core::status::LaunchStatus;
 use codex_plus_core::zed_remote::{ZedOpenStrategy, ZedRemoteProject};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
+use crate::live_state::{self, FileMutation};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CommandResult<T>
@@ -255,7 +258,16 @@ pub struct RelayFilesPayload {
     pub config_path: String,
     pub auth_path: String,
     pub config_contents: String,
-    pub auth_contents: String,
+    pub auth_status: LiveAuthStatusPayload,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveAuthStatusPayload {
+    pub authenticated: bool,
+    pub source: String,
+    pub account_label: Option<String>,
+    pub action_required: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -462,7 +474,21 @@ pub async fn load_settings() -> CommandResult<SettingsPayload> {
 }
 
 fn load_settings_blocking() -> CommandResult<SettingsPayload> {
-    settings_payload("设置已加载。", "设置读取失败")
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    let result = (|| -> anyhow::Result<()> {
+        let _guard = live_state::lock()?;
+        live_state::prepare_secret_paths(&home)?;
+        live_state::recover_locked()?;
+        migrate_legacy_profile_auth_locked()?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => settings_payload("设置已加载。", "设置读取失败"),
+        Err(error) => failed(
+            &format!("设置安全检查失败：{error}"),
+            fallback_settings_payload(),
+        ),
+    }
 }
 
 #[tauri::command]
@@ -474,7 +500,17 @@ pub async fn save_settings(settings: BackendSettings) -> CommandResult<SettingsP
 
 fn save_settings_blocking(settings: BackendSettings) -> CommandResult<SettingsPayload> {
     let settings = normalize_settings_before_save(settings);
-    match SettingsStore::default().save(&settings) {
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    let result = (|| -> anyhow::Result<()> {
+        let _guard = live_state::lock()?;
+        live_state::prepare_secret_paths(&home)?;
+        let bytes = serialize_settings_without_profile_auth(&settings)?;
+        live_state::commit_locked(&[FileMutation::bytes(
+            codex_plus_core::paths::default_settings_path(),
+            bytes,
+        )])
+    })();
+    match result {
         Ok(()) => settings_payload("设置已保存。", "设置保存后重新读取失败"),
         Err(error) => failed(
             &format!("保存设置失败：{error}"),
@@ -735,7 +771,7 @@ fn codex_cli_from_app_dir(app_dir: &Path) -> PathBuf {
     }
 }
 
-fn discover_target_codex_cli() -> anyhow::Result<PathBuf> {
+pub(crate) fn discover_target_codex_cli() -> anyhow::Result<PathBuf> {
     let settings = SettingsStore::default().load().unwrap_or_default();
     let saved = settings.codex_app_path.trim();
     let app_dir = codex_plus_core::app_paths::resolve_codex_app_dir_with_saved(
@@ -1393,6 +1429,7 @@ fn normalize_settings_before_save(mut settings: BackendSettings) -> BackendSetti
             &settings.relay_context_config_contents,
         );
     for profile in &mut settings.relay_profiles {
+        migrate_profile_auth_to_config(profile);
         if let Err(error) =
             codex_plus_core::relay_config::normalize_relay_profile_for_storage(profile)
         {
@@ -1405,6 +1442,7 @@ fn normalize_settings_before_save(mut settings: BackendSettings) -> BackendSetti
                 }),
             );
         }
+        sanitize_profile_after_core_normalize(profile);
     }
     let common_config = relay_combined_common_config(&settings);
     if !common_config.trim().is_empty() {
@@ -1437,6 +1475,86 @@ fn normalize_settings_before_save(mut settings: BackendSettings) -> BackendSetti
         .to_string();
     scrub_managed_context_state(&mut settings);
     settings
+}
+
+fn migrate_profile_auth_to_config(profile: &mut RelayProfile) {
+    let auth_api_key = profile_api_key_from_auth(&profile.auth_contents);
+    if profile.api_key.trim().is_empty() {
+        if let Some(api_key) = auth_api_key {
+            profile.api_key = api_key;
+        }
+    }
+    profile.auth_contents.clear();
+}
+
+fn sanitize_profile_after_core_normalize(profile: &mut RelayProfile) {
+    if profile.relay_mode == codex_plus_core::settings::RelayMode::PureApi {
+        let api_key = profile_api_key_from_auth(&profile.auth_contents)
+            .or_else(|| provider_bearer_token_from_config(&profile.config_contents))
+            .or_else(|| (!profile.api_key.trim().is_empty()).then(|| profile.api_key.clone()));
+        if let Some(api_key) = api_key {
+            if let Ok(config) =
+                set_provider_config_bearer(&profile.config_contents, &api_key, false)
+            {
+                profile.config_contents = config;
+            }
+            profile.api_key = api_key;
+        }
+    }
+    profile.auth_contents.clear();
+}
+
+fn profile_api_key_from_auth(auth_contents: &str) -> Option<String> {
+    serde_json::from_str::<Value>(auth_contents)
+        .ok()?
+        .get("OPENAI_API_KEY")?
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn provider_bearer_token_from_config(config_contents: &str) -> Option<String> {
+    let doc: toml_edit::DocumentMut = config_contents.parse().ok()?;
+    let provider_id = doc.get("model_provider")?.as_str()?.trim();
+    doc.get("model_providers")?
+        .as_table()?
+        .get(provider_id)?
+        .as_table()?
+        .get("experimental_bearer_token")?
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn set_provider_config_bearer(
+    config_contents: &str,
+    api_key: &str,
+    requires_openai_auth: bool,
+) -> anyhow::Result<String> {
+    let mut doc: toml_edit::DocumentMut = if config_contents.trim().is_empty() {
+        toml_edit::DocumentMut::new()
+    } else {
+        config_contents.parse()?
+    };
+    let provider_id = doc
+        .get("model_provider")
+        .and_then(toml_edit::Item::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("codex-plus-relay")
+        .to_string();
+    doc["model_provider"] = toml_edit::value(provider_id.as_str());
+    doc["model_providers"][provider_id.as_str()]["experimental_bearer_token"] =
+        toml_edit::value(api_key.trim());
+    doc["model_providers"][provider_id.as_str()]["requires_openai_auth"] =
+        toml_edit::value(requires_openai_auth);
+    let mut result = doc.to_string();
+    if !result.is_empty() && !result.ends_with('\n') {
+        result.push('\n');
+    }
+    Ok(result)
 }
 
 fn normalize_provider_sync_provider_list(values: Vec<String>) -> Vec<String> {
@@ -1662,7 +1780,7 @@ fn read_relay_files_blocking() -> CommandResult<RelayFilesPayload> {
                 config_path: home.join("config.toml").to_string_lossy().to_string(),
                 auth_path: home.join("auth.json").to_string_lossy().to_string(),
                 config_contents: String::new(),
-                auth_contents: String::new(),
+                auth_status: live_auth_status_payload(&home),
             },
         ),
     }
@@ -1722,9 +1840,18 @@ pub async fn save_relay_file(request: SaveRelayFileRequest) -> CommandResult<Rel
 
 fn save_relay_file_blocking(request: SaveRelayFileRequest) -> CommandResult<RelayFilesPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
-    match save_relay_file_in_home(&home, &request.kind, &request.contents)
-        .and_then(|_| relay_files_payload_from_home(&home))
-    {
+    let result = (|| -> anyhow::Result<RelayFilesPayload> {
+        validate_relay_file_save_kind(&request.kind)?;
+        let _guard = live_state::lock()?;
+        live_state::prepare_secret_paths(&home)?;
+        let (protected, context_snapshot) = context_protected_config(&home, &request.contents)?;
+        let config_path = home.join("config.toml");
+        live_state::commit_locked_verified(&[FileMutation::text(config_path, protected)], || {
+            verify_context_tables(&home, &context_snapshot)
+        })?;
+        relay_files_payload_from_home(&home)
+    })();
+    match result {
         Ok(payload) => ok("配置文件已保存。", payload),
         Err(error) => failed(
             &format!("保存配置文件失败：{error}"),
@@ -1732,10 +1859,18 @@ fn save_relay_file_blocking(request: SaveRelayFileRequest) -> CommandResult<Rela
                 config_path: home.join("config.toml").to_string_lossy().to_string(),
                 auth_path: home.join("auth.json").to_string_lossy().to_string(),
                 config_contents: String::new(),
-                auth_contents: String::new(),
+                auth_status: live_auth_status_payload(&home),
             }),
         ),
     }
+}
+
+fn validate_relay_file_save_kind(kind: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        kind == "config",
+        "auth.json 由官方客户端管理，Codex-- 不接受认证文件写入"
+    );
+    Ok(())
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -1750,59 +1885,44 @@ pub struct RelayProfileSwitchRequest {
 pub async fn switch_relay_profile(
     request: RelayProfileSwitchRequest,
 ) -> CommandResult<RelaySwitchPayload> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let result = with_context_tables_protected(|| switch_relay_profile_unguarded(request));
-        scrub_managed_context_store();
-        result
-    })
-    .await
-    .expect("blocking command panicked")
+    tauri::async_runtime::spawn_blocking(move || switch_relay_profile_blocking(request))
+        .await
+        .expect("blocking command panicked")
 }
 
-fn switch_relay_profile_unguarded(
+#[tauri::command]
+pub async fn save_active_relay_profile(
+    request: RelayProfileSwitchRequest,
+) -> CommandResult<RelaySwitchPayload> {
+    tauri::async_runtime::spawn_blocking(move || switch_relay_profile_blocking(request))
+        .await
+        .expect("blocking command panicked")
+}
+
+fn switch_relay_profile_blocking(
     request: RelayProfileSwitchRequest,
 ) -> CommandResult<RelaySwitchPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let previous_provider = current_effective_provider_from_home(&home);
-    let Ok(_guard) = relay_switch_mutex().lock() else {
-        let status = codex_plus_core::relay_config::default_relay_status();
-        return failed(
-            "供应商切换锁已损坏，请重启管理器后再试。",
-            relay_switch_payload(
-                SettingsStore::default().load().unwrap_or_default(),
-                status,
-                None,
-                previous_provider.clone(),
-                previous_provider,
-            ),
-        );
-    };
-    let store = SettingsStore::default();
     let previous_active_relay_id = request.previous_active_relay_id;
-    let settings = normalize_settings_before_save(request.settings);
+    let target_relay_id = request.settings.active_relay_id.clone();
     log_manager_event(
         "manager.switch_relay_profile.start",
         json!({
             "previousActiveRelayId": previous_active_relay_id,
-            "targetRelayId": settings.active_relay_id
+            "targetRelayId": target_relay_id
         }),
     );
-    match codex_plus_core::relay_switch::switch_relay_profile_in_home(
-        &store,
-        &home,
-        settings,
-        &previous_active_relay_id,
-    ) {
-        Ok(result) => {
+    match commit_relay_profile_transaction(request.settings, &previous_active_relay_id) {
+        Ok(settings) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
             let current_provider = current_effective_provider_from_home(&home);
             let provider_changed = previous_provider != current_provider;
             log_manager_event(
                 "manager.switch_relay_profile.ok",
                 json!({
-                    "targetRelayId": result.settings.active_relay_id,
+                    "targetRelayId": settings.active_relay_id,
                     "configured": status.configured,
-                    "backupPath": result.backup_path.as_ref(),
                     "previousProvider": previous_provider,
                     "currentProvider": current_provider,
                     "providerChanged": provider_changed,
@@ -1811,19 +1931,16 @@ fn switch_relay_profile_unguarded(
             );
             ok(
                 "供应商已切换。",
-                relay_switch_payload(
-                    result.settings,
-                    status,
-                    result.backup_path,
-                    previous_provider,
-                    current_provider,
-                ),
+                relay_switch_payload(settings, status, None, previous_provider, current_provider),
             )
         }
         Err(error) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
             let current_provider = current_effective_provider_from_home(&home);
-            let settings = store.load().unwrap_or_default();
+            let settings = SettingsStore::default()
+                .load()
+                .map(sanitize_settings_for_output)
+                .unwrap_or_default();
             log_manager_event(
                 "manager.switch_relay_profile.failed",
                 json!({
@@ -1837,6 +1954,160 @@ fn switch_relay_profile_unguarded(
                 relay_switch_payload(settings, status, None, previous_provider, current_provider),
             )
         }
+    }
+}
+
+fn commit_relay_profile_transaction(
+    mut settings: BackendSettings,
+    previous_active_relay_id: &str,
+) -> anyhow::Result<BackendSettings> {
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    let _guard = live_state::lock()?;
+    live_state::prepare_secret_paths(&home)?;
+    live_state::recover_locked()?;
+    migrate_legacy_profile_auth_locked()?;
+
+    let auth_path = home.join("auth.json");
+    let auth_before = read_optional_bytes(&auth_path)?;
+    if !previous_active_relay_id.trim().is_empty()
+        && previous_active_relay_id != settings.active_relay_id
+    {
+        backfill_profile_config_only(&home, &mut settings, previous_active_relay_id)?;
+    }
+    settings = normalize_settings_before_save(settings);
+    anyhow::ensure!(
+        settings.relay_profiles_enabled,
+        "供应商配置总开关已关闭，未写入 live 配置"
+    );
+
+    let candidate = stage_active_relay_config(&home, &settings)?;
+    let catalog_plan = crate::model_catalog::plan_active_profile(&home, &settings, &candidate)?;
+    let (protected_config, context_snapshot) =
+        context_protected_config(&home, &catalog_plan.config_contents)?;
+    let settings_bytes = serialize_settings_without_profile_auth(&settings)?;
+    let settings_path = codex_plus_core::paths::default_settings_path();
+    let config_path = home.join("config.toml");
+    let mut mutations = catalog_plan.mutations;
+    mutations.push(FileMutation::bytes(settings_path, settings_bytes));
+    mutations.push(FileMutation::text(config_path, protected_config));
+    live_state::commit_locked_verified(&mutations, || {
+        verify_context_tables(&home, &context_snapshot)?;
+        anyhow::ensure!(
+            read_optional_bytes(&auth_path)? == auth_before,
+            "live auth changed concurrently; provider transaction was rolled back"
+        );
+        Ok(())
+    })?;
+    Ok(sanitize_settings_for_output(settings))
+}
+
+fn backfill_profile_config_only(
+    home: &Path,
+    settings: &mut BackendSettings,
+    profile_id: &str,
+) -> anyhow::Result<()> {
+    let profile = settings
+        .relay_profiles
+        .iter_mut()
+        .find(|profile| profile.id == profile_id)
+        .with_context(|| "当前供应商已不在配置列表中，已停止切换以避免覆盖用户改动。")?;
+    with_private_staging_home("backfill", |stage_home| {
+        seed_staging_config(home, stage_home)?;
+        codex_plus_core::relay_config::backfill_relay_profile_from_home_with_common(
+            stage_home,
+            profile,
+            &mut settings.relay_context_config_contents,
+        )?;
+        profile.auth_contents.clear();
+        Ok(())
+    })
+}
+
+fn stage_active_relay_config(home: &Path, settings: &BackendSettings) -> anyhow::Result<String> {
+    let profile = settings.active_relay_profile();
+    anyhow::ensure!(
+        profile.relay_mode != codex_plus_core::settings::RelayMode::Aggregate,
+        "聚合供应商依赖已移除的本地代理，不能写入 live 配置"
+    );
+    with_private_staging_home("provider", |stage_home| {
+        seed_staging_config(home, stage_home)?;
+        if profile.relay_mode == codex_plus_core::settings::RelayMode::Official
+            && !profile.official_mix_api_key
+        {
+            codex_plus_core::relay_config::clear_relay_config_to_home_with_auth_and_computer_use_guard(
+                stage_home,
+                None,
+                settings.computer_use_guard_enabled,
+            )?;
+        } else {
+            let mut projection = profile.clone();
+            projection.auth_contents.clear();
+            if profile.relay_mode == codex_plus_core::settings::RelayMode::PureApi {
+                let api_key = provider_bearer_token_from_config(&profile.config_contents)
+                    .or_else(|| {
+                        (!profile.api_key.trim().is_empty()).then(|| profile.api_key.clone())
+                    })
+                    .context("纯 API 供应商缺少 provider bearer token")?;
+                projection.relay_mode = codex_plus_core::settings::RelayMode::Official;
+                projection.official_mix_api_key = true;
+                projection.api_key = api_key.clone();
+                projection.config_contents =
+                    set_provider_config_bearer(&projection.config_contents, &api_key, false)?;
+            }
+            codex_plus_core::relay_config::apply_relay_profile_config_to_home_with_context(
+                stage_home,
+                &projection,
+                &relay_combined_common_config(settings),
+            )?;
+        }
+        anyhow::ensure!(
+            !stage_home.join("auth.json").exists(),
+            "上游配置生成器意外写入了 staged auth.json"
+        );
+        let mut config = std::fs::read_to_string(stage_home.join("config.toml"))?;
+        if profile.relay_mode == codex_plus_core::settings::RelayMode::PureApi {
+            let api_key = provider_bearer_token_from_config(&config)
+                .context("纯 API staged 配置缺少 provider bearer token")?;
+            config = set_provider_config_bearer(&config, &api_key, false)?;
+        }
+        Ok(config)
+    })
+}
+
+fn seed_staging_config(live_home: &Path, stage_home: &Path) -> anyhow::Result<()> {
+    let config = read_optional_bytes(&live_home.join("config.toml"))?;
+    if let Some(config) = config {
+        live_state::atomic_write_owner_only(&stage_home.join("config.toml"), &config)?;
+    }
+    Ok(())
+}
+
+fn with_private_staging_home<T>(
+    label: &str,
+    run: impl FnOnce(&Path) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let root = codex_plus_core::paths::default_app_state_dir().join("private-staging");
+    live_state::ensure_owner_only_dir(&root)?;
+    let stage_home = root.join(format!("{label}-{}-{nonce}", std::process::id()));
+    live_state::ensure_owner_only_dir(&stage_home)?;
+    let result = run(&stage_home);
+    let cleanup = std::fs::remove_dir_all(&stage_home);
+    match (result, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(error)) => Err(error).context("failed to clean private staging home"),
+        (Err(error), _) => Err(error),
+    }
+}
+
+fn read_optional_bytes(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -1863,28 +2134,14 @@ pub fn backfill_relay_profile_from_live(
             "activeRelayId": settings.active_relay_id
         }),
     );
-    let Some(profile) = settings
-        .relay_profiles
-        .iter_mut()
-        .find(|profile| profile.id == request.profile_id)
-    else {
-        log_manager_event(
-            "manager.backfill_relay_profile_from_live.missing_profile",
-            json!({
-                "profileId": requested_profile_id
-            }),
-        );
-        return failed(
-            "当前供应商已不在配置列表中，已停止切换以避免覆盖用户改动。",
-            SettingsBackfillPayload { settings },
-        );
-    };
-
-    match codex_plus_core::relay_config::backfill_relay_profile_from_home_with_common(
-        &home,
-        profile,
-        &mut settings.relay_context_config_contents,
-    ) {
+    let result = (|| -> anyhow::Result<()> {
+        let _guard = live_state::lock()?;
+        live_state::prepare_secret_paths(&home)?;
+        backfill_profile_config_only(&home, &mut settings, &request.profile_id)?;
+        settings = normalize_settings_before_save(settings.clone());
+        Ok(())
+    })();
+    match result {
         Ok(()) => {
             log_manager_event(
                 "manager.backfill_relay_profile_from_live.ok",
@@ -1894,7 +2151,9 @@ pub fn backfill_relay_profile_from_live(
             );
             ok(
                 "当前供应商配置已从 live 文件回填。",
-                SettingsBackfillPayload { settings },
+                SettingsBackfillPayload {
+                    settings: sanitize_settings_for_output(settings),
+                },
             )
         }
         Err(error) => {
@@ -1907,7 +2166,9 @@ pub fn backfill_relay_profile_from_live(
             );
             failed(
                 &format!("回填当前供应商配置失败：{error}"),
-                SettingsBackfillPayload { settings },
+                SettingsBackfillPayload {
+                    settings: sanitize_settings_for_output(settings),
+                },
             )
         }
     }
@@ -2008,10 +2269,20 @@ pub async fn fetch_relay_profile_models(
         profile.name.trim()
     };
     match codex_plus_core::model_catalog::fetch_relay_profile_model_ids(&profile).await {
-        Ok((models, endpoint)) => ok(
-            &format!("已从「{profile_name}」获取 {} 个模型。", models.len()),
-            RelayProfileModelsPayload { models, endpoint },
-        ),
+        Ok((models, endpoint)) => {
+            if let Err(error) =
+                crate::model_catalog::record_provider_evidence(&profile.id, &endpoint, &models)
+            {
+                return failed(
+                    &format!("模型已获取，但供应商证据保存失败：{error}"),
+                    RelayProfileModelsPayload { models, endpoint },
+                );
+            }
+            ok(
+                &format!("已从「{profile_name}」获取 {} 个模型。", models.len()),
+                RelayProfileModelsPayload { models, endpoint },
+            )
+        }
         Err(error) => failed(
             &format!("从「{profile_name}」获取模型失败：{error}"),
             RelayProfileModelsPayload {
@@ -2234,288 +2505,94 @@ fn provider_doctor_recommendation(checks: &[ProviderDoctorCheck]) -> String {
 
 #[tauri::command]
 pub async fn apply_relay_injection() -> CommandResult<RelayPayload> {
-    tauri::async_runtime::spawn_blocking(|| {
-        with_context_tables_protected(apply_relay_injection_unguarded)
-    })
-    .await
-    .expect("blocking command panicked")
-}
-
-fn apply_relay_injection_unguarded() -> CommandResult<RelayPayload> {
-    let home = codex_plus_core::relay_config::default_codex_home_dir();
-    let settings = SettingsStore::default().load().unwrap_or_default();
-    if !settings.relay_profiles_enabled {
-        let status = codex_plus_core::relay_config::relay_status_from_home(&home);
-        return failed(
-            "供应商配置总开关已关闭，未写入 config.toml / auth.json。",
-            relay_payload(status, None),
-        );
-    }
-    let relay = settings.active_relay_profile();
-    log_relay_apply_request("manager.apply_relay_injection", &settings, &relay);
-    if settings.active_aggregate_relay_profile().is_some() {
-        return apply_aggregate_relay_injection_to_home(&home);
-    }
-    if relay_has_complete_files(&relay) {
-        return match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
-            &home,
-            &relay,
-            &relay_combined_common_config(&settings),
-            settings.computer_use_guard_enabled,
-        ) {
-            Ok(result) => {
-                let status = codex_plus_core::relay_config::relay_status_from_home(&home);
-                log_relay_apply_result(
-                    "manager.apply_relay_injection.ok",
-                    &relay,
-                    &status,
-                    result.backup_path.as_ref(),
-                    None,
-                );
-                ok(
-                    "已按兼容切换规则切换供应商。",
-                    relay_payload(status, result.backup_path),
-                )
-            }
-            Err(error) => {
-                let status = codex_plus_core::relay_config::relay_status_from_home(&home);
-                log_relay_apply_result(
-                    "manager.apply_relay_injection.failed",
-                    &relay,
-                    &status,
-                    None,
-                    Some(error.to_string()),
-                );
-                failed(
-                    &format!("切换完整中转配置失败：{error}"),
-                    relay_payload(status, None),
-                )
-            }
-        };
-    }
-
-    let auth = codex_plus_core::relay_config::chatgpt_auth_status_from_home(&home);
-    if !auth.authenticated {
-        let status = codex_plus_core::relay_config::relay_status_from_home(&home);
-        log_relay_apply_result(
-            "manager.apply_relay_injection.failed",
-            &relay,
-            &status,
-            None,
-            Some("未检测到 ChatGPT 登录状态".to_string()),
-        );
-        return failed(
-            "未检测到 ChatGPT 登录状态，已停止写入中转配置。",
-            relay_payload(status, None),
-        );
-    }
-
-    match codex_plus_core::relay_config::apply_relay_config_to_home_with_protocol(
-        &home,
-        &relay.base_url,
-        &relay.api_key,
-        relay.protocol,
-        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
-    ) {
-        Ok(result) => {
-            let status = codex_plus_core::relay_config::relay_status_from_home(&home);
-            log_relay_apply_result(
-                "manager.apply_relay_injection.ok",
-                &relay,
-                &status,
-                result.backup_path.as_ref(),
-                None,
-            );
-            ok(
-                "中转配置已写入，密钥未在界面明文显示。",
-                relay_payload(status, result.backup_path),
-            )
-        }
-        Err(error) => {
-            let status = codex_plus_core::relay_config::relay_status_from_home(&home);
-            log_relay_apply_result(
-                "manager.apply_relay_injection.failed",
-                &relay,
-                &status,
-                None,
-                Some(error.to_string()),
-            );
-            failed(
-                &format!("写入中转配置失败：{error}"),
-                relay_payload(status, None),
-            )
-        }
-    }
-}
-
-fn apply_aggregate_relay_injection_to_home(home: &Path) -> CommandResult<RelayPayload> {
-    match codex_plus_core::relay_config::apply_relay_config_to_home_with_protocol(
-        home,
-        &codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
-            codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
-        ),
-        "codex-plus-aggregate",
-        codex_plus_core::settings::RelayProtocol::Responses,
-        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
-    ) {
-        Ok(result) => {
-            let status = codex_plus_core::relay_config::relay_status_from_home(home);
-            ok(
-                "聚合供应商配置已写入，真实请求会由本地代理按策略轮转。",
-                relay_payload(status, result.backup_path),
-            )
-        }
-        Err(error) => {
-            let status = codex_plus_core::relay_config::relay_status_from_home(home);
-            failed(
-                &format!("写入聚合供应商配置失败：{error}"),
-                relay_payload(status, None),
-            )
-        }
-    }
+    tauri::async_runtime::spawn_blocking(|| apply_active_relay_profile_blocking("供应商配置"))
+        .await
+        .expect("blocking command panicked")
 }
 
 #[tauri::command]
 pub async fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
-    tauri::async_runtime::spawn_blocking(|| {
-        with_context_tables_protected(apply_pure_api_injection_unguarded)
-    })
-    .await
-    .expect("blocking command panicked")
+    tauri::async_runtime::spawn_blocking(|| apply_active_relay_profile_blocking("纯 API 配置"))
+        .await
+        .expect("blocking command panicked")
 }
 
-fn apply_pure_api_injection_unguarded() -> CommandResult<RelayPayload> {
+fn apply_active_relay_profile_blocking(label: &str) -> CommandResult<RelayPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
-    let settings = SettingsStore::default().load().unwrap_or_default();
-    if !settings.relay_profiles_enabled {
-        let status = codex_plus_core::relay_config::relay_status_from_home(&home);
-        return failed(
-            "供应商配置总开关已关闭，未写入 config.toml / auth.json。",
-            relay_payload(status, None),
-        );
-    }
-    let relay = settings.active_relay_profile();
-    log_relay_apply_request("manager.apply_pure_api_injection", &settings, &relay);
-    if relay_has_complete_files(&relay) {
-        return match codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules_and_computer_use_guard(
-            &home,
-            &relay,
-            &relay_combined_common_config(&settings),
-            settings.computer_use_guard_enabled,
-        ) {
-            Ok(result) => {
-                let status = codex_plus_core::relay_config::relay_status_from_home(&home);
-                log_relay_apply_result(
-                    "manager.apply_pure_api_injection.ok",
-                    &relay,
-                    &status,
-                    result.backup_path.as_ref(),
-                    None,
-                );
-                if !status.configured {
-                    return failed(
-                        "纯 API 配置写入后未检测到完整 custom provider，请检查 config.toml 和供应商 API Key。",
-                        relay_payload(status, result.backup_path),
-                    );
-                }
-                ok(
-                    "已按兼容切换规则切换供应商。",
-                    relay_payload(status, result.backup_path),
-                )
-            }
-            Err(error) => {
-                let status = codex_plus_core::relay_config::relay_status_from_home(&home);
-                log_relay_apply_result(
-                    "manager.apply_pure_api_injection.failed",
-                    &relay,
-                    &status,
-                    None,
-                    Some(error.to_string()),
-                );
-                failed(
-                    &format!("切换纯 API 配置失败：{error}"),
-                    relay_payload(status, None),
-                )
-            }
-        };
-    }
-
-    match codex_plus_core::relay_config::apply_pure_api_config_to_home_with_protocol(
-        &home,
-        &relay.base_url,
-        &relay.api_key,
-        relay.protocol,
-        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
-    ) {
-        Ok(result) => {
+    let settings = SettingsStore::default()
+        .load()
+        .map(sanitize_settings_for_output)
+        .unwrap_or_default();
+    let active_id = settings.active_relay_id.clone();
+    match commit_relay_profile_transaction(settings, &active_id) {
+        Ok(_) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
-            log_relay_apply_result(
-                "manager.apply_pure_api_injection.ok",
-                &relay,
-                &status,
-                result.backup_path.as_ref(),
-                None,
-            );
-            if !status.configured {
-                return failed(
-                    "纯 API 配置写入后未检测到完整 custom provider，请检查 config.toml 和供应商 API Key。",
-                    relay_payload(status, result.backup_path),
-                );
-            }
             ok(
-                "纯 API 模式已写入：config.toml 已写入 custom provider，auth.json 已切换为当前供应商。",
-                relay_payload(status, result.backup_path),
-            )
-        }
-        Err(error) => {
-            let status = codex_plus_core::relay_config::relay_status_from_home(&home);
-            log_relay_apply_result(
-                "manager.apply_pure_api_injection.failed",
-                &relay,
-                &status,
-                None,
-                Some(error.to_string()),
-            );
-            failed(
-                &format!("写入纯 API 模式失败：{error}"),
+                &format!("{label}已通过统一事务写入，live auth 保持不变。"),
                 relay_payload(status, None),
             )
         }
+        Err(error) => failed(
+            &format!("{label}写入失败：{error}"),
+            relay_payload(
+                codex_plus_core::relay_config::relay_status_from_home(&home),
+                None,
+            ),
+        ),
     }
 }
 
 #[tauri::command]
 pub async fn clear_relay_injection() -> CommandResult<RelayPayload> {
-    tauri::async_runtime::spawn_blocking(|| {
-        with_context_tables_protected(clear_relay_injection_unguarded)
-    })
-    .await
-    .expect("blocking command panicked")
+    tauri::async_runtime::spawn_blocking(clear_relay_injection_blocking)
+        .await
+        .expect("blocking command panicked")
 }
 
-fn clear_relay_injection_unguarded() -> CommandResult<RelayPayload> {
+fn clear_relay_injection_blocking() -> CommandResult<RelayPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
-    let settings = SettingsStore::default().load().unwrap_or_default();
-    let relay = settings.active_relay_profile();
     log_manager_event("manager.clear_relay_injection.start", json!({}));
-    let auth_contents = (relay.relay_mode == codex_plus_core::settings::RelayMode::Official
-        && !relay.official_mix_api_key
-        && !relay.auth_contents.trim().is_empty())
-    .then_some(relay.auth_contents.as_str());
-    match codex_plus_core::relay_config::clear_relay_config_to_home_with_auth(&home, auth_contents)
-    {
-        Ok(result) => {
+    let result = (|| -> anyhow::Result<()> {
+        let _guard = live_state::lock()?;
+        live_state::prepare_secret_paths(&home)?;
+        live_state::recover_locked()?;
+        migrate_legacy_profile_auth_locked()?;
+        let auth_path = home.join("auth.json");
+        let auth_before = read_optional_bytes(&auth_path)?;
+        let staged = with_private_staging_home("clear", |stage_home| {
+            seed_staging_config(&home, stage_home)?;
+            codex_plus_core::relay_config::clear_relay_config_to_home_with_auth(stage_home, None)?;
+            anyhow::ensure!(
+                !stage_home.join("auth.json").exists(),
+                "clear staged auth.json"
+            );
+            Ok(std::fs::read_to_string(stage_home.join("config.toml"))?)
+        })?;
+        let (protected, context_snapshot) = context_protected_config(&home, &staged)?;
+        live_state::commit_locked_verified(
+            &[FileMutation::text(home.join("config.toml"), protected)],
+            || {
+                verify_context_tables(&home, &context_snapshot)?;
+                anyhow::ensure!(
+                    read_optional_bytes(&auth_path)? == auth_before,
+                    "live auth changed"
+                );
+                Ok(())
+            },
+        )
+    })();
+    match result {
+        Ok(()) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
             log_manager_event(
                 "manager.clear_relay_injection.ok",
                 json!({
-                    "configured": status.configured,
-                    "backupPath": result.backup_path.as_ref()
+                    "configured": status.configured
                 }),
             );
             ok(
                 "已清除 custom 中转 API 模式，并切换到官方 ChatGPT 登录模式。",
-                relay_payload(status, result.backup_path),
+                relay_payload(status, None),
             )
         }
         Err(error) => {
@@ -2533,59 +2610,6 @@ fn clear_relay_injection_unguarded() -> CommandResult<RelayPayload> {
             )
         }
     }
-}
-
-fn relay_has_complete_files(relay: &codex_plus_core::settings::RelayProfile) -> bool {
-    if relay.relay_mode == codex_plus_core::settings::RelayMode::Official
-        && relay.official_mix_api_key
-    {
-        return !relay.config_contents.trim().is_empty();
-    }
-    !relay.config_contents.trim().is_empty() && !relay.auth_contents.trim().is_empty()
-}
-
-fn log_relay_apply_request(
-    event: &str,
-    settings: &BackendSettings,
-    relay: &codex_plus_core::settings::RelayProfile,
-) {
-    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-        event,
-        json!({
-            "activeRelayId": settings.active_relay_id,
-            "relayId": relay.id,
-            "relayName": relay.name,
-            "relayMode": relay.relay_mode,
-            "protocol": relay.protocol,
-            "baseUrl": relay.base_url,
-            "hasConfigContents": !relay.config_contents.trim().is_empty(),
-            "hasAuthContents": !relay.auth_contents.trim().is_empty(),
-            "configContainsProxy": relay.config_contents.contains("127.0.0.1:57321")
-        }),
-    );
-}
-
-fn log_relay_apply_result(
-    event: &str,
-    relay: &codex_plus_core::settings::RelayProfile,
-    status: &codex_plus_core::relay_config::RelayStatus,
-    backup_path: Option<&String>,
-    error: Option<String>,
-) {
-    log_manager_event(
-        event,
-        json!({
-            "relayId": relay.id,
-            "relayName": relay.name,
-            "relayMode": relay.relay_mode,
-            "protocol": relay.protocol,
-            "configured": status.configured,
-            "requiresOpenaiAuth": status.requires_openai_auth,
-            "hasBearerToken": status.has_bearer_token,
-            "backupPath": backup_path,
-            "error": error
-        }),
-    );
 }
 
 fn log_manager_event(event: &str, detail: Value) {
@@ -2657,12 +2681,13 @@ fn relay_switch_payload(
 /// 的根源），所以这里在写入前快照、写入后原样回植。
 const PROTECTED_CONTEXT_TABLES: &[&str] = &["mcp_servers", "skills", "plugins"];
 
+#[derive(Clone)]
 struct ContextTablesSnapshot {
     tables: Vec<(&'static str, Option<toml_edit::Item>)>,
 }
 
 fn snapshot_context_tables(home: &Path) -> anyhow::Result<ContextTablesSnapshot> {
-    let contents = std::fs::read_to_string(home.join("config.toml")).unwrap_or_default();
+    let contents = read_optional_text_file(&home.join("config.toml"))?;
     let doc: toml_edit::DocumentMut = contents.parse()?;
     Ok(ContextTablesSnapshot {
         tables: PROTECTED_CONTEXT_TABLES
@@ -2685,9 +2710,10 @@ fn render_context_table(name: &str, item: Option<&toml_edit::Item>) -> String {
     }
 }
 
+#[cfg(test)]
 fn restore_context_tables(home: &Path, snapshot: &ContextTablesSnapshot) -> anyhow::Result<()> {
     let config_path = home.join("config.toml");
-    let contents = std::fs::read_to_string(&config_path).unwrap_or_default();
+    let contents = read_optional_text_file(&config_path)?;
     let mut doc: toml_edit::DocumentMut = contents.parse()?;
     let mut changed = false;
     for (name, item) in &snapshot.tables {
@@ -2707,36 +2733,113 @@ fn restore_context_tables(home: &Path, snapshot: &ContextTablesSnapshot) -> anyh
         changed = true;
     }
     if changed {
-        std::fs::write(&config_path, doc.to_string())?;
+        live_state::atomic_write_owner_only(&config_path, doc.to_string().as_bytes())?;
         log_manager_event(
             "manager.context_guard.restored",
             json!({ "tables": PROTECTED_CONTEXT_TABLES }),
         );
     }
+    verify_context_tables(home, snapshot)
+}
+
+fn verify_context_tables(home: &Path, snapshot: &ContextTablesSnapshot) -> anyhow::Result<()> {
+    let current = snapshot_context_tables(home)?;
+    for ((name, expected), (current_name, actual)) in
+        snapshot.tables.iter().zip(current.tables.iter())
+    {
+        anyhow::ensure!(name == current_name, "Context snapshot table order changed");
+        anyhow::ensure!(
+            render_context_table(name, expected.as_ref())
+                == render_context_table(current_name, actual.as_ref()),
+            "受保护 Context 表 {name} 写入后校验失败"
+        );
+    }
     Ok(())
 }
 
-fn with_context_tables_protected<T>(run: impl FnOnce() -> T) -> T {
-    let home = codex_plus_core::relay_config::default_codex_home_dir();
-    let snapshot = snapshot_context_tables(&home);
-    let result = run();
-    match snapshot {
-        Ok(snapshot) => {
-            if let Err(error) = restore_context_tables(&home, &snapshot) {
-                log_manager_event(
-                    "manager.context_guard.restore_failed",
-                    json!({ "error": error.to_string() }),
-                );
-            }
-        }
-        Err(error) => {
-            log_manager_event(
-                "manager.context_guard.snapshot_failed",
-                json!({ "error": error.to_string() }),
-            );
+fn context_protected_config(
+    home: &Path,
+    candidate: &str,
+) -> anyhow::Result<(String, ContextTablesSnapshot)> {
+    let live_contents = read_optional_text_file(&home.join("config.toml"))?;
+    let live_doc: toml_edit::DocumentMut = live_contents.parse()?;
+    let snapshot = snapshot_context_tables(home)?;
+    let mut candidate_doc: toml_edit::DocumentMut = candidate.parse()?;
+
+    let live_keys = live_doc
+        .as_table()
+        .iter()
+        .map(|(name, _)| name.to_string())
+        .collect::<std::collections::HashSet<_>>();
+    let candidate_keys = candidate_doc
+        .as_table()
+        .iter()
+        .map(|(name, _)| name.to_string())
+        .collect::<Vec<_>>();
+    for name in candidate_keys {
+        if !is_provider_owned_root_item(&name) && !live_keys.contains(&name) {
+            candidate_doc.as_table_mut().remove(&name);
         }
     }
-    result
+    for (name, item) in live_doc.as_table().iter() {
+        if !is_provider_owned_root_item(name) {
+            candidate_doc[name] = item.clone();
+        }
+    }
+    for (name, item) in &snapshot.tables {
+        match item {
+            Some(item) => candidate_doc[*name] = item.clone(),
+            None => {
+                candidate_doc.as_table_mut().remove(name);
+            }
+        }
+    }
+
+    let rendered = candidate_doc.to_string();
+    let parsed_back: toml_edit::DocumentMut = rendered.parse()?;
+    for (name, item) in &snapshot.tables {
+        anyhow::ensure!(
+            render_context_table(name, parsed_back.get(name))
+                == render_context_table(name, item.as_ref()),
+            "受保护 Context 表 {name} 回植校验失败"
+        );
+    }
+    for (name, item) in live_doc.as_table().iter() {
+        if is_provider_owned_root_item(name) {
+            continue;
+        }
+        anyhow::ensure!(
+            render_toml_item(name, parsed_back.get(name)) == render_toml_item(name, Some(item)),
+            "无关根配置 {name} 未能保持原样"
+        );
+    }
+    Ok((rendered, snapshot))
+}
+
+fn is_provider_owned_root_item(name: &str) -> bool {
+    matches!(
+        name,
+        "model"
+            | "model_provider"
+            | "model_catalog_json"
+            | "base_url"
+            | "OPENAI_API_KEY"
+            | "model_context_window"
+            | "model_auto_compact_token_limit"
+            | "codex_plus_chat_base_url"
+            | "model_providers"
+    )
+}
+
+fn render_toml_item(name: &str, item: Option<&toml_edit::Item>) -> String {
+    match item {
+        Some(item) => {
+            let mut doc = toml_edit::DocumentMut::new();
+            doc[name] = item.clone();
+            doc.to_string()
+        }
+        None => String::new(),
+    }
 }
 
 /// 销毁 settings 存储中的 managed context 副本：残缺的 `[mcp_servers.*]` 拷贝
@@ -2760,24 +2863,31 @@ fn scrub_managed_context_state(settings: &mut BackendSettings) -> bool {
 }
 
 pub fn scrub_managed_context_store() {
-    let store = SettingsStore::default();
-    let Ok(mut settings) = store.load() else {
-        return;
-    };
-    if scrub_managed_context_state(&mut settings) {
-        match store.save(&settings) {
-            Ok(()) => log_manager_event("manager.context_guard.store_scrubbed", json!({})),
-            Err(error) => log_manager_event(
-                "manager.context_guard.store_scrub_failed",
-                json!({ "error": error.to_string() }),
-            ),
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    let result = (|| -> anyhow::Result<bool> {
+        let _guard = live_state::lock()?;
+        live_state::prepare_secret_paths(&home)?;
+        live_state::recover_locked()?;
+        migrate_legacy_profile_auth_locked()?;
+        let mut settings = SettingsStore::default().load()?;
+        let dirty = scrub_managed_context_state(&mut settings);
+        settings = normalize_settings_before_save(settings);
+        if dirty {
+            live_state::commit_locked(&[FileMutation::bytes(
+                codex_plus_core::paths::default_settings_path(),
+                serialize_settings_without_profile_auth(&settings)?,
+            )])?;
         }
+        Ok(dirty)
+    })();
+    match result {
+        Ok(true) => log_manager_event("manager.context_guard.store_scrubbed", json!({})),
+        Ok(false) => {}
+        Err(error) => log_manager_event(
+            "manager.context_guard.store_scrub_failed",
+            json!({ "error": error.to_string() }),
+        ),
     }
-}
-
-fn relay_switch_mutex() -> &'static Mutex<()> {
-    static RELAY_SWITCH_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    RELAY_SWITCH_LOCK.get_or_init(|| Mutex::new(()))
 }
 
 fn relay_files_payload_from_home(home: &std::path::Path) -> anyhow::Result<RelayFilesPayload> {
@@ -2787,25 +2897,19 @@ fn relay_files_payload_from_home(home: &std::path::Path) -> anyhow::Result<Relay
         config_path: config_path.to_string_lossy().to_string(),
         auth_path: auth_path.to_string_lossy().to_string(),
         config_contents: read_optional_text_file(&config_path)?,
-        auth_contents: read_optional_text_file(&auth_path)?,
+        auth_status: live_auth_status_payload(home),
     })
 }
 
-fn save_relay_file_in_home(
-    home: &std::path::Path,
-    kind: &str,
-    contents: &str,
-) -> anyhow::Result<()> {
-    let path = match kind {
-        "config" => home.join("config.toml"),
-        "auth" => home.join("auth.json"),
-        other => anyhow::bail!("未知配置文件类型：{other}"),
-    };
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+fn live_auth_status_payload(home: &Path) -> LiveAuthStatusPayload {
+    let status = codex_plus_core::relay_config::chatgpt_auth_status_from_home(home);
+    LiveAuthStatusPayload {
+        authenticated: status.authenticated,
+        source: status.source,
+        account_label: status.account_label,
+        action_required: (!status.authenticated)
+            .then(|| "请在官方 Codex/ChatGPT 客户端中登录。".to_string()),
     }
-    std::fs::write(path, contents)?;
-    Ok(())
 }
 
 fn read_optional_text_file(path: &std::path::Path) -> anyhow::Result<String> {
@@ -2845,7 +2949,7 @@ fn settings_payload_value() -> Result<SettingsPayload, (anyhow::Error, SettingsP
         .to_string();
     match store.load() {
         Ok(settings) => Ok(SettingsPayload {
-            settings,
+            settings: sanitize_settings_for_output(settings),
             settings_path,
             user_scripts: user_script_inventory(),
         }),
@@ -2858,6 +2962,72 @@ fn settings_payload_value() -> Result<SettingsPayload, (anyhow::Error, SettingsP
             },
         )),
     }
+}
+
+fn fallback_settings_payload() -> SettingsPayload {
+    SettingsPayload {
+        settings: BackendSettings::default(),
+        settings_path: codex_plus_core::paths::default_settings_path()
+            .to_string_lossy()
+            .to_string(),
+        user_scripts: user_script_inventory(),
+    }
+}
+
+fn sanitize_settings_for_output(mut settings: BackendSettings) -> BackendSettings {
+    for profile in &mut settings.relay_profiles {
+        sanitize_profile_after_core_normalize(profile);
+    }
+    settings
+}
+
+fn serialize_settings_without_profile_auth(settings: &BackendSettings) -> anyhow::Result<Vec<u8>> {
+    let mut value = serde_json::to_value(settings)?;
+    if let Some(profiles) = value.get_mut("relayProfiles").and_then(Value::as_array_mut) {
+        for profile in profiles {
+            if let Some(profile) = profile.as_object_mut() {
+                profile.remove("authContents");
+            }
+        }
+    }
+    Ok(serde_json::to_vec_pretty(&value)?)
+}
+
+fn migrate_legacy_profile_auth_locked() -> anyhow::Result<()> {
+    let settings_path = codex_plus_core::paths::default_settings_path();
+    if !settings_path.exists() {
+        return Ok(());
+    }
+    live_state::ensure_owner_only_file(&settings_path)?;
+    let raw = std::fs::read_to_string(&settings_path)?;
+    let contains_profile_auth = serde_json::from_str::<Value>(&raw)
+        .ok()
+        .and_then(|value| value.get("relayProfiles").cloned())
+        .and_then(|value| value.as_array().cloned())
+        .is_some_and(|profiles| {
+            profiles.iter().any(|profile| {
+                profile
+                    .get("authContents")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.trim().is_empty())
+            })
+        });
+    if !contains_profile_auth {
+        return Ok(());
+    }
+
+    let settings = SettingsStore::default().load()?;
+    let settings = normalize_settings_before_save(settings);
+    let bytes = serialize_settings_without_profile_auth(&settings)?;
+    // Credential migration intentionally has no prior-file backup. The old file is
+    // secured first and then atomically replaced so OAuth copies cannot survive in
+    // a recovery artifact.
+    live_state::atomic_write_owner_only(&settings_path, &bytes)?;
+    log_manager_event(
+        "manager.profile_auth_migration.completed",
+        json!({ "profileCount": settings.relay_profiles.len() }),
+    );
+    Ok(())
 }
 
 fn user_script_inventory() -> Value {
@@ -3276,5 +3446,118 @@ enabled = true
         );
         // 二次执行应为 no-op
         assert!(!scrub_managed_context_state(&mut settings));
+    }
+
+    #[test]
+    fn raw_auth_save_is_rejected() {
+        assert!(validate_relay_file_save_kind("auth").is_err());
+        assert!(validate_relay_file_save_kind("config").is_ok());
+    }
+
+    #[test]
+    fn normalization_removes_oauth_copies_and_projects_pure_api_key_to_config() {
+        let mut settings = BackendSettings::default();
+        settings.relay_profiles = vec![RelayProfile {
+            id: "pure".to_string(),
+            relay_mode: codex_plus_core::settings::RelayMode::PureApi,
+            base_url: "https://example.test/v1".to_string(),
+            upstream_base_url: "https://example.test/v1".to_string(),
+            auth_contents: r#"{
+                "OPENAI_API_KEY": "sk-test",
+                "auth_mode": "chatgpt",
+                "tokens": {"access_token": "oauth", "refresh_token": "refresh"}
+            }"#
+            .to_string(),
+            ..RelayProfile::default()
+        }];
+        let settings = normalize_settings_before_save(settings);
+        let profile = &settings.relay_profiles[0];
+        assert!(profile.auth_contents.is_empty());
+        assert_eq!(
+            provider_bearer_token_from_config(&profile.config_contents).as_deref(),
+            Some("sk-test")
+        );
+        let doc: toml_edit::DocumentMut = profile.config_contents.parse().unwrap();
+        let provider = doc["model_provider"].as_str().unwrap();
+        assert_eq!(
+            doc["model_providers"][provider]["requires_openai_auth"].as_bool(),
+            Some(false)
+        );
+        let persisted =
+            String::from_utf8(serialize_settings_without_profile_auth(&settings).unwrap()).unwrap();
+        assert!(!persisted.contains("oauth"));
+        assert!(!persisted.contains("refresh"));
+        assert!(!persisted.contains("authContents"));
+    }
+
+    #[test]
+    fn context_transaction_preserves_unrelated_root_settings() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join("config.toml"),
+            format!("{LIVE_CONFIG}\napproval_policy = \"never\"\n[profiles.work]\nmodel = \"x\"\n"),
+        )
+        .unwrap();
+        let candidate = r#"model_provider = "Other"
+model = "other"
+
+[model_providers.Other]
+name = "Other"
+base_url = "https://other.test"
+"#;
+        let (protected, snapshot) = context_protected_config(home.path(), candidate).unwrap();
+        assert!(protected.contains("approval_policy = \"never\""));
+        assert!(protected.contains("[profiles.work]"));
+        assert!(protected.contains("[mcp_servers.memory]"));
+        live_state::atomic_write_owner_only(&home.path().join("config.toml"), protected.as_bytes())
+            .unwrap();
+        verify_context_tables(home.path(), &snapshot).unwrap();
+    }
+
+    #[test]
+    fn invalid_live_config_fails_before_context_mutation() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("config.toml"), "[broken").unwrap();
+        assert!(context_protected_config(home.path(), "model = \"safe\"\n").is_err());
+        assert_eq!(
+            std::fs::read_to_string(home.path().join("config.toml")).unwrap(),
+            "[broken"
+        );
+    }
+
+    #[test]
+    fn pure_api_staging_uses_config_bearer_without_touching_live_auth() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("config.toml"), LIVE_CONFIG).unwrap();
+        std::fs::write(home.path().join("auth.json"), "official-auth").unwrap();
+        let auth_before = std::fs::read(home.path().join("auth.json")).unwrap();
+        let mut settings = BackendSettings::default();
+        settings.relay_profiles_enabled = true;
+        settings.active_relay_id = "pure".to_string();
+        settings.relay_profiles = vec![RelayProfile {
+            id: "pure".to_string(),
+            name: "Pure".to_string(),
+            relay_mode: codex_plus_core::settings::RelayMode::PureApi,
+            base_url: "https://example.test/v1".to_string(),
+            upstream_base_url: "https://example.test/v1".to_string(),
+            api_key: "sk-stage".to_string(),
+            config_contents: set_provider_config_bearer("", "sk-stage", false).unwrap(),
+            ..RelayProfile::default()
+        }];
+        let staged = stage_active_relay_config(home.path(), &settings).unwrap();
+        assert_eq!(
+            provider_bearer_token_from_config(&staged).as_deref(),
+            Some("sk-stage")
+        );
+        let doc: toml_edit::DocumentMut = staged.parse().unwrap();
+        let provider = doc["model_provider"].as_str().unwrap();
+        assert_eq!(
+            doc["model_providers"][provider]["requires_openai_auth"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            std::fs::read(home.path().join("auth.json")).unwrap(),
+            auth_before
+        );
     }
 }
