@@ -16,6 +16,10 @@
   - why: GitHub rewrites spaces in uploaded asset names, which made the first Windows checksum entries unresolvable, while the stale `main` filter skipped ordinary default-branch CI
   - verified: the corrected release has exactly one macOS archive, one MSI, one NSIS installer, and one checksum file with matching names and hashes; workflow YAML and shell packaging paths parse cleanly
   - refs: `.github/workflows/build.yml`, release `v0.3.0`
+- **docs**: synced the completed model-catalog behavior contract into the main OpenSpec tree and archived `manage-model-catalogs`
+  - why: preserve the nine implemented requirements as the durable capability specification while removing the completed change from the active queue
+  - verified: the main spec matches the archived delta semantically, both strict validations pass, all 49 tasks are complete, and commit `9c68b8b` is pushed to `master`
+  - refs: `openspec/specs/model-catalog-management/spec.md`, `openspec/changes/archive/2026-08-06-manage-model-catalogs/`
 
 ### 2026-08-05
 
