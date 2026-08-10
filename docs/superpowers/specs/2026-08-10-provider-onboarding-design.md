@@ -18,7 +18,7 @@
 2. 删除全部模板、模板搜索、分类和模板选择状态，不迁移或改写既有供应商。
 3. 首次保存成功后留在当前详情页，刷新目录状态并立即解锁完整功能。
 4. 未登录时引导用户在官方 Codex／ChatGPT 客户端登录免费账号；Manager 不发起、不代理也不保存 OAuth。
-5. 供应商诊断在确认属于可选输出限制字段不兼容时，只重试一次不带该字段的最小 Responses 请求。
+5. 供应商诊断在确认属于可选输出限制字段不兼容、或命中已知严格 generic wrapper 时，只重试一次不带该字段的最小 Responses 请求。
 6. 保持 Context 保护罩、事务回滚、OAuth 所有权和 owner-only 权限不变。
 
 ## 非目标
@@ -50,9 +50,9 @@
 
 1. 草稿转换为已保存 profile，但页面不返回列表。
 2. 前端用后端返回的规范化 profile 替换草稿。
-3. 调用一次 `model_catalog_status`，让后端为新 profile 建立默认 `official-plus-custom` 状态。
+3. 等待任何保存前已在运行的目录读取结束，再调用一次保存后的 `model_catalog_status`，让后端为新 profile 建立默认 `official-plus-custom` 状态。
 4. 详情页切换为已保存模式，显示「设为当前」、完整模型目录、Provider Doctor 和配置预览。
-5. 保存或目录刷新失败时留在当前页并显示具体失败，不制造半成功提示。
+5. 保存失败时保留草稿且不更新 canonical settings；保存成功但目录刷新失败时明确显示「已保存、目录同步失败」，留在当前页重试，不把两种结果混成含糊的半成功提示。
 
 「设为当前」仍是单独、显式的动作；首次保存不会自动切换 live provider。
 
@@ -72,7 +72,7 @@
 
 ### 首次保存状态机
 
-详情页明确区分 `draft`、`saving`、`saved` 三态。保存函数返回规范化 profile ID；父组件在同一页更新 `detailProfileId`、清空 `newProfileDraft`，再刷新模型目录。刷新完成前显示稳定的加载状态，不把 `summary = null` 解释成「供应商不支持托管目录」。
+详情页明确区分 `draft`、`saving`、`saved` 三态。保存函数只在后端成功时提交 canonical settings；失败时保留本地 draft，不把未落盘 profile 乐观写进父状态。成功后父组件在同一页更新 profile ID，再通过 after-current queue 执行一次保存后的目录读取。刷新完成前显示稳定的加载状态，不把 `summary = null` 解释成「供应商不支持托管目录」。
 
 ### 诊断兼容重试
 
@@ -80,8 +80,8 @@
 
 1. Responses 首次请求保持当前最小 payload。
 2. 仅当 HTTP 400 且响应命中以下 allowlist 时，再发送一次删除 `max_output_tokens` 的 payload：响应明确包含 `max_output_tokens` 与 unknown／unsupported／invalid parameter 语义；或结构化错误严格等于 `type = "upstream_error"` 且 `message = "Upstream request failed"`。
-3. 第二次结果作为最终结果，并在结构化结果中标记 `compatibility_fallback_used = true`。
-4. 非 400、认证失败、模型不存在、限流、网络错误或普通 upstream error 不重试。
+3. 第二次结果作为最终结果，并在结构化结果中标记 `compatibility_fallback_used = true`、首次 HTTP status；若第二次发生传输错误，保留首次 400 并返回稳定的最终传输失败类别，不能用 HTTP 0 误报成功。
+4. 非 400、认证失败、模型不存在、限流、网络错误或其他 upstream error 不重试。
 5. Chat Completions 不进入此兼容分支。
 
 该修复先进入 `BigPizzaV3/CodexPlusPlus`，本仓库只把 git dependency revision 升级到包含修复的上游 commit。若上游修复尚不可用，本仓库停止在 revision 升级之前，不复制 HTTP 请求逻辑。
@@ -108,6 +108,7 @@
 - 新建默认值精确为 official＋mixed key＋Responses。
 - 新建页不再引用或渲染任何模板。
 - 首次保存成功后仍停留在相同 profile 详情，并触发一次目录刷新。
+- 首次保存恰逢已有目录刷新时，会在旧刷新结束后再执行一次保存后刷新；保存失败不会刷新或把草稿写入 canonical state。
 - 目录刷新期间不显示错误的「不可用」状态。
 - 既有 profile 的模式和协议保持不变。
 
@@ -117,6 +118,7 @@
 - 明确字段不兼容的 HTTP 400 会删除该字段并重试一次。
 - 认证、模型、限流和普通 upstream error 不触发重试。
 - fallback 成功返回 HTTP 200 并标记兼容路径。
+- fallback transport 失败保留首次 HTTP 400、兼容路径与最终失败类别。
 - 请求和诊断输出不包含 Key。
 
 ### 本仓库 Rust 与集成
