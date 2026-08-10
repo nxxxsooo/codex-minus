@@ -84,6 +84,10 @@ import {
   type NetworkPolicyModeValue,
   type NetworkPolicyStatusView,
 } from "./network-policy-ui";
+import {
+  createNewRelayProfileDraft,
+  validateNewProviderDraft,
+} from "./provider-onboarding";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 
 
@@ -3052,7 +3056,14 @@ function RelayProfileDetail({
     setDraft(nextDraft);
     setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || ""));
   }, [profile.id, profile.configContents, profile.modelList, profile.modelWindows]);
-  const validationError = isAggregateRelayProfile(draft) ? aggregateRelayProfileValidation(draft) : null;
+  const newProviderFieldErrors = isNew && !isAggregateRelayProfile(draft)
+    ? validateNewProviderDraft(draft)
+    : {};
+  const validationError = isAggregateRelayProfile(draft)
+    ? aggregateRelayProfileValidation(draft)
+    : Object.keys(newProviderFieldErrors).length
+      ? t("请填写所有必填字段。")
+      : null;
   const draftWithModelRows = () => {
     const serializedRows = serializeModelWindowRows(modelWindowRows);
     return { ...draft, modelList: serializedRows.modelList, modelWindows: serializedRows.modelWindows };
@@ -3167,6 +3178,7 @@ function RelayProfileEditor({
     );
   }
 
+  const newProviderFieldErrors = isNew ? validateNewProviderDraft(profile) : {};
   const showApiFields = profile.relayMode !== "official" || profile.officialMixApiKey;
   const updateDraft = (patch: Partial<RelayProfile>) => {
     onProfileChange(applyRelayProfilePatchToFiles(profile, patch, { allowGenerateFiles: isNew }));
@@ -3218,25 +3230,34 @@ function RelayProfileEditor({
             onChange={(event) => updateDraft({ name: event.currentTarget.value })}
           />
         </Field>
-        <Field className="relay-field-mode" label={t("接入模式")}>
-          <select
-            className="field-select"
-            value={profile.relayMode}
-            onChange={(event) => {
-              const relayMode = event.currentTarget.value as RelayMode;
-              updateDraft(relayMode === "official" ? { relayMode, officialMixApiKey: false } : { relayMode });
-            }}
-          >
-            <option value="official">{t("官方登录")}</option>
-            <option value="pureApi">{t("纯 API")}</option>
-          </select>
-        </Field>
+        {isNew ? (
+          <Field className="relay-field-mode" label={t("接入模式")}>
+            <p className="field-hint">{t("官方登录＋混入 API Key＋Responses API")}</p>
+          </Field>
+        ) : (
+          <Field className="relay-field-mode" label={t("接入模式")}>
+            <select
+              className="field-select"
+              value={profile.relayMode}
+              onChange={(event) => {
+                const relayMode = event.currentTarget.value as RelayMode;
+                updateDraft(relayMode === "official" ? { relayMode, officialMixApiKey: false } : { relayMode });
+              }}
+            >
+              <option value="official">{t("官方登录")}</option>
+              <option value="pureApi">{t("纯 API")}</option>
+            </select>
+          </Field>
+        )}
         <Field className="relay-field-config-model" label={t("配置模型")}>
           <Input
+            aria-describedby={newProviderFieldErrors.model ? "provider-model-error" : undefined}
+            aria-invalid={newProviderFieldErrors.model ? true : undefined}
             value={profile.model}
             onChange={(event) => updateDraft({ model: event.currentTarget.value })}
             placeholder={t("例如 deepseek-v4-pro")}
           />
+          {newProviderFieldErrors.model ? <p className="field-hint" id="provider-model-error" role="alert">{t("必填")}</p> : null}
           <p className="field-hint">
             {t("默认启动 Codex 时使用的模型名，请勿带后缀；上下文窗口请在下方「模型列表」中按模型单独配置。")}
           </p>
@@ -3302,7 +3323,7 @@ function RelayProfileEditor({
             ) : null}
           </div>
         ) : null}
-        {profile.relayMode === "official" ? (
+        {!isNew && profile.relayMode === "official" ? (
           <Field className="relay-field-official-key" label="API Key">
             <label className="inline-check">
               <input
@@ -3318,37 +3339,45 @@ function RelayProfileEditor({
           <div className="relay-api-fields">
             <Field className="relay-field-base-url" label="Base URL">
               <Input
+                aria-describedby={newProviderFieldErrors.baseUrl ? "provider-base-url-error" : undefined}
+                aria-invalid={newProviderFieldErrors.baseUrl ? true : undefined}
                 value={profile.baseUrl}
                 onChange={(event) => updateDraft({ baseUrl: event.currentTarget.value })}
                 placeholder={t("填写中转服务 Base URL")}
               />
+              {newProviderFieldErrors.baseUrl ? <p className="field-hint" id="provider-base-url-error" role="alert">{t("必填")}</p> : null}
             </Field>
             <Field className="relay-field-key" label="Key">
               <Input
+                aria-describedby={newProviderFieldErrors.apiKey ? "provider-api-key-error" : undefined}
+                aria-invalid={newProviderFieldErrors.apiKey ? true : undefined}
                 type="password"
                 value={profile.apiKey}
                 onChange={(event) => updateDraft({ apiKey: event.currentTarget.value })}
                 placeholder={t("输入中转服务的 API Key")}
               />
+              {newProviderFieldErrors.apiKey ? <p className="field-hint" id="provider-api-key-error" role="alert">{t("必填")}</p> : null}
             </Field>
-            <Field className="relay-field-protocol" label={t("上游协议")}>
-              <div className="protocol-options">
-                <button
-                  className={`protocol-option ${profile.protocol === "responses" ? "active" : ""}`}
-                  onClick={() => updateDraft({ protocol: "responses" })}
-                  type="button"
-                >
-                  Responses API
-                </button>
-                <button
-                  className={`protocol-option ${profile.protocol === "chatCompletions" ? "active" : ""}`}
-                  onClick={() => updateDraft({ protocol: "chatCompletions" })}
-                  type="button"
-                >
-                  Chat Completions
-                </button>
-              </div>
-            </Field>
+            {isNew ? null : (
+              <Field className="relay-field-protocol" label={t("上游协议")}>
+                <div className="protocol-options">
+                  <button
+                    className={`protocol-option ${profile.protocol === "responses" ? "active" : ""}`}
+                    onClick={() => updateDraft({ protocol: "responses" })}
+                    type="button"
+                  >
+                    Responses API
+                  </button>
+                  <button
+                    className={`protocol-option ${profile.protocol === "chatCompletions" ? "active" : ""}`}
+                    onClick={() => updateDraft({ protocol: "chatCompletions" })}
+                    type="button"
+                  >
+                    Chat Completions
+                  </button>
+                </div>
+              </Field>
+            )}
           </div>
         ) : null}
         {showApiFields ? (
@@ -4941,28 +4970,7 @@ function updateRelayProfile(settings: BackendSettings, id: string, patch: Partia
 function createRelayProfile(settings: BackendSettings): RelayProfile {
   const id = `relay-${Date.now().toString(36)}`;
   const contextSelection = contextSelectionForAllEntries(settings);
-  const next = {
-    id,
-    name: tf("供应商 {0}", [settings.relayProfiles.length + 1]),
-    model: "",
-    baseUrl: defaultSettings.relayBaseUrl,
-    upstreamBaseUrl: defaultSettings.relayBaseUrl,
-    apiKey: "",
-    protocol: "responses" as RelayProtocol,
-    relayMode: "official" as RelayMode,
-    officialMixApiKey: false,
-    testModel: "",
-    configContents: "",
-    authContents: "",
-    useCommonConfig: true,
-    contextSelection,
-    contextSelectionInitialized: true,
-    contextWindow: "",
-    autoCompactLimit: "",
-    modelList: "",
-    modelWindows: "",
-    userAgent: "",
-  };
+  const next = createNewRelayProfileDraft({ id, contextSelection });
   return withGeneratedRelayFiles(next);
 }
 
