@@ -314,6 +314,8 @@ pub struct RelayProfileTestPayload {
     pub http_status: u16,
     pub endpoint: String,
     pub response_preview: String,
+    pub compatibility_fallback_used: bool,
+    pub initial_http_status: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -347,6 +349,8 @@ pub struct ProviderDoctorPayload {
     pub summary: String,
     pub recommendation: String,
     pub checks: Vec<ProviderDoctorCheck>,
+    pub compatibility_fallback_used: bool,
+    pub initial_http_status: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2201,6 +2205,110 @@ pub fn extract_relay_common_config(
     }
 }
 
+#[derive(Debug, Clone)]
+struct RelayProfileCompatibilityTestResult {
+    http_status: u16,
+    endpoint: String,
+    response_preview: String,
+    compatibility_fallback_used: bool,
+    initial_http_status: Option<u16>,
+}
+
+async fn test_relay_profile_with_compatibility(
+    profile: &RelayProfile,
+    model: &str,
+) -> anyhow::Result<RelayProfileCompatibilityTestResult> {
+    let initial = codex_plus_core::relay_config::test_relay_profile(profile, model).await?;
+    if !responses_output_limit_fallback_allowed(
+        profile.protocol,
+        initial.http_status,
+        &initial.response_preview,
+    ) {
+        return Ok(RelayProfileCompatibilityTestResult {
+            http_status: initial.http_status,
+            endpoint: initial.endpoint,
+            response_preview: initial.response_preview,
+            compatibility_fallback_used: false,
+            initial_http_status: None,
+        });
+    }
+
+    let api_key = codex_plus_core::relay_config::relay_profile_api_key(profile);
+    anyhow::ensure!(!api_key.trim().is_empty(), "API Key 不能为空");
+    let client = codex_plus_core::http_client::proxied_client("CodexMinus/RelayTestFallback")?;
+    let payload = json!({
+        "model": model.trim(),
+        "input": "hi"
+    });
+    let response = client
+        .post(&initial.endpoint)
+        .bearer_auth(api_key.trim())
+        .header("content-type", "application/json")
+        .body(payload.to_string())
+        .send()
+        .await?;
+    let http_status = response.status().as_u16();
+    let response_text = response.text().await.unwrap_or_default();
+    let response_preview = response_text
+        .replace(api_key.trim(), "[REDACTED]")
+        .chars()
+        .take(320)
+        .collect();
+    Ok(RelayProfileCompatibilityTestResult {
+        http_status,
+        endpoint: initial.endpoint,
+        response_preview,
+        compatibility_fallback_used: true,
+        initial_http_status: Some(initial.http_status),
+    })
+}
+
+fn responses_output_limit_fallback_allowed(
+    protocol: codex_plus_core::settings::RelayProtocol,
+    http_status: u16,
+    response_text: &str,
+) -> bool {
+    if protocol != codex_plus_core::settings::RelayProtocol::Responses || http_status != 400 {
+        return false;
+    }
+
+    let normalized = response_text.to_ascii_lowercase();
+    if normalized.contains("max_output_tokens")
+        && [
+            "unknown parameter",
+            "unknown field",
+            "unrecognized parameter",
+            "unsupported parameter",
+            "unsupported field",
+            "invalid parameter",
+            "invalid field",
+            "not supported",
+        ]
+        .iter()
+        .any(|phrase| normalized.contains(phrase))
+    {
+        return true;
+    }
+
+    serde_json::from_str::<Value>(response_text)
+        .ok()
+        .is_some_and(|value| {
+            let Some(error) = value.get("error") else {
+                return false;
+            };
+            error.get("type").and_then(Value::as_str) == Some("upstream_error")
+                && error.get("message").and_then(Value::as_str) == Some("Upstream request failed")
+        })
+}
+
+fn compatibility_fallback_note(used: bool) -> &'static str {
+    if used {
+        " 已通过省略 max_output_tokens 的兼容重试。"
+    } else {
+        ""
+    }
+}
+
 #[tauri::command]
 pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayProfileTestPayload> {
     let profile_name = if profile.name.trim().is_empty() {
@@ -2222,7 +2330,7 @@ pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayPro
             from_profile
         }
     };
-    match codex_plus_core::relay_config::test_relay_profile(&profile, &test_model).await {
+    match test_relay_profile_with_compatibility(&profile, &test_model).await {
         Ok(result) => {
             let status = if result.http_status < 400 {
                 "ok"
@@ -2238,13 +2346,16 @@ pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayPro
             CommandResult {
                 status: status.to_string(),
                 message: format!(
-                    "已向「{profile_name}」用模型「{test_model}」发送 hi，HTTP {}。{detail}",
-                    result.http_status
+                    "已向「{profile_name}」用模型「{test_model}」发送 hi，HTTP {}。{detail}{}",
+                    result.http_status,
+                    compatibility_fallback_note(result.compatibility_fallback_used)
                 ),
                 payload: RelayProfileTestPayload {
                     http_status: result.http_status,
                     endpoint: result.endpoint,
                     response_preview: result.response_preview,
+                    compatibility_fallback_used: result.compatibility_fallback_used,
+                    initial_http_status: result.initial_http_status,
                 },
             }
         }
@@ -2254,6 +2365,8 @@ pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayPro
                 http_status: 0,
                 endpoint: String::new(),
                 response_preview: String::new(),
+                compatibility_fallback_used: false,
+                initial_http_status: None,
             },
         ),
     }
@@ -2328,6 +2441,8 @@ pub async fn diagnose_relay_profile(profile: RelayProfile) -> CommandResult<Prov
             summary: "官方登录供应商无需 API 诊断。".to_string(),
             recommendation: "如果 Codex 官方账号可用，直接使用官方登录模式即可。".to_string(),
             checks,
+            compatibility_fallback_used: false,
+            initial_http_status: None,
         };
         return ok("Provider Doctor：官方登录供应商无需 API 诊断。", payload);
     }
@@ -2352,6 +2467,8 @@ pub async fn diagnose_relay_profile(profile: RelayProfile) -> CommandResult<Prov
             recommendation: "先填写 Base URL 和 API Key；如果是官方账号，请切换到官方登录模式。"
                 .to_string(),
             checks,
+            compatibility_fallback_used: false,
+            initial_http_status: None,
         };
         return failed("Provider Doctor：配置不完整。", payload);
     }
@@ -2407,8 +2524,12 @@ pub async fn diagnose_relay_profile(profile: RelayProfile) -> CommandResult<Prov
         }),
     }
 
-    match codex_plus_core::relay_config::test_relay_profile(&profile, &test_model).await {
+    let mut compatibility_fallback_used = false;
+    let mut initial_http_status = None;
+    match test_relay_profile_with_compatibility(&profile, &test_model).await {
         Ok(result) => {
+            compatibility_fallback_used = result.compatibility_fallback_used;
+            initial_http_status = result.initial_http_status;
             let status = if result.http_status < 400 {
                 "ok"
             } else {
@@ -2421,13 +2542,18 @@ pub async fn diagnose_relay_profile(profile: RelayProfile) -> CommandResult<Prov
                 status: status.to_string(),
                 detail: if preview.is_empty() {
                     format!(
-                        "{} 返回 HTTP {}，响应内容为空。",
-                        result.endpoint, result.http_status
+                        "{} 返回 HTTP {}，响应内容为空。{}",
+                        result.endpoint,
+                        result.http_status,
+                        compatibility_fallback_note(result.compatibility_fallback_used)
                     )
                 } else {
                     format!(
-                        "{} 返回 HTTP {}：{}",
-                        result.endpoint, result.http_status, preview
+                        "{} 返回 HTTP {}：{}{}",
+                        result.endpoint,
+                        result.http_status,
+                        preview,
+                        compatibility_fallback_note(result.compatibility_fallback_used)
                     )
                 },
             });
@@ -2473,6 +2599,8 @@ pub async fn diagnose_relay_profile(profile: RelayProfile) -> CommandResult<Prov
             summary,
             recommendation,
             checks,
+            compatibility_fallback_used,
+            initial_http_status,
         },
     }
 }
@@ -3559,5 +3687,222 @@ base_url = "https://other.test"
             std::fs::read(home.path().join("auth.json")).unwrap(),
             auth_before
         );
+    }
+}
+
+#[cfg(test)]
+mod provider_test_compatibility_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread::JoinHandle;
+
+    fn spawn_provider_test_server(
+        responses: Vec<(u16, String)>,
+    ) -> (String, JoinHandle<Vec<Value>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            responses
+                .into_iter()
+                .map(|(status, response_body)| {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    let mut request = Vec::new();
+                    let mut buffer = [0_u8; 4096];
+                    let (header_end, content_length) = loop {
+                        let read = stream.read(&mut buffer).unwrap();
+                        assert!(read > 0, "request closed before headers completed");
+                        request.extend_from_slice(&buffer[..read]);
+                        if let Some(header_end) =
+                            request.windows(4).position(|part| part == b"\r\n\r\n")
+                        {
+                            let headers = String::from_utf8_lossy(&request[..header_end]);
+                            let content_length = headers
+                                .lines()
+                                .find_map(|line| {
+                                    let (name, value) = line.split_once(':')?;
+                                    name.eq_ignore_ascii_case("content-length")
+                                        .then(|| value.trim().parse::<usize>().unwrap())
+                                })
+                                .unwrap_or_default();
+                            break (header_end + 4, content_length);
+                        }
+                    };
+                    while request.len() < header_end + content_length {
+                        let read = stream.read(&mut buffer).unwrap();
+                        assert!(read > 0, "request closed before body completed");
+                        request.extend_from_slice(&buffer[..read]);
+                    }
+                    let body = if content_length == 0 {
+                        Value::Null
+                    } else {
+                        serde_json::from_slice(
+                            &request[header_end..header_end + content_length],
+                        )
+                        .unwrap()
+                    };
+                    let reason = if status < 400 { "OK" } else { "Bad Request" };
+                    write!(
+                        stream,
+                        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                        response_body.len(),
+                    )
+                    .unwrap();
+                    body
+                })
+                .collect()
+        });
+        (format!("http://{address}/v1"), handle)
+    }
+
+    fn provider_test_profile(base_url: String, api_key: &str) -> RelayProfile {
+        RelayProfile {
+            base_url,
+            api_key: api_key.to_string(),
+            relay_mode: codex_plus_core::settings::RelayMode::PureApi,
+            protocol: codex_plus_core::settings::RelayProtocol::Responses,
+            ..RelayProfile::default()
+        }
+    }
+
+    #[test]
+    fn manager_provider_probe_retries_without_max_output_tokens() {
+        let api_key = "sk-manager-fallback-secret";
+        let (base_url, server) = spawn_provider_test_server(vec![
+            (
+                400,
+                r#"{"error":{"message":"Upstream request failed","type":"upstream_error"}}"#
+                    .to_string(),
+            ),
+            (200, format!(r#"{{"id":"response-ok","echo":"{api_key}"}}"#)),
+        ]);
+        let profile = provider_test_profile(base_url, api_key);
+
+        let result = tauri::async_runtime::block_on(test_relay_profile_with_compatibility(
+            &profile, "gpt-test",
+        ))
+        .unwrap();
+        let bodies = server.join().unwrap();
+
+        assert_eq!(bodies.len(), 2);
+        assert_eq!(bodies[0]["max_output_tokens"], 16);
+        assert!(bodies[1].get("max_output_tokens").is_none());
+        assert_eq!(result.http_status, 200);
+        assert!(result.compatibility_fallback_used);
+        assert_eq!(result.initial_http_status, Some(400));
+        assert!(!result.response_preview.contains(api_key));
+        assert!(result.response_preview.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn manager_provider_probe_does_not_retry_non_allowlisted_errors() {
+        let (base_url, server) = spawn_provider_test_server(vec![(
+            401,
+            r#"{"error":{"message":"Unknown parameter: max_output_tokens","type":"invalid_request_error"}}"#
+                .to_string(),
+        )]);
+        let profile = provider_test_profile(base_url, "sk-manager-no-retry");
+
+        let result = tauri::async_runtime::block_on(test_relay_profile_with_compatibility(
+            &profile, "gpt-test",
+        ))
+        .unwrap();
+        let bodies = server.join().unwrap();
+
+        assert_eq!(bodies.len(), 1);
+        assert_eq!(result.http_status, 401);
+        assert!(!result.compatibility_fallback_used);
+        assert_eq!(result.initial_http_status, None);
+    }
+
+    #[test]
+    fn manager_provider_probe_fallback_is_strictly_allowlisted() {
+        assert!(responses_output_limit_fallback_allowed(
+            codex_plus_core::settings::RelayProtocol::Responses,
+            400,
+            r#"{"error":{"message":"Unknown parameter: max_output_tokens","type":"invalid_request_error"}}"#,
+        ));
+        assert!(responses_output_limit_fallback_allowed(
+            codex_plus_core::settings::RelayProtocol::Responses,
+            400,
+            r#"{"error":{"message":"Upstream request failed","type":"upstream_error"}}"#,
+        ));
+        assert!(!responses_output_limit_fallback_allowed(
+            codex_plus_core::settings::RelayProtocol::Responses,
+            400,
+            r#"{"error":{"message":"model not found","type":"invalid_request_error"}}"#,
+        ));
+        assert!(!responses_output_limit_fallback_allowed(
+            codex_plus_core::settings::RelayProtocol::ChatCompletions,
+            400,
+            r#"{"error":{"message":"Unknown parameter: max_output_tokens"}}"#,
+        ));
+    }
+
+    #[test]
+    fn quick_provider_test_surfaces_compatibility_fallback() {
+        let (base_url, server) = spawn_provider_test_server(vec![
+            (
+                400,
+                r#"{"error":{"message":"Upstream request failed","type":"upstream_error"}}"#
+                    .to_string(),
+            ),
+            (
+                200,
+                r#"{"id":"response-ok","status":"completed"}"#.to_string(),
+            ),
+        ]);
+        let mut profile = provider_test_profile(base_url, "sk-quick-fallback");
+        profile.name = "Quick Test".to_string();
+        profile.test_model = "gpt-test".to_string();
+
+        let result = tauri::async_runtime::block_on(super::test_relay_profile(profile));
+        assert_eq!(result.status, "ok");
+        assert_eq!(result.payload.http_status, 200);
+        assert!(result.payload.compatibility_fallback_used);
+        assert_eq!(result.payload.initial_http_status, Some(400));
+        assert!(result.message.contains("兼容重试"));
+        let bodies = server.join().unwrap();
+        assert_eq!(bodies.len(), 2);
+    }
+
+    #[test]
+    fn provider_doctor_surfaces_compatibility_fallback() {
+        let (base_url, server) = spawn_provider_test_server(vec![
+            (200, r#"{"data":[{"id":"gpt-test"}]}"#.to_string()),
+            (
+                400,
+                r#"{"error":{"message":"Upstream request failed","type":"upstream_error"}}"#
+                    .to_string(),
+            ),
+            (
+                200,
+                r#"{"id":"response-ok","status":"completed"}"#.to_string(),
+            ),
+        ]);
+        let mut profile = provider_test_profile(base_url, "sk-doctor-fallback");
+        profile.name = "Doctor Test".to_string();
+        profile.test_model = "gpt-test".to_string();
+
+        let result = tauri::async_runtime::block_on(super::diagnose_relay_profile(profile));
+        assert_eq!(result.status, "ok");
+        assert!(result.payload.compatibility_fallback_used);
+        assert_eq!(result.payload.initial_http_status, Some(400));
+        let bodies = server.join().unwrap();
+        let request_check = result
+            .payload
+            .checks
+            .iter()
+            .find(|check| check.id == "request")
+            .unwrap();
+
+        assert_eq!(bodies.len(), 3);
+        assert_eq!(bodies[1]["max_output_tokens"], 16);
+        assert!(bodies[2].get("max_output_tokens").is_none());
+        assert_eq!(request_check.status, "ok");
+        assert!(request_check.detail.contains("兼容重试"));
     }
 }

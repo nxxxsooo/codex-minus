@@ -454,6 +454,8 @@ type RelayProfileTestResult = CommandResult<{
   httpStatus: number;
   endpoint: string;
   responsePreview: string;
+  compatibilityFallbackUsed: boolean;
+  initialHttpStatus: number | null;
 }>;
 
 type StepwiseTestResult = CommandResult<{
@@ -551,6 +553,8 @@ type ProviderDoctorResult = CommandResult<{
   summary: string;
   recommendation: string;
   checks: ProviderDoctorCheck[];
+  compatibilityFallbackUsed: boolean;
+  initialHttpStatus: number | null;
 }>;
 
 type CcsProviderImport = {

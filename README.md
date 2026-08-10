@@ -57,6 +57,7 @@ shasum -a 256 -c SHA256SUMS
 - settings、provider config、模型目录与 live 指针通过一个可恢复事务提交，失败时恢复完整上一代。
 - 切换后读取实际 `model_provider`，相同 provider 不触发会话扫描。
 - 检查可能覆盖供应商配置的 `OPENAI_*` 环境变量。
+- 供应商快速测试与 Provider Doctor 遇到严格匹配的 Responses HTTP 400 字段兼容错误时，会在 Manager 内省略可选的 `max_output_tokens` 重试一次并明确标记；认证、模型、限流、普通上游错误和 Chat Completions 不重试。
 
 ### 模型目录
 

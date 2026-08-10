@@ -6,6 +6,13 @@
 
 ## Changelog
 
+### 2026-08-10
+
+- **fix/providers**: made Quick Test and Provider Doctor retry one strictly allowlisted Responses HTTP 400 without the optional `max_output_tokens` field, while preserving the original status, final endpoint, redacted preview, and an explicit compatibility marker
+  - why: the configured relay returned a generic `upstream_error` for the synthetic output limit even though the same model and request succeeded when that optional field was omitted, causing the Manager to report a false provider failure
+  - verified: a live controlled probe reproduced HTTP 400 with the field and HTTP 200 without it; 65 Rust tests pass with one live-OAuth test intentionally ignored, including five new classifier, retry, negative-path, redaction, Quick Test, and Provider Doctor regressions; all 19 frontend tests, TypeScript check, Vite production build, Rust formatting, diff checks, and the full ad-hoc-signed macOS Tauri bundle build pass
+  - refs: `src-tauri/src/commands.rs`, `src/App.tsx`, `README.md`
+
 ### 2026-08-06
 
 - **release**: published Codex-- Manager `v0.3.0` for macOS arm64 and Windows x86_64, refreshed the GitHub project surface, and deployed the matching project and portfolio pages
