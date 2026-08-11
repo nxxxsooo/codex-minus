@@ -55,6 +55,19 @@ fn pure_oauth_profile(id: &str) -> RelayProfile {
     }
 }
 
+fn legacy_pure_api_profile(id: &str, auth_contents: &str) -> RelayProfile {
+    let mut profile = canonical_profile(
+        id,
+        "official-a",
+        "https://legacy.example/v1",
+        "legacy-provider-key",
+    );
+    profile.relay_mode = RelayMode::PureApi;
+    profile.official_mix_api_key = false;
+    profile.auth_contents = auth_contents.to_string();
+    profile
+}
+
 fn settings_with(profiles: Vec<RelayProfile>, active: &str) -> BackendSettings {
     BackendSettings {
         relay_profiles_enabled: true,
@@ -649,6 +662,77 @@ fn concurrent_official_auth_update_is_preserved_while_manager_targets_roll_back(
     let mut manager_after = fixture.file_generation();
     manager_after.remove("codex-home/auth.json").unwrap();
     assert_eq!(manager_after, manager_before);
+}
+
+#[test]
+fn persisted_legacy_auth_migrates_only_api_key_only_payloads() {
+    let active = pure_oauth_profile("official");
+    let mut api_only =
+        legacy_pure_api_profile("legacy", r#"{"OPENAI_API_KEY":"migrated-provider-key"}"#);
+    api_only.api_key.clear();
+    api_only.config_contents = api_only
+        .config_contents
+        .replace("experimental_bearer_token = \"legacy-provider-key\"\n", "");
+    let initial = settings_with(vec![active.clone(), api_only], "official");
+    let fixture = Fixture::new(&initial, &state_with_official());
+    let persisted = fixture.read_settings();
+
+    commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(
+            &persisted,
+            &persisted,
+            "legacy",
+            ProviderCommitAction::Save,
+            59,
+        ),
+    )
+    .unwrap();
+
+    let raw_settings = fs::read_to_string(&fixture.paths.settings_path).unwrap();
+    assert!(!raw_settings.contains("authContents"));
+    assert!(!raw_settings.contains("OPENAI_API_KEY"));
+    let migrated: BackendSettings = serde_json::from_str(&raw_settings).unwrap();
+    let migrated_profile = migrated
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == "legacy")
+        .unwrap();
+    assert_eq!(
+        selected_provider_field(
+            &migrated_profile.config_contents,
+            "experimental_bearer_token"
+        ),
+        "migrated-provider-key"
+    );
+
+    for forbidden_auth in [
+        r#"{"auth_mode":"chatgpt","tokens":{"access_token":"oauth-access-sentinel","refresh_token":"oauth-refresh-sentinel"}}"#,
+        r#"{"OPENAI_API_KEY":"provider-key-sentinel","auth_mode":"chatgpt","tokens":{"access_token":"oauth-access-sentinel"}}"#,
+    ] {
+        let forbidden = legacy_pure_api_profile("legacy", forbidden_auth);
+        let initial = settings_with(vec![active.clone(), forbidden], "official");
+        let fixture = Fixture::new(&initial, &state_with_official());
+        let before = fixture.file_generation();
+        let persisted = fixture.read_settings();
+
+        let error = commit_provider_detail_from_paths(
+            &fixture.paths,
+            request(
+                &persisted,
+                &persisted,
+                "legacy",
+                ProviderCommitAction::Save,
+                60,
+            ),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), ProviderCommitErrorCode::InputUnavailable);
+        assert!(!error.to_string().contains("oauth-access-sentinel"));
+        assert!(!error.to_string().contains("provider-key-sentinel"));
+        assert_eq!(fixture.file_generation(), before);
+    }
 }
 
 #[test]

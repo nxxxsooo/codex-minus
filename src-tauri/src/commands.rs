@@ -2315,11 +2315,53 @@ fn load_provider_commit_settings(path: &Path) -> anyhow::Result<BackendSettings>
     let mut settings: BackendSettings = serde_json::from_slice(&bytes)
         .map_err(|_| anyhow::anyhow!("provider settings are invalid"))?;
     for profile in &mut settings.relay_profiles {
+        migrate_persisted_legacy_api_key_auth(profile)?;
         codex_plus_core::relay_config::normalize_relay_profile_for_storage(profile)
             .map_err(|_| anyhow::anyhow!("persisted provider profile is invalid"))?;
         sanitize_profile_after_core_normalize_fallible(profile)?;
     }
     Ok(settings)
+}
+
+fn migrate_persisted_legacy_api_key_auth(profile: &mut RelayProfile) -> anyhow::Result<()> {
+    if profile.auth_contents.is_empty() {
+        return Ok(());
+    }
+    let value: serde_json::Value = serde_json::from_str(&profile.auth_contents)
+        .map_err(|_| anyhow::anyhow!("persisted provider auth copy is invalid"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("persisted provider auth copy is invalid"))?;
+    anyhow::ensure!(
+        object.len() == 1 && object.contains_key("OPENAI_API_KEY"),
+        "persisted provider auth copy is not API-key-only"
+    );
+    let legacy_key = object
+        .get("OPENAI_API_KEY")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("persisted provider API key is missing"))?;
+    anyhow::ensure!(
+        profile.relay_mode == codex_plus_core::settings::RelayMode::PureApi
+            || (profile.relay_mode == codex_plus_core::settings::RelayMode::Official
+                && profile.official_mix_api_key),
+        "persisted provider auth copy has no provider-key owner"
+    );
+    if !profile.api_key.trim().is_empty() {
+        anyhow::ensure!(
+            profile.api_key.as_bytes() == legacy_key.as_bytes(),
+            "persisted provider key conflict"
+        );
+    }
+    if let Some(bearer) = provider_bearer_token_from_config(&profile.config_contents) {
+        anyhow::ensure!(
+            bearer.as_bytes() == legacy_key.as_bytes(),
+            "persisted provider bearer conflict"
+        );
+    }
+    profile.api_key = legacy_key.to_string();
+    profile.auth_contents.clear();
+    Ok(())
 }
 
 fn sanitized_provider_normalization_error(error: &anyhow::Error) -> &'static str {
