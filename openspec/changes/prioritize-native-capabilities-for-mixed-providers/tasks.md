@@ -53,7 +53,7 @@
 - [x] 5.5 Add a specific regression proving a Base-URL-only edit can no longer turn `requires_openai_auth = false` back into `true`.
 - [x] 5.6 Remove the provider-scoped goals control or relocate it to its true live/global owner, and add a regression proving provider edits cannot introduce or change `[features].goals`.
 - [x] 5.7 Load backend-derived inspection state into the provider-detail draft as response-only UI metadata and prove it is never serialized into `settings.json`.
-- [ ] 5.8 Treat a protocol change from Responses to Chat Completions as an explicit compatibility exit with a capability-loss preview rather than an ordinary contract-preserving edit.
+- [x] 5.8 Treat a protocol change from Responses to Chat Completions as an explicit compatibility exit with a capability-loss preview rather than an ordinary contract-preserving edit.
 
 ## 6. Add explicit upgrade, exit, and capability-status UX
 
