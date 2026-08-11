@@ -1,8 +1,9 @@
 use codex_minus_lib::provider_capability_evidence::{
     ActorMarkerEvidence, CatalogModelEvidence, FreePlanRule, ImageCapabilityPath,
-    ImagePlanEvidence, ImagePolicySource, LocalPlanEvidence, OAuthSessionEvidence,
-    ProviderCapabilityEvidenceRequest, ProviderContractEvidence, ProviderRouteEvidence,
-    RuntimeEvidence, inspect_provider_capability_evidence_command_from_paths,
+    ImageGenerationEvidence, ImagePlanEvidence, ImagePolicySource, LocalPlanEvidence,
+    OAuthSessionEvidence, ProviderCapabilityEvidenceRequest, ProviderContractEvidence,
+    ProviderRouteEvidence, RuntimeEvidence, TextResponsesEvidence,
+    inspect_provider_capability_evidence_command_from_paths,
     inspect_provider_capability_evidence_from_paths,
 };
 use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol};
@@ -84,6 +85,8 @@ fn trusted_read_only_evidence_is_redacted_and_never_invents_target_policy() {
     assert_eq!(payload.local_plan, LocalPlanEvidence::Unknown);
     assert_eq!(payload.actor_marker, ActorMarkerEvidence::Eligible);
     assert_eq!(payload.catalog_model, CatalogModelEvidence::Unknown);
+    assert_eq!(payload.text_responses, TextResponsesEvidence::Unknown);
+    assert_eq!(payload.image_generation, ImageGenerationEvidence::Unknown);
     assert_eq!(payload.runtime, RuntimeEvidence::RestartRequired);
     assert_eq!(
         payload.route_kind,
@@ -112,6 +115,36 @@ fn trusted_read_only_evidence_is_redacted_and_never_invents_target_policy() {
     assert_eq!(std::fs::read(&settings_path).unwrap(), settings_before);
     assert_eq!(std::fs::read(&catalog_path).unwrap(), catalog_before);
     assert_eq!(std::fs::read(&auth_path).unwrap(), auth_before);
+
+    std::fs::write(
+        &catalog_path,
+        br#"{
+          "target":{"clientVersion":"0.147.0-alpha.6.5","trusted":true},
+          "profiles":{"relay-one":{"mode":"official-plus-custom","modeExplicit":true,"generatedHash":"catalog-hash","restartRequired":true}}
+        }"#,
+    )
+    .unwrap();
+    let generated_without_metadata = inspect_provider_capability_evidence_from_paths(
+        &settings_path,
+        &catalog_path,
+        &codex_home,
+        ProviderCapabilityEvidenceRequest {
+            profile_id: "relay-one".to_string(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        generated_without_metadata.catalog_model,
+        CatalogModelEvidence::MissingMetadata
+    );
+    assert_eq!(
+        generated_without_metadata.text_responses,
+        TextResponsesEvidence::Unknown
+    );
+    assert_eq!(
+        generated_without_metadata.image_generation,
+        ImageGenerationEvidence::Unknown
+    );
 
     std::fs::write(
         &settings_path,
