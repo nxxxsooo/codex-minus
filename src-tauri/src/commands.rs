@@ -1967,6 +1967,7 @@ pub enum ProviderCommitCheckpoint {
     Normalization,
     CatalogMaterialization,
     SettingsPersistence,
+    LiveConfigCommit,
 }
 
 impl ProviderCommitFailure {
@@ -2250,12 +2251,15 @@ pub fn commit_provider_detail_from_paths_observed(
             .map_err(transaction_failure)?,
     );
 
+    let live_config_path = paths.codex_home.join("config.toml");
     live_state::commit_locked_verified_at_observed(
         &paths.app_state,
         &mutations,
         |path| {
             if path == paths.settings_path {
                 observe(ProviderCommitCheckpoint::SettingsPersistence)?;
+            } else if path == live_config_path {
+                observe(ProviderCommitCheckpoint::LiveConfigCommit)?;
             }
             Ok(())
         },
