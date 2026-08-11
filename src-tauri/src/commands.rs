@@ -507,61 +507,184 @@ fn save_settings_blocking(settings: BackendSettings) -> CommandResult<SettingsPa
     let result = save_settings_with_provider_guard_at(&ProviderCommitPaths::defaults(), settings);
     match result {
         Ok(()) => settings_payload("设置已保存。", "设置保存后重新读取失败"),
-        Err(_) => match settings_payload_value() {
-            Ok(payload) => failed(
-                "保存设置失败；供应商相关改动必须使用统一供应商保存。",
-                payload,
-            ),
-            Err((_, payload)) => failed(
-                "保存设置失败；供应商相关改动必须使用统一供应商保存。",
-                payload,
-            ),
+        Err(error) => match settings_payload_value() {
+            Ok(payload) => failed(error.user_message(), payload),
+            Err((_, payload)) => failed(error.user_message(), payload),
         },
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GenericSettingsSaveError {
+    ProviderOwnedDifference,
+    ProviderAuthProhibited,
+    PersistedSettingsInvalid,
+    SecureStorageFailed,
+}
+
+impl GenericSettingsSaveError {
+    fn user_message(self) -> &'static str {
+        match self {
+            Self::ProviderOwnedDifference => "保存设置失败；供应商相关改动必须使用统一供应商保存。",
+            Self::ProviderAuthProhibited => "保存设置失败；供应商认证内容不能通过通用设置保存。",
+            Self::PersistedSettingsInvalid => "保存设置失败；本地设置文件无效，请先修复设置文件。",
+            Self::SecureStorageFailed => "保存设置失败；安全存储事务未能完成。",
+        }
+    }
+}
+
+impl std::fmt::Display for GenericSettingsSaveError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::ProviderOwnedDifference => "provider-owned settings differ from persisted state",
+            Self::ProviderAuthProhibited => "provider-owned authContents is prohibited",
+            Self::PersistedSettingsInvalid => "persisted settings are invalid",
+            Self::SecureStorageFailed => "secure settings transaction failed",
+        })
+    }
+}
+
+impl std::error::Error for GenericSettingsSaveError {}
+
+fn ui_provider_topology_projection(
+    mut settings: BackendSettings,
+) -> Result<crate::provider_commit::ProviderOwnedTopologyDraft, GenericSettingsSaveError> {
+    let all_context = codex_plus_core::relay_config::list_context_entries_from_common_config(
+        &settings.relay_context_config_contents,
+    )
+    .map_err(|_| GenericSettingsSaveError::PersistedSettingsInvalid)?;
+    let all_context = RelayContextSelection {
+        mcp_servers: all_context
+            .mcp_servers
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect(),
+        skills: all_context
+            .skills
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect(),
+        plugins: all_context
+            .plugins
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect(),
+    };
+    for profile in &mut settings.relay_profiles {
+        sanitize_profile_after_core_normalize(profile);
+        if profile.relay_mode == codex_plus_core::settings::RelayMode::MixedApi {
+            profile.relay_mode = codex_plus_core::settings::RelayMode::Official;
+            profile.official_mix_api_key = true;
+        }
+        if profile.relay_mode == codex_plus_core::settings::RelayMode::Official
+            && !profile.official_mix_api_key
+        {
+            profile.model.clear();
+            profile.base_url.clear();
+            profile.upstream_base_url.clear();
+            profile.api_key.clear();
+            profile.config_contents.clear();
+        }
+        if profile.relay_mode == codex_plus_core::settings::RelayMode::Aggregate {
+            profile.model.clear();
+            profile.base_url.clear();
+            profile.upstream_base_url.clear();
+            profile.api_key.clear();
+            profile.config_contents.clear();
+            profile.context_window.clear();
+            profile.auto_compact_limit.clear();
+            profile.model_list.clear();
+            profile.model_windows.clear();
+        }
+        if !profile.context_selection_initialized {
+            profile.context_selection = all_context.clone();
+            profile.context_selection_initialized = true;
+        }
+    }
+    if !settings
+        .relay_profiles
+        .iter()
+        .any(|profile| profile.id == settings.active_relay_id)
+    {
+        settings.active_relay_id = settings
+            .relay_profiles
+            .first()
+            .map(|profile| profile.id.clone())
+            .unwrap_or_else(|| "default".to_string());
+    }
+    if let Some(active) = settings
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == settings.active_relay_id)
+    {
+        settings.relay_base_url = active.base_url.clone();
+        settings.relay_api_key = active.api_key.clone();
+    }
+    Ok(crate::provider_commit::ProviderOwnedTopologyDraft::from_settings(&settings))
 }
 
 pub(crate) fn save_settings_with_provider_guard_at(
     paths: &ProviderCommitPaths,
     incoming: BackendSettings,
-) -> anyhow::Result<()> {
+) -> Result<(), GenericSettingsSaveError> {
     use crate::provider_commit::ProviderOwnedTopologyDraft;
 
-    let _guard = live_state::lock()?;
-    live_state::prepare_secret_paths_at(&paths.app_state, &paths.settings_path, &paths.codex_home)?;
-    live_state::recover_locked_at(&paths.app_state)?;
-    let persisted_bytes = std::fs::read(&paths.settings_path)
-        .context("persisted settings are unavailable for provider-owned comparison")?;
-    let persisted: BackendSettings = serde_json::from_slice(&persisted_bytes)
-        .context("persisted settings are invalid for provider-owned comparison")?;
-    anyhow::ensure!(
-        persisted
+    let _guard = live_state::lock().map_err(|_| GenericSettingsSaveError::SecureStorageFailed)?;
+    live_state::prepare_secret_paths_at(&paths.app_state, &paths.settings_path, &paths.codex_home)
+        .map_err(|_| GenericSettingsSaveError::SecureStorageFailed)?;
+    live_state::recover_locked_at(&paths.app_state)
+        .map_err(|_| GenericSettingsSaveError::SecureStorageFailed)?;
+    let (persisted, persisted_for_ui) = match std::fs::read(&paths.settings_path) {
+        Ok(persisted_bytes) => {
+            let persisted: BackendSettings = serde_json::from_slice(&persisted_bytes)
+                .map_err(|_| GenericSettingsSaveError::PersistedSettingsInvalid)?;
+            let persisted_for_ui = SettingsStore::new(paths.settings_path.clone())
+                .load()
+                .map_err(|_| GenericSettingsSaveError::PersistedSettingsInvalid)?;
+            (persisted, persisted_for_ui)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let defaults = BackendSettings::default();
+            (defaults.clone(), defaults)
+        }
+        Err(_) => return Err(GenericSettingsSaveError::SecureStorageFailed),
+    };
+    if persisted
+        .relay_profiles
+        .iter()
+        .any(|profile| !profile.auth_contents.is_empty())
+        || incoming
             .relay_profiles
             .iter()
-            .all(|profile| profile.auth_contents.is_empty()),
-        "persisted provider-owned authContents requires controlled migration"
-    );
-    anyhow::ensure!(
-        incoming
-            .relay_profiles
-            .iter()
-            .all(|profile| profile.auth_contents.is_empty()),
-        "incoming provider-owned authContents is prohibited"
-    );
+            .any(|profile| !profile.auth_contents.is_empty())
+    {
+        return Err(GenericSettingsSaveError::ProviderAuthProhibited);
+    }
     let persisted_topology = ProviderOwnedTopologyDraft::from_settings(&persisted);
     let incoming_topology = ProviderOwnedTopologyDraft::from_settings(&incoming);
-    anyhow::ensure!(
-        serde_json::to_vec(&persisted_topology)? == serde_json::to_vec(&incoming_topology)?,
-        "provider-owned settings differ from persisted state"
-    );
+    let persisted_ui_topology = ui_provider_topology_projection(persisted_for_ui)?;
+    let incoming_bytes = serde_json::to_vec(&incoming_topology)
+        .map_err(|_| GenericSettingsSaveError::SecureStorageFailed)?;
+    let matches_raw = serde_json::to_vec(&persisted_topology)
+        .map_err(|_| GenericSettingsSaveError::SecureStorageFailed)?
+        == incoming_bytes;
+    let matches_ui = serde_json::to_vec(&persisted_ui_topology)
+        .map_err(|_| GenericSettingsSaveError::SecureStorageFailed)?
+        == incoming_bytes;
+    if !matches_raw && !matches_ui {
+        return Err(GenericSettingsSaveError::ProviderOwnedDifference);
+    }
 
     let normalized_unrelated = normalize_settings_before_save(incoming);
     let merged = persisted_topology.apply_to(&normalized_unrelated);
-    let bytes = serialize_settings_without_profile_auth(&merged)?;
+    let bytes = serialize_settings_without_profile_auth(&merged)
+        .map_err(|_| GenericSettingsSaveError::SecureStorageFailed)?;
     live_state::commit_locked_verified_at(
         &paths.app_state,
         &[FileMutation::bytes(paths.settings_path.clone(), bytes)],
         || Ok(()),
     )
+    .map_err(|_| GenericSettingsSaveError::SecureStorageFailed)
 }
 
 #[tauri::command]

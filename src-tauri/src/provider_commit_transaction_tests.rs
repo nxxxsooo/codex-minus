@@ -1,9 +1,10 @@
 use std::fs;
 
 use crate::commands::{
-    ProviderCommitCheckpoint, ProviderCommitErrorCode, ProviderCommitPaths, ProviderCommitPayload,
-    assert_staged_native_provider_contract, commit_provider_detail_from_paths,
-    commit_provider_detail_from_paths_observed, save_settings_with_provider_guard_at,
+    GenericSettingsSaveError, ProviderCommitCheckpoint, ProviderCommitErrorCode,
+    ProviderCommitPaths, ProviderCommitPayload, assert_staged_native_provider_contract,
+    commit_provider_detail_from_paths, commit_provider_detail_from_paths_observed,
+    save_settings_with_provider_guard_at,
 };
 use crate::provider_commit::{
     CatalogMode, CatalogOverlay, CatalogState, CustomModel, OfficialSnapshot, ProfileCatalogDraft,
@@ -11,7 +12,9 @@ use crate::provider_commit::{
     provider_owned_fingerprint,
 };
 use base64::Engine;
-use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol};
+use codex_plus_core::settings::{
+    BackendSettings, RelayMode, RelayProfile, RelayProtocol, SettingsStore,
+};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -966,6 +969,7 @@ fn generic_settings_save_allows_unrelated_changes_but_rejects_every_provider_own
 
         let error = save_settings_with_provider_guard_at(&fixture.paths, bypass).unwrap_err();
 
+        assert_eq!(error, GenericSettingsSaveError::ProviderOwnedDifference);
         assert!(error.to_string().contains("provider-owned"));
         assert_eq!(fixture.file_generation(), before);
     }
@@ -995,6 +999,81 @@ fn generic_settings_save_allows_unrelated_changes_but_rejects_every_provider_own
     assert_eq!(
         fs::read(fixture.paths.codex_home.join("config.toml")).unwrap(),
         live_before
+    );
+}
+
+#[test]
+fn generic_settings_save_accepts_real_ui_derived_provider_shape_for_unrelated_changes() {
+    let first = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    let second = pure_oauth_profile("official");
+    let initial = settings_with(vec![first, second], "sub2api");
+    let fixture = Fixture::new(&initial, &state_with_official());
+    let persisted_before: BackendSettings =
+        serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+    let provider_before = ProviderOwnedTopologyDraft::from_settings(&persisted_before);
+
+    // Match the real load -> Tauri serialization -> TypeScript normalize path:
+    // core load derives the structured provider fields from configContents, then
+    // normalizeSettings initializes the context selection and synchronizes the
+    // legacy active-provider fields before an unrelated setting is saved.
+    let mut ui_round_trip = SettingsStore::new(fixture.paths.settings_path.clone())
+        .load()
+        .unwrap();
+    for profile in &mut ui_round_trip.relay_profiles {
+        if profile.relay_mode == RelayMode::Official && !profile.official_mix_api_key {
+            profile.model.clear();
+            profile.base_url.clear();
+            profile.upstream_base_url.clear();
+            profile.api_key.clear();
+            profile.config_contents.clear();
+        }
+        if !profile.context_selection_initialized {
+            profile.context_selection_initialized = true;
+        }
+    }
+    let active = ui_round_trip
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == ui_round_trip.active_relay_id)
+        .unwrap();
+    ui_round_trip.relay_base_url = active.base_url.clone();
+    ui_round_trip.relay_api_key = active.api_key.clone();
+    ui_round_trip.codex_goals_enabled = !ui_round_trip.codex_goals_enabled;
+
+    save_settings_with_provider_guard_at(&fixture.paths, ui_round_trip.clone()).unwrap();
+
+    let saved: BackendSettings =
+        serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+    assert_eq!(
+        serde_json::to_value(ProviderOwnedTopologyDraft::from_settings(&saved)).unwrap(),
+        serde_json::to_value(provider_before).unwrap()
+    );
+    assert_eq!(saved.codex_goals_enabled, ui_round_trip.codex_goals_enabled);
+}
+
+#[test]
+fn generic_settings_save_uses_default_provider_baseline_when_settings_file_is_absent() {
+    let fixture = Fixture::new(&BackendSettings::default(), &state_with_official());
+    fs::remove_file(&fixture.paths.settings_path).unwrap();
+    let mut first_save = BackendSettings::default();
+    first_save.codex_goals_enabled = true;
+
+    save_settings_with_provider_guard_at(&fixture.paths, first_save).unwrap();
+
+    let saved: BackendSettings =
+        serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+    assert!(saved.codex_goals_enabled);
+    assert_eq!(
+        serde_json::to_value(ProviderOwnedTopologyDraft::from_settings(&saved)).unwrap(),
+        serde_json::to_value(ProviderOwnedTopologyDraft::from_settings(
+            &BackendSettings::default()
+        ))
+        .unwrap()
     );
 }
 
