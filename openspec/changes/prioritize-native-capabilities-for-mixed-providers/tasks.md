@@ -11,12 +11,12 @@
 
 ## 2. Build the backend contract evaluator test-first
 
-- [ ] 2.1 Add failing Rust fixtures for canonical native-priority, eligible legacy mixed, partial, conflicting actor-header, external mixed, external pure OAuth, ordinary pure OAuth, pure API, Chat Completions, aggregate, missing-input, structured-key/bearer conflict, malformed TOML, reserved lowercase `openai`, and legacy alias IDs.
-- [ ] 2.2 Add failing tests proving classification is derived from relay/catalog fields and parsed TOML, with no serialized native-capability boolean added to settings.
-- [ ] 2.3 Add failing tests for both inline `http_headers` and explicit header-table forms, including preservation of unrelated headers and rejection of ambiguous or duplicate structures.
-- [ ] 2.4 Implement `provider_native_capability.rs` with the managed header constants, sanitized state/reason types, selected-provider lookup, eligibility rules, and complete-contract validation.
-- [ ] 2.5 Add tests that manually authored complete contracts are recognized, a header alone is insufficient, provider IDs remain case-sensitive, reserved built-in `openai` is rejected, and `CodexPlusPlus`/`CodexPP` require an explicit stable-ID rename.
-- [ ] 2.6 Expose a read-only bulk/per-profile inspection command that returns derived state and field-level reasons without returning provider keys, OAuth tokens, account identifiers, or raw auth JSON.
+- [x] 2.1 Add failing Rust fixtures for canonical native-priority, eligible legacy mixed, partial, conflicting actor-header, external mixed, external pure OAuth, ordinary pure OAuth, pure API, Chat Completions, aggregate, missing-input, structured-key/bearer conflict, malformed TOML, reserved lowercase `openai`, and legacy alias IDs.
+- [x] 2.2 Add failing tests proving classification is derived from relay/catalog fields and parsed TOML, with no serialized native-capability boolean added to settings.
+- [x] 2.3 Add failing tests for both inline `http_headers` and explicit header-table forms, including preservation of unrelated headers and rejection of ambiguous or duplicate structures.
+- [x] 2.4 Implement `provider_native_capability.rs` with the managed header constants, sanitized state/reason types, selected-provider lookup, eligibility rules, and complete-contract validation.
+- [x] 2.5 Add tests that manually authored complete contracts are recognized, a header alone is insufficient, provider IDs remain case-sensitive, reserved built-in `openai` is rejected, and `CodexPlusPlus`/`CodexPP` require an explicit stable-ID rename.
+- [x] 2.6 Expose a read-only bulk/per-profile inspection command that returns derived state and field-level reasons without returning provider keys, OAuth tokens, account identifiers, or raw auth JSON.
 
 ## 3. Build the pure draft transformer test-first
 
