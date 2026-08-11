@@ -313,21 +313,6 @@ pub struct ProfileCatalogSummary {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SaveProfileCatalogRequest {
-    pub profile_id: String,
-    pub mode: CatalogMode,
-    #[serde(default)]
-    pub mode_explicit: bool,
-    #[serde(default)]
-    pub upstream_topology: UpstreamTopology,
-    #[serde(default)]
-    pub confirm_context_cleanup: bool,
-    #[serde(default)]
-    pub overlay: CatalogOverlay,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct AdoptCatalogRequest {
     pub profile_id: String,
     #[serde(default)]
@@ -441,15 +426,6 @@ pub async fn refresh_official_model_catalog() -> CommandResult<CatalogStatusPayl
 }
 
 #[tauri::command]
-pub async fn save_profile_catalog(
-    request: SaveProfileCatalogRequest,
-) -> CommandResult<CatalogStatusPayload> {
-    tauri::async_runtime::spawn_blocking(move || save_profile_catalog_blocking(request))
-        .await
-        .expect("blocking command panicked")
-}
-
-#[tauri::command]
 pub async fn adopt_external_model_catalog(
     request: AdoptCatalogRequest,
 ) -> CommandResult<AdoptionPreviewPayload> {
@@ -556,90 +532,6 @@ fn refresh_official_model_catalog_blocking() -> CommandResult<CatalogStatusPaylo
         status_payload(&state, &settings, &home)
     })();
     command_result(result, "官方模型目录已刷新。", "官方模型目录刷新失败")
-}
-
-fn save_profile_catalog_blocking(
-    request: SaveProfileCatalogRequest,
-) -> CommandResult<CatalogStatusPayload> {
-    let home = codex_plus_core::relay_config::default_codex_home_dir();
-    let result = (|| -> anyhow::Result<CatalogStatusPayload> {
-        let _guard = live_state::lock()?;
-        live_state::prepare_secret_paths(&home)?;
-        live_state::recover_locked()?;
-        let mut settings = sanitized_settings()?;
-        let profile_index = settings
-            .relay_profiles
-            .iter()
-            .position(|profile| profile.id == request.profile_id)
-            .context("供应商不存在")?;
-        let profile = &settings.relay_profiles[profile_index];
-        ensure!(
-            managed_catalog_capable(profile),
-            "该供应商不支持托管模型目录"
-        );
-        validate_upstream_topology(profile, request.upstream_topology)?;
-        validate_overlay(&request.overlay)?;
-        let mut state = load_and_migrate_state(&settings, &home)?;
-        let profile_state = state.profiles.entry(profile.id.clone()).or_default();
-        profile_state.upstream_topology = request.upstream_topology;
-        profile_state.mode = request.mode;
-        profile_state.mode_explicit = request.mode_explicit;
-        profile_state.overlay = request.overlay;
-        if request.mode != CatalogMode::External {
-            profile_state.external_pointer = None;
-        }
-        profile_state.action_required = None;
-        state.operation_generation = state.operation_generation.saturating_add(1);
-
-        let mut mutations = Vec::new();
-        let saved_conflicts = if managed_mode(request.mode) {
-            global_context_conflicts(&profile.config_contents)
-        } else {
-            Vec::new()
-        };
-        if !saved_conflicts.is_empty() {
-            ensure!(
-                request.confirm_context_cleanup,
-                "托管目录需要移除全局上下文设置：{}",
-                saved_conflicts.join(", ")
-            );
-            settings.relay_profiles[profile_index].config_contents = remove_global_context_keys(
-                &settings.relay_profiles[profile_index].config_contents,
-            )?;
-            mutations.push(FileMutation::bytes(
-                codex_plus_core::paths::default_settings_path(),
-                serde_json::to_vec_pretty(&settings)?,
-            ));
-        }
-        let profile = &settings.relay_profiles[profile_index];
-        if profile.id == settings.active_relay_id {
-            let live_config = fs::read_to_string(home.join("config.toml"))?;
-            let plan = plan_active_profile_with_state(
-                &home,
-                &settings,
-                &live_config,
-                &mut state,
-                request.confirm_context_cleanup,
-            )?;
-            mutations.extend(plan.mutations);
-            mutations.push(FileMutation::text(
-                home.join("config.toml"),
-                plan.config_contents,
-            ));
-        } else {
-            if let Some(mutation) = materialize_profile(&mut state, profile, &home)? {
-                mutations.push(mutation);
-            }
-        }
-        mutations.push(state_mutation(&state)?);
-        live_state::commit_locked(&mutations)?;
-        status_payload(&state, &settings, &home)
-    })();
-    command_result(
-        result,
-        "供应商模型目录设置已保存。",
-        "供应商模型目录保存失败",
-    )
 }
 
 fn adopt_external_model_catalog_blocking(
