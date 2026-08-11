@@ -69,6 +69,7 @@ import {
   defaultCatalogMode,
   externalVersionRequiresAcceptance,
   managedContextConflictKeys,
+  providerManagedContextConflictKeys,
   providerEvidenceState,
   validateCatalogDraft,
 } from "./model-catalog-ui";
@@ -1506,7 +1507,7 @@ export function App() {
     const selectedCatalog = modelCatalog?.profiles.find((item) => item.profileId === selectedAfterSave.id);
     const selectedCatalogMode = catalogDraftOverride?.mode ?? selectedCatalog?.mode;
     const contextConflicts = selectedCatalogMode && managedCatalogMode(selectedCatalogMode)
-      ? managedContextConflictKeys(selectedAfterSave.configContents)
+      ? providerManagedContextConflictKeys(selectedAfterSave, relayFiles?.configContents ?? "")
       : [];
     const confirmContextCleanup = contextConflicts.length
       ? window.confirm(tf("切换到托管目录将移除这些全局上下文设置：\n\n{0}", [contextConflicts.join("\n")]))
@@ -3128,7 +3129,10 @@ function RelayProfileDetail({
         && !!catalogDraft
         && managedCatalogMode(catalogDraft.mode);
       const contextConflicts = managedCatalog
-        ? managedContextConflictKeys(normalizedDraft.configContents)
+        ? providerManagedContextConflictKeys(
+            normalizedDraft,
+            isActive ? relayFiles?.configContents ?? "" : "",
+          )
         : [];
       const confirmContextCleanup = contextConflicts.length
         ? window.confirm(tf("保存托管目录将移除这些全局上下文设置：\n\n{0}", [contextConflicts.join("\n")]))

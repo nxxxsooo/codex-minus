@@ -2404,6 +2404,46 @@ pub fn commit_provider_detail_from_paths_observed(
                 .map(|draft| draft.mode)
         })
         .unwrap_or(CatalogMode::NativeOfficial);
+    if let Some(focused_id) = focused_id.as_deref()
+        && crate::model_catalog::managed_mode(focused_mode)
+    {
+        let focused = request
+            .topology
+            .relay_profiles
+            .iter()
+            .find(|profile| profile.id == focused_id)
+            .ok_or_else(|| {
+                provider_commit_failure(
+                    ProviderCommitErrorCode::InvalidDraft,
+                    "focused provider profile is missing",
+                )
+            })?;
+        let saved_conflict = !focused.context_window.trim().is_empty()
+            || !focused.auto_compact_limit.trim().is_empty()
+            || !crate::model_catalog::global_context_conflicts(&focused.config_contents).is_empty();
+        let live_conflict = if request.topology.active_relay_id == focused_id {
+            let live = read_optional_bytes(&paths.codex_home.join("config.toml"))
+                .map_err(transaction_failure)?
+                .map(|bytes| String::from_utf8(bytes).map_err(|_| ()))
+                .transpose()
+                .map_err(|_| {
+                    provider_commit_failure(
+                        ProviderCommitErrorCode::InvalidDraft,
+                        "live provider config is invalid",
+                    )
+                })?
+                .unwrap_or_default();
+            !crate::model_catalog::global_context_conflicts(&live).is_empty()
+        } else {
+            false
+        };
+        if (saved_conflict || live_conflict) && !request.confirm_context_cleanup {
+            return Err(provider_commit_failure(
+                ProviderCommitErrorCode::InvalidDraft,
+                "managed catalog context cleanup confirmation is required",
+            ));
+        }
+    }
     observe(ProviderCommitCheckpoint::Normalization).map_err(|_| {
         provider_commit_failure(
             ProviderCommitErrorCode::InvalidDraft,
@@ -3055,7 +3095,9 @@ fn normalize_provider_detail_settings_fallible(
     validate_provider_detail_contract(focused, focused_mode)?;
     if crate::model_catalog::managed_mode(focused_mode) {
         let conflicts = crate::model_catalog::global_context_conflicts(&focused.config_contents);
-        if !conflicts.is_empty() {
+        let structured_conflict = !focused.context_window.trim().is_empty()
+            || !focused.auto_compact_limit.trim().is_empty();
+        if structured_conflict || !conflicts.is_empty() {
             anyhow::ensure!(
                 confirm_context_cleanup,
                 "managed catalog context cleanup confirmation is required"

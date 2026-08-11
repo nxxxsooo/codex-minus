@@ -450,37 +450,42 @@ fn successful_active_commit_preserves_context_semantics_and_auth_bytes() {
 
 #[test]
 fn managed_context_cleanup_requires_confirmation_and_commits_settings_and_live_atomically() {
-    let mut active = canonical_profile(
+    let mut structured_only = canonical_profile(
         "sub2api",
         "official-a",
         "https://relay.example/v1",
         "provider-key",
     );
-    active.context_window = "272000".to_string();
-    active.auto_compact_limit = "240000".to_string();
-    active.config_contents = format!(
+    structured_only.context_window = "272000".to_string();
+    structured_only.auto_compact_limit = "240000".to_string();
+    let mut raw_and_structured = structured_only.clone();
+    raw_and_structured.config_contents = format!(
         "model_context_window = 272000\nmodel_auto_compact_token_limit = 240000\n{}",
-        active.config_contents
+        raw_and_structured.config_contents
     );
-    let initial = settings_with(vec![active], "sub2api");
+    for active in [structured_only.clone(), raw_and_structured] {
+        let rejected = Fixture::new(
+            &settings_with(vec![active], "sub2api"),
+            &state_with_official(),
+        );
+        let persisted = rejected.read_settings();
+        let before = rejected.file_generation();
+        let error = commit_provider_detail_from_paths(
+            &rejected.paths,
+            request(
+                &persisted,
+                &persisted,
+                "sub2api",
+                ProviderCommitAction::Save,
+                57,
+            ),
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), ProviderCommitErrorCode::InvalidDraft);
+        assert_eq!(rejected.file_generation(), before);
+    }
 
-    let rejected = Fixture::new(&initial, &state_with_official());
-    let persisted = rejected.read_settings();
-    let before = rejected.file_generation();
-    let error = commit_provider_detail_from_paths(
-        &rejected.paths,
-        request(
-            &persisted,
-            &persisted,
-            "sub2api",
-            ProviderCommitAction::Save,
-            57,
-        ),
-    )
-    .unwrap_err();
-    assert_eq!(error.code(), ProviderCommitErrorCode::InvalidDraft);
-    assert_eq!(rejected.file_generation(), before);
-
+    let initial = settings_with(vec![structured_only], "sub2api");
     let confirmed = Fixture::new(&initial, &state_with_official());
     fs::write(
         confirmed.paths.codex_home.join("config.toml"),
@@ -515,6 +520,72 @@ fn managed_context_cleanup_requires_confirmation_and_commits_settings_and_live_a
             .config_contents
             .contains("model_auto_compact_token_limit")
     );
+    let live = fs::read_to_string(confirmed.paths.codex_home.join("config.toml")).unwrap();
+    assert!(!live.contains("model_context_window"));
+    assert!(!live.contains("model_auto_compact_token_limit"));
+    assert_eq!(semantic_context_tables(&live), context_before);
+    assert_eq!(
+        fs::read(confirmed.paths.codex_home.join("auth.json")).unwrap(),
+        auth_before
+    );
+}
+
+#[test]
+fn managed_context_cleanup_detects_live_only_conflicts_before_active_commit() {
+    let active = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    let initial = settings_with(vec![active], "sub2api");
+    let live_with_limits = format!(
+        "model_context_window = 272000\nmodel_auto_compact_token_limit = 240000\n{}",
+        rich_live_config()
+    );
+
+    let rejected = Fixture::new(&initial, &state_with_official());
+    fs::write(
+        rejected.paths.codex_home.join("config.toml"),
+        &live_with_limits,
+    )
+    .unwrap();
+    let persisted = rejected.read_settings();
+    let before = rejected.file_generation();
+    let error = commit_provider_detail_from_paths(
+        &rejected.paths,
+        request(
+            &persisted,
+            &persisted,
+            "sub2api",
+            ProviderCommitAction::Save,
+            59,
+        ),
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), ProviderCommitErrorCode::InvalidDraft);
+    assert_eq!(rejected.file_generation(), before);
+
+    let confirmed = Fixture::new(&initial, &state_with_official());
+    fs::write(
+        confirmed.paths.codex_home.join("config.toml"),
+        &live_with_limits,
+    )
+    .unwrap();
+    let context_before = semantic_context_tables(&live_with_limits);
+    let auth_before = fs::read(confirmed.paths.codex_home.join("auth.json")).unwrap();
+    let persisted = confirmed.read_settings();
+    let mut confirmed_request = request(
+        &persisted,
+        &persisted,
+        "sub2api",
+        ProviderCommitAction::Save,
+        60,
+    );
+    confirmed_request.confirm_context_cleanup = true;
+
+    commit_provider_detail_from_paths(&confirmed.paths, confirmed_request).unwrap();
+
     let live = fs::read_to_string(confirmed.paths.codex_home.join("config.toml")).unwrap();
     assert!(!live.contains("model_context_window"));
     assert!(!live.contains("model_auto_compact_token_limit"));

@@ -250,6 +250,19 @@ export function managedContextConflictKeys(config: string): string[] {
   );
 }
 
+export function providerManagedContextConflictKeys(
+  profile: { configContents: string; contextWindow: string; autoCompactLimit: string },
+  liveConfigContents = "",
+): string[] {
+  const conflicts = new Set([
+    ...managedContextConflictKeys(profile.configContents),
+    ...managedContextConflictKeys(liveConfigContents),
+  ]);
+  if (profile.contextWindow.trim()) conflicts.add("model_context_window");
+  if (profile.autoCompactLimit.trim()) conflicts.add("model_auto_compact_token_limit");
+  return [...conflicts];
+}
+
 export function externalVersionRequiresAcceptance(status: string): boolean {
   return status === "mismatch";
 }

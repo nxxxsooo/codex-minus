@@ -12,6 +12,7 @@ import {
   defaultCatalogMode,
   externalVersionRequiresAcceptance,
   managedContextConflictKeys,
+  providerManagedContextConflictKeys,
   profileCatalogFlags,
   providerEvidenceState,
   validateCatalogDraft,
@@ -220,6 +221,13 @@ describe("model catalog UI state", () => {
       ["model_context_window", "model_auto_compact_token_limit"],
     );
     assert.deepEqual(managedContextConflictKeys('model = "m"\n'), []);
+    assert.deepEqual(
+      providerManagedContextConflictKeys(
+        { configContents: 'model = "m"\n', contextWindow: "272000", autoCompactLimit: "" },
+        "model_auto_compact_token_limit = 240000\n",
+      ),
+      ["model_auto_compact_token_limit", "model_context_window"],
+    );
     assert.equal(externalVersionRequiresAcceptance("mismatch"), true);
     assert.equal(externalVersionRequiresAcceptance("match"), false);
     assert.equal(externalVersionRequiresAcceptance("unknown"), false);
