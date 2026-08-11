@@ -21,6 +21,8 @@ describe("provider detail draft wiring", () => {
     assert.match(source, /beginProviderDetailRawConfigEdit/);
     assert.match(relayFileEditorCall, /onProviderConfigChange=\{editProviderConfigDraft\}/);
     assert.doesNotMatch(relayFileEditorCall, /onProfileChange=\{replaceDraft\}/);
+    assert.match(source, /draftCommitBlocked=\{detailState\.pendingTransformRevision !== null \|\| detailState\.rawConfigContents !== null\}/);
+    assert.match(source, /switchDraft[\s\S]*detailState\.rawConfigContents !== null[\s\S]*return;/);
     assert.match(source, /endProviderDetailSession\([^;]*"navigate"/s);
     assert.doesNotMatch(source, /nativeCapabilityInspection\s*:/);
   });

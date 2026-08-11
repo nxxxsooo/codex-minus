@@ -100,12 +100,16 @@ pub enum NativeCapabilityReason {
     ConflictingKeySynchronization,
     DestructiveExitConfirmationRequired,
     CapabilityLossConfirmationRequired,
+    RawProviderContractChangeRequiresExplicitAction,
+    RawProviderSourceRequired,
+    RawProviderSourceInvalid,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum NativeCapabilityDraftAction {
     Inspect,
+    ValidateRawEdit,
     EnableNativePriority,
     ExitPureApi,
     ExitLegacyCompatibility,
@@ -138,6 +142,8 @@ pub struct ProviderNativeCapabilityDraftRequest {
     pub profile: RelayProfile,
     pub catalog_mode: CatalogMode,
     pub action: NativeCapabilityDraftAction,
+    #[serde(default)]
+    pub source_config_contents: Option<String>,
     #[serde(default)]
     pub confirmations: Vec<NativeCapabilityDraftConfirmation>,
     #[serde(default)]
@@ -700,6 +706,9 @@ pub fn draft_provider_native_capability_with_boundary(
             request.catalog_mode,
             ProviderNativeCapabilityDraftPreview::default(),
         ),
+        NativeCapabilityDraftAction::ValidateRawEdit => {
+            validate_raw_provider_config_edit(request, boundary)
+        }
         NativeCapabilityDraftAction::EnableNativePriority => {
             enable_native_priority_draft(request, boundary)
         }
@@ -717,6 +726,171 @@ pub fn transform_provider_native_capability_draft(
     request: ProviderNativeCapabilityDraftRequest,
 ) -> ProviderNativeCapabilityDraftPayload {
     draft_provider_native_capability(&request)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RawProviderContractProjection {
+    provider_id: String,
+    provider_shape: String,
+    provider_name: String,
+    wire_api: String,
+    requires_openai_auth: String,
+    bearer: String,
+    actor_headers: Vec<(String, String)>,
+}
+
+fn raw_string_projection(item: Option<&Item>) -> String {
+    match item {
+        None => "missing".to_string(),
+        Some(item) => item
+            .as_str()
+            .map(|value| format!("string:{value}"))
+            .unwrap_or_else(|| "malformed".to_string()),
+    }
+}
+
+fn raw_bool_projection(item: Option<&Item>) -> String {
+    match item {
+        None => "missing".to_string(),
+        Some(item) => item
+            .as_bool()
+            .map(|value| format!("bool:{value}"))
+            .unwrap_or_else(|| "malformed".to_string()),
+    }
+}
+
+fn raw_provider_contract_projection(document: &DocumentMut) -> RawProviderContractProjection {
+    let provider_id = document.get("model_provider").and_then(Item::as_str);
+    let provider_item = provider_id.and_then(|id| {
+        document
+            .get("model_providers")
+            .and_then(Item::as_table_like)
+            .and_then(|providers| providers.get(id))
+    });
+    let provider = provider_item.and_then(Item::as_table_like);
+    let provider_shape = match provider_item {
+        None => "missing",
+        Some(_) if provider.is_none() => "malformed",
+        Some(_) => "table",
+    }
+    .to_string();
+    let mut actor_headers = match provider.and_then(|table| table.get("http_headers")) {
+        None => vec![("missing".to_string(), "missing".to_string())],
+        Some(headers) => match headers.as_table_like() {
+            None => vec![("malformed".to_string(), "malformed".to_string())],
+            Some(headers) => {
+                let mut matches = headers
+                    .iter()
+                    .filter(|(name, _)| name.eq_ignore_ascii_case(MANAGED_ACTOR_HEADER_NAME))
+                    .map(|(name, value)| (name.to_string(), raw_string_projection(Some(value))))
+                    .collect::<Vec<_>>();
+                if matches.is_empty() {
+                    matches.push(("missing".to_string(), "missing".to_string()));
+                }
+                matches
+            }
+        },
+    };
+    actor_headers.sort();
+    RawProviderContractProjection {
+        provider_id: raw_string_projection(document.get("model_provider")),
+        provider_shape,
+        provider_name: raw_string_projection(provider.and_then(|table| table.get("name"))),
+        wire_api: raw_string_projection(provider.and_then(|table| table.get("wire_api"))),
+        requires_openai_auth: raw_bool_projection(
+            provider.and_then(|table| table.get("requires_openai_auth")),
+        ),
+        bearer: raw_string_projection(
+            provider.and_then(|table| table.get("experimental_bearer_token")),
+        ),
+        actor_headers,
+    }
+}
+
+fn project_raw_provider_fields(profile: &mut RelayProfile, document: &DocumentMut) {
+    if let Some(model) = document.get("model").and_then(Item::as_str) {
+        profile.model = model.to_string();
+    }
+    if let Some(provider_id) = document.get("model_provider").and_then(Item::as_str)
+        && let Some(provider) = document
+            .get("model_providers")
+            .and_then(Item::as_table_like)
+            .and_then(|providers| providers.get(provider_id))
+            .and_then(Item::as_table_like)
+        && let Some(base_url) = provider.get("base_url").and_then(Item::as_str)
+    {
+        profile.base_url = base_url.to_string();
+        profile.upstream_base_url = base_url.to_string();
+    }
+    profile.context_window = document
+        .get("model_context_window")
+        .and_then(Item::as_integer)
+        .map(|value| value.to_string())
+        .unwrap_or_default();
+    profile.auto_compact_limit = document
+        .get("model_auto_compact_token_limit")
+        .and_then(Item::as_integer)
+        .map(|value| value.to_string())
+        .unwrap_or_default();
+}
+
+fn validate_raw_provider_config_edit(
+    request: &ProviderNativeCapabilityDraftRequest,
+    boundary: &dyn ProviderNativeCapabilityDraftReadOnlyBoundary,
+) -> ProviderNativeCapabilityDraftPayload {
+    let Some(source_config_contents) = request.source_config_contents.as_deref() else {
+        return unchanged_draft_payload(
+            request,
+            boundary,
+            NativeCapabilityDraftStatus::Blocked,
+            vec![NativeCapabilityReason::RawProviderSourceRequired],
+            ProviderNativeCapabilityDraftPreview::default(),
+        );
+    };
+    let source_document = match source_config_contents.parse::<DocumentMut>() {
+        Ok(document) => document,
+        Err(_) => {
+            return unchanged_draft_payload(
+                request,
+                boundary,
+                NativeCapabilityDraftStatus::Blocked,
+                vec![NativeCapabilityReason::RawProviderSourceInvalid],
+                ProviderNativeCapabilityDraftPreview::default(),
+            );
+        }
+    };
+    let candidate_document = match request.profile.config_contents.parse::<DocumentMut>() {
+        Ok(document) => document,
+        Err(_) => {
+            return unchanged_draft_payload(
+                request,
+                boundary,
+                NativeCapabilityDraftStatus::Blocked,
+                vec![NativeCapabilityReason::MalformedToml],
+                ProviderNativeCapabilityDraftPreview::default(),
+            );
+        }
+    };
+    if raw_provider_contract_projection(&source_document)
+        != raw_provider_contract_projection(&candidate_document)
+    {
+        return unchanged_draft_payload(
+            request,
+            boundary,
+            NativeCapabilityDraftStatus::Blocked,
+            vec![NativeCapabilityReason::RawProviderContractChangeRequiresExplicitAction],
+            ProviderNativeCapabilityDraftPreview::default(),
+        );
+    }
+    let mut profile = request.profile.clone();
+    project_raw_provider_fields(&mut profile, &candidate_document);
+    ready_draft_payload(
+        request,
+        boundary,
+        profile,
+        request.catalog_mode,
+        ProviderNativeCapabilityDraftPreview::default(),
+    )
 }
 
 fn enable_native_priority_draft(

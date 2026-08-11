@@ -3372,7 +3372,12 @@ function RelayProfileDetail({
     }
   };
   const switchDraft = () => {
-    if (isNew || !form.relayProfilesEnabled || detailState.pendingTransformRevision !== null) return;
+    if (
+      isNew
+      || !form.relayProfilesEnabled
+      || detailState.pendingTransformRevision !== null
+      || detailState.rawConfigContents !== null
+    ) return;
     const draftWithWindows = draftWithModelRows();
     const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
     const previousActiveRelayId = form.activeRelayId;
@@ -3413,7 +3418,7 @@ function RelayProfileDetail({
           </Button>
         </Toolbar>
       </div>
-        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={replaceDraft} onProfileEdit={editDraft} onSwitch={switchDraft} actions={actions} modelWindowRows={modelWindowRows} setModelWindowRows={setModelWindowRows} catalogProfile={catalogProfile} />
+        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={replaceDraft} onProfileEdit={editDraft} onSwitch={switchDraft} actions={actions} modelWindowRows={modelWindowRows} setModelWindowRows={setModelWindowRows} catalogProfile={catalogProfile} draftCommitBlocked={detailState.pendingTransformRevision !== null || detailState.rawConfigContents !== null} />
       {!managedCatalogCapable(draft) ? null : catalogDraft ? (
         <CatalogProfileEditor
           catalog={modelCatalog}
@@ -3461,6 +3466,7 @@ function RelayProfileEditor({
   modelWindowRows,
   setModelWindowRows,
   catalogProfile,
+  draftCommitBlocked = false,
 }: {
   profile: RelayProfile;
   form: BackendSettings;
@@ -3472,6 +3478,7 @@ function RelayProfileEditor({
   modelWindowRows: ModelWindowRow[];
   setModelWindowRows: (value: ModelWindowRow[]) => void;
   catalogProfile: ProfileCatalogSummary | null;
+  draftCommitBlocked?: boolean;
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [doctorResult, setDoctorResult] = useState<ProviderDoctorResult | null>(null);
@@ -3525,9 +3532,9 @@ function RelayProfileEditor({
         </div>
         {isNew ? null : (
           <Button
-            disabled={!form.relayProfilesEnabled || actions.relaySwitching}
+            disabled={!form.relayProfilesEnabled || actions.relaySwitching || draftCommitBlocked}
             onClick={onSwitch}
-            title={!form.relayProfilesEnabled ? t("供应商配置总开关已关闭") : actions.relaySwitching ? t("供应商切换中") : undefined}
+            title={!form.relayProfilesEnabled ? t("供应商配置总开关已关闭") : actions.relaySwitching ? t("供应商切换中") : draftCommitBlocked ? t("供应商配置尚未通过后端验证。") : undefined}
             variant={profile.id === form.activeRelayId ? "secondary" : "default"}
           >
             {actions.relaySwitching ? t("切换中") : profile.id === form.activeRelayId ? t("使用中") : t("设为当前")}

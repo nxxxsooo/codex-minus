@@ -9,6 +9,7 @@ export type ProviderCatalogMode = CatalogModeValue;
 
 export type ProviderDraftTransformAction =
   | "inspect"
+  | "validateRawEdit"
   | "enableNativePriority"
   | "exitPureApi"
   | "exitLegacyCompatibility"
@@ -41,6 +42,7 @@ export type ProviderDraftTransformRequest<P extends ProviderConfigRoutableProfil
   action: ProviderDraftTransformAction;
   confirmations: ProviderDraftTransformConfirmation[];
   replacementProviderId?: string;
+  sourceConfigContents?: string;
 };
 
 export type RoutedProviderConfigEdit<P extends ProviderConfigRoutableProfile> =

@@ -332,7 +332,8 @@ describe("provider detail draft state", () => {
     assert.equal(step.effects.length, 1);
     assert.equal(step.effects[0].kind, "transform");
     if (step.effects[0].kind !== "transform") return;
-    assert.equal(step.effects[0].invocation.request.action, "inspect");
+    assert.equal(step.effects[0].invocation.request.action, "validateRawEdit");
+    assert.equal(step.effects[0].invocation.request.sourceConfigContents, config);
     assert.equal(step.effects[0].invocation.request.draftRevision, 1);
     assert.equal(step.effects[0].invocation.request.profile.configContents, changedConfig);
     assert.equal(step.effects[0].invocation.request.profile.authContents, "");
@@ -358,6 +359,25 @@ describe("provider detail draft state", () => {
       catalogMode: "official-plus-custom",
     });
     assert.equal(malformed.state.profile.configContents, config);
+    const blocked = settleProviderDetailTransform(
+      malformed.state,
+      transformCorrelation(malformed),
+      {
+        draftRevision: 2,
+        status: "blocked",
+        draft: {
+          profile: { ...profile(), configContents: `broken = "sk-provider-sentinel` },
+          structuredApiKey: "provider-key",
+          catalogMode: "official-plus-custom",
+        },
+        blockers: ["malformedToml"],
+        inspection,
+        preview,
+      },
+    );
+    assert.equal(blocked.disposition, "notApplied");
+    assert.equal(blocked.state.profile.configContents, config);
+    assert.equal(blocked.state.rawConfigContents, `broken = "sk-provider-sentinel`);
     const failed = settleProviderDetailTransformError(
       malformed.state,
       transformCorrelation(malformed),
