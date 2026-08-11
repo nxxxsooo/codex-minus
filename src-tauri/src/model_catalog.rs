@@ -1031,8 +1031,9 @@ pub(crate) fn validate_upstream_topology(
         return Ok(());
     }
     ensure!(
-        profile.relay_mode == RelayMode::PureApi,
-        "服务端复合供应商必须使用纯 API 模式"
+        profile.relay_mode == RelayMode::PureApi
+            || (profile.relay_mode == RelayMode::Official && profile.official_mix_api_key),
+        "服务端复合供应商必须使用纯 API 或官方登录混入 API Key 模式"
     );
     ensure!(
         profile.protocol == codex_plus_core::settings::RelayProtocol::Responses,
@@ -2977,6 +2978,44 @@ mod tests {
         assert_eq!(
             default_mode(&profile, None, UpstreamTopology::ServerSideComposite),
             CatalogMode::OfficialPlusCustom
+        );
+
+        let official_mixed = RelayProfile {
+            relay_mode: RelayMode::Official,
+            official_mix_api_key: true,
+            protocol: codex_plus_core::settings::RelayProtocol::Responses,
+            base_url: "https://relay.example/v1".to_string(),
+            api_key: "provider-key".to_string(),
+            ..RelayProfile::default()
+        };
+        validate_upstream_topology(&official_mixed, UpstreamTopology::ServerSideComposite).unwrap();
+        assert_eq!(
+            default_mode(&official_mixed, None, UpstreamTopology::ServerSideComposite,),
+            CatalogMode::OfficialPlusCustom
+        );
+        assert_eq!(
+            default_mode(
+                &official_mixed,
+                Some("/tmp/user-owned-models.json"),
+                UpstreamTopology::ServerSideComposite,
+            ),
+            CatalogMode::External
+        );
+
+        let pure_oauth = RelayProfile {
+            relay_mode: RelayMode::Official,
+            official_mix_api_key: false,
+            protocol: codex_plus_core::settings::RelayProtocol::Responses,
+            base_url: "https://relay.example/v1".to_string(),
+            api_key: "provider-key".to_string(),
+            ..RelayProfile::default()
+        };
+        assert_eq!(
+            default_mode(&pure_oauth, None, UpstreamTopology::Direct),
+            CatalogMode::NativeOfficial
+        );
+        assert!(
+            validate_upstream_topology(&pure_oauth, UpstreamTopology::ServerSideComposite).is_err()
         );
 
         let mut aggregate = profile.clone();
