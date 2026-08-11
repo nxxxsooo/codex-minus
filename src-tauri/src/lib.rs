@@ -23,7 +23,7 @@ const TRAY_MENU_QUIT: &str = "tray_quit_app";
 
 pub fn run() {
     install_panic_logger();
-    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+    let _ = commands::append_manager_diagnostic(
         "manager.start",
         serde_json::json!({
             "version": env!("CARGO_PKG_VERSION")
@@ -102,7 +102,7 @@ pub fn run() {
                 ..
             } = event
             {
-                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                let _ = commands::append_manager_diagnostic(
                     "manager.reopen",
                     serde_json::json!({
                         "had_visible_windows": has_visible_windows
@@ -115,7 +115,7 @@ pub fn run() {
             let _ = (app_handle, event);
         }),
         Err(error) => {
-            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            let _ = commands::append_manager_diagnostic(
                 "manager.run_failed",
                 serde_json::json!({
                     "error": error.to_string()
@@ -312,7 +312,7 @@ fn install_instance_activation_listener<R: tauri::Runtime>(_app_handle: tauri::A
 
 #[cfg(unix)]
 fn log_instance_activation_listener_error(socket_path: &std::path::Path, error: &std::io::Error) {
-    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+    let _ = commands::append_manager_diagnostic(
         "manager.activation_listener_failed",
         serde_json::json!({
             "socket_path": socket_path,
@@ -336,7 +336,7 @@ fn install_panic_logger() {
                 "column": location.column()
             })
         });
-        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        let _ = commands::append_manager_diagnostic(
             "manager.panic",
             serde_json::json!({
                 "payload": payload,
@@ -352,7 +352,7 @@ fn acquire_single_instance_guard() -> Option<codex_plus_core::ports::LoopbackPor
     ) {
         Ok(guard) => {
             if let Some(fallback_lock_path) = guard.fallback_path() {
-                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                let _ = commands::append_manager_diagnostic(
                     "manager.guard_fallback",
                     serde_json::json!({
                         "requested_guard_port": codex_plus_core::ports::manager_guard_port(),
@@ -368,7 +368,7 @@ fn acquire_single_instance_guard() -> Option<codex_plus_core::ports::LoopbackPor
                 std::io::ErrorKind::AddrInUse | std::io::ErrorKind::WouldBlock
             ) =>
         {
-            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            let _ = commands::append_manager_diagnostic(
                 "manager.already_running",
                 serde_json::json!({
                     "guard_port": codex_plus_core::ports::manager_guard_port()
@@ -378,7 +378,7 @@ fn acquire_single_instance_guard() -> Option<codex_plus_core::ports::LoopbackPor
             None
         }
         Err(error) => {
-            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            let _ = commands::append_manager_diagnostic(
                 "manager.guard_failed",
                 serde_json::json!({
                     "guard_port": codex_plus_core::ports::manager_guard_port(),
@@ -390,7 +390,7 @@ fn acquire_single_instance_guard() -> Option<codex_plus_core::ports::LoopbackPor
                     listener,
                 )),
                 Err(fallback_error) => {
-                    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    let _ = commands::append_manager_diagnostic(
                         "manager.guard_fallback_failed",
                         serde_json::json!({
                             "error": fallback_error.to_string()

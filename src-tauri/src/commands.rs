@@ -1794,8 +1794,8 @@ fn read_relay_files_blocking() -> CommandResult<RelayFilesPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     match relay_files_payload_from_home(&home) {
         Ok(payload) => ok("配置文件内容已读取。", payload),
-        Err(error) => failed(
-            &format!("读取配置文件失败：{error}"),
+        Err(_) => failed(
+            "读取配置文件失败；未返回底层文件或解析错误。",
             RelayFilesPayload {
                 config_path: home.join("config.toml").to_string_lossy().to_string(),
                 auth_path: home.join("auth.json").to_string_lossy().to_string(),
@@ -1874,8 +1874,8 @@ fn save_relay_file_blocking(request: SaveRelayFileRequest) -> CommandResult<Rela
     })();
     match result {
         Ok(payload) => ok("配置文件已保存。", payload),
-        Err(error) => failed(
-            &format!("保存配置文件失败：{error}"),
+        Err(_) => failed(
+            "保存配置文件失败；配置无效或事务未完成。",
             relay_files_payload_from_home(&home).unwrap_or_else(|_| RelayFilesPayload {
                 config_path: home.join("config.toml").to_string_lossy().to_string(),
                 auth_path: home.join("auth.json").to_string_lossy().to_string(),
@@ -3031,10 +3031,12 @@ fn read_optional_bytes(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
 #[tauri::command]
 pub fn write_diagnostic_event(event: String, detail: Value) -> CommandResult<Value> {
     let event = sanitize_ui_manager_event(&event);
-    match codex_plus_core::diagnostic_log::append_diagnostic_log(
-        &event,
-        sanitize_diagnostic_detail(detail),
-    ) {
+    let detail = if event == "manager.ui.event" {
+        json!({})
+    } else {
+        detail
+    };
+    match append_manager_diagnostic(&event, detail) {
         Ok(()) => ok("诊断日志已写入。", json!({})),
         Err(error) => failed(&format!("写入诊断日志失败：{error}"), json!({})),
     }
@@ -3273,10 +3275,13 @@ fn sanitize_provider_test_result(
     profile: &RelayProfile,
     mut result: CommandResult<RelayProfileTestPayload>,
 ) -> CommandResult<RelayProfileTestPayload> {
-    result.message = redact_provider_surface_text(profile, &result.message);
+    result.message = format!(
+        "供应商测试完成，HTTP {}。{}",
+        result.payload.http_status,
+        compatibility_fallback_note(result.payload.compatibility_fallback_used)
+    );
     result.payload.endpoint = redact_provider_surface_text(profile, &result.payload.endpoint);
-    result.payload.response_preview =
-        redact_provider_surface_text(profile, &result.payload.response_preview);
+    result.payload.response_preview.clear();
     result
 }
 
@@ -3286,7 +3291,31 @@ fn sanitize_provider_models_result(
 ) -> CommandResult<RelayProfileModelsPayload> {
     result.message = redact_provider_surface_text(profile, &result.message);
     result.payload.endpoint = redact_provider_surface_text(profile, &result.payload.endpoint);
+    result.payload.models = sanitize_provider_model_ids(profile, result.payload.models);
     result
+}
+
+fn sanitize_provider_model_ids(profile: &RelayProfile, models: Vec<String>) -> Vec<String> {
+    let sensitive = provider_sensitive_values(profile);
+    models
+        .into_iter()
+        .filter(|model| {
+            let model = model.trim();
+            !model.is_empty()
+                && model.len() <= 200
+                && model.is_ascii()
+                && !model.contains('@')
+                && !model.contains('\\')
+                && !model.to_ascii_lowercase().starts_with("http://")
+                && !model.to_ascii_lowercase().starts_with("https://")
+                && model.chars().all(|ch| {
+                    ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/' | ':')
+                })
+                && !sensitive.iter().any(|secret| {
+                    !secret.trim().is_empty() && (model.contains(secret) || secret.contains(model))
+                })
+        })
+        .collect()
 }
 
 fn sanitize_provider_doctor_result(
@@ -3302,7 +3331,15 @@ fn sanitize_provider_doctor_result(
         redact_provider_surface_text(profile, &result.payload.recommendation);
     for check in &mut result.payload.checks {
         check.title = redact_provider_surface_text(profile, &check.title);
-        check.detail = redact_provider_surface_text(profile, &check.detail);
+        check.detail = if check.id == "request" {
+            format!(
+                "上游请求状态：{}。{}",
+                check.status,
+                compatibility_fallback_note(result.payload.compatibility_fallback_used)
+            )
+        } else {
+            redact_provider_surface_text(profile, &check.detail)
+        };
     }
     result
 }
@@ -3383,18 +3420,17 @@ pub async fn fetch_relay_profile_models(
     let result = match codex_plus_core::model_catalog::fetch_relay_profile_model_ids(&profile).await
     {
         Ok((models, endpoint)) => {
-            if let Err(error) =
-                crate::model_catalog::record_provider_evidence(&profile.id, &endpoint, &models)
-            {
-                return failed(
-                    &format!("模型已获取，但供应商证据保存失败：{error}"),
+            let models = sanitize_provider_model_ids(&profile, models);
+            match crate::model_catalog::record_provider_evidence(&profile.id, &endpoint, &models) {
+                Ok(()) => ok(
+                    &format!("已从「{profile_name}」获取 {} 个模型。", models.len()),
                     RelayProfileModelsPayload { models, endpoint },
-                );
+                ),
+                Err(_) => failed(
+                    "模型已获取，但供应商证据保存失败。",
+                    RelayProfileModelsPayload { models, endpoint },
+                ),
             }
-            ok(
-                &format!("已从「{profile_name}」获取 {} 个模型。", models.len()),
-                RelayProfileModelsPayload { models, endpoint },
-            )
         }
         Err(error) => failed(
             &format!("从「{profile_name}」获取模型失败：{error}"),
@@ -3751,27 +3787,95 @@ fn clear_relay_injection_blocking() -> CommandResult<RelayPayload> {
 }
 
 fn log_manager_event(event: &str, detail: Value) {
-    let event = sanitize_manager_event(event);
-    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-        &event,
-        sanitize_diagnostic_detail(detail),
-    );
+    let _ = append_manager_diagnostic(event, detail);
 }
 
 fn sanitize_diagnostic_detail(detail: Value) -> Value {
-    match detail {
-        Value::String(_) => Value::String("[REDACTED]".to_string()),
-        Value::Array(values) => {
-            Value::Array(values.into_iter().map(sanitize_diagnostic_detail).collect())
+    fn sanitize(value: Value, key: Option<&str>) -> Option<Value> {
+        const ALLOWED_KEYS: &[&str] = &[
+            "version",
+            "had_visible_windows",
+            "requested_guard_port",
+            "guard_port",
+            "configured",
+            "currentRelayId",
+            "targetRelayId",
+            "targetRelayName",
+            "targetRelayMode",
+            "activeRelayId",
+            "previousActiveRelayId",
+            "command",
+            "status",
+            "launchMode",
+            "previousProvider",
+            "currentProvider",
+            "providerChanged",
+            "attempt",
+            "retry",
+            "error",
+            "message",
+            "payload",
+            "location",
+            "file",
+            "line",
+            "column",
+            "socket_path",
+            "fallback_lock_path",
+        ];
+        match value {
+            Value::Object(object) => Some(Value::Object(
+                object
+                    .into_iter()
+                    .filter(|(key, _)| ALLOWED_KEYS.contains(&key.as_str()))
+                    .filter_map(|(key, value)| {
+                        sanitize(value, Some(&key)).map(|value| (key, value))
+                    })
+                    .collect(),
+            )),
+            Value::Array(values) => Some(Value::Array(
+                values
+                    .into_iter()
+                    .filter_map(|value| sanitize(value, key))
+                    .collect(),
+            )),
+            Value::String(value) => {
+                let key = key.unwrap_or_default();
+                if matches!(
+                    key,
+                    "version" | "status" | "targetRelayMode" | "launchMode" | "command"
+                ) && value.len() <= 64
+                    && value
+                        .chars()
+                        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+                {
+                    Some(Value::String(value))
+                } else if matches!(
+                    key,
+                    "currentRelayId"
+                        | "targetRelayId"
+                        | "activeRelayId"
+                        | "previousActiveRelayId"
+                        | "previousProvider"
+                        | "currentProvider"
+                ) {
+                    let identity_hash = format!("{:x}", Sha256::digest(value.as_bytes()));
+                    Some(Value::String(format!("sha256:{}", &identity_hash[..16])))
+                } else {
+                    Some(Value::String("[REDACTED]".to_string()))
+                }
+            }
+            value @ (Value::Bool(_) | Value::Number(_) | Value::Null) => Some(value),
         }
-        Value::Object(object) => Value::Object(
-            object
-                .into_iter()
-                .map(|(key, value)| (key, sanitize_diagnostic_detail(value)))
-                .collect(),
-        ),
-        value => value,
     }
+    sanitize(detail, None).unwrap_or_else(|| json!({}))
+}
+
+pub(crate) fn append_manager_diagnostic(event: &str, detail: Value) -> anyhow::Result<()> {
+    codex_plus_core::diagnostic_log::append_diagnostic_log(
+        &sanitize_manager_event(event),
+        sanitize_diagnostic_detail(detail),
+    )?;
+    Ok(())
 }
 
 fn sanitize_ui_manager_event(event: &str) -> String {
@@ -3825,43 +3929,49 @@ fn relay_payload(
     }
 }
 
-fn collect_sensitive_config_values(
-    value: &Value,
-    sensitive_parent: bool,
-    values: &mut Vec<String>,
-) {
+fn normalized_secret_key(key: &str) -> String {
+    key.chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn redact_toml_diagnostic_value(value: &mut Value, inside_headers: bool) {
     match value {
-        Value::String(value) if sensitive_parent && !value.trim().is_empty() => {
-            values.push(value.clone())
-        }
         Value::Array(items) => {
             for item in items {
-                collect_sensitive_config_values(item, sensitive_parent, values);
+                redact_toml_diagnostic_value(item, inside_headers);
             }
         }
         Value::Object(object) => {
             for (key, value) in object {
-                let normalized = key
-                    .chars()
-                    .filter(|ch| ch.is_ascii_alphanumeric())
-                    .flat_map(char::to_lowercase)
-                    .collect::<String>();
-                let sensitive = sensitive_parent
-                    || matches!(
-                        normalized.as_str(),
-                        "baseurl"
-                            | "upstreambaseurl"
-                            | "openaiapikey"
-                            | "apikey"
-                            | "experimentalbearertoken"
-                            | "authorization"
-                            | "xapikey"
-                            | "accesstoken"
-                            | "refreshtoken"
-                            | "idtoken"
-                            | "authcontents"
-                    );
-                collect_sensitive_config_values(value, sensitive, values);
+                let normalized = normalized_secret_key(key);
+                let actor_marker = normalized == "xopenaiactorauthorization"
+                    && value.as_str() == Some("local-image-extension");
+                let header_container = matches!(normalized.as_str(), "headers" | "httpheaders");
+                let credential_key = matches!(
+                    normalized.as_str(),
+                    "baseurl"
+                        | "upstreambaseurl"
+                        | "openaiapikey"
+                        | "apikey"
+                        | "experimentalbearertoken"
+                        | "authorization"
+                        | "proxyauthorization"
+                        | "xapikey"
+                        | "xopenaiapikey"
+                        | "cookie"
+                        | "setcookie"
+                        | "accesstoken"
+                        | "refreshtoken"
+                        | "idtoken"
+                        | "authcontents"
+                );
+                if credential_key || (inside_headers && !actor_marker) {
+                    *value = Value::String("[REDACTED]".to_string());
+                } else {
+                    redact_toml_diagnostic_value(value, inside_headers || header_container);
+                }
             }
         }
         _ => {}
@@ -3869,18 +3979,12 @@ fn collect_sensitive_config_values(
 }
 
 fn redact_live_config_for_output(config: &str) -> String {
-    let Ok(value) = toml_edit::de::from_str::<Value>(config) else {
+    let Ok(mut value) = toml_edit::de::from_str::<Value>(config) else {
         return "# 配置包含无法安全解析的内容；已停止在诊断界面显示。\n".to_string();
     };
-    let mut sensitive = Vec::new();
-    collect_sensitive_config_values(&value, false, &mut sensitive);
-    sensitive.sort_by_key(|value| std::cmp::Reverse(value.len()));
-    sensitive.dedup();
-    sensitive
-        .into_iter()
-        .fold(config.to_string(), |output, value| {
-            output.replace(&value, "[REDACTED]")
-        })
+    redact_toml_diagnostic_value(&mut value, false);
+    toml_edit::ser::to_string_pretty(&value)
+        .unwrap_or_else(|_| "# 配置无法安全序列化；已停止在诊断界面显示。\n".to_string())
 }
 
 fn relay_switch_payload(
@@ -5223,5 +5327,72 @@ http_headers = { Authorization = "Bearer oauth-config-output-token", "x-keep" = 
         assert!(!visible_config.contains("https://private.example.test/v1"));
         assert!(!visible_config.contains("sk-config-output-secret"));
         assert!(!visible_config.contains("oauth-config-output-token"));
+
+        let escaped_config = redact_live_config_for_output(
+            r#"model_provider = "Relay"
+[model_providers.Relay]
+base_url = "https:\u002f\u002fescaped.example.test\u002fv1"
+experimental_bearer_token = "sk\u002descaped-secret"
+http_headers = { "x-openai-api-key" = "sk-header-secret", Cookie = "oauth-cookie-secret", "x-openai-actor-authorization" = "local-image-extension" }
+"#,
+        );
+        assert!(!escaped_config.contains("escaped.example.test"));
+        assert!(!escaped_config.contains("sk\\u002descaped-secret"));
+        assert!(!escaped_config.contains("sk-header-secret"));
+        assert!(!escaped_config.contains("oauth-cookie-secret"));
+        assert!(escaped_config.contains("local-image-extension"));
+
+        let unknown_key = sanitize_diagnostic_detail(json!({
+            "sk-secret-in-key": true,
+            "status": "ok",
+            "targetRelayId": "provider-a"
+        }));
+        let unknown_key_text = serde_json::to_string(&unknown_key).unwrap();
+        assert!(!unknown_key_text.contains("sk-secret-in-key"));
+        assert!(unknown_key_text.contains("ok"));
+        assert!(!unknown_key_text.contains("provider-a"));
+        let panic_detail = sanitize_diagnostic_detail(json!({
+            "payload": "sk-panic-secret",
+            "location": { "file": "/private/oauth-panic-token.rs", "line": 42 }
+        }));
+        assert!(
+            !serde_json::to_string(&panic_detail)
+                .unwrap()
+                .contains("sk-panic-secret")
+        );
+        assert!(!include_str!("lib.rs").contains("diagnostic_log::append_diagnostic_log"));
+
+        let profile = provider_test_profile(
+            "https://private.example.test/v1".to_string(),
+            "sk-boundary-secret",
+        );
+        let leaked_prefix = "sk-boundary-se";
+        let sanitized_probe = sanitize_provider_test_result(
+            &profile,
+            CommandResult {
+                status: "failed".to_string(),
+                message: format!("HTTP 401: {leaked_prefix}"),
+                payload: RelayProfileTestPayload {
+                    http_status: 401,
+                    endpoint: "https://private.example.test/v1/responses".to_string(),
+                    response_preview: leaked_prefix.to_string(),
+                    compatibility_fallback_used: false,
+                    initial_http_status: None,
+                },
+            },
+        );
+        let sanitized_probe_text = serde_json::to_string(&sanitized_probe).unwrap();
+        assert!(!sanitized_probe_text.contains(leaked_prefix));
+
+        let safe_models = sanitize_provider_model_ids(
+            &profile,
+            vec![
+                "gpt-safe".to_string(),
+                "sk-boundary-secret".to_string(),
+                "oauth-model-token@example.test".to_string(),
+                "https://private.example.test/v1".to_string(),
+            ],
+        );
+        assert_eq!(safe_models, vec!["gpt-safe"]);
     }
 }
