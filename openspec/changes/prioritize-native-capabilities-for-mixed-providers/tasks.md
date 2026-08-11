@@ -70,8 +70,8 @@
 ## 7. Integrate catalog and restart semantics
 
 - [x] 7.1 Add tests that non-external native-priority mixed profiles request `official-plus-custom`, ordinary pure OAuth requests `native-official`, explicit server-side-composite classification accepts Responses `PureApi` and `Official + officialMixApiKey` single-upstream profiles, external ownership wins before all defaults, and native-priority code defines no competing catalog baseline or update channel.
-- [ ] 7.2 Block a new active native-priority generation when its managed catalog prerequisite is missing, scope-stale, invalid, or cannot contain the selected default model; preserve the last valid active provider/catalog generation.
-- [ ] 7.3 Allow an inactive native-priority draft to remain saved as action-required when catalog readiness is unavailable, without changing live configuration or claiming runtime readiness.
+- [x] 7.2 Block a new active native-priority generation when its managed catalog prerequisite is missing, scope-stale, invalid, or cannot contain the selected default model; preserve the last valid active provider/catalog generation.
+- [x] 7.3 Allow an inactive native-priority draft to remain saved as action-required when catalog readiness is unavailable, without changing live configuration or claiming runtime readiness.
 - [ ] 7.4 Add recovery tests that a later valid official refresh or provider-detail commit materializes an action-required inactive profile, clears only its catalog-readiness action, and permits activation retry under the remaining gates.
 - [ ] 7.5 Preserve `adopt_external_model_catalog` as the source/version-hash-bound specialized catalog transaction and make the combined provider-detail command reject any unreviewed external-to-managed ownership transition.
 - [ ] 7.6 Add an independent `appliedRuntimeFingerprint` to `ProfileCatalogState`, using provider ID/name, protocol, auth requirement, actor header, and stable catalog runtime identity (`generated_hash`, external source identity, or native sentinel); add migration/default tests.
