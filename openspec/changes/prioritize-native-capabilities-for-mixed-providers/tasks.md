@@ -37,7 +37,7 @@
 - [x] 4.5 Add transaction-failure injection tests at normalization, catalog materialization, settings persistence, live-config commit, Context verification, and post-commit verification; prove every persisted artifact returns to the prior generation.
 - [x] 4.6 Extend success and failure tests to prove protected Context tables remain semantically identical and live `auth.json` remains byte-identical when no official-client update races the transaction.
 - [ ] 4.7 Add regression tests proving unrelated live roots and tables—including review model, reasoning effort, sandbox/network policy, acknowledgements, and feature flags—are preserved from live state and never introduced from profile content.
-- [ ] 4.8 Add a concurrent official-auth update test proving the provider transaction aborts and rolls back only Manager-owned mutations while preserving the newer official `auth.json` bytes.
+- [x] 4.8 Add a concurrent official-auth update test proving the provider transaction aborts and rolls back only Manager-owned mutations while preserving the newer official `auth.json` bytes.
 - [ ] 4.9 Reject every new Save/Set-as-current request with non-empty `authContents`, whether OAuth or API-key-only; permit only controlled migration of an already persisted API-key-only legacy copy into the provider bearer, then delete that copy.
 - [ ] 4.10 Block Set-as-current and active Save without current official ChatGPT authentication or with scope-stale catalog identity/target state, while permitting a valid inactive action-required Save.
 - [ ] 4.11 Verify rollback journals, staging directories, logs, errors, diagnostics, settings, and catalog artifacts contain no ChatGPT OAuth payload, and verify owner-only permissions for every provider-key-bearing path.
