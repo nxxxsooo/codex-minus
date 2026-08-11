@@ -222,6 +222,12 @@ describe("provider detail draft state", () => {
         ["replaceActorHeader"],
       );
     }
+    const failedConfirmation = settleProviderDetailTransformError(
+      confirmed.state,
+      transformCorrelation(confirmed),
+    );
+    assert.equal(failedConfirmation.disposition, "error");
+    assert.deepEqual(failedConfirmation.state.inspection, observed.state.inspection);
     const cancelled = cancelProviderDetailTransition(blocked.state);
     assert.deepEqual(cancelled.effects, []);
     assert.equal(cancelled.state.profile.configContents, actorState.profile.configContents);
@@ -335,6 +341,13 @@ describe("provider detail draft state", () => {
         "RelayReplacement",
       );
     }
+    const failedRetry = settleProviderDetailTransformError(
+      retry.state,
+      transformCorrelation(retry),
+    );
+    assert.equal(failedRetry.disposition, "error");
+    assert.deepEqual(failedRetry.state.inspection, observed.inspection);
+    assert.equal(failedRetry.state.pendingLegacyProviderIdResolution?.reason, "unavailable");
     for (const invalid of ["", "openai", "CodexPlusPlus", "CodexPP"]) {
       assert.throws(
         () => resolveLegacy(blocked.state, invalid),

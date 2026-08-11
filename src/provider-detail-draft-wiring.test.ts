@@ -12,6 +12,10 @@ describe("provider detail draft wiring", () => {
     assert.match(source, /transformProviderNativeCapability\(effect\.invocation\)/);
     assert.match(source, /settleProviderDetailTransform\([^;]*effect\.correlation/s);
     assert.match(source, /settleProviderDetailTransformError\([^;]*effect\.correlation/s);
+    assert.match(
+      source,
+      /settleProviderDetailTransformError\([\s\S]*?if \(!settled\.report\) return;\s*updateDetailState\(settled\.state\)/,
+    );
     assert.doesNotMatch(source, /transformProviderNativeCapability\(effect\)/);
   });
 

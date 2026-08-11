@@ -172,7 +172,7 @@ export function beginProviderDetailEdit<P extends ProviderDetailProfile>(
         : null,
       pendingConfirmation: null,
       pendingLegacyProviderIdResolution: null,
-      inspection: null,
+      inspection: state.inspection,
       preview: null,
       blockers: [],
     },
@@ -459,13 +459,17 @@ export function settleProviderDetailTransformError<P extends ProviderDetailProfi
   ) {
     return { state, effects: [], disposition: "stale", report: false };
   }
+  const failedLegacyRetry = state.pendingTransition?.transition.action === "enableNativePriority"
+    && !!state.pendingTransition.transition.replacementProviderId
+    ? { ...state.pendingTransition, reason: "unavailable" as const }
+    : null;
   return {
     state: {
       ...state,
       pendingTransformRevision: null,
       pendingTransition: null,
       pendingConfirmation: null,
-      pendingLegacyProviderIdResolution: null,
+      pendingLegacyProviderIdResolution: failedLegacyRetry,
     },
     effects: [],
     disposition: "error",
