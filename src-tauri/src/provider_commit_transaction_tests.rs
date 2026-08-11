@@ -1388,6 +1388,191 @@ fn generic_settings_save_rejects_a_concurrent_persisted_provider_generation_chan
 }
 
 #[test]
+fn direct_invoke_matrix_rejects_provider_bypasses_without_mutating_any_generation() {
+    let first = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    let second = canonical_profile(
+        "backup",
+        "official-a",
+        "https://backup.example/v1",
+        "backup-key",
+    );
+    let initial = settings_with(vec![first, second], "sub2api");
+
+    for case in [
+        "invalid-provider-toml",
+        "actor-header",
+        "provider-bearer",
+        "auth-contents",
+        "active-id",
+        "topology-order",
+        "common-config",
+        "context-config",
+        "legacy-base-url",
+        "test-model",
+    ] {
+        let fixture = Fixture::new(&initial, &state_with_official());
+        let mut incoming: BackendSettings =
+            serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+        let before = fixture.file_generation();
+        match case {
+            "invalid-provider-toml" => {
+                incoming.relay_profiles[0].config_contents =
+                    "model_provider = [invalid-provider-toml".to_string();
+            }
+            "actor-header" => {
+                incoming.relay_profiles[0].config_contents = incoming.relay_profiles[0]
+                    .config_contents
+                    .replace("local-image-extension", "actor-bypass-sentinel");
+            }
+            "provider-bearer" => {
+                incoming.relay_profiles[0].api_key = "provider-bypass-sentinel".to_string();
+                incoming.relay_profiles[0].config_contents = incoming.relay_profiles[0]
+                    .config_contents
+                    .replace("provider-key", "provider-bypass-sentinel");
+            }
+            "auth-contents" => {
+                incoming.relay_profiles[0].auth_contents =
+                    r#"{"tokens":{"access_token":"oauth-bypass-sentinel"}}"#.to_string();
+            }
+            "active-id" => incoming.active_relay_id = "backup".to_string(),
+            "topology-order" => incoming.relay_profiles.reverse(),
+            "common-config" => {
+                incoming.relay_common_config_contents =
+                    "sandbox_mode = \"danger-full-access\"\n".to_string();
+            }
+            "context-config" => {
+                incoming.relay_context_config_contents =
+                    "[mcp_servers.bypass]\ncommand = \"secret-command\"\n".to_string();
+            }
+            "legacy-base-url" => {
+                incoming.relay_base_url = "https://legacy-bypass.example/v1".to_string();
+            }
+            "test-model" => incoming.relay_test_model = "bypass-model".to_string(),
+            _ => unreachable!(),
+        }
+
+        let error = save_settings_with_provider_guard_at(&fixture.paths, incoming).unwrap_err();
+
+        let expected = if case == "auth-contents" {
+            GenericSettingsSaveError::ProviderAuthProhibited
+        } else {
+            GenericSettingsSaveError::ProviderOwnedDifference
+        };
+        assert_eq!(error, expected, "unexpected error for {case}");
+        assert!(!error.to_string().contains("provider-bypass-sentinel"));
+        assert!(!error.to_string().contains("oauth-bypass-sentinel"));
+        assert!(!error.to_string().contains("legacy-bypass.example"));
+        assert_eq!(
+            fixture.file_generation(),
+            before,
+            "mutation leaked for {case}"
+        );
+    }
+
+    for context in ["active-detail", "inactive-detail", "topology"] {
+        let active = canonical_profile(
+            "sub2api",
+            "official-a",
+            "https://stale-provider.example/v1",
+            "stale-provider-key",
+        );
+        let inactive = canonical_profile(
+            "backup",
+            "official-a",
+            "https://inactive.example/v1",
+            "inactive-provider-key",
+        );
+        let persisted = settings_with(vec![active, inactive], "sub2api");
+        let fixture = Fixture::new(&persisted, &state_with_official());
+        let persisted = fixture.read_settings();
+        let mut stale = request(
+            &persisted,
+            &persisted,
+            if context == "inactive-detail" {
+                "backup"
+            } else {
+                "sub2api"
+            },
+            ProviderCommitAction::Save,
+            u64::MAX,
+        );
+        if context == "topology" {
+            stale.focused_profile_id = None;
+            stale.catalog_drafts.clear();
+        }
+        stale.expected_provider_fingerprint = "sha256:stale-direct-invoke".to_string();
+        let before = fixture.file_generation();
+
+        let error = commit_provider_detail_from_paths(&fixture.paths, stale).unwrap_err();
+
+        assert_eq!(error.code(), ProviderCommitErrorCode::StaleState);
+        assert_eq!(
+            error.to_string(),
+            "provider state changed; reload or merge before saving"
+        );
+        assert!(!error.to_string().contains("stale-provider-key"));
+        assert!(!error.to_string().contains("stale-provider.example"));
+        assert_eq!(
+            fixture.file_generation(),
+            before,
+            "stale {context} mutated a generation"
+        );
+    }
+}
+
+#[test]
+fn provider_commit_rejects_a_concurrent_raw_settings_generation_change() {
+    let active = pure_oauth_profile("official");
+    let inactive = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    let initial = settings_with(vec![active, inactive], "official");
+    let fixture = Fixture::new(&initial, &state_with_official());
+    let persisted = fixture.read_settings();
+    let commit = request(
+        &persisted,
+        &persisted,
+        "sub2api",
+        ProviderCommitAction::Save,
+        999,
+    );
+    let mut concurrent: Value =
+        serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+    concurrent["codexGoalsEnabled"] = json!(true);
+    concurrent["concurrentRawGenerationSentinel"] = json!("must-survive");
+    let concurrent_bytes = serde_json::to_vec_pretty(&concurrent).unwrap();
+    let settings_path = fixture.paths.settings_path.clone();
+    let mut expected = fixture.file_generation();
+    expected.insert(
+        "app-state/settings.json".to_string(),
+        concurrent_bytes.clone(),
+    );
+
+    let error = commit_provider_detail_from_paths_observed(&fixture.paths, commit, |checkpoint| {
+        if checkpoint == ProviderCommitCheckpoint::CatalogMaterialization {
+            fs::write(&settings_path, &concurrent_bytes)?;
+        }
+        Ok(())
+    })
+    .unwrap_err();
+
+    assert_eq!(error.code(), ProviderCommitErrorCode::StaleState);
+    assert_eq!(
+        error.to_string(),
+        "provider settings changed during commit; reload or merge before saving"
+    );
+    assert_eq!(fixture.file_generation(), expected);
+}
+
+#[test]
 fn topology_adapter_commits_list_mutations_through_the_shared_provider_transaction() {
     let a = canonical_profile(
         "relay-a",

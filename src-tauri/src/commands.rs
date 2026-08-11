@@ -2348,12 +2348,13 @@ pub fn commit_provider_detail_from_paths_observed(
         .map_err(transaction_failure)?;
     live_state::recover_locked_at(&paths.app_state).map_err(transaction_failure)?;
 
-    let persisted_settings = load_provider_commit_settings(&paths.settings_path).map_err(|_| {
-        provider_commit_failure(
-            ProviderCommitErrorCode::InputUnavailable,
-            "provider settings are unavailable",
-        )
-    })?;
+    let (persisted_settings_bytes, persisted_settings) =
+        load_provider_commit_settings(&paths.settings_path).map_err(|_| {
+            provider_commit_failure(
+                ProviderCommitErrorCode::InputUnavailable,
+                "provider settings are unavailable",
+            )
+        })?;
     let persisted_state = crate::model_catalog::load_and_migrate_state_from_path(
         &persisted_settings,
         &paths.codex_home,
@@ -2641,6 +2642,16 @@ pub fn commit_provider_detail_from_paths_observed(
             .map_err(transaction_failure)?,
     );
 
+    let settings_generation_matches = read_optional_bytes(&paths.settings_path)
+        .map_err(transaction_failure)?
+        .is_some_and(|current| current == persisted_settings_bytes);
+    if !settings_generation_matches {
+        return Err(provider_commit_failure(
+            ProviderCommitErrorCode::StaleState,
+            "provider settings changed during commit; reload or merge before saving",
+        ));
+    }
+
     let live_config_path = paths.codex_home.join("config.toml");
     let observe = std::cell::RefCell::new(&mut observe);
     live_state::commit_locked_verified_at_observed(
@@ -2765,7 +2776,7 @@ fn validate_native_provider_activation_gate(
     Ok(true)
 }
 
-fn load_provider_commit_settings(path: &Path) -> anyhow::Result<BackendSettings> {
+fn load_provider_commit_settings(path: &Path) -> anyhow::Result<(Vec<u8>, BackendSettings)> {
     let bytes =
         std::fs::read(path).map_err(|_| anyhow::anyhow!("provider settings unavailable"))?;
     let mut settings: BackendSettings = serde_json::from_slice(&bytes)
@@ -2776,7 +2787,7 @@ fn load_provider_commit_settings(path: &Path) -> anyhow::Result<BackendSettings>
             .map_err(|_| anyhow::anyhow!("persisted provider profile is invalid"))?;
         sanitize_profile_after_core_normalize_fallible(profile)?;
     }
-    Ok(settings)
+    Ok((bytes, settings))
 }
 
 fn migrate_persisted_legacy_api_key_auth(profile: &mut RelayProfile) -> anyhow::Result<()> {
