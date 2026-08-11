@@ -20,4 +20,10 @@
 - Source audit found no native-capability dependency on a standard-Pro artifact, signed-update channel, or 372k readiness policy. The existing `models_372k.json` string is only an external-catalog filename fixture.
 - `npm install` reported four pre-existing dependency audit findings (one low, three high); no dependency-changing `npm audit fix` was run.
 
+### Apply-time architecture correction
+
+- Backend call-site audit found that hardening generic `save_settings` without a replacement would break provider enablement, reorder, copy, delete, aggregate cleanup, and provider test-model mutations.
+- The change therefore uses one provider-owned canonical topology envelope with an expected provider-state fingerprint. Thin detail/topology commands share one planner and transaction engine; frontend revision is correlation metadata only.
+- This correction closes an implementation gap in the original artifacts without changing OAuth, Context, external-catalog, or native-capability contracts.
+
 Focused, final full-suite, bundle, manual-flow, and scenario reconciliation evidence is appended here as the corresponding task groups complete.

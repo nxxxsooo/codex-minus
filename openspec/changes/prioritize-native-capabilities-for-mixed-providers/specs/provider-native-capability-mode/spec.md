@@ -153,6 +153,16 @@ The system MUST preserve the native-capability-priority contract across subseque
 - **WHEN** the provider table is invalid, ambiguous, or contains a structure the system cannot preserve
 - **THEN** the operation fails before any saved or live write and reports the blocking field without normalizing away user content
 
+#### Scenario: Provider topology is changed outside the detail editor
+
+- **WHEN** the user enables or disables provider routing, reorders, copies, or deletes a provider, changes provider test-model state, or performs aggregate-reference cleanup
+- **THEN** the operation uses the same provider-owned validation, catalog planning, compare-and-swap, Context protection, OAuth observation, and transaction engine as provider-detail Save rather than generic settings persistence
+
+#### Scenario: Generic settings save carries provider changes
+
+- **WHEN** a stale, custom, or unconverted caller submits any provider-owned difference through generic `save_settings`
+- **THEN** the backend rejects the request before writing and directs the caller to the provider-owned commit boundary
+
 ### Requirement: Explicit and atomic upgrade lifecycle
 
 The system SHALL make legacy-profile native-capability migration an explicit draft operation. Loading, inspecting, diagnosing, or starting the manager MUST NOT mutate an eligible profile for native-capability migration. Saving or activating an upgrade MUST use the unified provider-detail transaction and MUST preserve one complete prior generation on any failure.
@@ -176,6 +186,11 @@ The system SHALL make legacy-profile native-capability migration an explicit dra
 
 - **WHEN** provider persistence, catalog-state creation, permitted inactive materialization, or transaction verification fails during first Save
 - **THEN** neither a partial provider nor a partial catalog state remains persisted
+
+#### Scenario: Provider draft is stale
+
+- **WHEN** the expected provider-state fingerprint no longer matches persisted provider-owned state
+- **THEN** the commit fails before mutation and returns a sanitized conflict for reload or merge; the frontend draft revision is used only to correlate responses and never overrides the compare-and-swap failure
 
 #### Scenario: User previews an upgrade
 

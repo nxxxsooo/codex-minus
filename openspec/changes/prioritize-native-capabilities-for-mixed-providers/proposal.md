@@ -13,7 +13,7 @@ The product needs one explicit, reproducible “native-capability priority” pa
 - Derive effective state from the provider TOML instead of persisting a second boolean that can drift from the configuration.
 - When the target mode retains a custom provider table, preserve unrelated provider headers and fields; prevent later model/Base URL/key edits from undoing the native-capability contract; and keep global live configuration outside the provider profile. True pure OAuth remains the explicit, previewed destructive exception because it removes the custom provider table.
 - Show capability evidence and degraded reasons without promising that configuration alone unlocks every native feature. In particular, identify the current Free-plan image-generation restriction, model/catalog capability requirements, upstream image permission, and restart/new-task requirement.
-- Complete and use one unified provider-detail Save/Set-as-current transaction for first save, inactive save, upgrade, and activation through the existing Context/OAuth protection boundary; add no direct `config.toml` or `auth.json` write path.
+- Complete and use one provider-owned transaction engine for provider-detail Save/Set-as-current and provider-list/topology mutations. Thin detail and topology commands may expose different request shapes, but both must use the same validation, catalog planning, Context/OAuth protection, compare-and-swap, and commit boundary; add no direct `config.toml` or `auth.json` write path.
 - Keep pure OAuth as true `native-official`, backed by Codex’s dynamic catalog. Keep pure API and legacy compatibility paths available as advanced, non-default options.
 - Reuse the existing `official-plus-custom` catalog contract and its currently authoritative validated official baseline for mixed profiles. Any future standard-Pro baseline, signed-update policy, or optional Sol 372k overlay remains a separate catalog change and is not defined or required here.
 
@@ -29,7 +29,7 @@ None. The existing `model-catalog-management` specification already assigns mixe
 
 ## Impact
 
-- Frontend provider onboarding, provider detail state, upgrade presentation, capability diagnostics, and restart guidance.
+- Frontend provider onboarding, provider detail state, provider-list/topology mutations, upgrade presentation, capability diagnostics, and restart guidance.
 - Backend provider-TOML parsing and transformation, normalized profile persistence, staged live application, and sanitized auth/capability status.
 - Existing provider generation and structured edit helpers that currently force `requires_openai_auth = true` or reconstruct provider tables.
 - Provider Doctor presentation and validation boundaries; it may report observable prerequisites but must not claim end-to-end image generation without a real verified result.
