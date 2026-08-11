@@ -2,10 +2,13 @@ import assert from "node:assert";
 import { describe, it } from "node:test";
 
 import {
+  applyProviderDetailInspection,
   beginProviderDetailEdit,
   buildProviderDetailCommitEffect,
   createProviderDetailDraftState,
   endProviderDetailSession,
+  replaceProviderDetailCatalogDraft,
+  replaceProviderDetailProfile,
   settleProviderDetailTransform,
   settleProviderDetailTransformError,
 } from "./provider-detail-draft-state.ts";
@@ -268,6 +271,56 @@ describe("provider detail draft state", () => {
     assert.deepEqual(settled.state.inspection, inspection);
     assert.equal("inspection" in settled.state.profile, false);
     assert.equal("preview" in settled.state.profile, false);
+  });
+
+  it("loads inspection only into the matching live detail session", () => {
+    const first = draftState();
+    const reopened = draftState();
+    const stale = applyProviderDetailInspection(reopened, first.sessionToken, inspection);
+    assert.equal(stale.disposition, "stale");
+    assert.equal(stale.state.inspection, null);
+
+    const current = applyProviderDetailInspection(
+      reopened,
+      reopened.sessionToken,
+      inspection,
+    );
+    assert.equal(current.disposition, "applied");
+    assert.deepEqual(current.state.inspection, inspection);
+    assert.equal("inspection" in current.state.profile, false);
+  });
+
+  it("invalidates pending transforms when the controlled profile changes locally", () => {
+    const pending = beginProviderDetailEdit(draftState(), {
+      patch: { relayMode: "official", officialMixApiKey: true },
+      target: existingTarget,
+      transition: { action: "enableNativePriority", confirmations: [] },
+    });
+    const replaced = replaceProviderDetailProfile(
+      pending.state,
+      { ...pending.state.profile, name: "New local name" },
+    );
+    assert.equal(replaced.latestTransformRevision, 2);
+    assert.equal(replaced.pendingTransformRevision, null);
+    assert.equal(replaced.profile.name, "New local name");
+    assert.equal(
+      settleProviderDetailTransformError(replaced, transformCorrelation(pending)).disposition,
+      "stale",
+    );
+    assert.throws(
+      () => replaceProviderDetailProfile(replaced, { ...replaced.profile, id: "other" }),
+      /another session/i,
+    );
+
+    const catalog = replaceProviderDetailCatalogDraft(
+      replaced,
+      { ...catalogDraft, mode: "custom-only" },
+    );
+    assert.equal(catalog.catalogDraft?.mode, "custom-only");
+    assert.throws(
+      () => replaceProviderDetailCatalogDraft(catalog, { ...catalogDraft, profileId: "other" }),
+      /another profile/i,
+    );
   });
 
   it("keeps preview and confirmation steps in memory without creating a commit effect", () => {

@@ -219,6 +219,55 @@ export function settleProviderDetailTransformError<P extends ProviderDetailProfi
   };
 }
 
+export function applyProviderDetailInspection<P extends ProviderDetailProfile>(
+  state: ProviderDetailDraftState<P>,
+  sessionToken: symbol,
+  inspection: ProviderDetailInspectionMetadata,
+): ProviderDetailStep<P> & { disposition: "applied" | "stale" } {
+  if (
+    state.lifecycle !== "active"
+    || sessionToken !== state.sessionToken
+    || inspection.profileId !== state.profile.id
+  ) {
+    return { state, effects: [], disposition: "stale" };
+  }
+  return {
+    state: { ...state, inspection },
+    effects: [],
+    disposition: "applied",
+  };
+}
+
+export function replaceProviderDetailProfile<P extends ProviderDetailProfile>(
+  state: ProviderDetailDraftState<P>,
+  profile: P,
+): ProviderDetailDraftState<P> {
+  assertActive(state);
+  if (profile.id !== state.profile.id) {
+    throw new Error("Provider detail profile replacement belongs to another session.");
+  }
+  return {
+    ...state,
+    profile,
+    latestTransformRevision: state.latestTransformRevision + 1,
+    pendingTransformRevision: null,
+    inspection: null,
+    preview: null,
+    blockers: [],
+  };
+}
+
+export function replaceProviderDetailCatalogDraft<P extends ProviderDetailProfile>(
+  state: ProviderDetailDraftState<P>,
+  catalogDraft: ProfileCatalogDraft | null,
+): ProviderDetailDraftState<P> {
+  assertActive(state);
+  if (catalogDraft && catalogDraft.profileId !== state.profile.id) {
+    throw new Error("Provider detail catalog draft belongs to another profile.");
+  }
+  return { ...state, catalogDraft };
+}
+
 export function endProviderDetailSession<P extends ProviderDetailProfile>(
   state: ProviderDetailDraftState<P>,
   _reason: "cancel" | "close" | "navigate",

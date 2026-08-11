@@ -113,6 +113,21 @@ import {
   withGeneratedRelayConfig,
   type ProviderConfigTargetContract,
 } from "./provider-config-draft";
+import {
+  applyProviderDetailInspection,
+  beginProviderDetailEdit,
+  createProviderDetailDraftState,
+  endProviderDetailSession,
+  replaceProviderDetailCatalogDraft,
+  replaceProviderDetailProfile,
+  settleProviderDetailTransform,
+  settleProviderDetailTransformError,
+  type ProviderDetailDraftState,
+  type ProviderDetailInspectionMetadata,
+  type ProviderDetailTransformInvocation,
+  type ProviderDetailTransformResponse,
+} from "./provider-detail-draft-state";
+import type { ProviderDraftTransition } from "./provider-config-transform-router";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 
 
@@ -344,6 +359,10 @@ type ProviderCommitResult = CommandResult<{
   providerFingerprint: string;
   restartRequired: boolean;
   errorCode: string | null;
+}>;
+
+type ProviderNativeCapabilityInspectionResult = CommandResult<{
+  inspections: ProviderDetailInspectionMetadata[];
 }>;
 
 type RelayResult = CommandResult<{
@@ -1347,6 +1366,26 @@ export function App() {
     return result ?? null;
   };
 
+  const inspectProviderNativeCapabilities = async (profileId: string) => {
+    try {
+      const result = await call<ProviderNativeCapabilityInspectionResult>(
+        "inspect_provider_native_capabilities",
+        { request: { profileId } },
+      );
+      if (!isSuccessStatus(result.status)) return null;
+      return result.inspections.find((inspection) => inspection.profileId === profileId) ?? null;
+    } catch {
+      return null;
+    }
+  };
+
+  const transformProviderNativeCapability = async (
+    invocation: ProviderDetailTransformInvocation<RelayProfile>,
+  ) => call<ProviderDetailTransformResponse<RelayProfile>>(
+    invocation.command,
+    { request: invocation.request },
+  );
+
   const fetchRelayProfileModels = async (profile: RelayProfile) => {
     const result = await run(() => call<RelayProfileModelsResult>("fetch_relay_profile_models", { profile }));
     if (result) showNotice(t("模型列表"), result.message, result.status);
@@ -1668,6 +1707,8 @@ export function App() {
       extractRelayCommonConfig,
       testRelayProfile,
       diagnoseRelayProfile,
+      inspectProviderNativeCapabilities,
+      transformProviderNativeCapability,
       fetchRelayProfileModels,
       commitProviderTopology,
       commitProviderDetail,
@@ -1840,6 +1881,8 @@ type Actions = {
   extractRelayCommonConfig: (configContents: string) => Promise<ExtractRelayCommonConfigResult | null>;
   testRelayProfile: (profile: RelayProfile) => Promise<void>;
   diagnoseRelayProfile: (profile: RelayProfile) => Promise<ProviderDoctorResult | null>;
+  inspectProviderNativeCapabilities: (profileId: string) => Promise<ProviderDetailInspectionMetadata | null>;
+  transformProviderNativeCapability: (invocation: ProviderDetailTransformInvocation<RelayProfile>) => Promise<ProviderDetailTransformResponse<RelayProfile>>;
   fetchRelayProfileModels: (profile: RelayProfile) => Promise<string[] | null>;
   commitProviderTopology: (settings: BackendSettings, kind: Exclude<ProviderMutationKind, "detailSave" | "setCurrent">, copySourceProfileId?: string) => Promise<boolean>;
   commitProviderDetail: (settings: BackendSettings, focusedProfileId: string, catalogDraft: ProfileCatalogDraft | null, focusedProfileWasPersisted: boolean, kind: "detailSave" | "setCurrent", confirmContextCleanup?: boolean) => Promise<boolean>;
@@ -3071,7 +3114,6 @@ function RelayProfileDetail({
   onSaved?: () => void;
   actions: Actions;
 }) {
-  const [draft, setDraft] = useState<RelayProfile>(profile);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   const [modelWindowRows, setModelWindowRows] = useState<ModelWindowRow[]>(
@@ -3081,15 +3123,23 @@ function RelayProfileDetail({
     profile.relayMode,
     profile.officialMixApiKey,
   ) as CatalogMode;
-  const [catalogDraft, setCatalogDraft] = useState<ProfileCatalogDraft | null>(() => (
-    isNew || catalogProfile
-      ? catalogProfileDraft({
-          profileId: profile.id,
-          fallbackMode: fallbackCatalogMode,
-          summary: catalogProfile,
-        })
-      : null
-  ));
+  const initialCatalogDraft = isNew || catalogProfile
+    ? catalogProfileDraft({
+        profileId: profile.id,
+        fallbackMode: fallbackCatalogMode,
+        summary: catalogProfile,
+      })
+    : null;
+  const [detailState, setDetailState] = useState<ProviderDetailDraftState<RelayProfile>>(() =>
+    createProviderDetailDraftState({ profile, catalogDraft: initialCatalogDraft }),
+  );
+  const detailStateRef = useRef(detailState);
+  const updateDetailState = (next: ProviderDetailDraftState<RelayProfile>) => {
+    detailStateRef.current = next;
+    setDetailState(next);
+  };
+  const draft = detailState.profile;
+  const catalogDraft = detailState.catalogDraft;
   const isActive = !isNew && profile.id === form.activeRelayId;
   useEffect(() => {
     const nextDraft = isAggregateRelayProfile(profile)
@@ -3099,18 +3149,142 @@ function RelayProfileDetail({
           configContents: providerConfigDraft(profile.configContents, relayFiles?.configContents ?? ""),
           authContents: "",
         });
-    setDraft(nextDraft);
-    setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || ""));
-  }, [profile.id, profile.configContents, profile.modelList, profile.modelWindows]);
-  useEffect(() => {
-    setCatalogDraft(isNew || catalogProfile
+    const nextCatalogDraft = isNew || catalogProfile
       ? catalogProfileDraft({
           profileId: profile.id,
           fallbackMode: defaultCatalogMode(profile.relayMode, profile.officialMixApiKey) as CatalogMode,
           summary: catalogProfile,
         })
-      : null);
+      : null;
+    const nextState = createProviderDetailDraftState({
+      profile: nextDraft,
+      catalogDraft: nextCatalogDraft,
+    });
+    updateDetailState(nextState);
+    setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || ""));
+    let cancelled = false;
+    if (!isNew && !isAggregateRelayProfile(nextDraft)) {
+      void actions.inspectProviderNativeCapabilities(profile.id).then((inspection) => {
+        if (cancelled || !inspection) return;
+        const applied = applyProviderDetailInspection(
+          detailStateRef.current,
+          nextState.sessionToken,
+          inspection,
+        );
+        if (applied.disposition === "applied") updateDetailState(applied.state);
+      });
+    }
+    return () => {
+      cancelled = true;
+      if (detailStateRef.current.sessionToken === nextState.sessionToken) {
+        detailStateRef.current = endProviderDetailSession(detailStateRef.current, "close").state;
+      }
+    };
+  }, [profile.id, profile.configContents, profile.modelList, profile.modelWindows]);
+  useEffect(() => {
+    const nextCatalogDraft = isNew || catalogProfile
+      ? catalogProfileDraft({
+          profileId: profile.id,
+          fallbackMode: defaultCatalogMode(profile.relayMode, profile.officialMixApiKey) as CatalogMode,
+          summary: catalogProfile,
+        })
+      : null;
+    if (
+      detailStateRef.current.lifecycle === "active"
+      && detailStateRef.current.profile.id === profile.id
+    ) {
+      updateDetailState(replaceProviderDetailCatalogDraft(detailStateRef.current, nextCatalogDraft));
+    }
   }, [profile.id, isNew, catalogProfile?.effectiveHash]);
+  const replaceDraft = (next: RelayProfile) => {
+    updateDetailState(replaceProviderDetailProfile(detailStateRef.current, next));
+  };
+  const transitionForPatch = (
+    current: RelayProfile,
+    patch: Partial<RelayProfile>,
+  ): ProviderDraftTransition | undefined => {
+    if (!("relayMode" in patch || "officialMixApiKey" in patch || "protocol" in patch)) return undefined;
+    const next = { ...current, ...patch };
+    if (next.protocol === "chatCompletions") {
+      return { action: "exitChatCompletions", confirmations: [] };
+    }
+    if (next.relayMode === "pureApi") {
+      return { action: "exitPureApi", confirmations: [] };
+    }
+    if (next.relayMode === "official" && !next.officialMixApiKey) {
+      return { action: "exitPureOAuth", confirmations: [] };
+    }
+    return { action: "enableNativePriority", confirmations: [] };
+  };
+  const editDraft = (patch: Partial<RelayProfile>) => {
+    let current = detailStateRef.current;
+    const target = providerConfigTargetContract(
+      { ...current.profile, ...patch },
+      isNew && !current.profile.configContents.trim(),
+    );
+    let step;
+    try {
+      const transition = target.source === "existing"
+        ? transitionForPatch(current.profile, patch)
+        : undefined;
+      let routedPatch = patch;
+      if (transition) {
+        const {
+          relayMode,
+          officialMixApiKey,
+          protocol,
+          ...ordinaryPatch
+        } = patch;
+        if (Object.keys(ordinaryPatch).length) {
+          const ordinary = beginProviderDetailEdit(current, {
+            patch: ordinaryPatch,
+            target,
+          });
+          current = ordinary.state;
+        }
+        routedPatch = {
+          ...(relayMode === undefined ? {} : { relayMode }),
+          ...(officialMixApiKey === undefined ? {} : { officialMixApiKey }),
+          ...(protocol === undefined ? {} : { protocol }),
+        };
+      }
+      step = beginProviderDetailEdit(current, {
+        patch: routedPatch,
+        target,
+        transition,
+      });
+    } catch (error) {
+      void actions.showMessage(t("供应商配置转换"), stringifyError(error), "failed");
+      return;
+    }
+    updateDetailState(step.state);
+    const effect = step.effects.find((candidate) => candidate.kind === "transform");
+    if (!effect || effect.kind !== "transform") return;
+    void actions.transformProviderNativeCapability(effect.invocation).then((response) => {
+      const settled = settleProviderDetailTransform(
+        detailStateRef.current,
+        effect.correlation,
+        response,
+      );
+      if (settled.disposition === "stale") return;
+      updateDetailState(settled.state);
+      if (settled.disposition === "notApplied") {
+        void actions.showMessage(
+          t("供应商配置转换"),
+          response.blockers.join("、") || t("当前供应商配置不能完成该转换。"),
+          "failed",
+        );
+      }
+    }).catch((error) => {
+      const settled = settleProviderDetailTransformError(
+        detailStateRef.current,
+        effect.correlation,
+      );
+      if (!settled.report) return;
+      updateDetailState(settled.state);
+      void actions.showMessage(t("供应商配置转换"), stringifyError(error), "failed");
+    });
+  };
   const newProviderFieldErrors = isNew && !isAggregateRelayProfile(draft)
     ? validateNewProviderDraft(draft)
     : {};
@@ -3118,7 +3292,9 @@ function RelayProfileDetail({
     ? aggregateRelayProfileValidation(draft)
     : Object.keys(newProviderFieldErrors).length
       ? t("请填写所有必填字段。")
-      : null;
+      : detailState.pendingTransformRevision !== null
+        ? t("供应商配置转换中。")
+        : null;
   const draftWithModelRows = () => {
     const serializedRows = serializeModelWindowRows(modelWindowRows);
     return { ...draft, modelList: serializedRows.modelList, modelWindows: serializedRows.modelWindows };
@@ -3177,7 +3353,7 @@ function RelayProfileDetail({
     }
   };
   const switchDraft = () => {
-    if (isNew || !form.relayProfilesEnabled) return;
+    if (isNew || !form.relayProfilesEnabled || detailState.pendingTransformRevision !== null) return;
     const draftWithWindows = draftWithModelRows();
     const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
     const previousActiveRelayId = form.activeRelayId;
@@ -3194,11 +3370,16 @@ function RelayProfileDetail({
         : catalogDraft,
     );
   };
+  const navigateBack = () => {
+    const ended = endProviderDetailSession(detailStateRef.current, "navigate");
+    detailStateRef.current = ended.state;
+    onBack();
+  };
   return (
     <div className="relay-detail-page" key={profile.id}>
       <div className="relay-detail-sticky">
         <Toolbar>
-          <Button onClick={onBack} variant="secondary">
+          <Button onClick={navigateBack} variant="secondary">
             <ArrowLeft className="h-4 w-4" />
             {t("返回列表")}
           </Button>
@@ -3213,12 +3394,12 @@ function RelayProfileDetail({
           </Button>
         </Toolbar>
       </div>
-        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={setDraft} onSwitch={switchDraft} actions={actions} modelWindowRows={modelWindowRows} setModelWindowRows={setModelWindowRows} catalogProfile={catalogProfile} />
+        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={replaceDraft} onProfileEdit={editDraft} onSwitch={switchDraft} actions={actions} modelWindowRows={modelWindowRows} setModelWindowRows={setModelWindowRows} catalogProfile={catalogProfile} />
       {!managedCatalogCapable(draft) ? null : catalogDraft ? (
         <CatalogProfileEditor
           catalog={modelCatalog}
           draft={catalogDraft}
-          onDraftChange={(next) => setCatalogDraft(next)}
+          onDraftChange={(next) => updateDetailState(replaceProviderDetailCatalogDraft(detailStateRef.current, next))}
           profile={draft}
           summary={catalogProfile}
           isNew={isNew}
@@ -3240,7 +3421,7 @@ function RelayProfileDetail({
         profile={draft}
         authStatus={isActive ? relayFiles?.authStatus ?? null : null}
         liveConfigContents={relayFiles?.configContents ?? ""}
-        onProfileChange={setDraft}
+        onProfileChange={replaceDraft}
       />
       )}
     </div>
@@ -3253,6 +3434,7 @@ function RelayProfileEditor({
   form,
   isNew = false,
   onProfileChange,
+  onProfileEdit,
   onSwitch,
   actions,
   modelWindowRows,
@@ -3263,6 +3445,7 @@ function RelayProfileEditor({
   form: BackendSettings;
   isNew?: boolean;
   onProfileChange: (value: RelayProfile) => void;
+  onProfileEdit?: (patch: Partial<RelayProfile>) => void;
   onSwitch: () => void;
   actions: Actions;
   modelWindowRows: ModelWindowRow[];
@@ -3287,6 +3470,10 @@ function RelayProfileEditor({
   const newProviderFieldErrors = isNew ? validateNewProviderDraft(profile) : {};
   const showApiFields = profile.relayMode !== "official" || profile.officialMixApiKey;
   const updateDraft = (patch: Partial<RelayProfile>) => {
+    if (onProfileEdit) {
+      onProfileEdit(patch);
+      return;
+    }
     const target = providerConfigTargetContract({ ...profile, ...patch }, isNew);
     onProfileChange(applyRelayProfilePatchToFiles(profile, patch, {
       allowGenerateFiles: isNew,
