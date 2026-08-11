@@ -2416,11 +2416,10 @@ fn reconcile_provider_string(
     raw: &str,
     conflict: &'static str,
 ) -> anyhow::Result<()> {
-    let raw = raw.trim();
     if structured.trim().is_empty() {
         *structured = raw.to_string();
     } else {
-        anyhow::ensure!(structured.trim() == raw, conflict);
+        anyhow::ensure!(structured.as_bytes() == raw.as_bytes(), conflict);
     }
     Ok(())
 }

@@ -452,6 +452,88 @@ fn fallible_normalizer_rejects_structured_raw_conflicts_before_any_mutation() {
 }
 
 #[test]
+fn fallible_normalizer_rejects_byte_distinct_raw_values_before_any_mutation() {
+    let canonical = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    let mut legacy = canonical.clone();
+    legacy.config_contents = legacy.config_contents.replace("RelayOne", "CodexPP");
+    let mut pure_api = canonical.clone();
+    pure_api.relay_mode = RelayMode::PureApi;
+
+    for (index, (active, raw_field)) in [
+        (canonical, "base-url"),
+        (legacy, "model"),
+        (pure_api, "key"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let persisted = settings_with(vec![active], "sub2api");
+        let fixture = Fixture::new(&persisted, &state_with_official());
+        let persisted = fixture.read_settings();
+        let before = [
+            fs::read(&fixture.paths.settings_path).unwrap(),
+            fs::read(&fixture.paths.catalog_state_path).unwrap(),
+            fs::read(fixture.paths.codex_home.join("config.toml")).unwrap(),
+            fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
+        ];
+        let mut conflicted = persisted.relay_profiles[0].clone();
+        conflicted.config_contents = match raw_field {
+            "base-url" => conflicted.config_contents.replace(
+                "base_url = \"https://relay.example/v1\"",
+                "base_url = \"https://relay.example/v1 \"",
+            ),
+            "model" => conflicted
+                .config_contents
+                .replace("model = \"official-a\"", "model = \"official-a \""),
+            "key" => conflicted.config_contents.replace(
+                "experimental_bearer_token = \"provider-key\"",
+                "experimental_bearer_token = \" provider-key \"",
+            ),
+            _ => unreachable!(),
+        };
+        let mut next = persisted.clone();
+        next.relay_profiles[0] = conflicted;
+
+        let error = commit_provider_detail_from_paths(
+            &fixture.paths,
+            request(
+                &persisted,
+                &next,
+                "sub2api",
+                ProviderCommitAction::Save,
+                10 + index as u64,
+            ),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.code(),
+            ProviderCommitErrorCode::InvalidDraft,
+            "raw byte variant {index}: {error}"
+        );
+        assert!(error.to_string().contains("conflict"));
+        assert!(!error.to_string().contains("provider-key"));
+        assert_eq!(fs::read(&fixture.paths.settings_path).unwrap(), before[0]);
+        assert_eq!(
+            fs::read(&fixture.paths.catalog_state_path).unwrap(),
+            before[1]
+        );
+        assert_eq!(
+            fs::read(fixture.paths.codex_home.join("config.toml")).unwrap(),
+            before[2]
+        );
+        assert_eq!(
+            fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
+            before[3]
+        );
+    }
+}
+
+#[test]
 fn provider_commit_failures_are_typed_and_failure_payloads_are_secret_free() {
     let active = canonical_profile(
         "sub2api",
