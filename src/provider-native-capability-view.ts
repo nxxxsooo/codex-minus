@@ -19,6 +19,13 @@ export type ProviderNativeCapabilityInspectionViewSource = {
   }>;
 };
 
+export type ProviderModePresentation =
+  | "nativePriority"
+  | "nativeOfficial"
+  | "external"
+  | "advancedCompatibility"
+  | "unknown";
+
 export type ProviderLocalAccountPlan = "free" | "paid" | "other" | "unknown";
 
 export type ProviderNativeCapabilityView = {
@@ -49,6 +56,33 @@ const NATIVE_CAPABILITY_STATES = new Set<ProviderNativeCapabilityState>([
   "notApplicable",
   "unknown",
 ]);
+
+export function deriveProviderModePresentation(
+  inspection: ProviderNativeCapabilityInspectionViewSource | null,
+): ProviderModePresentation {
+  if (!inspection) return "unknown";
+  const reasons = new Set(inspection.fields.map((entry) => entry.reason));
+  if (reasons.has("externalCatalog")) return "external";
+  if (reasons.has("pureOAuth")) return "nativeOfficial";
+  const legacyCompatibilityContract = inspection.state === "upgradeAvailable"
+    && reasons.has("providerNameMismatch")
+    && reasons.has("openAiAuthRequired")
+    && reasons.has("missingActorHeader");
+  if (
+    legacyCompatibilityContract
+    || reasons.has("pureApi")
+    || reasons.has("chatCompletions")
+    || reasons.has("aggregate")
+    || reasons.has("unsupportedRelayMode")
+    || reasons.has("legacyProviderIdRequiresRename")
+  ) return "advancedCompatibility";
+  if (
+    inspection.state === "nativePriority"
+    || inspection.state === "upgradeAvailable"
+    || inspection.state === "degraded"
+  ) return "nativePriority";
+  return "unknown";
+}
 
 export function deriveProviderNativeCapabilityView(input: {
   inspection: ProviderNativeCapabilityInspectionViewSource | null;

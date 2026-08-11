@@ -142,6 +142,7 @@ import {
 } from "./provider-config-transform-router";
 import {
   deriveProviderNativeCapabilityView,
+  deriveProviderModePresentation,
   providerTransitionDecisionForStructuredPatch,
 } from "./provider-native-capability-view";
 import {
@@ -3348,6 +3349,7 @@ function RelayProfileDetail({
       localPlan: "unknown",
     },
   });
+  const modePresentation = deriveProviderModePresentation(detailState.inspection);
   useEffect(() => {
     const nextDraft = isAggregateRelayProfile(profile)
       ? normalizeAggregateRelayProfile(profile, form)
@@ -3747,7 +3749,7 @@ function RelayProfileDetail({
             </div>
             <div className="catalog-editor-actions">
               <UiBadge variant="outline">
-                {providerNativeCapabilityStateLabel(nativeCapabilityView.state)}
+                {providerModePresentationLabel(modePresentation, nativeCapabilityView.state)}
               </UiBadge>
               {nativeCapabilityView.upgradeAction ? (
                 <Button
@@ -3769,6 +3771,13 @@ function RelayProfileDetail({
               ) : null}
             </div>
           </div>
+          {modePresentation === "nativeOfficial" ? (
+            <span>{t("当前为 native-official；仅使用官方 OAuth，不会自动转换为混合供应商。")}</span>
+          ) : modePresentation === "external" ? (
+            <span>{t("当前目录由 external 所有；采用或移除前不会自动改为托管模式。")}</span>
+          ) : modePresentation === "advancedCompatibility" ? (
+            <span>{t("当前是高级兼容路径，不是新供应商默认模式，也不会被静默转换。")}</span>
+          ) : null}
           {nativeCapabilityView.upgradeAvailability === "manualResolutionRequired" ? (
             <span>{t("旧供应商 ID 需要先明确重命名，当前不会执行一键升级。")}</span>
           ) : null}
@@ -4238,6 +4247,22 @@ function providerNativeCapabilityStateLabel(state: string): string {
   }
 }
 
+function providerModePresentationLabel(
+  presentation: "nativePriority" | "nativeOfficial" | "external" | "advancedCompatibility" | "unknown",
+  state: string,
+): string {
+  switch (presentation) {
+    case "nativeOfficial":
+      return "native-official";
+    case "external":
+      return "external";
+    case "advancedCompatibility":
+      return t("高级兼容路径");
+    default:
+      return providerNativeCapabilityStateLabel(state);
+  }
+}
+
 function providerCapabilityEvidenceLabel(state: string): string {
   switch (state) {
     case "ready": return t("就绪");
@@ -4313,7 +4338,7 @@ function AggregateRelayProfileEditor({
           <strong>{profile.name || t("未命名聚合供应商")}</strong>
           <span>{t("本地成员轮转依赖已移除的 127.0.0.1:57321 代理，不能应用。")}</span>
         </div>
-        <UiBadge variant="outline">{t("本地聚合（不可用）")}</UiBadge>
+        <UiBadge variant="outline">{t("高级兼容路径")} · {t("本地聚合（不可用）")}</UiBadge>
       </div>
       <div className="relay-fields aggregate-fields">
         <Field className="relay-field-name" label={t("名称")}>

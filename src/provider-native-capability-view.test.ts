@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   deriveProviderNativeCapabilityView,
+  deriveProviderModePresentation,
   providerTransitionDecisionForStructuredPatch,
 } from "./provider-native-capability-view.ts";
 
@@ -16,6 +17,59 @@ const upgradeInspection = {
 };
 
 describe("provider native-capability view", () => {
+  it("presents ordinary pure OAuth as native-official without converting it", () => {
+    assert.equal(deriveProviderModePresentation({
+      profileId: "official-only",
+      state: "notApplicable",
+      fields: [
+        { field: "relayMode", outcome: "notApplicable", reason: "pureOAuth" },
+      ],
+    }), "nativeOfficial");
+  });
+
+  it("gives external ownership presentation precedence for every topology", () => {
+    for (const state of ["notApplicable", "upgradeAvailable", "degraded"]) {
+      const inspection = {
+        profileId: `external-${state}`,
+        state,
+        fields: [
+          { field: "catalog", outcome: "notApplicable", reason: "externalCatalog" },
+          { field: "relayMode", outcome: "satisfied", reason: "canonical" },
+        ],
+      };
+      assert.equal(deriveProviderModePresentation(inspection), "external");
+      assert.equal(deriveProviderNativeCapabilityView({
+        inspection,
+        officialAuth: { authenticated: true, localPlan: "unknown" },
+      }).upgradeAction, null);
+    }
+  });
+
+  it("keeps pure API, Chat, aggregate, and legacy paths visibly advanced", () => {
+    const reasons = [
+      ["compatibility", "pureApi"],
+      ["compatibility", "chatCompletions"],
+      ["notApplicable", "aggregate"],
+      ["upgradeAvailable", "legacyProviderIdRequiresRename"],
+    ] as const;
+    for (const [state, reason] of reasons) {
+      assert.equal(deriveProviderModePresentation({
+        profileId: `advanced-${reason}`,
+        state,
+        fields: [{ field: "relayMode", outcome: "mismatch", reason }],
+      }), "advancedCompatibility");
+    }
+    assert.equal(deriveProviderModePresentation({
+      profileId: "advanced-legacy-contract",
+      state: "upgradeAvailable",
+      fields: [
+        { field: "providerName", outcome: "mismatch", reason: "providerNameMismatch" },
+        { field: "requiresOpenAiAuth", outcome: "mismatch", reason: "openAiAuthRequired" },
+        { field: "actorHeader", outcome: "missing", reason: "missingActorHeader" },
+      ],
+    }), "advancedCompatibility");
+  });
+
   it("keeps a signed-in Free plan descriptive while actor eligibility and runtime proof stay independent", () => {
     const view = deriveProviderNativeCapabilityView({
       inspection: upgradeInspection,

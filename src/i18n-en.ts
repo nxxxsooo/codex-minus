@@ -9,6 +9,13 @@ export const EN_PLAIN: Record<string, string> = {
   "能力所有权与证据边界": "Capability ownership and evidence boundaries",
   "配置只建立可路由资格；每项能力仍以独立证据为准。":
     "Configuration establishes route eligibility only; each capability still requires independent evidence.",
+  "高级兼容路径": "Advanced compatibility path",
+  "当前为 native-official；仅使用官方 OAuth，不会自动转换为混合供应商。":
+    "This profile is native-official and uses official OAuth only; it will not be converted to a mixed provider automatically.",
+  "当前目录由 external 所有；采用或移除前不会自动改为托管模式。":
+    "The current catalog remains externally owned; it will not become managed until it is explicitly adopted or removed.",
+  "当前是高级兼容路径，不是新供应商默认模式，也不会被静默转换。":
+    "This is an advanced compatibility path, not the new-provider default, and it will not be converted silently.",
   "配置就绪": "Configuration ready",
   "可升级": "Upgrade available",
   "兼容模式": "Compatibility mode",
