@@ -117,8 +117,10 @@ import {
   applyProviderDetailInspection,
   beginProviderDetailEdit,
   beginProviderDetailInspection,
+  beginProviderDetailLegacyIdUpgrade,
   beginProviderDetailNativePriorityUpgrade,
   beginProviderDetailRawConfigEdit,
+  cancelProviderDetailLegacyProviderIdResolution,
   cancelProviderDetailTransition,
   confirmProviderDetailTransition,
   createProviderDetailDraftState,
@@ -126,6 +128,7 @@ import {
   refreshProviderDetailCatalogDraftState,
   replaceProviderDetailCatalogDraft,
   replaceProviderDetailProfile,
+  resolveProviderDetailLegacyProviderId,
   settleProviderDetailTransform,
   settleProviderDetailTransformError,
   type ProviderDetailDraftState,
@@ -3129,6 +3132,7 @@ function RelayProfileDetail({
 }) {
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
+  const [legacyReplacementProviderId, setLegacyReplacementProviderId] = useState("");
   const [modelWindowRows, setModelWindowRows] = useState<ModelWindowRow[]>(
     modelWindowRowsFromProfile(profile.modelList, profile.modelWindows || ""),
   );
@@ -3181,6 +3185,7 @@ function RelayProfileDetail({
       catalogDraft: nextCatalogDraft,
     });
     updateDetailState(nextState);
+    setLegacyReplacementProviderId("");
     setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || ""));
     let cancelled = false;
     if (!isNew && !isAggregateRelayProfile(nextDraft)) {
@@ -3268,6 +3273,7 @@ function RelayProfileDetail({
       if (settled.disposition === "stale") return;
       updateDetailState(settled.state);
       if (settled.disposition === "notApplied") {
+        if (settled.state.pendingLegacyProviderIdResolution) return;
         if (
           response.status === "confirmationRequired"
           && settled.state.pendingConfirmation
@@ -3356,12 +3362,37 @@ function RelayProfileDetail({
   };
   const upgradeNativePriorityDraft = () => {
     try {
-      dispatchProviderDetailStep(
-        beginProviderDetailNativePriorityUpgrade(detailStateRef.current),
-      );
+      const action = nativeCapabilityView.upgradeAction;
+      if (action === "resolveLegacyProviderId") {
+        dispatchProviderDetailStep(beginProviderDetailLegacyIdUpgrade(detailStateRef.current));
+      } else if (action === "upgrade" || action === "replaceActorHeader") {
+        dispatchProviderDetailStep(
+          beginProviderDetailNativePriorityUpgrade(detailStateRef.current),
+        );
+      } else {
+        throw new Error("This provider has no available native-priority action.");
+      }
     } catch (error) {
       void actions.showMessage(t("原生能力优先"), stringifyError(error), "failed");
     }
+  };
+  const retryLegacyProviderIdDraft = () => {
+    try {
+      dispatchProviderDetailStep(
+        resolveProviderDetailLegacyProviderId(
+          detailStateRef.current,
+          legacyReplacementProviderId,
+        ),
+      );
+    } catch (error) {
+      void actions.showMessage(t("旧供应商 ID"), stringifyError(error), "failed");
+    }
+  };
+  const cancelLegacyProviderIdDraft = () => {
+    updateDetailState(
+      cancelProviderDetailLegacyProviderIdResolution(detailStateRef.current).state,
+    );
+    setLegacyReplacementProviderId("");
   };
   const editProviderConfigDraft = (configContents: string) => {
     const current = detailStateRef.current;
@@ -3385,6 +3416,8 @@ function RelayProfileDetail({
           ? t("供应商配置尚未通过后端验证。")
           : detailState.pendingConfirmation !== null
             ? t("请先确认或取消供应商兼容模式转换。")
+            : detailState.pendingLegacyProviderIdResolution !== null
+              ? t("请先完成或取消旧供应商 ID 重命名。")
             : detailState.blockers.length
               ? t("供应商草稿被后端验证阻止，请处理提示后重试。")
               : null;
@@ -3452,6 +3485,7 @@ function RelayProfileDetail({
       || detailState.pendingTransformRevision !== null
       || detailState.rawConfigContents !== null
       || detailState.pendingConfirmation !== null
+      || detailState.pendingLegacyProviderIdResolution !== null
       || detailState.blockers.length > 0
     ) return;
     const draftWithWindows = draftWithModelRows();
@@ -3505,15 +3539,22 @@ function RelayProfileDetail({
               <UiBadge variant="outline">
                 {providerNativeCapabilityStateLabel(nativeCapabilityView.state)}
               </UiBadge>
-              {nativeCapabilityView.upgradeAvailability === "available" ? (
+              {nativeCapabilityView.upgradeAction ? (
                 <Button
-                  disabled={detailState.pendingTransformRevision !== null}
+                  disabled={
+                    detailState.pendingTransformRevision !== null
+                    || detailState.pendingLegacyProviderIdResolution !== null
+                  }
                   onClick={upgradeNativePriorityDraft}
                   size="sm"
                   type="button"
                   variant="secondary"
                 >
-                  {t("升级为原生能力优先")}
+                  {nativeCapabilityView.upgradeAction === "resolveLegacyProviderId"
+                    ? t("处理旧供应商 ID")
+                    : nativeCapabilityView.upgradeAction === "replaceActorHeader"
+                      ? t("替换自定义 Actor 标记")
+                      : t("升级为原生能力优先")}
                 </Button>
               ) : null}
             </div>
@@ -3521,9 +3562,37 @@ function RelayProfileDetail({
           {nativeCapabilityView.upgradeAvailability === "manualResolutionRequired" ? (
             <span>{t("旧供应商 ID 需要先明确重命名，当前不会执行一键升级。")}</span>
           ) : null}
+          {detailState.pendingLegacyProviderIdResolution === null ? null : (
+            <div className="catalog-editor-actions">
+              <Input
+                value={legacyReplacementProviderId}
+                onChange={(event) => setLegacyReplacementProviderId(event.currentTarget.value)}
+                placeholder={t("未使用的供应商 ID")}
+              />
+              <Button type="button" size="sm" onClick={retryLegacyProviderIdDraft}>
+                {t("重试重命名")}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                onClick={cancelLegacyProviderIdDraft}
+              >
+                {t("取消")}
+              </Button>
+            </div>
+          )}
+          {detailState.preview?.renamedProviderFrom && detailState.preview.renamedProviderTo ? (
+            <span>
+              {tf("供应商 ID 将从 {0} 重命名为 {1}；当前仍是未保存草稿。", [
+                detailState.preview.renamedProviderFrom,
+                detailState.preview.renamedProviderTo,
+              ])}
+            </span>
+          ) : null}
         </section>
       )}
-        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={replaceDraft} onProfileEdit={editDraft} onSwitch={switchDraft} actions={actions} modelWindowRows={modelWindowRows} setModelWindowRows={setModelWindowRows} catalogProfile={catalogProfile} draftCommitBlocked={detailState.pendingTransformRevision !== null || detailState.rawConfigContents !== null || detailState.pendingConfirmation !== null || detailState.blockers.length > 0} />
+        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={replaceDraft} onProfileEdit={editDraft} onSwitch={switchDraft} actions={actions} modelWindowRows={modelWindowRows} setModelWindowRows={setModelWindowRows} catalogProfile={catalogProfile} draftCommitBlocked={detailState.pendingTransformRevision !== null || detailState.rawConfigContents !== null || detailState.pendingConfirmation !== null || detailState.pendingLegacyProviderIdResolution !== null || detailState.blockers.length > 0} />
       {!managedCatalogCapable(draft) ? null : catalogDraft ? (
         <CatalogProfileEditor
           catalog={modelCatalog}
@@ -3850,6 +3919,9 @@ function providerTransitionConfirmationMessage(
 ): string {
   const pending = state.pendingConfirmation;
   if (!pending) return t("当前没有等待确认的供应商转换。");
+  if (pending.requiredConfirmation === "replaceActorHeader") {
+    return t("当前自定义 Actor 标记与原生能力优先标记冲突。确认后只替换冲突的 Actor 标记并更新草稿，仍需点击保存或设为当前才会生效。是否继续？");
+  }
   if (pending.transition.action === "exitPureOAuth") {
     const providerId = state.preview?.removedProviderId || t("当前自定义供应商");
     const fields = state.preview?.removedProviderFields.join("、") || t("全部供应商字段");
