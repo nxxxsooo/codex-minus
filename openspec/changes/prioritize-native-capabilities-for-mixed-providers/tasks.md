@@ -46,13 +46,13 @@
 
 ## 5. Make frontend provider generation and editing mode-aware
 
-- [ ] 5.1 Add failing TypeScript tests that a new empty provider selects a transient native-priority target but remains incomplete, then emits the exact canonical TOML only after Base URL, key, and model are complete.
-- [ ] 5.2 Refactor `buildRelayConfigToml`, `withGeneratedRelayFiles`, `applyRelayProfilePatchToFiles`, and provider-default helpers to accept an explicit transient target contract instead of assuming `requires_openai_auth = true`.
-- [ ] 5.3 Allow the synchronous TypeScript builder to create the canonical header only for a brand-new empty profile; route every add/replace/remove on existing TOML through the revisioned backend transformer.
-- [ ] 5.4 Add regression tests that model, Base URL, provider key, context-window, and auto-compact edits never clobber the native-priority provider table; keep managed-catalog context-conflict reporting and cleanup under the catalog capability.
-- [ ] 5.5 Add a specific regression proving a Base-URL-only edit can no longer turn `requires_openai_auth = false` back into `true`.
-- [ ] 5.6 Remove the provider-scoped goals control or relocate it to its true live/global owner, and add a regression proving provider edits cannot introduce or change `[features].goals`.
-- [ ] 5.7 Load backend-derived inspection state into the provider-detail draft as response-only UI metadata and prove it is never serialized into `settings.json`.
+- [x] 5.1 Add failing TypeScript tests that a new empty provider selects a transient native-priority target but remains incomplete, then emits the exact canonical TOML only after Base URL, key, and model are complete.
+- [x] 5.2 Refactor `buildRelayConfigToml`, `withGeneratedRelayFiles`, `applyRelayProfilePatchToFiles`, and provider-default helpers to accept an explicit transient target contract instead of assuming `requires_openai_auth = true`.
+- [x] 5.3 Allow the synchronous TypeScript builder to create the canonical header only for a brand-new empty profile; route every add/replace/remove on existing TOML through the revisioned backend transformer.
+- [x] 5.4 Add regression tests that model, Base URL, provider key, context-window, and auto-compact edits never clobber the native-priority provider table; keep managed-catalog context-conflict reporting and cleanup under the catalog capability.
+- [x] 5.5 Add a specific regression proving a Base-URL-only edit can no longer turn `requires_openai_auth = false` back into `true`.
+- [x] 5.6 Remove the provider-scoped goals control or relocate it to its true live/global owner, and add a regression proving provider edits cannot introduce or change `[features].goals`.
+- [x] 5.7 Load backend-derived inspection state into the provider-detail draft as response-only UI metadata and prove it is never serialized into `settings.json`.
 - [ ] 5.8 Treat a protocol change from Responses to Chat Completions as an explicit compatibility exit with a capability-loss preview rather than an ordinary contract-preserving edit.
 
 ## 6. Add explicit upgrade, exit, and capability-status UX
