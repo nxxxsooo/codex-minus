@@ -111,6 +111,62 @@ export type ProviderCapabilityLedger = {
   };
 };
 
+export type ProviderCapabilityEvidenceLoadState = {
+  requestSequence: number;
+  loading: boolean;
+  ledger: ProviderCapabilityLedger | null;
+  sourceFingerprint: string | null;
+};
+
+export function createProviderCapabilityEvidenceLoadState(): ProviderCapabilityEvidenceLoadState {
+  return { requestSequence: 0, loading: false, ledger: null, sourceFingerprint: null };
+}
+
+export function beginProviderCapabilityEvidenceLoad(
+  state: ProviderCapabilityEvidenceLoadState,
+): { state: ProviderCapabilityEvidenceLoadState; requestSequence: number } {
+  const requestSequence = state.requestSequence + 1;
+  return {
+    requestSequence,
+    state: { requestSequence, loading: true, ledger: null, sourceFingerprint: null },
+  };
+}
+
+export function invalidateProviderCapabilityEvidenceLoad(
+  state: ProviderCapabilityEvidenceLoadState,
+): ProviderCapabilityEvidenceLoadState {
+  return {
+    requestSequence: state.requestSequence + 1,
+    loading: false,
+    ledger: null,
+    sourceFingerprint: null,
+  };
+}
+
+export function settleProviderCapabilityEvidenceLoad(
+  state: ProviderCapabilityEvidenceLoadState,
+  requestSequence: number,
+  sourceMatches: boolean,
+  ledger: ProviderCapabilityLedger | null,
+  sourceFingerprint: string,
+): {
+  state: ProviderCapabilityEvidenceLoadState;
+  disposition: "applied" | "stale";
+} {
+  if (state.requestSequence !== requestSequence) {
+    return { state, disposition: "stale" };
+  }
+  return {
+    disposition: "applied",
+    state: {
+      requestSequence,
+      loading: false,
+      ledger: sourceMatches ? ledger : null,
+      sourceFingerprint: sourceMatches && ledger ? sourceFingerprint : null,
+    },
+  };
+}
+
 export function buildProviderCapabilityLedger(
   input: ProviderCapabilityLedgerInput,
 ): ProviderCapabilityLedger {

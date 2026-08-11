@@ -24,15 +24,17 @@ describe("provider capability ledger wiring", () => {
     )?.[0] ?? "";
     assert.match(loader, /call<ProviderCapabilityEvidenceResult>\(\s*"inspect_provider_capability_evidence"/);
     assert.doesNotMatch(loader, /transformProviderNativeCapability|commitProvider|saveSettings/);
-    assert.match(appSource, /setCapabilityLedger/);
+    assert.match(appSource, /updateCapabilityEvidenceLoad/);
     assert.match(appSource, /providerCapabilityEvidenceRefreshAllowed/);
+    assert.match(appSource, /beginProviderCapabilityEvidenceLoad/);
+    assert.match(appSource, /settleProviderCapabilityEvidenceLoad/);
     assert.doesNotMatch(appSource, /capabilityLedger\s*:/);
     assert.doesNotMatch(appSource, /\.\.\.capabilityLedger/);
   });
 
   it("renders every independent gate without capability-success copy", () => {
     const ledgerUi = appSource.match(
-      /\{capabilityLedger \? \([\s\S]*?刷新能力证据[\s\S]*?<\/section>/,
+      /\{displayedCapabilityLedger \? \([\s\S]*?刷新能力证据[\s\S]*?<\/section>/,
     )?.[0] ?? "";
     for (const copy of [
       "供应商契约",
@@ -46,5 +48,12 @@ describe("provider capability ledger wiring", () => {
       assert.match(ledgerUi, new RegExp(copy));
     }
     assert.doesNotMatch(ledgerUi, /所有 Pro 能力|全部原生能力已启用|Paid（能力成功）/);
+    assert.doesNotMatch(
+      appSource,
+      /isNew \|\| isAggregateRelayProfile\(draft\) \|\| !detailState\.inspection/,
+    );
+    assert.match(appSource, /catalogProfile\?\.actionRequired/);
+    assert.match(appSource, /catalogProfile\?\.restartRequired/);
+    assert.match(appSource, /capabilityEvidenceCatalogSourceFingerprint/);
   });
 });

@@ -4,7 +4,11 @@ import { describe, it } from "node:test";
 import {
   buildProviderCapabilityLedger,
   buildProviderCapabilityLedgerFromBackendEvidence,
+  beginProviderCapabilityEvidenceLoad,
+  createProviderCapabilityEvidenceLoadState,
+  invalidateProviderCapabilityEvidenceLoad,
   providerCapabilityEvidenceRefreshAllowed,
+  settleProviderCapabilityEvidenceLoad,
   type ProviderCapabilityLedgerInput,
 } from "./provider-capability-ledger.ts";
 
@@ -225,5 +229,67 @@ describe("provider capability evidence ledger", () => {
       currentCatalogDraft: catalog,
       authoritativeCatalogDraft: catalog,
     }), false);
+  });
+
+  it("clears old evidence on refresh and accepts only the latest matching response", () => {
+    const oldLedger = buildProviderCapabilityLedger(baseInput);
+    const freshLedger = buildProviderCapabilityLedger({
+      ...baseInput,
+      runtime: "restartRequired",
+    });
+    const first = beginProviderCapabilityEvidenceLoad({
+      ...createProviderCapabilityEvidenceLoadState(),
+      ledger: oldLedger,
+    });
+    assert.equal(first.state.loading, true);
+    assert.equal(first.state.ledger, null);
+    const second = beginProviderCapabilityEvidenceLoad(first.state);
+    const stale = settleProviderCapabilityEvidenceLoad(
+      second.state,
+      first.requestSequence,
+      true,
+      oldLedger,
+      "catalog:v1",
+    );
+    assert.equal(stale.disposition, "stale");
+    assert.equal(stale.state.ledger, null);
+    const current = settleProviderCapabilityEvidenceLoad(
+      stale.state,
+      second.requestSequence,
+      true,
+      freshLedger,
+      "catalog:v2",
+    );
+    assert.equal(current.disposition, "applied");
+    assert.equal(current.state.loading, false);
+    assert.equal(current.state.ledger?.runtime.state, "restartRequired");
+    assert.equal(current.state.sourceFingerprint, "catalog:v2");
+
+    const third = beginProviderCapabilityEvidenceLoad(current.state);
+    const failed = settleProviderCapabilityEvidenceLoad(
+      third.state,
+      third.requestSequence,
+      true,
+      null,
+      "catalog:v2",
+    );
+    assert.equal(failed.state.ledger, null);
+    assert.equal(failed.state.loading, false);
+
+    const fourth = beginProviderCapabilityEvidenceLoad(failed.state);
+    const mismatched = settleProviderCapabilityEvidenceLoad(
+      fourth.state,
+      fourth.requestSequence,
+      false,
+      freshLedger,
+      "catalog:v3",
+    );
+    assert.equal(mismatched.state.ledger, null);
+    assert.equal(mismatched.state.sourceFingerprint, null);
+    assert.equal(mismatched.state.loading, false);
+
+    const invalidated = invalidateProviderCapabilityEvidenceLoad(mismatched.state);
+    assert.equal(invalidated.requestSequence, mismatched.state.requestSequence + 1);
+    assert.equal(invalidated.ledger, null);
   });
 });
