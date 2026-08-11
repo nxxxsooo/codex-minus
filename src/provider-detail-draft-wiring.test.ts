@@ -22,7 +22,7 @@ describe("provider detail draft wiring", () => {
     assert.match(relayFileEditorCall, /onProviderConfigChange=\{editProviderConfigDraft\}/);
     assert.match(relayFileEditorCall, /providerReadOnly=\{isNew\}/);
     assert.doesNotMatch(relayFileEditorCall, /onProfileChange=\{replaceDraft\}/);
-    assert.match(source, /draftCommitBlocked=\{detailState\.pendingTransformRevision !== null \|\| detailState\.rawConfigContents !== null \|\| detailState\.pendingConfirmation !== null\}/);
+    assert.match(source, /draftCommitBlocked=\{detailState\.pendingTransformRevision !== null \|\| detailState\.rawConfigContents !== null \|\| detailState\.pendingConfirmation !== null \|\| detailState\.blockers\.length > 0\}/);
     assert.match(source, /switchDraft[\s\S]*detailState\.rawConfigContents !== null[\s\S]*return;/);
     assert.match(source, /endProviderDetailSession\([^;]*"navigate"/s);
     assert.doesNotMatch(source, /nativeCapabilityInspection\s*:/);

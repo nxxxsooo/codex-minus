@@ -3332,7 +3332,9 @@ function RelayProfileDetail({
           ? t("供应商配置尚未通过后端验证。")
           : detailState.pendingConfirmation !== null
             ? t("请先确认或取消供应商兼容模式转换。")
-            : null;
+            : detailState.blockers.length
+              ? t("供应商草稿被后端验证阻止，请处理提示后重试。")
+              : null;
   const draftWithModelRows = () => {
     const serializedRows = serializeModelWindowRows(modelWindowRows);
     return { ...draft, modelList: serializedRows.modelList, modelWindows: serializedRows.modelWindows };
@@ -3397,6 +3399,7 @@ function RelayProfileDetail({
       || detailState.pendingTransformRevision !== null
       || detailState.rawConfigContents !== null
       || detailState.pendingConfirmation !== null
+      || detailState.blockers.length > 0
     ) return;
     const draftWithWindows = draftWithModelRows();
     const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
@@ -3438,7 +3441,7 @@ function RelayProfileDetail({
           </Button>
         </Toolbar>
       </div>
-        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={replaceDraft} onProfileEdit={editDraft} onSwitch={switchDraft} actions={actions} modelWindowRows={modelWindowRows} setModelWindowRows={setModelWindowRows} catalogProfile={catalogProfile} draftCommitBlocked={detailState.pendingTransformRevision !== null || detailState.rawConfigContents !== null || detailState.pendingConfirmation !== null} />
+        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={replaceDraft} onProfileEdit={editDraft} onSwitch={switchDraft} actions={actions} modelWindowRows={modelWindowRows} setModelWindowRows={setModelWindowRows} catalogProfile={catalogProfile} draftCommitBlocked={detailState.pendingTransformRevision !== null || detailState.rawConfigContents !== null || detailState.pendingConfirmation !== null || detailState.blockers.length > 0} />
       {!managedCatalogCapable(draft) ? null : catalogDraft ? (
         <CatalogProfileEditor
           catalog={modelCatalog}

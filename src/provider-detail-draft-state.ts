@@ -264,7 +264,10 @@ export function settleProviderDetailTransform<P extends ProviderDetailProfile>(
   if (applied.kind === "stale") return { state, effects: [], disposition: "stale" };
   if (applied.kind === "notApplied") {
     const requiredConfirmation = applied.status === "confirmationRequired"
-      ? exitConfirmationForAction(state.pendingTransition?.transition.action)
+      ? exitConfirmationForResponse(
+          state.pendingTransition?.transition.action,
+          response.blockers,
+        )
       : null;
     return {
       state: {
@@ -478,6 +481,9 @@ export function buildProviderDetailCommitEffect<P extends ProviderDetailProfile>
   if (state.pendingConfirmation !== null) {
     throw new Error("Cannot commit before confirming or cancelling the provider transition preview.");
   }
+  if (state.blockers.length) {
+    throw new Error("Cannot commit a provider draft blocked by backend validation.");
+  }
   const existingIndex = input.settings.relayProfiles.findIndex(
     (candidate) => candidate.id === state.profile.id,
   );
@@ -517,14 +523,23 @@ function assertActive<P extends ProviderDetailProfile>(state: ProviderDetailDraf
   if (state.lifecycle !== "active") throw new Error("Provider detail session is closed.");
 }
 
-function exitConfirmationForAction(
+function exitConfirmationForResponse(
   action: ProviderDraftTransition["action"] | undefined,
+  blockers: string[],
 ): ProviderDraftTransformConfirmation | null {
-  if (action === "exitPureOAuth") return "confirmDestructivePureOAuth";
   if (
-    action === "exitPureApi"
-    || action === "exitLegacyCompatibility"
-    || action === "exitChatCompletions"
+    action === "exitPureOAuth"
+    && blockers.length === 1
+    && blockers[0] === "destructiveExitConfirmationRequired"
+  ) return "confirmDestructivePureOAuth";
+  if (
+    blockers.length === 1
+    && blockers[0] === "capabilityLossConfirmationRequired"
+    && (
+      action === "exitPureApi"
+      || action === "exitLegacyCompatibility"
+      || action === "exitChatCompletions"
+    )
   ) return "confirmCapabilityLoss";
   return null;
 }

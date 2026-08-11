@@ -8,6 +8,7 @@ export const EN_PLAIN: Record<string, string> = {
   "上游拓扑": "Upstream topology",
   "当前没有等待确认的供应商转换。": "No provider transition is awaiting confirmation.",
   "请先确认或取消供应商兼容模式转换。": "Confirm or cancel the provider compatibility transition first.",
+  "供应商草稿被后端验证阻止，请处理提示后重试。": "Backend validation blocked the provider draft. Resolve the reported issue and try again.",
   "当前自定义供应商": "the current custom provider",
   "全部供应商字段": "all provider fields",
   "切换到兼容模式将失去原生能力优先配置。确认后只更新草稿，仍需点击保存或设为当前才会生效。是否继续？":

@@ -671,6 +671,59 @@ describe("provider detail draft state", () => {
     }
   });
 
+  it("does not misclassify a key-conflict confirmation as an exit confirmation", () => {
+    for (const [action, patch] of [
+      ["exitPureOAuth", { relayMode: "official", officialMixApiKey: false }],
+      ["exitChatCompletions", { protocol: "chatCompletions" }],
+    ] as const) {
+      const pending = beginProviderDetailEdit(draftState(), {
+        patch,
+        target: existingTarget,
+        transition: { action, confirmations: [] },
+      });
+      const conflict = settleProviderDetailTransform(
+        pending.state,
+        transformCorrelation(pending),
+        {
+          draftRevision: 1,
+          status: "confirmationRequired",
+          draft: {
+            profile: profile(),
+            structuredApiKey: "provider-key",
+            catalogMode: "official-plus-custom",
+          },
+          blockers: ["structuredKeyBearerConflict"],
+          inspection,
+          preview: {
+            ...preview,
+            removesProviderTable: action === "exitPureOAuth",
+          },
+        },
+      );
+      assert.equal(conflict.disposition, "notApplied", action);
+      assert.equal(conflict.state.pendingConfirmation, null, action);
+      assert.deepEqual(conflict.state.blockers, ["structuredKeyBearerConflict"], action);
+      assert.throws(() => confirmProviderDetailTransition(conflict.state), /no provider transition/i);
+      for (const kind of ["detailSave", "setCurrent"] as const) {
+        assert.throws(
+          () => buildProviderDetailCommitEffect(conflict.state, {
+            kind,
+            settings: settings(),
+            persistedSettings: settings(),
+            catalogDrafts: [catalogDraft],
+            focusedProfileWasPersisted: true,
+            previousActiveRelayId: "relay-old",
+            confirmContextCleanup: false,
+            expectedProviderFingerprint: "fingerprint-old",
+            draftRevision: 44,
+          }),
+          /blocked/i,
+          `${action}/${kind}`,
+        );
+      }
+    }
+  });
+
   it("closes, cancels, and navigates without producing persistence effects", () => {
     for (const reason of ["cancel", "close", "navigate"] as const) {
       const ended = endProviderDetailSession(
