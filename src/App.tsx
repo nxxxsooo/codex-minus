@@ -2354,7 +2354,6 @@ function CatalogProfileEditor({
         pendingDormantCustomCount={presentation.pendingDormantCustomCount}
         pendingMessage={tf("保存后，{0} 个自定义模型将暂不生效。", [presentation.pendingDormantCustomCount])}
         restoreLabel={t("恢复官方＋自定义")}
-        saveProfileCatalog={() => actions.saveProfileCatalog(profile.id, mode, overlay, upstreamTopology, modeExplicit)}
         updateDraftMode={(nextMode) => {
           setMode(nextMode);
           setModeExplicit(true);

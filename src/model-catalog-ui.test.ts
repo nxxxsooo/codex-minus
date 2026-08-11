@@ -150,8 +150,6 @@ describe("model catalog UI state", () => {
   it("keeps cancel, confirm, and restore catalog controls draft-only", () => {
     let selectedMode: CatalogModeValue = "official-plus-custom";
     let modeExplicit = false;
-    let saveCalls = 0;
-    const saveProfileCatalog = () => { saveCalls += 1; };
     const updateDraftMode = (nextMode: CatalogModeValue) => {
       selectedMode = nextMode;
       modeExplicit = true;
@@ -161,29 +159,26 @@ describe("model catalog UI state", () => {
       externalPointer: null,
       customModelCount: 7,
       confirmDiscard: () => false,
-      actions: { updateDraftMode, saveProfileCatalog },
+      actions: { updateDraftMode },
     });
     assert.equal(cancelled.requestMode("native-official"), false);
     assert.equal(selectedMode, "official-plus-custom");
     assert.equal(modeExplicit, false);
-    assert.equal(saveCalls, 0);
 
     const confirmed = catalogModeDraftController({
       currentMode: selectedMode,
       externalPointer: null,
       customModelCount: 7,
       confirmDiscard: () => true,
-      actions: { updateDraftMode, saveProfileCatalog },
+      actions: { updateDraftMode },
     });
     assert.equal(confirmed.requestMode("native-official"), true);
     assert.equal(selectedMode, "native-official");
     assert.equal(modeExplicit, true);
-    assert.equal(saveCalls, 0);
 
     confirmed.restoreOfficialPlusCustom();
     assert.equal(selectedMode, "official-plus-custom");
     assert.equal(modeExplicit, true);
-    assert.equal(saveCalls, 0);
   });
 
   it("gates refresh on target capability, credentials, and loading", () => {

@@ -46,7 +46,6 @@ export function catalogModeDraftController(input: {
   confirmDiscard: (decision: "confirm-discard-external" | "confirm-discard-custom") => boolean;
   actions: {
     updateDraftMode: (mode: CatalogModeValue) => void;
-    saveProfileCatalog: () => unknown;
   };
 }): {
   requestMode: (requestedMode: CatalogModeValue) => boolean;

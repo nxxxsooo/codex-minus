@@ -3,6 +3,7 @@ mod live_state;
 mod model_catalog;
 mod network_policy;
 mod platform_command;
+pub mod provider_commit;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

@@ -32,7 +32,6 @@ describe("catalog mode controls", () => {
     assert.ok(controlsModule, "the production CatalogModeControls component must exist");
     let selectedMode: CatalogModeValue = "official-plus-custom";
     let allowDiscard = false;
-    let saveCalls = 0;
     const render = () => controlsModule.CatalogModeControls({
       currentMode: selectedMode,
       externalPointer: null,
@@ -48,23 +47,19 @@ describe("catalog mode controls", () => {
       restoreLabel: "恢复官方＋自定义",
       confirmDiscard: () => allowDiscard,
       updateDraftMode: (mode) => { selectedMode = mode; },
-      saveProfileCatalog: () => { saveCalls += 1; },
     });
 
     const cancelledNative = findButton(render(), "data-catalog-mode", "native-official");
     click(cancelledNative);
     assert.equal(selectedMode, "official-plus-custom");
-    assert.equal(saveCalls, 0);
 
     allowDiscard = true;
     const confirmedNative = findButton(render(), "data-catalog-mode", "native-official");
     click(confirmedNative);
     assert.equal(selectedMode, "native-official");
-    assert.equal(saveCalls, 0);
 
     const restore = findButton(render(), "data-catalog-restore");
     click(restore);
     assert.equal(selectedMode, "official-plus-custom");
-    assert.equal(saveCalls, 0);
   });
 });

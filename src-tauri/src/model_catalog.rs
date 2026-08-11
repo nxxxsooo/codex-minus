@@ -853,7 +853,14 @@ fn sanitized_settings() -> anyhow::Result<BackendSettings> {
 }
 
 fn load_and_migrate_state(settings: &BackendSettings, home: &Path) -> anyhow::Result<CatalogState> {
-    let path = state_path();
+    load_and_migrate_state_from_path(settings, home, &state_path())
+}
+
+fn load_and_migrate_state_from_path(
+    settings: &BackendSettings,
+    home: &Path,
+    path: &Path,
+) -> anyhow::Result<CatalogState> {
     let mut state = match fs::read(&path) {
         Ok(bytes) => {
             live_state::ensure_owner_only_file(&path)?;
@@ -986,7 +993,7 @@ fn managed_mode(mode: CatalogMode) -> bool {
     )
 }
 
-fn validate_upstream_topology(
+pub(crate) fn validate_upstream_topology(
     profile: &RelayProfile,
     topology: UpstreamTopology,
 ) -> anyhow::Result<()> {
@@ -2081,7 +2088,7 @@ fn model_value_map(value: &Value) -> anyhow::Result<BTreeMap<String, Value>> {
         .collect())
 }
 
-fn compose_profile_catalog(
+pub(crate) fn compose_profile_catalog(
     state: &CatalogState,
     profile: &RelayProfile,
     profile_state: &ProfileCatalogState,
@@ -2300,7 +2307,7 @@ fn strip_official_only_capabilities(model: &mut Value) {
     );
 }
 
-fn validate_overlay(overlay: &CatalogOverlay) -> anyhow::Result<()> {
+pub(crate) fn validate_overlay(overlay: &CatalogOverlay) -> anyhow::Result<()> {
     let mut slugs = HashSet::new();
     for (slug, value) in &overlay.official {
         validate_slug(slug)?;
@@ -2475,7 +2482,7 @@ fn managed_catalog_capable(profile: &RelayProfile) -> bool {
         && profile.protocol != codex_plus_core::settings::RelayProtocol::ChatCompletions
 }
 
-fn generated_relative_path(profile_id: &str) -> String {
+pub(crate) fn generated_relative_path(profile_id: &str) -> String {
     let identity = hash_text(profile_id);
     format!(
         "{GENERATED_DIR}/{GENERATED_PREFIX}{}-{}.json",
@@ -3306,6 +3313,37 @@ mod tests {
         assert_eq!(retained.generated_hash.as_deref(), Some("last-valid-hash"));
         assert_eq!(retained.generation, 7);
         assert!(retained.action_required.is_some());
+    }
+
+    #[test]
+    fn status_loading_is_read_only_for_missing_state_and_migrates_existing_state_in_memory() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing_path = temp.path().join("missing-state.json");
+        let settings = BackendSettings {
+            relay_profiles: vec![RelayProfile {
+                id: "new-profile".to_string(),
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+
+        let loaded =
+            load_and_migrate_state_from_path(&settings, temp.path(), &missing_path).unwrap();
+        assert!(loaded.profiles.contains_key("new-profile"));
+        assert!(!missing_path.exists());
+
+        let existing_path = temp.path().join("existing-state.json");
+        let old = CatalogState {
+            version: 1,
+            ..CatalogState::default()
+        };
+        std::fs::write(&existing_path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let migrated =
+            load_and_migrate_state_from_path(&settings, temp.path(), &existing_path).unwrap();
+        assert_eq!(migrated.version, STATE_VERSION);
+        let unchanged: CatalogState =
+            serde_json::from_slice(&std::fs::read(&existing_path).unwrap()).unwrap();
+        assert_eq!(unchanged.version, 1);
     }
 
     #[test]

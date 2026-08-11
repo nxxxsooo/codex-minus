@@ -19,7 +19,6 @@ export function CatalogModeControls(props: {
   restoreLabel: string;
   confirmDiscard: (decision: "confirm-discard-external" | "confirm-discard-custom") => boolean;
   updateDraftMode: (mode: CatalogModeValue) => void;
-  saveProfileCatalog: () => unknown;
 }): ReactElement {
   const actions = catalogModeDraftController({
     currentMode: props.currentMode,
@@ -28,7 +27,6 @@ export function CatalogModeControls(props: {
     confirmDiscard: props.confirmDiscard,
     actions: {
       updateDraftMode: props.updateDraftMode,
-      saveProfileCatalog: props.saveProfileCatalog,
     },
   });
   const restoreButton = () => createElement("button", {
