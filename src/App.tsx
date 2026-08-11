@@ -3327,7 +3327,6 @@ function RelayProfileDetail({
     let cancelled = false;
     if (!isNew && !isAggregateRelayProfile(nextDraft)) {
       const inspectionCorrelation = beginProviderDetailInspection(nextState);
-      refreshCapabilityLedger(nextState);
       void actions.inspectProviderNativeCapabilities(profile.id).then((inspection) => {
         if (cancelled || !inspection) return;
         const applied = applyProviderDetailInspection(
@@ -3340,6 +3339,9 @@ function RelayProfileDetail({
     }
     return () => {
       cancelled = true;
+      capabilityEvidenceLoadRef.current = invalidateProviderCapabilityEvidenceLoad(
+        capabilityEvidenceLoadRef.current,
+      );
       if (detailStateRef.current.sessionToken === nextState.sessionToken) {
         detailStateRef.current = endProviderDetailSession(detailStateRef.current, "close").state;
       }
@@ -3403,7 +3405,12 @@ function RelayProfileDetail({
     return () => {
       cancelled = true;
     };
-  }, [profile.id, isNew, capabilityEvidenceCatalogSourceFingerprint]);
+  }, [
+    profile.id,
+    isNew,
+    authoritativeCapabilityProfileRevision,
+    capabilityEvidenceCatalogSourceFingerprint,
+  ]);
   const replaceDraft = (next: RelayProfile) => {
     updateDetailState(replaceProviderDetailProfile(detailStateRef.current, next));
   };
@@ -3652,6 +3659,9 @@ function RelayProfileDetail({
     );
   };
   const navigateBack = () => {
+    capabilityEvidenceLoadRef.current = invalidateProviderCapabilityEvidenceLoad(
+      capabilityEvidenceLoadRef.current,
+    );
     const ended = endProviderDetailSession(detailStateRef.current, "navigate");
     detailStateRef.current = ended.state;
     onBack();
