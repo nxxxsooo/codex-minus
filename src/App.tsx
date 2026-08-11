@@ -144,6 +144,12 @@ import {
   deriveProviderNativeCapabilityView,
   providerTransitionDecisionForStructuredPatch,
 } from "./provider-native-capability-view";
+import {
+  buildProviderCapabilityLedgerFromBackendEvidence,
+  providerCapabilityEvidenceRefreshAllowed,
+  type ProviderCapabilityEvidencePayload,
+  type ProviderCapabilityLedger,
+} from "./provider-capability-ledger";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 
 
@@ -653,6 +659,8 @@ type ProviderDoctorResult = CommandResult<{
   compatibilityFallbackUsed: boolean;
   initialHttpStatus: number | null;
 }>;
+
+type ProviderCapabilityEvidenceResult = CommandResult<ProviderCapabilityEvidencePayload>;
 
 type CcsProviderImport = {
   sourceId: string;
@@ -1395,6 +1403,19 @@ export function App() {
     }
   };
 
+  const inspectProviderCapabilityEvidence = async (profileId: string) => {
+    try {
+      const result = await call<ProviderCapabilityEvidenceResult>(
+        "inspect_provider_capability_evidence",
+        { request: { profileId } },
+      );
+      if (!isSuccessStatus(result.status) || result.profileId !== profileId) return null;
+      return buildProviderCapabilityLedgerFromBackendEvidence(result);
+    } catch {
+      return null;
+    }
+  };
+
   const transformProviderNativeCapability = async (
     invocation: ProviderDetailTransformInvocation<RelayProfile>,
   ) => call<ProviderDetailTransformResponse<RelayProfile>>(
@@ -1724,6 +1745,7 @@ export function App() {
       testRelayProfile,
       diagnoseRelayProfile,
       inspectProviderNativeCapabilities,
+      inspectProviderCapabilityEvidence,
       transformProviderNativeCapability,
       fetchRelayProfileModels,
       commitProviderTopology,
@@ -1898,6 +1920,7 @@ type Actions = {
   testRelayProfile: (profile: RelayProfile) => Promise<void>;
   diagnoseRelayProfile: (profile: RelayProfile) => Promise<ProviderDoctorResult | null>;
   inspectProviderNativeCapabilities: (profileId: string) => Promise<ProviderDetailInspectionMetadata | null>;
+  inspectProviderCapabilityEvidence: (profileId: string) => Promise<ProviderCapabilityLedger | null>;
   transformProviderNativeCapability: (invocation: ProviderDetailTransformInvocation<RelayProfile>) => Promise<ProviderDetailTransformResponse<RelayProfile>>;
   fetchRelayProfileModels: (profile: RelayProfile) => Promise<string[] | null>;
   commitProviderTopology: (settings: BackendSettings, kind: Exclude<ProviderMutationKind, "detailSave" | "setCurrent">, copySourceProfileId?: string) => Promise<boolean>;
@@ -3150,10 +3173,69 @@ function RelayProfileDetail({
   const [detailState, setDetailState] = useState<ProviderDetailDraftState<RelayProfile>>(() =>
     createProviderDetailDraftState({ profile, catalogDraft: initialCatalogDraft }),
   );
+  const [capabilityLedger, setCapabilityLedger] = useState<ProviderCapabilityLedger | null>(null);
   const detailStateRef = useRef(detailState);
+  const authoritativeCapabilityProfile = isAggregateRelayProfile(profile)
+    ? normalizeAggregateRelayProfile(profile, form)
+    : deriveRelayProfileFromFiles({
+        ...profile,
+        configContents: providerConfigDraft(
+          profile.configContents,
+          relayFiles?.configContents ?? "",
+        ),
+        authContents: "",
+      });
+  const authoritativeCapabilityCatalogDraft = isNew || catalogProfile
+    ? catalogProfileDraft({
+        profileId: profile.id,
+        fallbackMode: fallbackCatalogMode,
+        summary: catalogProfile,
+      })
+    : null;
+  const capabilityEvidenceRefreshAllowedForState = (
+    sourceState: ProviderDetailDraftState<RelayProfile>,
+  ) => providerCapabilityEvidenceRefreshAllowed({
+    applicable: !isNew && !isAggregateRelayProfile(sourceState.profile),
+    currentProfile: sourceState.profile,
+    authoritativeProfile: authoritativeCapabilityProfile,
+    currentCatalogDraft: sourceState.catalogDraft,
+    authoritativeCatalogDraft: authoritativeCapabilityCatalogDraft,
+  });
   const updateDetailState = (next: ProviderDetailDraftState<RelayProfile>) => {
+    const current = detailStateRef.current;
+    if (
+      next.sessionToken !== current.sessionToken
+      || next.latestTransformRevision !== current.latestTransformRevision
+      || JSON.stringify(next.profile) !== JSON.stringify(current.profile)
+      || JSON.stringify(next.catalogDraft) !== JSON.stringify(current.catalogDraft)
+    ) {
+      setCapabilityLedger(null);
+    }
     detailStateRef.current = next;
     setDetailState(next);
+  };
+  const refreshCapabilityLedger = (sourceState: ProviderDetailDraftState<RelayProfile>) => {
+    if (!capabilityEvidenceRefreshAllowedForState(sourceState)) {
+      setCapabilityLedger(null);
+      return;
+    }
+    const correlation = {
+      sessionToken: sourceState.sessionToken,
+      profileId: sourceState.profile.id,
+      revision: sourceState.latestTransformRevision,
+    };
+    void actions.inspectProviderCapabilityEvidence(sourceState.profile.id).then((ledger) => {
+      const current = detailStateRef.current;
+      if (
+        !ledger
+        || current.lifecycle !== "active"
+        || current.sessionToken !== correlation.sessionToken
+        || current.profile.id !== correlation.profileId
+        || current.latestTransformRevision !== correlation.revision
+        || !capabilityEvidenceRefreshAllowedForState(current)
+      ) return;
+      setCapabilityLedger(ledger);
+    });
   };
   const draft = detailState.profile;
   const catalogDraft = detailState.catalogDraft;
@@ -3190,6 +3272,7 @@ function RelayProfileDetail({
     let cancelled = false;
     if (!isNew && !isAggregateRelayProfile(nextDraft)) {
       const inspectionCorrelation = beginProviderDetailInspection(nextState);
+      refreshCapabilityLedger(nextState);
       void actions.inspectProviderNativeCapabilities(profile.id).then((inspection) => {
         if (cancelled || !inspection) return;
         const applied = applyProviderDetailInspection(
@@ -3242,6 +3325,7 @@ function RelayProfileDetail({
         && !isNew
         && !isAggregateRelayProfile(refreshed.state.profile)
       ) {
+        refreshCapabilityLedger(refreshed.state);
         void actions.inspectProviderNativeCapabilities(profile.id).then((inspection) => {
           if (cancelled || !inspection) return;
           const applied = applyProviderDetailInspection(
@@ -3590,6 +3674,30 @@ function RelayProfileDetail({
               ])}
             </span>
           ) : null}
+          {capabilityLedger ? (
+            <div className="catalog-evidence-list">
+              <div className="catalog-evidence-row"><strong>{t("供应商契约")}</strong><span>{providerCapabilityEvidenceLabel(capabilityLedger.provider.state)}</span></div>
+              <div className="catalog-evidence-row"><strong>{t("OAuth 会话")}</strong><span>{providerCapabilityEvidenceLabel(capabilityLedger.oauth.session)}</span></div>
+              <div className="catalog-evidence-row"><strong>{t("本地账号计划")}</strong><span>{providerCapabilityPlanLabel(capabilityLedger.plan.observed)}</span></div>
+              <div className="catalog-evidence-row"><strong>{t("Actor 资格")}</strong><span>{providerCapabilityEvidenceLabel(capabilityLedger.actor.state)}</span></div>
+              <div className="catalog-evidence-row"><strong>{t("目录／模型")}</strong><span>{providerCapabilityEvidenceLabel(capabilityLedger.catalogModel.state)}</span></div>
+              <div className="catalog-evidence-row"><strong>{t("上游证据")}</strong><span>{tf("文本：{0}；图片：{1}", [providerCapabilityEvidenceLabel(capabilityLedger.upstream.textResponses), providerCapabilityEvidenceLabel(capabilityLedger.upstream.imageGeneration)])}</span></div>
+              <div className="catalog-evidence-row"><strong>{t("运行时")}</strong><span>{providerCapabilityEvidenceLabel(capabilityLedger.runtime.state)}</span></div>
+              <div className="catalog-evidence-row">
+                <span>{t("各项证据相互独立；Actor 标记与本地账号计划都不代表能力成功。")}</span>
+                <Button disabled={!capabilityEvidenceRefreshAllowedForState(detailState)} type="button" size="sm" variant="secondary" onClick={() => refreshCapabilityLedger(detailStateRef.current)}>
+                  <RefreshCw className="h-4 w-4" />{t("刷新能力证据")}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="catalog-evidence-row">
+              <span>{t("能力证据尚未加载；未知状态不会被视为成功或阻断。")}</span>
+              <Button disabled={!capabilityEvidenceRefreshAllowedForState(detailState)} type="button" size="sm" variant="secondary" onClick={() => refreshCapabilityLedger(detailStateRef.current)}>
+                <RefreshCw className="h-4 w-4" />{t("刷新能力证据")}
+              </Button>
+            </div>
+          )}
         </section>
       )}
         <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={replaceDraft} onProfileEdit={editDraft} onSwitch={switchDraft} actions={actions} modelWindowRows={modelWindowRows} setModelWindowRows={setModelWindowRows} catalogProfile={catalogProfile} draftCommitBlocked={detailState.pendingTransformRevision !== null || detailState.rawConfigContents !== null || detailState.pendingConfirmation !== null || detailState.pendingLegacyProviderIdResolution !== null || detailState.blockers.length > 0} />
@@ -3947,6 +4055,41 @@ function providerNativeCapabilityStateLabel(state: string): string {
       return t("不适用");
     default:
       return t("状态未知");
+  }
+}
+
+function providerCapabilityEvidenceLabel(state: string): string {
+  switch (state) {
+    case "ready": return t("就绪");
+    case "upgradeAvailable": return t("可升级");
+    case "conflicting": return t("存在冲突");
+    case "invalid": return t("无效");
+    case "signedIn": return t("已登录");
+    case "signedOut": return t("需要登录");
+    case "expired": return t("登录已过期");
+    case "eligible": return t("具备客户端资格（不代表上游授权）");
+    case "ineligible": return t("不具备客户端资格");
+    case "supported": return t("元数据支持");
+    case "missingMetadata": return t("缺少能力元数据");
+    case "stale": return t("证据已过期");
+    case "reachable": return t("文本可达");
+    case "fallbackReachable": return t("仅兼容回退可达");
+    case "permissionVerified": return t("权限已验证");
+    case "denied": return t("已拒绝");
+    case "restartRequired": return t("需要完整重启");
+    case "newTaskRequired": return t("需要新任务");
+    case "adopted": return t("已观察到采用");
+    case "notApplicable": return t("不适用");
+    default: return t("未知");
+  }
+}
+
+function providerCapabilityPlanLabel(plan: string): string {
+  switch (plan) {
+    case "free": return t("Free（仅描述账号计划）");
+    case "paid": return t("Paid（不代表能力成功）");
+    case "other": return t("其他（不代表能力成功）");
+    default: return t("未知（不推断能力）");
   }
 }
 

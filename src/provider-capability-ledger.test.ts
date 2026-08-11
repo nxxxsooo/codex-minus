@@ -3,6 +3,8 @@ import { describe, it } from "node:test";
 
 import {
   buildProviderCapabilityLedger,
+  buildProviderCapabilityLedgerFromBackendEvidence,
+  providerCapabilityEvidenceRefreshAllowed,
   type ProviderCapabilityLedgerInput,
 } from "./provider-capability-ledger.ts";
 
@@ -162,5 +164,66 @@ describe("provider capability evidence ledger", () => {
       buildProviderCapabilityLedger({ ...baseInput, routeKind: "legacyCompatibility" }).route.label,
       "compatibility",
     );
+    assert.equal(
+      buildProviderCapabilityLedger({ ...baseInput, routeKind: "notApplicable" }).route.label,
+      "notApplicable",
+    );
+    assert.equal(
+      buildProviderCapabilityLedger({ ...baseInput, routeKind: "unknown" }).route.label,
+      "unknown",
+    );
+  });
+
+  it("projects one backend-only payload without adding identity or secret fields", () => {
+    const ledger = buildProviderCapabilityLedgerFromBackendEvidence({
+      profileId: "relay-one",
+      providerContract: "ready",
+      oauthSession: "signedIn",
+      localPlan: "free",
+      actorMarker: "eligible",
+      catalogModel: "missingMetadata",
+      textResponses: "unknown",
+      imageGeneration: "unknown",
+      runtime: "restartRequired",
+      routeKind: "nativePriorityMixed",
+      imagePlanEvidence: { kind: "unknown" },
+    });
+    assert.equal(ledger.oauth.session, "signedIn");
+    assert.equal(ledger.plan.observed, "free");
+    assert.equal(ledger.image.status, "unknown");
+    assert.doesNotMatch(JSON.stringify(ledger), /relay-one|token|account|email|bearer|api.?key/i);
+  });
+
+  it("reads persisted evidence only while the detail draft matches its authoritative source", () => {
+    const profile = { id: "relay-one", model: "gpt-5.5" };
+    const catalog = { profileId: "relay-one", mode: "official-plus-custom" };
+    assert.equal(providerCapabilityEvidenceRefreshAllowed({
+      applicable: true,
+      currentProfile: profile,
+      authoritativeProfile: { ...profile },
+      currentCatalogDraft: catalog,
+      authoritativeCatalogDraft: { ...catalog },
+    }), true);
+    assert.equal(providerCapabilityEvidenceRefreshAllowed({
+      applicable: true,
+      currentProfile: { ...profile, model: "unsaved-model" },
+      authoritativeProfile: profile,
+      currentCatalogDraft: catalog,
+      authoritativeCatalogDraft: catalog,
+    }), false);
+    assert.equal(providerCapabilityEvidenceRefreshAllowed({
+      applicable: true,
+      currentProfile: profile,
+      authoritativeProfile: profile,
+      currentCatalogDraft: { ...catalog, mode: "custom-only" },
+      authoritativeCatalogDraft: catalog,
+    }), false);
+    assert.equal(providerCapabilityEvidenceRefreshAllowed({
+      applicable: false,
+      currentProfile: profile,
+      authoritativeProfile: profile,
+      currentCatalogDraft: catalog,
+      authoritativeCatalogDraft: catalog,
+    }), false);
   });
 });

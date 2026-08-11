@@ -40,7 +40,9 @@ export type ProviderRuntimeEvidence =
 export type ProviderRouteKind =
   | "nativePriorityMixed"
   | "keyOnlyPureApi"
-  | "legacyCompatibility";
+  | "legacyCompatibility"
+  | "notApplicable"
+  | "unknown";
 
 export type ProviderImagePlanEvidence =
   | { kind: "unknown" }
@@ -64,6 +66,20 @@ export type ProviderCapabilityLedgerInput = {
   imagePlanEvidence: ProviderImagePlanEvidence;
 };
 
+export type ProviderCapabilityEvidencePayload = {
+  profileId: string;
+  providerContract: ProviderContractEvidence;
+  oauthSession: ProviderOAuthSessionEvidence;
+  localPlan: ProviderLocalPlanEvidence;
+  actorMarker: ProviderActorMarkerEvidence;
+  catalogModel: ProviderCatalogModelEvidence;
+  textResponses: ProviderUpstreamEvidence["textResponses"];
+  imageGeneration: ProviderUpstreamEvidence["imageGeneration"];
+  runtime: ProviderRuntimeEvidence;
+  routeKind: ProviderRouteKind;
+  imagePlanEvidence: ProviderImagePlanEvidence;
+};
+
 export type ProviderCapabilityLedger = {
   provider: { state: ProviderContractEvidence };
   oauth: {
@@ -82,7 +98,9 @@ export type ProviderCapabilityLedger = {
   catalogModel: { state: ProviderCatalogModelEvidence };
   upstream: ProviderUpstreamEvidence;
   runtime: { state: ProviderRuntimeEvidence };
-  route: { label: "nativePriorityMixed" | "pureApi" | "compatibility" };
+  route: {
+    label: "nativePriorityMixed" | "pureApi" | "compatibility" | "notApplicable" | "unknown";
+  };
   image: {
     planGate: "blocked" | "notBlocked" | "unknown";
     status: "blocked" | "unknown";
@@ -155,6 +173,37 @@ export function buildProviderCapabilityLedger(
   };
 }
 
+export function buildProviderCapabilityLedgerFromBackendEvidence(
+  payload: ProviderCapabilityEvidencePayload,
+): ProviderCapabilityLedger {
+  return buildProviderCapabilityLedger({
+    providerContract: payload.providerContract,
+    oauthSession: payload.oauthSession,
+    localPlan: payload.localPlan,
+    actorMarker: payload.actorMarker,
+    catalogModel: payload.catalogModel,
+    upstream: {
+      textResponses: payload.textResponses,
+      imageGeneration: payload.imageGeneration,
+    },
+    runtime: payload.runtime,
+    routeKind: payload.routeKind,
+    imagePlanEvidence: payload.imagePlanEvidence,
+  });
+}
+
+export function providerCapabilityEvidenceRefreshAllowed(input: {
+  applicable: boolean;
+  currentProfile: unknown;
+  authoritativeProfile: unknown;
+  currentCatalogDraft: unknown;
+  authoritativeCatalogDraft: unknown;
+}): boolean {
+  return input.applicable
+    && JSON.stringify(input.currentProfile) === JSON.stringify(input.authoritativeProfile)
+    && JSON.stringify(input.currentCatalogDraft) === JSON.stringify(input.authoritativeCatalogDraft);
+}
+
 function providerRouteLabel(
   routeKind: ProviderRouteKind,
 ): ProviderCapabilityLedger["route"]["label"] {
@@ -165,6 +214,10 @@ function providerRouteLabel(
       return "pureApi";
     case "legacyCompatibility":
       return "compatibility";
+    case "notApplicable":
+      return "notApplicable";
+    case "unknown":
+      return "unknown";
     default:
       return assertNever(routeKind);
   }
