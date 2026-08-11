@@ -1,0 +1,10 @@
+model = ""
+model_provider = "CustomProvider"
+
+[model_providers.CustomProvider]
+name = "OpenAI"
+base_url = ""
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = ""
+http_headers = { "x-openai-actor-authorization" = "local-image-extension" }

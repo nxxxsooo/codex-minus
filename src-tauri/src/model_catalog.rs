@@ -986,6 +986,56 @@ fn default_mode(
     }
 }
 
+pub(crate) fn default_catalog_mode_for_profile(profile: &RelayProfile) -> CatalogMode {
+    default_mode(
+        profile,
+        root_catalog_pointer(&profile.config_contents).as_deref(),
+        UpstreamTopology::Direct,
+    )
+}
+
+pub(crate) fn catalog_state_path() -> PathBuf {
+    state_path()
+}
+
+pub(crate) fn read_only_catalog_modes_from_path(
+    settings: &BackendSettings,
+    path: &Path,
+) -> anyhow::Result<BTreeMap<String, CatalogMode>> {
+    let state = match fs::read(path) {
+        Ok(bytes) => Some(
+            serde_json::from_slice::<CatalogState>(&bytes)
+                .context("model catalog state is invalid")?,
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    let mut modes = BTreeMap::new();
+    for profile in &settings.relay_profiles {
+        let pointer = root_catalog_pointer(&profile.config_contents);
+        let mode = match state
+            .as_ref()
+            .and_then(|state| state.profiles.get(&profile.id))
+        {
+            Some(profile_state) if profile_state.mode == CatalogMode::External => {
+                CatalogMode::External
+            }
+            Some(profile_state)
+                if !profile_state.mode_explicit
+                    && pointer.as_deref().is_some_and(|pointer| {
+                        !manager_owned_pointer_path(&profile.id, pointer, profile_state)
+                    }) =>
+            {
+                CatalogMode::External
+            }
+            Some(profile_state) => profile_state.mode,
+            None => default_mode(profile, pointer.as_deref(), UpstreamTopology::Direct),
+        };
+        modes.insert(profile.id.clone(), mode);
+    }
+    Ok(modes)
+}
+
 fn managed_mode(mode: CatalogMode) -> bool {
     matches!(
         mode,

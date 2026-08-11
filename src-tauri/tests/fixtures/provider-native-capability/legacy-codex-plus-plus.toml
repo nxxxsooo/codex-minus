@@ -1,0 +1,10 @@
+model = "gpt-5"
+model_provider = "CodexPlusPlus"
+
+[model_providers.CodexPlusPlus]
+name = "OpenAI"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = "secret-alias-long"
+http_headers = { "x-openai-actor-authorization" = "local-image-extension" }

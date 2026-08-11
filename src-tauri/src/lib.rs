@@ -4,6 +4,7 @@ mod model_catalog;
 mod network_policy;
 mod platform_command;
 pub mod provider_commit;
+pub mod provider_native_capability;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -81,6 +82,7 @@ pub fn run() {
             model_catalog::refresh_official_model_catalog,
             model_catalog::save_profile_catalog,
             model_catalog::adopt_external_model_catalog,
+            provider_native_capability::inspect_provider_native_capabilities,
             network_policy::manager_network_policy_status,
             network_policy::save_manager_network_policy,
             network_policy::test_manager_network_policy,
