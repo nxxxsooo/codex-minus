@@ -42,7 +42,7 @@
 - [x] 4.10 Block Set-as-current and active Save without current official ChatGPT authentication or with scope-stale catalog identity/target state, while permitting a valid inactive action-required Save.
 - [x] 4.11 Verify rollback journals, staging directories, logs, errors, diagnostics, settings, and catalog artifacts contain no ChatGPT OAuth payload, and verify owner-only permissions for every provider-key-bearing path.
 - [x] 4.12 Route provider-detail and provider-list callers—including enablement, reorder, copy, delete, aggregate cleanup, and provider test-model changes—through the shared provider-owned transaction engine; then harden backend `save_settings` by comparing the incoming provider-owned settings snapshot with persisted state and allowing unrelated settings changes only when relay profiles, active IDs, relay common/context state, enablement, aggregate/legacy projections, and related provider fields are unchanged.
-- [ ] 4.13 Add direct-invoke bypass and stale-fingerprint tests proving generic `save_settings` rejects invalid provider TOML, actor/auth changes, non-empty `authContents`, active-ID changes, topology mutations, and other provider-bearing differences with persisted and live bytes unchanged; prove draft revision alone cannot bypass compare-and-swap.
+- [x] 4.13 Add direct-invoke bypass and stale-fingerprint tests proving generic `save_settings` rejects invalid provider TOML, actor/auth changes, non-empty `authContents`, active-ID changes, topology mutations, and other provider-bearing differences with persisted and live bytes unchanged; prove draft revision alone cannot bypass compare-and-swap.
 
 ## 5. Make frontend provider generation and editing mode-aware
 
