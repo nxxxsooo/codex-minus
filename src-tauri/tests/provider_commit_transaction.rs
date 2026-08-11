@@ -274,6 +274,26 @@ fn unrelated_live_semantics(config: &str) -> BTreeMap<String, serde_json::Value>
         .collect()
 }
 
+fn selected_provider_field(config: &str, field: &str) -> String {
+    let document = config.parse::<toml_edit::DocumentMut>().unwrap();
+    let provider_id = document["model_provider"].as_str().unwrap();
+    document["model_providers"][provider_id][field]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+fn raw_stored_profile_config(settings_path: &Path, profile_id: &str) -> String {
+    let settings: BackendSettings =
+        serde_json::from_slice(&fs::read(settings_path).unwrap()).unwrap();
+    settings
+        .relay_profiles
+        .into_iter()
+        .find(|profile| profile.id == profile_id)
+        .unwrap()
+        .config_contents
+}
+
 #[test]
 fn successful_active_commit_preserves_context_semantics_and_auth_bytes() {
     let active = canonical_profile(
@@ -681,8 +701,24 @@ fn active_commit_re_grafts_live_globals_and_rejects_profile_global_injection() {
     assert_eq!(unrelated_live_semantics(&live), live_globals_before);
     assert!(!live.contains("profile-review-must-not-leak"));
     assert!(!live.contains("must-not-leak"));
-    let saved = fixture.read_settings();
-    assert!(unrelated_live_semantics(&saved.relay_profiles[0].config_contents).is_empty());
+    assert_eq!(
+        selected_provider_field(&live, "base_url"),
+        "https://changed.example/v1"
+    );
+    assert_eq!(
+        selected_provider_field(&live, "experimental_bearer_token"),
+        "changed-provider-key"
+    );
+    let stored_config = raw_stored_profile_config(&fixture.paths.settings_path, "sub2api");
+    assert!(unrelated_live_semantics(&stored_config).is_empty());
+    assert_eq!(
+        selected_provider_field(&stored_config, "base_url"),
+        "https://changed.example/v1"
+    );
+    assert_eq!(
+        selected_provider_field(&stored_config, "experimental_bearer_token"),
+        "changed-provider-key"
+    );
 }
 
 #[test]
