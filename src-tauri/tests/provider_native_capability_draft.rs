@@ -340,6 +340,10 @@ arbitrary = "custom-content"
             .and_then(Item::as_str),
         Some("custom-content")
     );
+    let preview = serde_json::to_value(&confirmed.preview).unwrap();
+    assert_eq!(preview["renamedProviderFrom"], "CodexPP");
+    assert_eq!(preview["renamedProviderTo"], "RelayReplacement");
+    assert!(!preview.to_string().contains("legacy-secret"));
 
     for invalid in ["openai", "CodexPlusPlus", "custom"] {
         let mut invalid_request = confirmed_request.clone();

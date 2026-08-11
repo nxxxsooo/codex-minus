@@ -111,7 +111,38 @@ describe("provider native-capability view", () => {
     });
 
     assert.equal(view.upgradeAvailability, "manualResolutionRequired");
+    assert.equal(view.upgradeAction, "resolveLegacyProviderId");
     assert.equal(view.providerRoutableCapabilityProof, "unverified");
+  });
+
+  it("offers a distinct explicit actor replacement only when that is the sole contract conflict", () => {
+    const actorConflict = deriveProviderNativeCapabilityView({
+      inspection: {
+        profileId: "actor-one",
+        state: "degraded",
+        fields: [
+          { field: "relayMode", outcome: "satisfied", reason: "canonical" },
+          { field: "actorHeader", outcome: "conflict", reason: "actorHeaderValueConflict" },
+        ],
+      },
+      officialAuth: { authenticated: true, localPlan: "free" },
+    });
+    assert.equal(actorConflict.upgradeAvailability, "confirmationRequired");
+    assert.equal(actorConflict.upgradeAction, "replaceActorHeader");
+
+    const multipleConflicts = deriveProviderNativeCapabilityView({
+      inspection: {
+        profileId: "actor-broken",
+        state: "degraded",
+        fields: [
+          { field: "providerBearer", outcome: "missing", reason: "missingProviderBearer" },
+          { field: "actorHeader", outcome: "conflict", reason: "actorHeaderValueConflict" },
+        ],
+      },
+      officialAuth: { authenticated: true, localPlan: "free" },
+    });
+    assert.equal(multipleConflicts.upgradeAvailability, "unavailable");
+    assert.equal(multipleConflicts.upgradeAction, null);
   });
 });
 

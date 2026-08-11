@@ -24,7 +24,16 @@ export type ProviderLocalAccountPlan = "free" | "paid" | "other" | "unknown";
 export type ProviderNativeCapabilityView = {
   state: ProviderNativeCapabilityState;
   externalOwnership: boolean;
-  upgradeAvailability: "available" | "manualResolutionRequired" | "unavailable";
+  upgradeAvailability:
+    | "available"
+    | "confirmationRequired"
+    | "manualResolutionRequired"
+    | "unavailable";
+  upgradeAction:
+    | "upgrade"
+    | "replaceActorHeader"
+    | "resolveLegacyProviderId"
+    | null;
   officialAuthGate: "satisfied" | "signInRequired" | "unknown";
   localPlan: ProviderLocalAccountPlan;
   localPlanBlocksActivation: false;
@@ -62,6 +71,11 @@ export function deriveProviderNativeCapabilityView(input: {
   const legacyProviderIdRequiresRename = input.inspection?.fields.some(
     (entry) => entry.reason === "legacyProviderIdRequiresRename",
   ) ?? false;
+  const nonSatisfiedFields = input.inspection?.fields.filter(
+    (entry) => entry.outcome !== "satisfied",
+  ) ?? [];
+  const actorHeaderIsOnlyConflict = nonSatisfiedFields.length === 1
+    && nonSatisfiedFields[0].reason === "actorHeaderValueConflict";
   const actorField = input.inspection?.fields.find(
     (entry) => entry.field === "actorHeader",
   );
@@ -72,16 +86,26 @@ export function deriveProviderNativeCapabilityView(input: {
       : actorField
         ? "ineligible"
         : "unknown";
+  const upgradeAvailability = externalOwnership
+    ? "unavailable" as const
+    : legacyProviderIdRequiresRename
+      ? "manualResolutionRequired" as const
+      : actorHeaderIsOnlyConflict
+        ? "confirmationRequired" as const
+        : state === "upgradeAvailable" || chatCompatibility
+          ? "available" as const
+          : "unavailable" as const;
   return {
     state,
     externalOwnership,
-    upgradeAvailability: externalOwnership
-      ? "unavailable"
-      : legacyProviderIdRequiresRename
-        ? "manualResolutionRequired"
-        : state === "upgradeAvailable" || chatCompatibility
-          ? "available"
-          : "unavailable",
+    upgradeAvailability,
+    upgradeAction: upgradeAvailability === "available"
+      ? "upgrade"
+      : upgradeAvailability === "confirmationRequired"
+        ? "replaceActorHeader"
+        : upgradeAvailability === "manualResolutionRequired"
+          ? "resolveLegacyProviderId"
+          : null,
     officialAuthGate: input.officialAuth.authenticated === true
       ? "satisfied"
       : input.officialAuth.authenticated === false

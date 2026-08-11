@@ -179,6 +179,103 @@ describe("provider detail draft state", () => {
     );
   });
 
+  it("requires an explicit second confirmation before replacing a custom actor header", () => {
+    const actorState = draftState();
+    const observed = applyProviderDetailInspection(
+      actorState,
+      beginProviderDetailInspection(actorState),
+      {
+        profileId: "relay-one",
+        state: "degraded",
+        fields: [
+          { field: "relayMode", outcome: "satisfied", reason: "canonical" },
+          { field: "actorHeader", outcome: "conflict", reason: "actorHeaderValueConflict" },
+        ],
+      },
+    );
+    assert.equal(observed.disposition, "applied");
+    const first = beginProviderDetailNativePriorityUpgrade(observed.state);
+    const blocked = settleProviderDetailTransform(first.state, transformCorrelation(first), {
+      draftRevision: 1,
+      status: "confirmationRequired",
+      draft: {
+        profile: profile(),
+        structuredApiKey: "provider-key",
+        catalogMode: "official-plus-custom",
+      },
+      blockers: ["actorHeaderValueConflict"],
+      inspection: observed.state.inspection!,
+      preview,
+    });
+
+    assert.equal(blocked.disposition, "notApplied");
+    assert.equal(blocked.state.pendingConfirmation?.requiredConfirmation, "replaceActorHeader");
+    assert.deepEqual(blocked.effects, []);
+    const confirmed = confirmProviderDetailTransition(blocked.state);
+    assert.equal(confirmed.effects[0]?.kind, "transform");
+    if (confirmed.effects[0]?.kind === "transform") {
+      assert.deepEqual(
+        confirmed.effects[0].invocation.request.confirmations,
+        ["replaceActorHeader"],
+      );
+    }
+    const cancelled = cancelProviderDetailTransition(blocked.state);
+    assert.deepEqual(cancelled.effects, []);
+    assert.equal(cancelled.state.profile.configContents, actorState.profile.configContents);
+  });
+
+  it("keeps a legacy ID collision as a retryable draft-only resolution", () => {
+    const legacyState = draftState();
+    const pending = beginProviderDetailEdit(legacyState, {
+      patch: {
+        relayMode: "official",
+        officialMixApiKey: true,
+        protocol: "responses",
+      },
+      target: existingTarget,
+      transition: { action: "enableNativePriority", confirmations: [] },
+    });
+    const blocked = settleProviderDetailTransform(pending.state, transformCorrelation(pending), {
+      draftRevision: 1,
+      status: "blocked",
+      draft: {
+        profile: profile(),
+        structuredApiKey: "provider-key",
+        catalogMode: "official-plus-custom",
+      },
+      blockers: ["replacementProviderIdRequired"],
+      inspection: {
+        profileId: "relay-one",
+        state: "degraded",
+        fields: [{
+          field: "providerSelection",
+          outcome: "mismatch",
+          reason: "legacyProviderIdRequiresRename",
+        }],
+      },
+      preview,
+    });
+
+    assert.equal(blocked.disposition, "notApplied");
+    assert.equal(blocked.state.pendingLegacyProviderIdResolution?.reason, "required");
+    assert.deepEqual(blocked.effects, []);
+    assert.equal(blocked.state.profile.configContents, legacyState.profile.configContents);
+    assert.throws(
+      () => buildProviderDetailCommitEffect(blocked.state, {
+        kind: "detailSave",
+        settings: settings(),
+        persistedSettings: settings(),
+        catalogDrafts: [catalogDraft],
+        focusedProfileWasPersisted: true,
+        previousActiveRelayId: "relay-old",
+        confirmContextCleanup: false,
+        expectedProviderFingerprint: "fingerprint-old",
+        draftRevision: 42,
+      }),
+      /legacy provider ID/i,
+    );
+  });
+
   it("binds catalog refresh re-inspection to the new response-only revision", () => {
     const loaded = draftState();
     const initial = applyProviderDetailInspection(

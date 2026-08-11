@@ -29,6 +29,8 @@ export type ProviderDetailTransformPreview = {
   removesProviderTable: boolean;
   removedProviderId: string | null;
   removedProviderFields: string[];
+  renamedProviderFrom?: string | null;
+  renamedProviderTo?: string | null;
 };
 
 export type ProviderDetailDraftState<P extends ProviderDetailProfile> = {
@@ -40,6 +42,7 @@ export type ProviderDetailDraftState<P extends ProviderDetailProfile> = {
   pendingTransformRevision: number | null;
   pendingTransition: ProviderDetailTransitionIntent | null;
   pendingConfirmation: ProviderDetailPendingConfirmation | null;
+  pendingLegacyProviderIdResolution: ProviderDetailLegacyProviderIdResolution | null;
   inspection: ProviderDetailInspectionMetadata | null;
   preview: ProviderDetailTransformPreview | null;
   blockers: string[];
@@ -54,6 +57,10 @@ export type ProviderDetailTransitionIntent = {
 
 export type ProviderDetailPendingConfirmation = ProviderDetailTransitionIntent & {
   requiredConfirmation: ProviderDraftTransformConfirmation;
+};
+
+export type ProviderDetailLegacyProviderIdResolution = ProviderDetailTransitionIntent & {
+  reason: "required" | "invalid" | "unavailable";
 };
 
 export type ProviderDetailTransformInvocation<P extends ProviderDetailProfile> = {
@@ -98,6 +105,7 @@ export function createProviderDetailDraftState<P extends ProviderDetailProfile>(
     pendingTransformRevision: null,
     pendingTransition: null,
     pendingConfirmation: null,
+    pendingLegacyProviderIdResolution: null,
     inspection: null,
     preview: null,
     blockers: [],
@@ -139,6 +147,7 @@ export function beginProviderDetailEdit<P extends ProviderDetailProfile>(
         pendingTransformRevision: null,
         pendingTransition: null,
         pendingConfirmation: null,
+        pendingLegacyProviderIdResolution: null,
         inspection: null,
         preview: null,
         blockers: [],
@@ -162,6 +171,7 @@ export function beginProviderDetailEdit<P extends ProviderDetailProfile>(
           }
         : null,
       pendingConfirmation: null,
+      pendingLegacyProviderIdResolution: null,
       inspection: null,
       preview: null,
       blockers: [],
@@ -202,8 +212,17 @@ export function beginProviderDetailNativePriorityUpgrade<
   const legacyProviderIdRequiresRename = state.inspection?.fields.some(
     (entry) => entry.reason === "legacyProviderIdRequiresRename",
   ) ?? false;
+  const nonSatisfiedFields = state.inspection?.fields.filter(
+    (entry) => entry.outcome !== "satisfied",
+  ) ?? [];
+  const actorHeaderIsOnlyConflict = nonSatisfiedFields.length === 1
+    && nonSatisfiedFields[0].reason === "actorHeaderValueConflict";
   if (
-    (state.inspection?.state !== "upgradeAvailable" && !chatCompatibility)
+    (
+      state.inspection?.state !== "upgradeAvailable"
+      && !chatCompatibility
+      && !actorHeaderIsOnlyConflict
+    )
     || externalOwnership
     || legacyProviderIdRequiresRename
   ) {
@@ -241,6 +260,7 @@ export function beginProviderDetailRawConfigEdit<P extends ProviderDetailProfile
       pendingTransformRevision: revision,
       pendingTransition: null,
       pendingConfirmation: null,
+      pendingLegacyProviderIdResolution: null,
       inspection: null,
       preview: null,
       blockers: [],
@@ -295,8 +315,14 @@ export function settleProviderDetailTransform<P extends ProviderDetailProfile>(
   if (applied.kind === "stale") return { state, effects: [], disposition: "stale" };
   if (applied.kind === "notApplied") {
     const requiredConfirmation = applied.status === "confirmationRequired"
-      ? exitConfirmationForResponse(
+      ? confirmationForResponse(
           state.pendingTransition?.transition.action,
+          response.blockers,
+        )
+      : null;
+    const legacyProviderIdResolution = state.pendingTransition
+      ? legacyProviderIdResolutionForResponse(
+          state.pendingTransition.transition.action,
           response.blockers,
         )
       : null;
@@ -308,6 +334,10 @@ export function settleProviderDetailTransform<P extends ProviderDetailProfile>(
         pendingConfirmation: requiredConfirmation && state.pendingTransition
           ? { ...state.pendingTransition, requiredConfirmation }
           : null,
+        pendingLegacyProviderIdResolution:
+          legacyProviderIdResolution && state.pendingTransition
+            ? { ...state.pendingTransition, reason: legacyProviderIdResolution }
+            : null,
         inspection: response.inspection,
         preview: response.preview,
         blockers: [...response.blockers],
@@ -328,6 +358,7 @@ export function settleProviderDetailTransform<P extends ProviderDetailProfile>(
       pendingTransformRevision: null,
       pendingTransition: null,
       pendingConfirmation: null,
+      pendingLegacyProviderIdResolution: null,
       inspection: response.inspection,
       preview: response.preview,
       blockers: [],
@@ -357,6 +388,7 @@ export function settleProviderDetailTransformError<P extends ProviderDetailProfi
       pendingTransformRevision: null,
       pendingTransition: null,
       pendingConfirmation: null,
+      pendingLegacyProviderIdResolution: null,
     },
     effects: [],
     disposition: "error",
@@ -400,6 +432,7 @@ export function replaceProviderDetailProfile<P extends ProviderDetailProfile>(
     pendingTransformRevision: null,
     pendingTransition: null,
     pendingConfirmation: null,
+    pendingLegacyProviderIdResolution: null,
     inspection: null,
     preview: null,
     blockers: [],
@@ -422,6 +455,7 @@ export function replaceProviderDetailCatalogDraft<P extends ProviderDetailProfil
     pendingTransformRevision: null,
     pendingTransition: null,
     pendingConfirmation: null,
+    pendingLegacyProviderIdResolution: null,
     inspection: null,
     preview: null,
     blockers: [],
@@ -463,6 +497,7 @@ export function endProviderDetailSession<P extends ProviderDetailProfile>(
       pendingTransformRevision: null,
       pendingTransition: null,
       pendingConfirmation: null,
+      pendingLegacyProviderIdResolution: null,
     },
     effects: [],
   };
@@ -536,6 +571,9 @@ export function buildProviderDetailCommitEffect<P extends ProviderDetailProfile>
   if (state.pendingConfirmation !== null) {
     throw new Error("Cannot commit before confirming or cancelling the provider transition preview.");
   }
+  if (state.pendingLegacyProviderIdResolution !== null) {
+    throw new Error("Cannot commit before resolving or cancelling the legacy provider ID.");
+  }
   if (state.blockers.length) {
     throw new Error("Cannot commit a provider draft blocked by backend validation.");
   }
@@ -578,10 +616,15 @@ function assertActive<P extends ProviderDetailProfile>(state: ProviderDetailDraf
   if (state.lifecycle !== "active") throw new Error("Provider detail session is closed.");
 }
 
-function exitConfirmationForResponse(
+function confirmationForResponse(
   action: ProviderDraftTransition["action"] | undefined,
   blockers: string[],
 ): ProviderDraftTransformConfirmation | null {
+  if (
+    action === "enableNativePriority"
+    && blockers.length === 1
+    && blockers[0] === "actorHeaderValueConflict"
+  ) return "replaceActorHeader";
   if (
     action === "exitPureOAuth"
     && blockers.length === 1
@@ -596,5 +639,16 @@ function exitConfirmationForResponse(
       || action === "exitChatCompletions"
     )
   ) return "confirmCapabilityLoss";
+  return null;
+}
+
+function legacyProviderIdResolutionForResponse(
+  action: ProviderDraftTransition["action"] | undefined,
+  blockers: string[],
+): ProviderDetailLegacyProviderIdResolution["reason"] | null {
+  if (action !== "enableNativePriority" || blockers.length !== 1) return null;
+  if (blockers[0] === "replacementProviderIdRequired") return "required";
+  if (blockers[0] === "replacementProviderIdInvalid") return "invalid";
+  if (blockers[0] === "replacementProviderIdUnavailable") return "unavailable";
   return null;
 }

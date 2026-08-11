@@ -159,6 +159,8 @@ pub struct ProviderNativeCapabilityDraftPreview {
     pub removes_provider_table: bool,
     pub removed_provider_id: Option<String>,
     pub removed_provider_fields: Vec<String>,
+    pub renamed_provider_from: Option<String>,
+    pub renamed_provider_to: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1105,6 +1107,7 @@ fn enable_native_priority_draft(
             );
         }
     };
+    let original_provider_id = provider_id.clone();
     let provider_id = if LEGACY_PROVIDER_IDS.contains(&provider_id.as_str()) {
         match migrate_legacy_provider_id(
             &mut document,
@@ -1133,6 +1136,12 @@ fn enable_native_priority_draft(
             );
         }
         provider_id
+    };
+    let provider_was_renamed = provider_id != original_provider_id;
+    let preview = ProviderNativeCapabilityDraftPreview {
+        renamed_provider_from: provider_was_renamed.then_some(original_provider_id),
+        renamed_provider_to: provider_was_renamed.then_some(provider_id.clone()),
+        ..ProviderNativeCapabilityDraftPreview::default()
     };
 
     let (raw_bearer, actor_header) = match provider_contract_inputs(&document, &provider_id) {
@@ -1280,7 +1289,7 @@ fn enable_native_priority_draft(
         boundary,
         profile,
         CatalogMode::OfficialPlusCustom,
-        ProviderNativeCapabilityDraftPreview::default(),
+        preview,
     )
 }
 
@@ -1468,6 +1477,7 @@ fn pure_oauth_exit_draft(
         removes_provider_table: true,
         removed_provider_id: Some(provider_id.clone()),
         removed_provider_fields: provider.iter().map(|(key, _)| key.to_string()).collect(),
+        ..ProviderNativeCapabilityDraftPreview::default()
     };
     if let Err((status, reason)) = provider_key_resolution(request, &request.profile, provider) {
         return unchanged_draft_payload(request, boundary, status, vec![reason], preview);
