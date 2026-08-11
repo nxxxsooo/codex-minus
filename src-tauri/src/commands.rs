@@ -1959,6 +1959,14 @@ pub struct ProviderCommitFailure {
     message: &'static str,
 }
 
+/// Transaction checkpoints exposed only so isolated regression fixtures can inject failures
+/// without replacing the production journal or storage implementation.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderCommitCheckpoint {
+    Normalization,
+}
+
 impl ProviderCommitFailure {
     fn new(code: ProviderCommitErrorCode, message: &'static str) -> Self {
         Self { code, message }
@@ -2005,6 +2013,15 @@ pub async fn commit_provider_detail(
 pub fn commit_provider_detail_from_paths(
     paths: &ProviderCommitPaths,
     request: crate::provider_commit::ProviderCommitRequest,
+) -> Result<ProviderCommitPayload, ProviderCommitFailure> {
+    commit_provider_detail_from_paths_observed(paths, request, |_| Ok(()))
+}
+
+#[doc(hidden)]
+pub fn commit_provider_detail_from_paths_observed(
+    paths: &ProviderCommitPaths,
+    request: crate::provider_commit::ProviderCommitRequest,
+    mut observe: impl FnMut(ProviderCommitCheckpoint) -> anyhow::Result<()>,
 ) -> Result<ProviderCommitPayload, ProviderCommitFailure> {
     use crate::model_catalog::CatalogMode;
     use crate::provider_commit::{ProviderOwnedTopologyDraft, plan_provider_detail_commit};
@@ -2072,6 +2089,12 @@ pub fn commit_provider_detail_from_paths(
         .find(|draft| draft.profile_id == focused_id)
         .map(|draft| draft.mode)
         .unwrap_or(CatalogMode::NativeOfficial);
+    observe(ProviderCommitCheckpoint::Normalization).map_err(|_| {
+        provider_commit_failure(
+            ProviderCommitErrorCode::InvalidDraft,
+            "provider draft normalization failed",
+        )
+    })?;
     let normalized_settings =
         normalize_provider_detail_settings_fallible(raw_plan.settings, focused_id, focused_mode)
             .map_err(|error| {

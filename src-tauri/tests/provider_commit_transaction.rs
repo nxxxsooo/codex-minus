@@ -1,8 +1,9 @@
 use std::fs;
 
 use codex_minus_lib::commands::{
-    ProviderCommitErrorCode, ProviderCommitPaths, ProviderCommitPayload,
+    ProviderCommitCheckpoint, ProviderCommitErrorCode, ProviderCommitPaths, ProviderCommitPayload,
     assert_staged_native_provider_contract, commit_provider_detail_from_paths,
+    commit_provider_detail_from_paths_observed,
 };
 use codex_minus_lib::provider_commit::{
     CatalogMode, CatalogOverlay, CatalogState, CustomModel, OfficialSnapshot, ProfileCatalogDraft,
@@ -11,6 +12,8 @@ use codex_minus_lib::provider_commit::{
 };
 use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
+use std::path::Path;
 
 fn canonical_profile(id: &str, model: &str, base_url: &str, key: &str) -> RelayProfile {
     RelayProfile {
@@ -178,6 +181,98 @@ impl Fixture {
     fn read_state(&self) -> CatalogState {
         serde_json::from_slice(&fs::read(&self.paths.catalog_state_path).unwrap()).unwrap()
     }
+
+    fn file_generation(&self) -> BTreeMap<String, Vec<u8>> {
+        let mut files = BTreeMap::new();
+        collect_files(&self.paths.app_state, "app-state", &mut files);
+        collect_files(&self.paths.codex_home, "codex-home", &mut files);
+        files
+    }
+}
+
+fn collect_files(root: &Path, prefix: &str, files: &mut BTreeMap<String, Vec<u8>>) {
+    let mut entries = fs::read_dir(root)
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let path = entry.path();
+        let relative = path.strip_prefix(root).unwrap().to_string_lossy();
+        let key = format!("{prefix}/{relative}");
+        if path.is_dir() {
+            collect_files(&path, &key, files);
+        } else {
+            files.insert(key, fs::read(path).unwrap());
+        }
+    }
+}
+
+fn rich_live_config() -> &'static str {
+    r#"model = "live-before"
+review_model = "live-review"
+model_reasoning_effort = "xhigh"
+disable_response_storage = true
+network_access = "enabled"
+windows_wsl_setup_acknowledged = true
+sandbox_mode = "workspace-write"
+
+[features]
+goals = false
+shell_snapshot = true
+
+[mcp_servers.memory]
+command = "memory-server"
+args = ["--live"]
+
+[skills.writer]
+path = "/live/skills/writer"
+enabled = true
+
+[plugins.browser]
+enabled = true
+"#
+}
+
+#[test]
+fn injected_normalization_failure_preserves_the_complete_prior_generation() {
+    let active = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    let initial = settings_with(vec![active], "sub2api");
+    let fixture = Fixture::new(&initial, &state_with_official());
+    fs::write(
+        fixture.paths.codex_home.join("config.toml"),
+        rich_live_config(),
+    )
+    .unwrap();
+    let persisted = fixture.read_settings();
+    let before = fixture.file_generation();
+
+    let error = commit_provider_detail_from_paths_observed(
+        &fixture.paths,
+        request(
+            &persisted,
+            &persisted,
+            "sub2api",
+            ProviderCommitAction::Save,
+            50,
+        ),
+        |checkpoint| {
+            if checkpoint == ProviderCommitCheckpoint::Normalization {
+                anyhow::bail!("normalization-fault-sentinel");
+            }
+            Ok(())
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code(), ProviderCommitErrorCode::InvalidDraft);
+    assert!(!error.to_string().contains("normalization-fault-sentinel"));
+    assert_eq!(fixture.file_generation(), before);
 }
 
 #[test]
