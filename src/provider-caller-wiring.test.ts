@@ -27,4 +27,13 @@ describe("provider caller wiring", () => {
     assert.doesNotMatch(source, /relayProfileSwitchCommand/);
     assert.doesNotMatch(source, /call<SettingsResult>\("save_settings", \{ settings: settingsForm \}\)/);
   });
+
+  it("keeps persisted topology visible until the provider transaction succeeds", () => {
+    const body = source.match(
+      /const saveRelaySettings = async \([\s\S]*?\) => \{([\s\S]*?)\n  \};/,
+    )?.[1];
+    assert.ok(body, "the provider topology submit adapter must remain auditable");
+    assert.doesNotMatch(body, /onFormChange\(next\)/);
+    assert.match(body, /return actions\.commitProviderTopology\(next, kind, copySourceProfileId\)/);
+  });
 });

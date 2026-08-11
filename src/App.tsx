@@ -1869,7 +1869,6 @@ function RelayScreen({
     kind: Exclude<ProviderMutationKind, "detailSave" | "setCurrent">,
     copySourceProfileId?: string,
   ) => {
-    onFormChange(next);
     return actions.commitProviderTopology(next, kind, copySourceProfileId);
   };
   const createNewAggregateProfile = () => {
