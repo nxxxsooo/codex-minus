@@ -1,9 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use codex_plus_core::settings::{
-    BackendSettings, RelayMode, RelayProfile, RelayProtocol, SettingsStore,
-};
+use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol};
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item, TableLike};
 
@@ -582,8 +580,9 @@ pub fn inspect_provider_native_capabilities_from_paths(
     catalog_state_path: &Path,
     request: ProviderNativeCapabilityInspectionRequest,
 ) -> Result<ProviderNativeCapabilityInspectionPayload, ProviderNativeCapabilityInspectionError> {
-    let mut settings = SettingsStore::new(settings_path.to_path_buf())
-        .load()
+    let settings_bytes = std::fs::read(settings_path)
+        .map_err(|_| ProviderNativeCapabilityInspectionError::InputUnavailable)?;
+    let mut settings = serde_json::from_slice::<BackendSettings>(&settings_bytes)
         .map_err(|_| ProviderNativeCapabilityInspectionError::InputUnavailable)?;
     for profile in &mut settings.relay_profiles {
         profile.auth_contents.clear();

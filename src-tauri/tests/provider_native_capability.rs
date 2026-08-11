@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 
 use codex_minus_lib::provider_native_capability::{
     CatalogMode, NativeCapabilityField, NativeCapabilityOutcome, NativeCapabilityReason,
-    NativeCapabilityState, ProviderNativeCapabilityInspectionRequest, inspect_profile,
-    inspect_profiles, inspect_provider_native_capabilities_from_paths,
+    NativeCapabilityState, ProviderNativeCapabilityInspectionError,
+    ProviderNativeCapabilityInspectionRequest, inspect_profile, inspect_profiles,
+    inspect_provider_native_capabilities_from_paths,
 };
 use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol};
 
@@ -539,4 +540,164 @@ fn command_loader_reads_bulk_or_one_profile_without_modifying_either_store() {
             .unwrap()
             .contains("oauth-sentinel")
     );
+}
+
+#[test]
+fn command_loader_preserves_raw_persisted_evidence_before_evaluation() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings_path = temp.path().join("settings.json");
+    let catalog_path = temp.path().join("missing-catalog-state.json");
+    let raw_settings = serde_json::json!({
+        "relayProfiles": [
+            {
+                "id": "reserved",
+                "name": "reserved",
+                "protocol": "responses",
+                "relayMode": "official",
+                "officialMixApiKey": true,
+                "configContents": RESERVED_OPENAI,
+                "authContents": "oauth-reserved-sentinel"
+            },
+            {
+                "id": "CodexPlusPlus-profile",
+                "name": "alias long",
+                "protocol": "responses",
+                "relayMode": "official",
+                "officialMixApiKey": true,
+                "configContents": LEGACY_CODEX_PLUS_PLUS
+            },
+            {
+                "id": "CodexPP-profile",
+                "name": "alias short",
+                "protocol": "responses",
+                "relayMode": "official",
+                "officialMixApiKey": true,
+                "configContents": LEGACY_CODEX_PP
+            },
+            {
+                "id": "key-conflict",
+                "name": "key conflict",
+                "apiKey": "different-structured-secret",
+                "protocol": "responses",
+                "relayMode": "official",
+                "officialMixApiKey": true,
+                "configContents": CANONICAL_INLINE
+            },
+            {
+                "id": "missing-field",
+                "name": "missing field",
+                "protocol": "responses",
+                "relayMode": "official",
+                "officialMixApiKey": true,
+                "configContents": PARTIAL
+            }
+        ]
+    });
+    std::fs::write(
+        &settings_path,
+        serde_json::to_vec_pretty(&raw_settings).unwrap(),
+    )
+    .unwrap();
+    let before = std::fs::read(&settings_path).unwrap();
+
+    let payload = inspect_provider_native_capabilities_from_paths(
+        &settings_path,
+        &catalog_path,
+        ProviderNativeCapabilityInspectionRequest::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        payload
+            .inspections
+            .iter()
+            .map(|item| (item.profile_id.as_str(), item.state))
+            .collect::<Vec<_>>(),
+        vec![
+            ("reserved", NativeCapabilityState::Degraded),
+            (
+                "CodexPlusPlus-profile",
+                NativeCapabilityState::UpgradeAvailable,
+            ),
+            ("CodexPP-profile", NativeCapabilityState::UpgradeAvailable),
+            ("key-conflict", NativeCapabilityState::Degraded),
+            ("missing-field", NativeCapabilityState::Degraded),
+        ]
+    );
+    assert_eq!(
+        reason(
+            &payload.inspections[0],
+            NativeCapabilityField::ProviderSelection
+        ),
+        (
+            NativeCapabilityOutcome::Conflict,
+            NativeCapabilityReason::ReservedProviderId,
+        )
+    );
+    for inspection in &payload.inspections[1..=2] {
+        assert_eq!(
+            reason(inspection, NativeCapabilityField::ProviderSelection),
+            (
+                NativeCapabilityOutcome::Mismatch,
+                NativeCapabilityReason::LegacyProviderIdRequiresRename,
+            )
+        );
+    }
+    assert_eq!(
+        reason(
+            &payload.inspections[3],
+            NativeCapabilityField::ProviderBearer,
+        ),
+        (
+            NativeCapabilityOutcome::Conflict,
+            NativeCapabilityReason::StructuredKeyBearerConflict,
+        )
+    );
+    assert_eq!(
+        reason(&payload.inspections[4], NativeCapabilityField::ActorHeader),
+        (
+            NativeCapabilityOutcome::Missing,
+            NativeCapabilityReason::MissingActorHeader,
+        )
+    );
+
+    let serialized = serde_json::to_string(&payload).unwrap();
+    for forbidden in [
+        "secret-reserved",
+        "secret-alias-long",
+        "secret-alias-short",
+        "secret-canonical-inline",
+        "different-structured-secret",
+        "secret-partial",
+        "oauth-reserved-sentinel",
+    ] {
+        assert!(!serialized.contains(forbidden), "leaked {forbidden}");
+    }
+    assert_eq!(std::fs::read(&settings_path).unwrap(), before);
+    assert!(!catalog_path.exists());
+}
+
+#[test]
+fn command_loader_rejects_malformed_settings_with_one_sanitized_typed_error() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings_path = temp.path().join("settings.json");
+    let catalog_path = temp.path().join("missing-catalog-state.json");
+    let malformed = br#"{"relayProfiles":[{"configContents":"secret-settings-parser"}"#;
+    std::fs::write(&settings_path, malformed).unwrap();
+    let before = std::fs::read(&settings_path).unwrap();
+
+    let error = inspect_provider_native_capabilities_from_paths(
+        &settings_path,
+        &catalog_path,
+        ProviderNativeCapabilityInspectionRequest::default(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        ProviderNativeCapabilityInspectionError::InputUnavailable
+    );
+    let serialized = serde_json::to_string(&error).unwrap();
+    assert_eq!(serialized, r#""inputUnavailable""#);
+    assert!(!serialized.contains("secret-settings-parser"));
+    assert_eq!(std::fs::read(&settings_path).unwrap(), before);
+    assert!(!catalog_path.exists());
 }
