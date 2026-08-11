@@ -64,11 +64,12 @@ import {
   addCatalogCandidate,
   adoptionPreviewSummary,
   catalogDiffSummary,
+  catalogModeChangeDecision,
+  catalogModePresentation,
   catalogRefreshGate,
   defaultCatalogMode,
   externalVersionRequiresAcceptance,
   managedContextConflictKeys,
-  profileCatalogFlags,
   providerEvidenceState,
   validateCatalogDraft,
 } from "./model-catalog-ui";
@@ -2206,7 +2207,14 @@ function CatalogProfileEditor({
 
   const officialModels = catalog?.officialModels ?? [];
   const reported = new Set(summary?.providerReportedSlugs ?? []);
-  const catalogFlags = profileCatalogFlags(summary ?? { restartRequired: false, actionRequired: null });
+  const presentation = catalogModePresentation({
+    selectedMode: mode,
+    persistedMode: summary?.mode ?? null,
+    generatedPath: summary?.generatedPath ?? null,
+    externalPointer: summary?.externalPointer ?? null,
+    restartRequired: summary?.restartRequired ?? false,
+    customModelCount: overlay.custom.length,
+  });
   const draftError = validateCatalogDraft(
     overlay,
     mode,
@@ -2256,6 +2264,17 @@ function CatalogProfileEditor({
       templateProvenance: "user-created",
     }] });
   };
+  const requestMode = (requestedMode: CatalogMode) => {
+    const decision = catalogModeChangeDecision(mode, requestedMode, summary?.externalPointer ?? null, overlay.custom.length);
+    const confirmation = decision === "confirm-discard-external"
+      ? t("切换到原生目录模式将停止管理外部目录。当前目录会在保存成功前继续生效。是否继续？")
+      : decision === "confirm-discard-custom"
+        ? t("切换到原生目录模式将不再使用自定义模型。当前目录会在保存成功前继续生效。是否继续？")
+        : null;
+    if (confirmation && !window.confirm(confirmation)) return;
+    setMode(requestedMode);
+    setModeExplicit(true);
+  };
   const save = async () => {
     const confirmContextCleanup = summary?.contextConflicts.length
       ? window.confirm(tf("托管模型目录将移除这些全局上下文设置，让每个模型使用自己的窗口：\n\n{0}", [summary.contextConflicts.join("\n")]))
@@ -2303,10 +2322,14 @@ function CatalogProfileEditor({
       <div className="catalog-editor-head">
         <div>
           <strong>{t("模型目录")}</strong>
-          <span>{summary?.generatedPath || summary?.externalPointer || t("使用 Codex 原生动态目录")}</span>
+          <span>{presentation.source === "native"
+            ? t("使用 Codex 原生动态目录")
+            : presentation.source === "unsaved"
+              ? t("目录模式尚未保存")
+              : presentation.path}</span>
         </div>
         <div className="catalog-editor-actions">
-          {catalogFlags.restart ? <UiBadge variant="secondary">{t("需重启 Codex")}</UiBadge> : null}
+          {presentation.restart ? <UiBadge variant="secondary">{t("需重启 Codex")}</UiBadge> : null}
           <Button disabled={saving || !!draftError} onClick={() => void save()} size="sm" title={draftError || undefined}>
             <Save className="h-4 w-4" />
             {saving ? t("保存中") : t("保存目录")}
@@ -2320,7 +2343,7 @@ function CatalogProfileEditor({
           ["custom-only", t("仅自定义")],
           ...(summary?.externalPointer || summary?.mode === "external" ? [["external", t("外部目录")]] : []),
         ] as Array<[CatalogMode, string]>).map(([value, label]) => (
-          <button className={mode === value ? "active" : ""} key={value} onClick={() => { setMode(value); setModeExplicit(true); }} type="button">
+          <button className={mode === value ? "active" : ""} key={value} onClick={() => requestMode(value)} type="button">
             {label}
           </button>
         ))}
@@ -2341,7 +2364,15 @@ function CatalogProfileEditor({
           <small>{upstreamTopology === "server-side-composite" ? t("一个 Responses Base URL 和 Key；模型聚合由上游完成。") : t("一个直接 API 上游。")}</small>
         </div>
       ) : null}
-      {catalogFlags.partialFailure || draftError ? <div className="catalog-inline-error">{summary?.actionRequired || catalogDraftErrorLabel(draftError)}</div> : null}
+      {summary?.actionRequired || draftError ? <div className="catalog-inline-error">{summary?.actionRequired || catalogDraftErrorLabel(draftError)}</div> : null}
+      {presentation.dormantCustomCount > 0 ? (
+        <div className="catalog-inline-error">
+          <span>{tf("原生目录模式下有 {0} 个自定义模型暂不生效。", [presentation.dormantCustomCount])}</span>
+          <Button onClick={() => { setMode("official-plus-custom"); setModeExplicit(true); }} size="sm" variant="secondary">
+            {t("恢复官方＋自定义")}
+          </Button>
+        </div>
+      ) : null}
       {mode === "external" ? (
         <div className="catalog-external-row">
           <span>{summary?.externalPointer || t("未识别外部目录指针")}</span>

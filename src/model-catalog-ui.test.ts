@@ -5,6 +5,8 @@ import {
   addCatalogCandidate,
   adoptionPreviewSummary,
   catalogDiffSummary,
+  catalogModeChangeDecision,
+  catalogModePresentation,
   catalogRefreshGate,
   defaultCatalogMode,
   externalVersionRequiresAcceptance,
@@ -24,6 +26,54 @@ describe("model catalog UI state", () => {
     assert.equal(defaultCatalogMode("pureApi", false), "custom-only");
     assert.equal(defaultCatalogMode("pureApi", false, null, "server-side-composite"), "official-plus-custom");
     assert.equal(defaultCatalogMode("pureApi", false, "models/custom.json"), "external");
+  });
+
+  it("requires confirmation before native mode abandons custom or external ownership", () => {
+    assert.equal(catalogModeChangeDecision("official-plus-custom", "native-official", null, 7), "confirm-discard-custom");
+    assert.equal(catalogModeChangeDecision("custom-only", "native-official", null, 1), "confirm-discard-custom");
+    assert.equal(catalogModeChangeDecision("external", "native-official", "models_372k.json", 0), "confirm-discard-external");
+    assert.equal(catalogModeChangeDecision("official-plus-custom", "custom-only", null, 7), "select");
+    assert.equal(catalogModeChangeDecision("native-official", "native-official", null, 7), "select");
+  });
+
+  it("native presentation hides stale managed state and reports dormant custom models", () => {
+    assert.deepEqual(catalogModePresentation({
+      selectedMode: "native-official",
+      persistedMode: "native-official",
+      generatedPath: "model-catalogs/stale.json",
+      externalPointer: null,
+      restartRequired: true,
+      customModelCount: 7,
+    }), {
+      source: "native",
+      path: null,
+      restart: false,
+      dormantCustomCount: 7,
+    });
+  });
+
+  it("managed presentation exposes only the matching persisted generation", () => {
+    assert.deepEqual(catalogModePresentation({
+      selectedMode: "official-plus-custom",
+      persistedMode: "official-plus-custom",
+      generatedPath: "model-catalogs/current.json",
+      externalPointer: null,
+      restartRequired: true,
+      customModelCount: 7,
+    }), {
+      source: "managed",
+      path: "model-catalogs/current.json",
+      restart: true,
+      dormantCustomCount: 0,
+    });
+    assert.equal(catalogModePresentation({
+      selectedMode: "custom-only",
+      persistedMode: "official-plus-custom",
+      generatedPath: "model-catalogs/current.json",
+      externalPointer: null,
+      restartRequired: true,
+      customModelCount: 7,
+    }).source, "unsaved");
   });
 
   it("gates refresh on target capability, credentials, and loading", () => {

@@ -6,6 +6,14 @@
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
   "上游拓扑": "Upstream topology",
+  "切换到原生目录模式将停止管理外部目录。当前目录会在保存成功前继续生效。是否继续？":
+    "Switching to native catalog mode stops managing the external catalog. The current catalog remains active until Save succeeds. Continue?",
+  "切换到原生目录模式将不再使用自定义模型。当前目录会在保存成功前继续生效。是否继续？":
+    "Switching to native catalog mode stops using custom models. The current catalog remains active until Save succeeds. Continue?",
+  "使用 Codex 原生动态目录": "Using Codex's native dynamic catalog",
+  "目录模式尚未保存": "Catalog mode has not been saved",
+  "原生目录模式下有 {0} 个自定义模型暂不生效。": "{0} custom model(s) are dormant in native catalog mode.",
+  "恢复官方＋自定义": "Restore official + custom",
   "直连 API": "Direct API",
   "服务端复合": "Server-side composite",
   "一个 Responses Base URL 和 Key；模型聚合由上游完成。": "One Responses Base URL and key; model aggregation is handled upstream.",

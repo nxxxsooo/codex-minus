@@ -27,6 +27,43 @@ export type CatalogOverlayDraft = {
   }>;
 };
 
+export function catalogModeChangeDecision(
+  currentMode: CatalogModeValue,
+  requestedMode: CatalogModeValue,
+  externalPointer: string | null,
+  customModelCount: number,
+): "select" | "confirm-discard-external" | "confirm-discard-custom" {
+  if (requestedMode !== "native-official" || requestedMode === currentMode) return "select";
+  if (externalPointer) return "confirm-discard-external";
+  if (customModelCount > 0) return "confirm-discard-custom";
+  return "select";
+}
+
+export function catalogModePresentation(input: {
+  selectedMode: CatalogModeValue;
+  persistedMode: CatalogModeValue | null;
+  generatedPath: string | null;
+  externalPointer: string | null;
+  restartRequired: boolean;
+  customModelCount: number;
+}): {
+  source: "native" | "managed" | "external" | "unsaved";
+  path: string | null;
+  restart: boolean;
+  dormantCustomCount: number;
+} {
+  if (input.selectedMode === "native-official") {
+    return { source: "native", path: null, restart: false, dormantCustomCount: input.customModelCount };
+  }
+  if (input.selectedMode !== input.persistedMode) {
+    return { source: "unsaved", path: null, restart: false, dormantCustomCount: 0 };
+  }
+  if (input.selectedMode === "external") {
+    return { source: "external", path: input.externalPointer, restart: input.restartRequired, dormantCustomCount: 0 };
+  }
+  return { source: "managed", path: input.generatedPath, restart: input.restartRequired, dormantCustomCount: 0 };
+}
+
 export function defaultCatalogMode(
   relayMode: string,
   officialMixApiKey: boolean,
