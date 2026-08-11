@@ -16,6 +16,8 @@ export type ProviderProbeCapabilityEvidence = {
 
 type ProviderDoctorEvidenceInput = {
   status: string;
+  protocol: "responses" | "chatCompletions" | "unknown";
+  requestHttpStatus: number | null;
   compatibilityFallbackUsed: boolean;
   checks: Array<{
     id: string;
@@ -27,6 +29,7 @@ type ProviderDoctorEvidenceInput = {
 
 type ProviderQuickProbeEvidenceInput = {
   status: string;
+  protocol: "responses" | "chatCompletions" | "unknown";
   httpStatus: number;
   compatibilityFallbackUsed: boolean;
   [key: string]: unknown;
@@ -46,7 +49,13 @@ export function providerDoctorEvidence(
   input: ProviderDoctorEvidenceInput,
 ): ProviderProbeCapabilityEvidence {
   const request = input.checks.find((check) => check.id === "request");
-  if (request?.status !== "ok") return unknownProbeEvidence();
+  if (
+    input.protocol !== "responses"
+    || request?.status !== "ok"
+    || input.requestHttpStatus === null
+    || input.requestHttpStatus < 200
+    || input.requestHttpStatus >= 300
+  ) return unknownProbeEvidence();
   return {
     ...unknownProbeEvidence(),
     textResponses: input.compatibilityFallbackUsed ? "fallbackReachable" : "reachable",
@@ -57,7 +66,8 @@ export function providerDoctorEvidence(
 export function providerQuickProbeEvidence(
   input: ProviderQuickProbeEvidenceInput,
 ): ProviderProbeCapabilityEvidence {
-  if (input.status === "ok" && input.httpStatus >= 200 && input.httpStatus < 400) {
+  if (input.protocol !== "responses") return unknownProbeEvidence();
+  if (input.status === "ok" && input.httpStatus >= 200 && input.httpStatus < 300) {
     return {
       ...unknownProbeEvidence(),
       textResponses: input.compatibilityFallbackUsed ? "fallbackReachable" : "reachable",

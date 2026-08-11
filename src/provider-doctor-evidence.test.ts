@@ -11,6 +11,8 @@ describe("Provider Doctor capability evidence", () => {
   it("maps only a successful Responses request to text reachability", () => {
     const direct = providerDoctorEvidence({
       status: "ok",
+      protocol: "responses",
+      requestHttpStatus: 200,
       compatibilityFallbackUsed: false,
       checks: [{ id: "request", status: "ok" }],
     });
@@ -26,6 +28,8 @@ describe("Provider Doctor capability evidence", () => {
   it("keeps compatibility fallback as a separate text-only observation", () => {
     const fallback = providerDoctorEvidence({
       status: "ok",
+      protocol: "responses",
+      requestHttpStatus: 200,
       compatibilityFallbackUsed: true,
       checks: [{ id: "request", status: "ok" }],
     });
@@ -35,6 +39,8 @@ describe("Provider Doctor capability evidence", () => {
 
     const failedFallback = providerDoctorEvidence({
       status: "failed",
+      protocol: "responses",
+      requestHttpStatus: 500,
       compatibilityFallbackUsed: true,
       checks: [{ id: "request", status: "failed" }],
     });
@@ -44,14 +50,18 @@ describe("Provider Doctor capability evidence", () => {
 
   it("keeps missing, failed, and non-request Doctor states unknown", () => {
     for (const input of [
-      { status: "failed", compatibilityFallbackUsed: false, checks: [] },
+      { status: "failed", protocol: "responses" as const, requestHttpStatus: null, compatibilityFallbackUsed: false, checks: [] },
       {
         status: "failed",
+        protocol: "responses" as const,
+        requestHttpStatus: null,
         compatibilityFallbackUsed: false,
         checks: [{ id: "models", status: "ok" }],
       },
       {
         status: "failed",
+        protocol: "responses" as const,
+        requestHttpStatus: 500,
         compatibilityFallbackUsed: false,
         checks: [{ id: "request", status: "failed" }],
       },
@@ -65,17 +75,20 @@ describe("Provider Doctor capability evidence", () => {
   it("maps the quick probe conservatively and treats only explicit auth denial as denied", () => {
     assert.equal(providerQuickProbeEvidence({
       status: "ok",
+      protocol: "responses",
       httpStatus: 200,
       compatibilityFallbackUsed: false,
     }).textResponses, "reachable");
     assert.equal(providerQuickProbeEvidence({
       status: "ok",
+      protocol: "responses",
       httpStatus: 200,
       compatibilityFallbackUsed: true,
     }).textResponses, "fallbackReachable");
     for (const httpStatus of [401, 403]) {
       assert.equal(providerQuickProbeEvidence({
         status: "failed",
+        protocol: "responses",
         httpStatus,
         compatibilityFallbackUsed: false,
       }).textResponses, "denied");
@@ -83,15 +96,39 @@ describe("Provider Doctor capability evidence", () => {
     for (const httpStatus of [0, 400, 404, 429, 500]) {
       assert.equal(providerQuickProbeEvidence({
         status: "failed",
+        protocol: "responses",
         httpStatus,
         compatibilityFallbackUsed: false,
       }).textResponses, "unknown");
     }
+    for (const protocol of ["chatCompletions", "unknown"] as const) {
+      assert.equal(providerQuickProbeEvidence({
+        status: "ok",
+        protocol,
+        httpStatus: 200,
+        compatibilityFallbackUsed: false,
+      }).textResponses, "unknown");
+      assert.equal(providerDoctorEvidence({
+        status: "ok",
+        protocol,
+        requestHttpStatus: 200,
+        compatibilityFallbackUsed: false,
+        checks: [{ id: "request", status: "ok" }],
+      }).textResponses, "unknown");
+    }
+    assert.equal(providerQuickProbeEvidence({
+      status: "ok",
+      protocol: "responses",
+      httpStatus: 302,
+      compatibilityFallbackUsed: false,
+    }).textResponses, "unknown");
   });
 
   it("never projects endpoint, body, identity, or credential strings", () => {
     const evidence = providerDoctorEvidence({
       status: "ok",
+      protocol: "responses",
+      requestHttpStatus: 200,
       compatibilityFallbackUsed: false,
       checks: [{
         id: "request",
