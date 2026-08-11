@@ -3,7 +3,7 @@ use std::fs;
 use crate::commands::{
     ProviderCommitCheckpoint, ProviderCommitErrorCode, ProviderCommitPaths, ProviderCommitPayload,
     assert_staged_native_provider_contract, commit_provider_detail_from_paths,
-    commit_provider_detail_from_paths_observed,
+    commit_provider_detail_from_paths_observed, save_settings_with_provider_guard_at,
 };
 use crate::provider_commit::{
     CatalogMode, CatalogOverlay, CatalogState, CustomModel, OfficialSnapshot, ProfileCatalogDraft,
@@ -919,6 +919,83 @@ fn real_transaction_keeps_secret_stages_private_and_cleans_faulted_recovery_mate
     );
     assert_directory_has_no_entries(&fixture.paths.app_state.join("live-state-transactions"));
     assert_directory_has_no_entries(&fixture.paths.app_state.join("private-staging"));
+}
+
+#[test]
+fn generic_settings_save_allows_unrelated_changes_but_rejects_every_provider_owned_difference() {
+    let first = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    let second = canonical_profile(
+        "backup",
+        "official-a",
+        "https://backup.example/v1",
+        "backup-key",
+    );
+    let initial = settings_with(vec![first, second], "sub2api");
+
+    for mutate in [
+        |settings: &mut BackendSettings| settings.relay_profiles_enabled = false,
+        |settings: &mut BackendSettings| settings.relay_profiles.reverse(),
+        |settings: &mut BackendSettings| {
+            let mut copy = settings.relay_profiles[0].clone();
+            copy.id = "copy".to_string();
+            settings.relay_profiles.push(copy);
+        },
+        |settings: &mut BackendSettings| {
+            settings.relay_profiles.pop();
+        },
+        |settings: &mut BackendSettings| settings.active_relay_id = "backup".to_string(),
+        |settings: &mut BackendSettings| {
+            settings.relay_profiles[0].base_url = "https://bypass.example/v1".to_string()
+        },
+        |settings: &mut BackendSettings| {
+            settings.relay_test_model = "bypass-test-model".to_string()
+        },
+    ] as [fn(&mut BackendSettings); 7]
+    {
+        let fixture = Fixture::new(&initial, &state_with_official());
+        let persisted: BackendSettings =
+            serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+        let before = fixture.file_generation();
+        let mut bypass = persisted.clone();
+        mutate(&mut bypass);
+
+        let error = save_settings_with_provider_guard_at(&fixture.paths, bypass).unwrap_err();
+
+        assert!(error.to_string().contains("provider-owned"));
+        assert_eq!(fixture.file_generation(), before);
+    }
+
+    let fixture = Fixture::new(&initial, &state_with_official());
+    let persisted: BackendSettings =
+        serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+    let provider_before = ProviderOwnedTopologyDraft::from_settings(&persisted);
+    let auth_before = fs::read(fixture.paths.codex_home.join("auth.json")).unwrap();
+    let live_before = fs::read(fixture.paths.codex_home.join("config.toml")).unwrap();
+    let mut unrelated = persisted;
+    unrelated.codex_goals_enabled = !unrelated.codex_goals_enabled;
+
+    save_settings_with_provider_guard_at(&fixture.paths, unrelated.clone()).unwrap();
+
+    let saved: BackendSettings =
+        serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+    assert_eq!(
+        serde_json::to_value(ProviderOwnedTopologyDraft::from_settings(&saved)).unwrap(),
+        serde_json::to_value(provider_before).unwrap()
+    );
+    assert_eq!(saved.codex_goals_enabled, unrelated.codex_goals_enabled);
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
+        auth_before
+    );
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join("config.toml")).unwrap(),
+        live_before
+    );
 }
 
 #[test]

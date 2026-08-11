@@ -504,30 +504,64 @@ pub async fn save_settings(settings: BackendSettings) -> CommandResult<SettingsP
 }
 
 fn save_settings_blocking(settings: BackendSettings) -> CommandResult<SettingsPayload> {
-    let settings = normalize_settings_before_save(settings);
-    let home = codex_plus_core::relay_config::default_codex_home_dir();
-    let result = (|| -> anyhow::Result<()> {
-        let _guard = live_state::lock()?;
-        live_state::prepare_secret_paths(&home)?;
-        let bytes = serialize_settings_without_profile_auth(&settings)?;
-        live_state::commit_locked(&[FileMutation::bytes(
-            codex_plus_core::paths::default_settings_path(),
-            bytes,
-        )])
-    })();
+    let result = save_settings_with_provider_guard_at(&ProviderCommitPaths::defaults(), settings);
     match result {
         Ok(()) => settings_payload("设置已保存。", "设置保存后重新读取失败"),
-        Err(error) => failed(
-            &format!("保存设置失败：{error}"),
-            SettingsPayload {
-                settings,
-                settings_path: codex_plus_core::paths::default_settings_path()
-                    .to_string_lossy()
-                    .to_string(),
-                user_scripts: user_script_inventory(),
-            },
-        ),
+        Err(_) => match settings_payload_value() {
+            Ok(payload) => failed(
+                "保存设置失败；供应商相关改动必须使用统一供应商保存。",
+                payload,
+            ),
+            Err((_, payload)) => failed(
+                "保存设置失败；供应商相关改动必须使用统一供应商保存。",
+                payload,
+            ),
+        },
     }
+}
+
+pub(crate) fn save_settings_with_provider_guard_at(
+    paths: &ProviderCommitPaths,
+    incoming: BackendSettings,
+) -> anyhow::Result<()> {
+    use crate::provider_commit::ProviderOwnedTopologyDraft;
+
+    let _guard = live_state::lock()?;
+    live_state::prepare_secret_paths_at(&paths.app_state, &paths.settings_path, &paths.codex_home)?;
+    live_state::recover_locked_at(&paths.app_state)?;
+    let persisted_bytes = std::fs::read(&paths.settings_path)
+        .context("persisted settings are unavailable for provider-owned comparison")?;
+    let persisted: BackendSettings = serde_json::from_slice(&persisted_bytes)
+        .context("persisted settings are invalid for provider-owned comparison")?;
+    anyhow::ensure!(
+        persisted
+            .relay_profiles
+            .iter()
+            .all(|profile| profile.auth_contents.is_empty()),
+        "persisted provider-owned authContents requires controlled migration"
+    );
+    anyhow::ensure!(
+        incoming
+            .relay_profiles
+            .iter()
+            .all(|profile| profile.auth_contents.is_empty()),
+        "incoming provider-owned authContents is prohibited"
+    );
+    let persisted_topology = ProviderOwnedTopologyDraft::from_settings(&persisted);
+    let incoming_topology = ProviderOwnedTopologyDraft::from_settings(&incoming);
+    anyhow::ensure!(
+        serde_json::to_vec(&persisted_topology)? == serde_json::to_vec(&incoming_topology)?,
+        "provider-owned settings differ from persisted state"
+    );
+
+    let normalized_unrelated = normalize_settings_before_save(incoming);
+    let merged = persisted_topology.apply_to(&normalized_unrelated);
+    let bytes = serialize_settings_without_profile_auth(&merged)?;
+    live_state::commit_locked_verified_at(
+        &paths.app_state,
+        &[FileMutation::bytes(paths.settings_path.clone(), bytes)],
+        || Ok(()),
+    )
 }
 
 #[tauri::command]
