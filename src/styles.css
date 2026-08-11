@@ -1186,6 +1186,13 @@ body {
   opacity: 0.78;
 }
 
+.catalog-editor-readonly {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
 .catalog-editor-actions,
 .catalog-candidates {
   display: flex;

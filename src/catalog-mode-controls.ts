@@ -19,6 +19,7 @@ export function CatalogModeControls(props: {
   restoreLabel: string;
   confirmDiscard: (decision: "confirm-discard-external" | "confirm-discard-custom") => boolean;
   updateDraftMode: (mode: CatalogModeValue) => void;
+  disabled?: boolean;
 }): ReactElement {
   const actions = catalogModeDraftController({
     currentMode: props.currentMode,
@@ -32,7 +33,10 @@ export function CatalogModeControls(props: {
   const restoreButton = () => createElement("button", {
     className: "catalog-inline-action",
     "data-catalog-restore": "true",
-    onClick: actions.restoreOfficialPlusCustom,
+    disabled: props.disabled,
+    onClick: () => {
+      if (!props.disabled) actions.restoreOfficialPlusCustom();
+    },
     type: "button",
   }, props.restoreLabel);
 
@@ -41,8 +45,11 @@ export function CatalogModeControls(props: {
       ...props.modeOptions.map((option) => createElement("button", {
         className: props.currentMode === option.value ? "active" : "",
         "data-catalog-mode": option.value,
+        disabled: props.disabled,
         key: option.value,
-        onClick: () => actions.requestMode(option.value),
+        onClick: () => {
+          if (!props.disabled) actions.requestMode(option.value);
+        },
         type: "button",
       }, option.label)),
     ),

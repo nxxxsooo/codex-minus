@@ -33,3 +33,12 @@ export function updateCatalogProfileDraft(
 ): ProfileCatalogDraft {
   return { ...draft, ...patch, profileId: draft.profileId };
 }
+
+export function catalogEditingAvailability(combinedSaveAvailable: boolean): {
+  editable: boolean;
+  label: string;
+} {
+  return combinedSaveAvailable
+    ? { editable: true, label: "可随统一保存提交" }
+    : { editable: false, label: "统一保存接入后可编辑" };
+}

@@ -12,7 +12,7 @@ export type ProviderContextSelectionDraft = {
   plugins: string[];
 };
 
-export type ProviderRelayProfileDraft = {
+export type ProviderRelayProfileSource = {
   id: string;
   name: string;
   model: string;
@@ -36,6 +36,10 @@ export type ProviderRelayProfileDraft = {
   userAgent: string;
 };
 
+export type ProviderRelayProfileDraft = Omit<ProviderRelayProfileSource, "modelInsertMode"> & {
+  modelInsertMode: string;
+};
+
 export type ProviderAggregateDraft = {
   id: string;
   name: string;
@@ -45,7 +49,7 @@ export type ProviderAggregateDraft = {
 
 export type ProviderSettingsSource = {
   relayProfilesEnabled: boolean;
-  relayProfiles: ProviderRelayProfileDraft[];
+  relayProfiles: ProviderRelayProfileSource[];
   aggregateRelayProfiles: ProviderAggregateDraft[];
   activeRelayId: string;
   activeAggregateRelayId: string;
@@ -56,7 +60,9 @@ export type ProviderSettingsSource = {
   relayTestModel: string;
 };
 
-export type ProviderOwnedTopologyDraft = ProviderSettingsSource;
+export type ProviderOwnedTopologyDraft = Omit<ProviderSettingsSource, "relayProfiles"> & {
+  relayProfiles: ProviderRelayProfileDraft[];
+};
 
 export type ProfileCatalogDraft = {
   profileId: string;
@@ -137,7 +143,7 @@ export function projectProviderOwnedTopology(settings: ProviderSettingsSource): 
   };
 }
 
-function projectRelayProfile(profile: ProviderRelayProfileDraft): ProviderRelayProfileDraft & { modelInsertMode: string } {
+function projectRelayProfile(profile: ProviderRelayProfileSource): ProviderRelayProfileDraft {
   return {
     id: profile.id,
     name: profile.name,

@@ -506,7 +506,7 @@ fn validate_common_request(
             "duplicate provider profile id"
         );
         ensure!(
-            profile.auth_contents.trim().is_empty(),
+            profile.auth_contents.is_empty(),
             "incoming authContents is prohibited"
         );
     }
@@ -613,6 +613,22 @@ fn validate_common_request(
                 "ordinary save must preserve external catalog ownership identity"
             );
         }
+    }
+    for (profile_id, prior) in &persisted_state.profiles {
+        if prior.mode != CatalogMode::External {
+            continue;
+        }
+        let Some(profile) = profiles.get(profile_id.as_str()) else {
+            continue;
+        };
+        let expected_pointer = prior
+            .external_pointer
+            .as_deref()
+            .context("persisted external catalog ownership is missing its pointer")?;
+        ensure!(
+            parsed_catalog_pointer(&profile.config_contents)?.as_deref() == Some(expected_pointer),
+            "ordinary save must preserve every external catalog pointer"
+        );
     }
     for profile in &request.topology.relay_profiles {
         if persisted_settings
@@ -1160,6 +1176,28 @@ mod tests {
         );
         assert!(
             validate_provider_detail_request(&persisted, &external_state, &transition).is_err()
+        );
+    }
+
+    #[test]
+    fn incoming_auth_contents_rejects_whitespace_bytes() {
+        let persisted = settings_with(vec![mixed_profile("relay-a", "official-a")], "relay-a");
+        let mut next = persisted.clone();
+        next.relay_profiles[0].auth_contents = " \n\t".to_string();
+        let request = request_for(
+            &persisted,
+            &next,
+            Some("relay-a"),
+            vec![catalog_draft(
+                "relay-a",
+                CatalogMode::OfficialPlusCustom,
+                CatalogOverlay::default(),
+            )],
+            ProviderCommitAction::Save,
+        );
+
+        assert!(
+            validate_provider_detail_request(&persisted, &state_with_official(), &request).is_err()
         );
     }
 
@@ -1781,6 +1819,67 @@ mod tests {
             ProviderCommitAction::Save,
         );
         assert!(validate_provider_detail_request(&persisted, &managed_state, &request).is_err());
+    }
+
+    #[test]
+    fn draftless_topology_save_preserves_every_external_profile_pointer() {
+        let mut external = mixed_profile("relay-external", "owned-model");
+        external.config_contents = "model_catalog_json = \"models/user-owned.json\"\n".to_string();
+        let ordinary = mixed_profile("relay-b", "official-a");
+        let persisted = settings_with(vec![external.clone(), ordinary.clone()], "relay-external");
+        let mut state = state_with_official();
+        state.profiles.insert(
+            "relay-external".to_string(),
+            ProfileCatalogState {
+                mode: CatalogMode::External,
+                mode_explicit: true,
+                external_pointer: Some("models/user-owned.json".to_string()),
+                ..ProfileCatalogState::default()
+            },
+        );
+
+        let mut reordered = settings_with(vec![ordinary, external], "relay-external");
+        reordered.relay_profiles_enabled = false;
+        let valid = request_for(
+            &persisted,
+            &reordered,
+            None,
+            vec![],
+            ProviderCommitAction::Save,
+        );
+        assert!(validate_common_request(&persisted, &state, &valid).is_ok());
+
+        let mut changed = reordered.clone();
+        changed
+            .relay_profiles
+            .iter_mut()
+            .find(|profile| profile.id == "relay-external")
+            .unwrap()
+            .config_contents = "model_catalog_json = \"models/replaced.json\"\n".to_string();
+        let changed = request_for(
+            &persisted,
+            &changed,
+            None,
+            vec![],
+            ProviderCommitAction::Save,
+        );
+        assert!(validate_common_request(&persisted, &state, &changed).is_err());
+
+        let mut removed = reordered;
+        removed
+            .relay_profiles
+            .iter_mut()
+            .find(|profile| profile.id == "relay-external")
+            .unwrap()
+            .config_contents = "model = \"owned-model\"\n".to_string();
+        let removed = request_for(
+            &persisted,
+            &removed,
+            None,
+            vec![],
+            ProviderCommitAction::Save,
+        );
+        assert!(validate_common_request(&persisted, &state, &removed).is_err());
     }
 
     #[test]

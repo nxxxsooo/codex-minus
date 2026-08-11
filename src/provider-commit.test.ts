@@ -2,13 +2,13 @@ import assert from "node:assert";
 import { describe, it } from "node:test";
 
 import type { CatalogOverlayDraft } from "./model-catalog-ui.ts";
-import type { ProviderRelayProfileDraft } from "./provider-commit.ts";
+import type { ProviderRelayProfileSource } from "./provider-commit.ts";
 
 const commitModule = await import("./provider-commit.ts").catch(() => null);
 
 const emptyOverlay = (): CatalogOverlayDraft => ({ official: {}, custom: [] });
 
-const firstProfile: ProviderRelayProfileDraft & Record<string, unknown> = {
+const firstProfile: ProviderRelayProfileSource & Record<string, unknown> = {
   id: "relay-a",
   name: "Relay A",
   model: "gpt-5.4",
@@ -33,7 +33,7 @@ const firstProfile: ProviderRelayProfileDraft & Record<string, unknown> = {
   nativeCapabilityInspection: { state: "ready", providerKey: "must-not-leak" },
 };
 
-const secondProfile: ProviderRelayProfileDraft & Record<string, unknown> = {
+const secondProfile: ProviderRelayProfileSource & Record<string, unknown> = {
   ...firstProfile,
   id: "relay-b",
   name: "Relay B",
@@ -44,7 +44,7 @@ const secondProfile: ProviderRelayProfileDraft & Record<string, unknown> = {
   nativeCapabilityInspection: { state: "upgradeAvailable" },
 };
 
-function settingsWith(profiles: Array<ProviderRelayProfileDraft & Record<string, unknown>>) {
+function settingsWith(profiles: Array<ProviderRelayProfileSource & Record<string, unknown>>) {
   return {
     relayProfilesEnabled: true,
     relayProfiles: profiles,
@@ -246,5 +246,22 @@ describe("provider-owned commit request", () => {
     }]);
     assert.equal("enhancementsEnabled" in request.topology, false);
     assert.equal("nativeCapabilityInspection" in request.topology.relayProfiles[0], false);
+  });
+
+  it("defaults omitted source modelInsertMode but always emits it in the canonical request", () => {
+    assert.ok(commitModule, "provider commit request builders must exist");
+    const { modelInsertMode: _omitted, ...sourceWithoutInsertMode } = firstProfile;
+    const request = commitModule.buildProviderTopologyRequest({
+      settings: settingsWith([sourceWithoutInsertMode]),
+      catalogDrafts: [],
+      action: "save",
+      previousActiveRelayId: "relay-a",
+      confirmContextCleanup: false,
+      draftRevision: 31,
+      expectedProviderFingerprint: "sha256:source-default",
+    });
+
+    assert.equal(request.topology.relayProfiles[0].modelInsertMode, "patch");
+    assert.equal(Object.hasOwn(request.topology.relayProfiles[0], "modelInsertMode"), true);
   });
 });

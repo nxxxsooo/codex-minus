@@ -64,4 +64,13 @@ describe("catalog profile parent draft", () => {
     assert.equal("save" in draftModule, false);
     assert.equal("persist" in draftModule, false);
   });
+
+  it("reports ordinary controls as read-only until combined save is connected", () => {
+    assert.ok(draftModule, "the catalog editing availability helper must exist");
+
+    assert.deepEqual(draftModule.catalogEditingAvailability(false), {
+      editable: false,
+      label: "统一保存接入后可编辑",
+    });
+  });
 });

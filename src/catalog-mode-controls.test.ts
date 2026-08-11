@@ -62,4 +62,31 @@ describe("catalog mode controls", () => {
     click(restore);
     assert.equal(selectedMode, "official-plus-custom");
   });
+
+  it("does not update the ordinary draft when combined save is unavailable", () => {
+    assert.ok(controlsModule, "the production CatalogModeControls component must exist");
+    let selectedMode: CatalogModeValue = "official-plus-custom";
+    const rendered = controlsModule.CatalogModeControls({
+      currentMode: selectedMode,
+      externalPointer: null,
+      customModelCount: 0,
+      dormantCustomCount: 0,
+      pendingDormantCustomCount: 0,
+      modeOptions: [
+        { value: "native-official", label: "官方原生" },
+        { value: "official-plus-custom", label: "官方 + 自定义" },
+      ],
+      dormantMessage: "",
+      pendingMessage: "",
+      restoreLabel: "恢复官方＋自定义",
+      confirmDiscard: () => true,
+      updateDraftMode: (mode) => { selectedMode = mode; },
+      disabled: true,
+    });
+
+    const native = findButton(rendered, "data-catalog-mode", "native-official");
+    assert.equal(native.props.disabled, true);
+    click(native);
+    assert.equal(selectedMode, "official-plus-custom");
+  });
 });

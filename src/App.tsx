@@ -73,7 +73,11 @@ import {
   validateCatalogDraft,
 } from "./model-catalog-ui";
 import { CatalogModeControls } from "./catalog-mode-controls";
-import { catalogProfileDraft, updateCatalogProfileDraft } from "./catalog-profile-draft";
+import {
+  catalogEditingAvailability,
+  catalogProfileDraft,
+  updateCatalogProfileDraft,
+} from "./catalog-profile-draft";
 import type { ProfileCatalogDraft } from "./provider-commit";
 import { providerConfigDraft, RelayConfigPanels } from "./relay-config-panels";
 import {
@@ -2168,6 +2172,7 @@ function CatalogProfileEditor({
   actions: Actions;
 }) {
   const { mode, modeExplicit, upstreamTopology, overlay } = draft;
+  const editingAvailability = catalogEditingAvailability(false);
 
   if (!summary?.managedAvailable) {
     return (
@@ -2289,7 +2294,7 @@ function CatalogProfileEditor({
         </div>
         <div className="catalog-editor-actions">
           {presentation.restart ? <UiBadge variant="secondary">{t("需重启 Codex")}</UiBadge> : null}
-          <UiBadge variant="outline">{t("随供应商草稿保存")}</UiBadge>
+          <UiBadge variant="outline">{t(editingAvailability.label)}</UiBadge>
         </div>
       </div>
       <CatalogModeControls
@@ -2300,6 +2305,7 @@ function CatalogProfileEditor({
         customModelCount={overlay.custom.length}
         dormantCustomCount={presentation.dormantCustomCount}
         dormantMessage={tf("原生目录模式下有 {0} 个自定义模型暂不生效。", [presentation.dormantCustomCount])}
+        disabled={!editingAvailability.editable}
         externalPointer={summary?.externalPointer ?? null}
         modeOptions={[
           { value: "native-official", label: t("官方原生") },
@@ -2320,13 +2326,13 @@ function CatalogProfileEditor({
         <div className="catalog-topology-control">
           <span>{t("上游拓扑")}</span>
           <div className="segmented">
-            <button className={upstreamTopology === "direct" ? "active" : ""} onClick={() => {
+            <button className={upstreamTopology === "direct" ? "active" : ""} disabled={!editingAvailability.editable} onClick={() => {
               onDraftChange(updateCatalogProfileDraft(draft, {
                 upstreamTopology: "direct",
                 ...(!modeExplicit ? { mode: "custom-only" as CatalogMode } : {}),
               }));
             }} type="button">{t("直连 API")}</button>
-            <button className={upstreamTopology === "server-side-composite" ? "active" : ""} onClick={() => {
+            <button className={upstreamTopology === "server-side-composite" ? "active" : ""} disabled={!editingAvailability.editable} onClick={() => {
               onDraftChange(updateCatalogProfileDraft(draft, {
                 upstreamTopology: "server-side-composite",
                 ...(!modeExplicit ? { mode: "official-plus-custom" as CatalogMode } : {}),
@@ -2347,6 +2353,7 @@ function CatalogProfileEditor({
         </div>
       ) : null}
       {mode === "official-plus-custom" ? (
+        <fieldset className="catalog-editor-readonly" disabled={!editingAvailability.editable}>
         <div className="catalog-official-list">
           <div className="catalog-list-head">
             <strong>{t("官方清单")}</strong>
@@ -2421,8 +2428,10 @@ function CatalogProfileEditor({
             );
           })}
         </div>
+        </fieldset>
       ) : null}
       {mode === "official-plus-custom" || mode === "custom-only" ? (
+        <fieldset className="catalog-editor-readonly" disabled={!editingAvailability.editable}>
         <div className="catalog-custom-list">
           <div className="catalog-list-head">
             <div><strong>{t("自定义模型")}</strong><span>{t("使用保守模板，不声明官方后端专属能力")}</span></div>
@@ -2450,6 +2459,7 @@ function CatalogProfileEditor({
             </div>
           ))}
         </div>
+        </fieldset>
       ) : null}
       {profile.relayMode !== "official" || profile.officialMixApiKey ? (
         <div className="catalog-evidence-row">
