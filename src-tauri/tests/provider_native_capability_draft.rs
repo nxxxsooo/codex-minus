@@ -7,6 +7,7 @@ use codex_minus_lib::provider_native_capability::{
     ProviderNativeCapabilityDraftRequest, draft_provider_native_capability,
     draft_provider_native_capability_with_boundary, inspect_profile,
     transform_provider_native_capability_draft,
+    transform_provider_native_capability_draft_from_paths,
     transform_provider_native_capability_draft_from_settings_path,
 };
 use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol};
@@ -861,6 +862,174 @@ fn external_ownership_blocks_every_native_exit_even_when_confirmed() {
 }
 
 #[test]
+fn persisted_external_ownership_cannot_be_forged_to_managed_at_the_command_boundary() {
+    let original = mixed_profile(
+        "persisted-external-exit",
+        "same-secret",
+        &enabled_exit_source(),
+    );
+    let mut settings = BackendSettings::default();
+    settings.relay_profiles.push(original.clone());
+    let temp = tempfile::tempdir().unwrap();
+    let settings_path = temp.path().join("settings.json");
+    let catalog_state_path = temp.path().join("model-catalog-state.json");
+    std::fs::write(&settings_path, serde_json::to_vec(&settings).unwrap()).unwrap();
+    std::fs::write(
+        &catalog_state_path,
+        serde_json::to_vec(&serde_json::json!({
+            "profiles": {
+                "persisted-external-exit": {
+                    "mode": "external",
+                    "modeExplicit": true
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    for action in [
+        NativeCapabilityDraftAction::ExitPureApi,
+        NativeCapabilityDraftAction::ExitLegacyCompatibility,
+        NativeCapabilityDraftAction::ExitChatCompletions,
+        NativeCapabilityDraftAction::ExitPureOAuth,
+    ] {
+        let mut forged = request(original.clone(), CatalogMode::OfficialPlusCustom, action);
+        forged.confirmations = vec![
+            NativeCapabilityDraftConfirmation::ConfirmCapabilityLoss,
+            NativeCapabilityDraftConfirmation::ConfirmDestructivePureOAuth,
+        ];
+        let blocked = transform_provider_native_capability_draft_from_paths(
+            &settings_path,
+            &catalog_state_path,
+            forged,
+        );
+
+        assert_eq!(blocked.status, NativeCapabilityDraftStatus::Blocked);
+        assert_eq!(
+            blocked.blockers,
+            vec![NativeCapabilityReason::ExternalCatalog]
+        );
+        assert_eq!(blocked.draft.catalog_mode, CatalogMode::External);
+        assert_eq!(blocked.draft.profile, original);
+    }
+}
+
+#[test]
+fn exit_transform_fails_closed_when_persisted_catalog_ownership_is_unavailable() {
+    let original = mixed_profile(
+        "ownership-unavailable",
+        "same-secret",
+        &enabled_exit_source(),
+    );
+    let mut settings = BackendSettings::default();
+    settings.relay_profiles.push(original.clone());
+    let temp = tempfile::tempdir().unwrap();
+    let settings_path = temp.path().join("settings.json");
+    std::fs::write(&settings_path, serde_json::to_vec(&settings).unwrap()).unwrap();
+
+    for (case, contents) in [
+        ("missing", None),
+        ("invalid", Some(b"not-json".as_slice())),
+        (
+            "profile-mismatch",
+            Some(
+                br#"{"profiles":{"different-profile":{"mode":"external","modeExplicit":true}}}"#
+                    .as_slice(),
+            ),
+        ),
+        (
+            "newer-state-version",
+            Some(
+                br#"{"version":4294967295,"profiles":{"ownership-unavailable":{"mode":"official-plus-custom","modeExplicit":true}}}"#
+                    .as_slice(),
+            ),
+        ),
+    ] {
+        let catalog_state_path = temp.path().join(format!("{case}.json"));
+        if let Some(contents) = contents {
+            std::fs::write(&catalog_state_path, contents).unwrap();
+        }
+        let mut exit = request(
+            original.clone(),
+            CatalogMode::OfficialPlusCustom,
+            NativeCapabilityDraftAction::ExitPureOAuth,
+        );
+        exit.confirmations = vec![NativeCapabilityDraftConfirmation::ConfirmDestructivePureOAuth];
+        let blocked = transform_provider_native_capability_draft_from_paths(
+            &settings_path,
+            &catalog_state_path,
+            exit,
+        );
+
+        assert_eq!(
+            blocked.status,
+            NativeCapabilityDraftStatus::Blocked,
+            "{case}"
+        );
+        assert_eq!(
+            blocked.blockers,
+            vec![NativeCapabilityReason::CatalogOwnershipUnavailable],
+            "{case}"
+        );
+        assert_eq!(blocked.draft.profile, original, "{case}");
+    }
+}
+
+#[test]
+fn persisted_managed_ownership_allows_only_confirmed_exit_drafts() {
+    let original = mixed_profile(
+        "persisted-managed-exit",
+        "same-secret",
+        &enabled_exit_source(),
+    );
+    let mut settings = BackendSettings::default();
+    settings.relay_profiles.push(original.clone());
+    let temp = tempfile::tempdir().unwrap();
+    let settings_path = temp.path().join("settings.json");
+    let catalog_state_path = temp.path().join("model-catalog-state.json");
+    std::fs::write(&settings_path, serde_json::to_vec(&settings).unwrap()).unwrap();
+    std::fs::write(
+        &catalog_state_path,
+        serde_json::to_vec(&serde_json::json!({
+            "profiles": {
+                "persisted-managed-exit": {
+                    "mode": "official-plus-custom",
+                    "modeExplicit": true
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    for action in [
+        NativeCapabilityDraftAction::ExitPureApi,
+        NativeCapabilityDraftAction::ExitLegacyCompatibility,
+        NativeCapabilityDraftAction::ExitChatCompletions,
+        NativeCapabilityDraftAction::ExitPureOAuth,
+    ] {
+        let mut exit = request(original.clone(), CatalogMode::External, action);
+        exit.confirmations = vec![
+            NativeCapabilityDraftConfirmation::ConfirmCapabilityLoss,
+            NativeCapabilityDraftConfirmation::ConfirmDestructivePureOAuth,
+        ];
+        let transformed = transform_provider_native_capability_draft_from_paths(
+            &settings_path,
+            &catalog_state_path,
+            exit,
+        );
+
+        assert_eq!(
+            transformed.status,
+            NativeCapabilityDraftStatus::Ready,
+            "{action:?}"
+        );
+        assert_ne!(transformed.draft.profile, original, "{action:?}");
+    }
+}
+
+#[test]
 fn revisioned_command_uses_only_the_injected_read_only_inspection_boundary() {
     #[derive(Default)]
     struct AuditBoundary {
@@ -879,8 +1048,9 @@ fn revisioned_command_uses_only_the_injected_read_only_inspection_boundary() {
         }
     }
 
+    let profile = mixed_profile("pure", "same-secret", &canonical_source("inline"));
     let request = request(
-        mixed_profile("pure", "same-secret", &canonical_source("inline")),
+        profile.clone(),
         CatalogMode::OfficialPlusCustom,
         NativeCapabilityDraftAction::EnableNativePriority,
     );
@@ -888,8 +1058,30 @@ fn revisioned_command_uses_only_the_injected_read_only_inspection_boundary() {
     let audited = draft_provider_native_capability_with_boundary(&request, &audit);
     assert_eq!(audit.inspection_calls.get(), 2);
 
-    let command_payload =
-        tauri::async_runtime::block_on(transform_provider_native_capability_draft(request));
+    let mut settings = BackendSettings::default();
+    settings.relay_profiles.push(profile);
+    let temp = tempfile::tempdir().unwrap();
+    let settings_path = temp.path().join("settings.json");
+    let catalog_state_path = temp.path().join("model-catalog-state.json");
+    std::fs::write(&settings_path, serde_json::to_vec(&settings).unwrap()).unwrap();
+    std::fs::write(
+        &catalog_state_path,
+        serde_json::to_vec(&serde_json::json!({
+            "profiles": {
+                "pure": {
+                    "mode": "official-plus-custom",
+                    "modeExplicit": true
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let command_payload = transform_provider_native_capability_draft_from_paths(
+        &settings_path,
+        &catalog_state_path,
+        request,
+    );
     assert_eq!(command_payload.draft_revision, 41);
     assert_eq!(command_payload.status, NativeCapabilityDraftStatus::Ready);
     assert_eq!(

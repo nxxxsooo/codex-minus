@@ -66,6 +66,7 @@ pub enum NativeCapabilityReason {
     UnsupportedRelayMode,
     ChatCompletions,
     CatalogModeMismatch,
+    CatalogOwnershipUnavailable,
     MalformedToml,
     MissingProviderSelection,
     ReservedProviderId,
@@ -727,13 +728,72 @@ pub async fn transform_provider_native_capability_draft(
     request: ProviderNativeCapabilityDraftRequest,
 ) -> ProviderNativeCapabilityDraftPayload {
     tauri::async_runtime::spawn_blocking(move || {
-        transform_provider_native_capability_draft_from_settings_path(
+        transform_provider_native_capability_draft_from_paths(
             &codex_plus_core::paths::default_settings_path(),
+            &crate::model_catalog::catalog_state_path(),
             request,
         )
     })
     .await
     .expect("blocking provider draft transform panicked")
+}
+
+fn action_requires_persisted_catalog_ownership(action: NativeCapabilityDraftAction) -> bool {
+    matches!(
+        action,
+        NativeCapabilityDraftAction::EnableNativePriority
+            | NativeCapabilityDraftAction::ExitPureApi
+            | NativeCapabilityDraftAction::ExitLegacyCompatibility
+            | NativeCapabilityDraftAction::ExitChatCompletions
+            | NativeCapabilityDraftAction::ExitPureOAuth
+    )
+}
+
+pub fn transform_provider_native_capability_draft_from_paths(
+    settings_path: &Path,
+    catalog_state_path: &Path,
+    request: ProviderNativeCapabilityDraftRequest,
+) -> ProviderNativeCapabilityDraftPayload {
+    if !action_requires_persisted_catalog_ownership(request.action) {
+        return transform_provider_native_capability_draft_from_settings_path(
+            settings_path,
+            request,
+        );
+    }
+
+    let trusted_mode = std::fs::read(settings_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<BackendSettings>(&bytes).ok())
+        .and_then(|settings| {
+            crate::model_catalog::persisted_catalog_mode_from_path(
+                &settings,
+                catalog_state_path,
+                &request.profile.id,
+            )
+            .ok()
+            .flatten()
+        });
+    let Some(trusted_mode) = trusted_mode else {
+        return unchanged_draft_payload(
+            &request,
+            &EvaluatorDraftReadOnlyBoundary,
+            NativeCapabilityDraftStatus::Blocked,
+            vec![NativeCapabilityReason::CatalogOwnershipUnavailable],
+            ProviderNativeCapabilityDraftPreview::default(),
+        );
+    };
+    let mut trusted_request = request;
+    trusted_request.catalog_mode = trusted_mode;
+    if trusted_mode == CatalogMode::External {
+        return unchanged_draft_payload(
+            &trusted_request,
+            &EvaluatorDraftReadOnlyBoundary,
+            NativeCapabilityDraftStatus::Blocked,
+            vec![NativeCapabilityReason::ExternalCatalog],
+            ProviderNativeCapabilityDraftPreview::default(),
+        );
+    }
+    draft_provider_native_capability(&trusted_request)
 }
 
 pub fn transform_provider_native_capability_draft_from_settings_path(

@@ -977,6 +977,41 @@ pub(crate) fn read_only_catalog_modes_from_path(
     Ok(modes)
 }
 
+pub(crate) fn persisted_catalog_mode_from_path(
+    settings: &BackendSettings,
+    path: &Path,
+    profile_id: &str,
+) -> anyhow::Result<Option<CatalogMode>> {
+    let bytes = fs::read(path)?;
+    let state =
+        serde_json::from_slice::<CatalogState>(&bytes).context("model catalog state is invalid")?;
+    ensure!(
+        state.version <= STATE_VERSION,
+        "model catalog state comes from a newer manager version"
+    );
+    let Some(profile) = settings
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == profile_id)
+    else {
+        return Ok(None);
+    };
+    let Some(profile_state) = state.profiles.get(profile_id) else {
+        return Ok(None);
+    };
+    let pointer = root_catalog_pointer(&profile.config_contents);
+    let mode = if profile_state.mode == CatalogMode::External
+        || (!profile_state.mode_explicit
+            && pointer.as_deref().is_some_and(|pointer| {
+                !manager_owned_pointer_path(profile_id, pointer, profile_state)
+            })) {
+        CatalogMode::External
+    } else {
+        profile_state.mode
+    };
+    Ok(Some(mode))
+}
+
 pub(crate) fn managed_mode(mode: CatalogMode) -> bool {
     matches!(
         mode,
