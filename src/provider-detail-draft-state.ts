@@ -239,6 +239,83 @@ export function beginProviderDetailNativePriorityUpgrade<
   });
 }
 
+export function beginProviderDetailLegacyIdUpgrade<
+  P extends ProviderDetailProfile,
+>(state: ProviderDetailDraftState<P>): ProviderDetailStep<P> {
+  assertActive(state);
+  const nonSatisfiedFields = state.inspection?.fields.filter(
+    (entry) => entry.outcome !== "satisfied",
+  ) ?? [];
+  const legacyProviderIdIsOnlyConflict = nonSatisfiedFields.length === 1
+    && nonSatisfiedFields[0].reason === "legacyProviderIdRequiresRename";
+  const externalOwnership = state.inspection?.fields.some(
+    (entry) => entry.reason === "externalCatalog",
+  ) ?? false;
+  if (!legacyProviderIdIsOnlyConflict || externalOwnership) {
+    throw new Error("This provider is not eligible for a legacy provider ID upgrade.");
+  }
+  return beginProviderDetailEdit(state, {
+    patch: {
+      relayMode: "official",
+      officialMixApiKey: true,
+      protocol: "responses",
+    },
+    target: { target: "preserveExisting", source: "existing" },
+    transition: { action: "enableNativePriority", confirmations: [] },
+  });
+}
+
+export function resolveProviderDetailLegacyProviderId<
+  P extends ProviderDetailProfile,
+>(
+  state: ProviderDetailDraftState<P>,
+  replacementProviderId: string,
+): ProviderDetailStep<P> {
+  assertActive(state);
+  const pending = state.pendingLegacyProviderIdResolution;
+  if (!pending) throw new Error("No legacy provider ID resolution is pending.");
+  const replacement = replacementProviderId.trim();
+  if (
+    !replacement
+    || replacement === "openai"
+    || replacement === "CodexPlusPlus"
+    || replacement === "CodexPP"
+  ) {
+    throw new Error("Choose a non-empty, non-reserved replacement provider ID.");
+  }
+  return beginProviderDetailEdit(
+    {
+      ...state,
+      pendingLegacyProviderIdResolution: null,
+      preview: null,
+      blockers: [],
+    },
+    {
+      patch: pending.patch,
+      target: pending.target,
+      transition: {
+        ...pending.transition,
+        replacementProviderId: replacement,
+      },
+    },
+  );
+}
+
+export function cancelProviderDetailLegacyProviderIdResolution<
+  P extends ProviderDetailProfile,
+>(state: ProviderDetailDraftState<P>): ProviderDetailStep<P> {
+  assertActive(state);
+  return {
+    state: {
+      ...state,
+      pendingLegacyProviderIdResolution: null,
+      preview: null,
+      blockers: [],
+    },
+    effects: [],
+  };
+}
+
 export function beginProviderDetailRawConfigEdit<P extends ProviderDetailProfile>(
   state: ProviderDetailDraftState<P>,
   input: {

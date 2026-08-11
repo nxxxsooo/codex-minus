@@ -1,6 +1,8 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 
+import * as providerDetailStateApi from "./provider-detail-draft-state.ts";
+
 import {
   applyProviderDetailInspection,
   beginProviderDetailInspection,
@@ -17,6 +19,7 @@ import {
   refreshProviderDetailCatalogDraftState,
   settleProviderDetailTransform,
   settleProviderDetailTransformError,
+  type ProviderDetailStep,
 } from "./provider-detail-draft-state.ts";
 
 const existingTarget = { target: "preserveExisting", source: "existing" } as const;
@@ -274,6 +277,96 @@ describe("provider detail draft state", () => {
       }),
       /legacy provider ID/i,
     );
+  });
+
+  it("retries a legacy collision with one validated replacement ID and cancels without effects", () => {
+    const api = providerDetailStateApi as unknown as Record<string, unknown>;
+    const beginLegacy = api.beginProviderDetailLegacyIdUpgrade;
+    const resolveLegacy = api.resolveProviderDetailLegacyProviderId;
+    const cancelLegacy = api.cancelProviderDetailLegacyProviderIdResolution;
+    assert.equal(typeof beginLegacy, "function");
+    assert.equal(typeof resolveLegacy, "function");
+    assert.equal(typeof cancelLegacy, "function");
+    if (
+      typeof beginLegacy !== "function"
+      || typeof resolveLegacy !== "function"
+      || typeof cancelLegacy !== "function"
+    ) return;
+
+    const source = draftState();
+    const observed = applyProviderDetailInspection(
+      source,
+      beginProviderDetailInspection(source),
+      {
+        profileId: "relay-one",
+        state: "upgradeAvailable",
+        fields: [{
+          field: "providerSelection",
+          outcome: "mismatch",
+          reason: "legacyProviderIdRequiresRename",
+        }],
+      },
+    ).state;
+    const first = beginLegacy(observed) as ReturnType<typeof beginProviderDetailEdit>;
+    assert.equal(first.effects[0]?.kind, "transform");
+    if (first.effects[0]?.kind === "transform") {
+      assert.equal(first.effects[0].invocation.request.replacementProviderId, undefined);
+    }
+    const blocked = settleProviderDetailTransform(first.state, transformCorrelation(first), {
+      draftRevision: 1,
+      status: "blocked",
+      draft: {
+        profile: profile(),
+        structuredApiKey: "provider-key",
+        catalogMode: "official-plus-custom",
+      },
+      blockers: ["replacementProviderIdRequired"],
+      inspection: observed.inspection!,
+      preview,
+    });
+    const retry = resolveLegacy(
+      blocked.state,
+      "RelayReplacement",
+    ) as ReturnType<typeof beginProviderDetailEdit>;
+    assert.equal(retry.effects[0]?.kind, "transform");
+    if (retry.effects[0]?.kind === "transform") {
+      assert.equal(
+        retry.effects[0].invocation.request.replacementProviderId,
+        "RelayReplacement",
+      );
+    }
+    for (const invalid of ["", "openai", "CodexPlusPlus", "CodexPP"]) {
+      assert.throws(
+        () => resolveLegacy(blocked.state, invalid),
+        /provider ID/i,
+      );
+    }
+    const cancelled = cancelLegacy(blocked.state) as ProviderDetailStep<ReturnType<typeof profile>>;
+    assert.deepEqual(cancelled.effects, []);
+    assert.equal(cancelled.state.pendingLegacyProviderIdResolution, null);
+    assert.equal(cancelled.state.profile.configContents, source.profile.configContents);
+
+    const external = createProviderDetailDraftState({
+      profile: profile(),
+      catalogDraft: { ...catalogDraft, mode: "external" as const },
+    });
+    const externalObserved = applyProviderDetailInspection(
+      external,
+      beginProviderDetailInspection(external),
+      {
+        profileId: "relay-one",
+        state: "notApplicable",
+        fields: [
+          { field: "catalog", outcome: "notApplicable", reason: "externalCatalog" },
+          {
+            field: "providerSelection",
+            outcome: "mismatch",
+            reason: "legacyProviderIdRequiresRename",
+          },
+        ],
+      },
+    ).state;
+    assert.throws(() => beginLegacy(externalObserved), /not eligible/i);
   });
 
   it("binds catalog refresh re-inspection to the new response-only revision", () => {
