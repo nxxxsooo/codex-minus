@@ -3311,9 +3311,9 @@ fn sanitize_provider_model_ids(profile: &RelayProfile, models: Vec<String>) -> V
                 && model.chars().all(|ch| {
                     ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/' | ':')
                 })
-                && !sensitive.iter().any(|secret| {
-                    !secret.trim().is_empty() && (model.contains(secret) || secret.contains(model))
-                })
+                && !sensitive
+                    .iter()
+                    .any(|secret| !secret.trim().is_empty() && model.contains(secret))
         })
         .collect()
 }
@@ -3812,6 +3812,18 @@ fn sanitize_diagnostic_detail(detail: Value) -> Value {
             "providerChanged",
             "attempt",
             "retry",
+            "activeCount",
+            "mismatchCount",
+            "archivedCount",
+            "archivedRolloutsTraversed",
+            "candidateCount",
+            "elapsedMs",
+            "failedCount",
+            "profileCount",
+            "sessionScansScheduled",
+            "skippedCount",
+            "profileId",
+            "profileName",
             "error",
             "message",
             "payload",
@@ -3840,14 +3852,26 @@ fn sanitize_diagnostic_detail(detail: Value) -> Value {
             )),
             Value::String(value) => {
                 let key = key.unwrap_or_default();
-                if matches!(
-                    key,
-                    "version" | "status" | "targetRelayMode" | "launchMode" | "command"
-                ) && value.len() <= 64
-                    && value
-                        .chars()
-                        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
-                {
+                let safe_enum = match key {
+                    "version" => semver::Version::parse(&value).is_ok(),
+                    "status" => matches!(
+                        value.as_str(),
+                        "ok" | "failed" | "not_implemented" | "stale" | "partial"
+                    ),
+                    "targetRelayMode" => matches!(
+                        value.as_str(),
+                        "official" | "mixedApi" | "pureApi" | "aggregate"
+                    ),
+                    "launchMode" => matches!(value.as_str(), "patch" | "relay"),
+                    "command" => matches!(
+                        value.as_str(),
+                        "clear_relay_injection"
+                            | "apply_relay_injection"
+                            | "apply_pure_api_injection"
+                    ),
+                    _ => false,
+                };
+                if safe_enum {
                     Some(Value::String(value))
                 } else if matches!(
                     key,
@@ -3857,6 +3881,7 @@ fn sanitize_diagnostic_detail(detail: Value) -> Value {
                         | "previousActiveRelayId"
                         | "previousProvider"
                         | "currentProvider"
+                        | "profileId"
                 ) {
                     let identity_hash = format!("{:x}", Sha256::digest(value.as_bytes()));
                     Some(Value::String(format!("sha256:{}", &identity_hash[..16])))
@@ -3870,10 +3895,56 @@ fn sanitize_diagnostic_detail(detail: Value) -> Value {
     sanitize(detail, None).unwrap_or_else(|| json!({}))
 }
 
+fn sanitize_diagnostic_detail_for_event(event: &str, detail: Value) -> Value {
+    let allowed_ui_fields: Option<&[&str]> = match event {
+        "manager.ui.switchRelayProfile.start" => Some(&[
+            "currentRelayId",
+            "targetRelayId",
+            "targetRelayName",
+            "targetRelayMode",
+        ]),
+        "manager.ui.switchRelayProfile.validation_failed" => {
+            Some(&["targetRelayId", "targetRelayName", "error"])
+        }
+        "manager.ui.switchRelayProfile.apply_start" => Some(&[
+            "targetRelayId",
+            "targetRelayName",
+            "previousActiveRelayId",
+            "command",
+        ]),
+        "manager.ui.switchRelayProfile.apply_no_result" => Some(&["targetRelayId"]),
+        "manager.ui.switchRelayProfile.apply_failed" => {
+            Some(&["targetRelayId", "status", "message", "activeRelayId"])
+        }
+        "manager.ui.switchRelayProfile.ok" => Some(&[
+            "targetRelayId",
+            "launchMode",
+            "status",
+            "previousProvider",
+            "currentProvider",
+            "providerChanged",
+        ]),
+        "manager.ui.event" => Some(&[]),
+        _ => None,
+    };
+    let detail = match (allowed_ui_fields, detail) {
+        (Some(allowed), Value::Object(object)) => Value::Object(
+            object
+                .into_iter()
+                .filter(|(key, _)| allowed.contains(&key.as_str()))
+                .collect(),
+        ),
+        (Some(_), _) => json!({}),
+        (None, detail) => detail,
+    };
+    sanitize_diagnostic_detail(detail)
+}
+
 pub(crate) fn append_manager_diagnostic(event: &str, detail: Value) -> anyhow::Result<()> {
+    let event = sanitize_manager_event(event);
     codex_plus_core::diagnostic_log::append_diagnostic_log(
-        &sanitize_manager_event(event),
-        sanitize_diagnostic_detail(detail),
+        &event,
+        sanitize_diagnostic_detail_for_event(&event, detail),
     )?;
     Ok(())
 }
@@ -3953,6 +4024,11 @@ fn redact_toml_diagnostic_value(value: &mut Value, inside_headers: bool) {
                     normalized.as_str(),
                     "baseurl"
                         | "upstreambaseurl"
+                        | "token"
+                        | "bearertoken"
+                        | "clientsecret"
+                        | "secret"
+                        | "password"
                         | "openaiapikey"
                         | "apikey"
                         | "experimentalbearertoken"
@@ -5334,12 +5410,20 @@ http_headers = { Authorization = "Bearer oauth-config-output-token", "x-keep" = 
 base_url = "https:\u002f\u002fescaped.example.test\u002fv1"
 experimental_bearer_token = "sk\u002descaped-secret"
 http_headers = { "x-openai-api-key" = "sk-header-secret", Cookie = "oauth-cookie-secret", "x-openai-actor-authorization" = "local-image-extension" }
+token = "oauth-generic-token"
+bearer_token = "sk-generic-bearer"
+client_secret = "generic-client-secret"
+password = "generic-provider-password"
 "#,
         );
         assert!(!escaped_config.contains("escaped.example.test"));
         assert!(!escaped_config.contains("sk\\u002descaped-secret"));
         assert!(!escaped_config.contains("sk-header-secret"));
         assert!(!escaped_config.contains("oauth-cookie-secret"));
+        assert!(!escaped_config.contains("oauth-generic-token"));
+        assert!(!escaped_config.contains("sk-generic-bearer"));
+        assert!(!escaped_config.contains("generic-client-secret"));
+        assert!(!escaped_config.contains("generic-provider-password"));
         assert!(escaped_config.contains("local-image-extension"));
 
         let unknown_key = sanitize_diagnostic_detail(json!({
@@ -5351,6 +5435,30 @@ http_headers = { "x-openai-api-key" = "sk-header-secret", Cookie = "oauth-cookie
         assert!(!unknown_key_text.contains("sk-secret-in-key"));
         assert!(unknown_key_text.contains("ok"));
         assert!(!unknown_key_text.contains("provider-a"));
+        for key in [
+            "status",
+            "command",
+            "targetRelayMode",
+            "launchMode",
+            "version",
+        ] {
+            let injected = sanitize_diagnostic_detail_for_event(
+                "manager.ui.switchRelayProfile.ok",
+                Value::Object(
+                    [(
+                        key.to_string(),
+                        Value::String("sk-safe-field-secret".to_string()),
+                    )]
+                    .into_iter()
+                    .collect(),
+                ),
+            );
+            assert!(
+                !serde_json::to_string(&injected)
+                    .unwrap()
+                    .contains("sk-safe-field-secret")
+            );
+        }
         let panic_detail = sanitize_diagnostic_detail(json!({
             "payload": "sk-panic-secret",
             "location": { "file": "/private/oauth-panic-token.rs", "line": 42 }
@@ -5394,5 +5502,9 @@ http_headers = { "x-openai-api-key" = "sk-header-secret", Cookie = "oauth-cookie
             ],
         );
         assert_eq!(safe_models, vec!["gpt-safe"]);
+        assert_eq!(
+            sanitize_provider_model_ids(&profile, vec!["v1".to_string()]),
+            vec!["v1"]
+        );
     }
 }
