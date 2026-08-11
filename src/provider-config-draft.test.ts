@@ -93,6 +93,59 @@ custom_flag = "keep"
     assert.match(edited.configContents, /custom_flag = "keep"/);
   });
 
+  it("keeps the complete native contract on a Base-URL-only existing edit", () => {
+    const existing = `model = "gpt-5.5"
+model_provider = "RelayOne"
+
+[model_providers.RelayOne]
+name = "OpenAI"
+base_url = "https://before.example/v1"
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = "provider-key"
+custom_provider_field = "keep-provider"
+http_headers = { "x-openai-actor-authorization" = "local-image-extension", "x-unowned" = "keep-header" }
+`;
+    const profile = {
+      ...createNewRelayProfileDraft({ id: "base-only", contextSelection: {} }),
+      transientTarget: undefined,
+      model: "gpt-5.5",
+      baseUrl: "https://before.example/v1",
+      upstreamBaseUrl: "https://before.example/v1",
+      apiKey: "provider-key",
+      configContents: existing,
+    };
+
+    const edited = applyProviderConfigPatch(
+      profile,
+      { baseUrl: "https://after.example/v1" },
+      existingTarget,
+    );
+
+    assert.match(edited.configContents, /base_url = "https:\/\/after\.example\/v1"/);
+    assert.match(edited.configContents, /requires_openai_auth = false/);
+    assert.doesNotMatch(edited.configContents, /requires_openai_auth = true/);
+    assert.match(
+      edited.configContents,
+      /"x-openai-actor-authorization" = "local-image-extension"/,
+    );
+    assert.match(edited.configContents, /custom_provider_field = "keep-provider"/);
+    assert.match(edited.configContents, /"x-unowned" = "keep-header"/);
+  });
+
+  it("never introduces global feature ownership into a new canonical provider", () => {
+    const profile = {
+      ...createNewRelayProfileDraft({ id: "no-global-features", contextSelection: {} }),
+      model: "gpt-5.5",
+      baseUrl: "https://relay.example/v1",
+      apiKey: "provider-key",
+    };
+    const config = buildRelayConfigToml(profile, nativeTarget);
+
+    assert.doesNotMatch(config, /^\s*\[features\]\s*$/m);
+    assert.doesNotMatch(config, /^\s*goals\s*=/m);
+  });
+
   it("requires every builder call to choose an explicit non-native compatibility target", () => {
     const profile = {
       ...createNewRelayProfileDraft({ id: "compat", contextSelection: {} }),

@@ -50,7 +50,6 @@ export const EN_PLAIN: Record<string, string> = {
   "Codex 应用路径": "Codex app path",
   "Codex 意外停止": "Codex stopped unexpectedly",
   "Codex 版本": "Codex version",
-  "Codex 目标": "Codex goals",
   "Codex++ 官方中转站，主打稳定接入和划算价格，支持 GPT-5.6 全系列、Fable 5、Sonnet 5、GPT-5.5、GPT-5.4、Claude Opus 4.8、Claude Opus 4.7、gpt-image-2 等模型与图像能力。":
     "The official Codex++ relay, built for stable access and good value, supporting the full GPT-5.6 family, Fable 5, Sonnet 5, GPT-5.5, GPT-5.4, Claude Opus 4.8, Claude Opus 4.7, gpt-image-2 and other models plus image capabilities.",
   "Codex++ 导入": "Codex++ import",
@@ -300,7 +299,6 @@ export const EN_PLAIN: Record<string, string> = {
   "启用 Windows Computer Use Guard": "Enable Windows Computer Use Guard",
   "启用供应商配置切换": "Enable provider configuration switching",
   "启用此扩展项": "Enable this entry",
-  "启用目标功能": "Enable goals feature",
   "图片": "Image",
   "图片覆盖层": "Image overlay",
   "在会话列表悬停显示删除按钮，并支持撤销。": "Show a delete button on hover in the session list, with undo support.",
