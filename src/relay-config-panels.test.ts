@@ -96,4 +96,29 @@ describe("relay config panels", () => {
     });
     assert.equal(nextProviderConfig, "model_provider = \"next\"\n");
   });
+
+  it("keeps a brand-new provider preview read-only until its first combined save", () => {
+    assert.ok(panelsModule, "the production RelayConfigPanels component must exist");
+    let providerWrites = 0;
+    const tree = panelsModule.RelayConfigPanels({
+      nativeOfficial: false,
+      providerReadOnly: true,
+      providerConfig: "model_provider = \"custom\"\n",
+      liveConfig: "",
+      nativeProviderMessage: "官方原生模式无独立供应商配置",
+      unavailableLiveMessage: "当前 live config.toml 不可用",
+      providerTitle: "供应商配置",
+      providerHelp: "首次保存后可编辑",
+      liveTitle: "实时 config.toml",
+      liveHelp: "直接读取，不保存副本",
+      onProviderConfigChange: () => { providerWrites += 1; },
+    });
+
+    const provider = findElement(tree, "data-provider-config");
+    assert.equal(provider.props.readOnly, true);
+    (provider.props.onChange as (event: { currentTarget: { value: string } }) => void)({
+      currentTarget: { value: "forged = true\n" },
+    });
+    assert.equal(providerWrites, 0);
+  });
 });

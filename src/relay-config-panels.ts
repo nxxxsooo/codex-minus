@@ -10,6 +10,7 @@ function commentLine(message: string): string {
 
 export function RelayConfigPanels(props: {
   nativeOfficial: boolean;
+  providerReadOnly?: boolean;
   providerConfig: string;
   liveConfig: string;
   nativeProviderMessage: string;
@@ -39,9 +40,11 @@ export function RelayConfigPanels(props: {
         className: "relay-file-textarea",
         "data-provider-config": "true",
         onChange: (event: { currentTarget: { value: string } }) => {
-          if (!props.nativeOfficial) props.onProviderConfigChange(event.currentTarget.value);
+          if (!props.nativeOfficial && !props.providerReadOnly) {
+            props.onProviderConfigChange(event.currentTarget.value);
+          }
         },
-        readOnly: props.nativeOfficial,
+        readOnly: props.nativeOfficial || !!props.providerReadOnly,
         spellCheck: false,
         value: providerValue,
       }),

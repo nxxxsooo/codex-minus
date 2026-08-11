@@ -859,7 +859,8 @@ fn revisioned_command_uses_only_the_injected_read_only_inspection_boundary() {
     let audited = draft_provider_native_capability_with_boundary(&request, &audit);
     assert_eq!(audit.inspection_calls.get(), 2);
 
-    let command_payload = transform_provider_native_capability_draft(request);
+    let command_payload =
+        tauri::async_runtime::block_on(transform_provider_native_capability_draft(request));
     assert_eq!(command_payload.draft_revision, 41);
     assert_eq!(command_payload.status, NativeCapabilityDraftStatus::Ready);
     assert_eq!(
@@ -920,11 +921,12 @@ fn direct_command_rejects_auth_contents_and_never_echoes_them() {
             &canonical_source("inline").replace("same-secret", "provider-secret-sentinel"),
         );
         profile.auth_contents = auth_contents.to_string();
-        let payload = transform_provider_native_capability_draft(request(
-            profile,
-            CatalogMode::OfficialPlusCustom,
-            NativeCapabilityDraftAction::Inspect,
-        ));
+        let payload =
+            tauri::async_runtime::block_on(transform_provider_native_capability_draft(request(
+                profile,
+                CatalogMode::OfficialPlusCustom,
+                NativeCapabilityDraftAction::Inspect,
+            )));
         assert_eq!(payload.status, NativeCapabilityDraftStatus::Blocked);
         assert_eq!(
             payload.blockers,
@@ -1210,11 +1212,12 @@ fn complete_response_keeps_provider_secret_only_in_declared_local_draft_fields()
         secret,
         &canonical_source("inline").replace("same-secret", secret),
     );
-    let payload = transform_provider_native_capability_draft(request(
-        profile,
-        CatalogMode::OfficialPlusCustom,
-        NativeCapabilityDraftAction::Inspect,
-    ));
+    let payload =
+        tauri::async_runtime::block_on(transform_provider_native_capability_draft(request(
+            profile,
+            CatalogMode::OfficialPlusCustom,
+            NativeCapabilityDraftAction::Inspect,
+        )));
     let serialized = serde_json::to_value(&payload).unwrap();
 
     assert_eq!(

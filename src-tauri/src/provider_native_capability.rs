@@ -723,13 +723,17 @@ pub fn draft_provider_native_capability_with_boundary(
 }
 
 #[tauri::command]
-pub fn transform_provider_native_capability_draft(
+pub async fn transform_provider_native_capability_draft(
     request: ProviderNativeCapabilityDraftRequest,
 ) -> ProviderNativeCapabilityDraftPayload {
-    transform_provider_native_capability_draft_from_settings_path(
-        &codex_plus_core::paths::default_settings_path(),
-        request,
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        transform_provider_native_capability_draft_from_settings_path(
+            &codex_plus_core::paths::default_settings_path(),
+            request,
+        )
+    })
+    .await
+    .expect("blocking provider draft transform panicked")
 }
 
 pub fn transform_provider_native_capability_draft_from_settings_path(

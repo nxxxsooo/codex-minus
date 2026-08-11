@@ -3448,6 +3448,7 @@ function RelayProfileDetail({
         authStatus={isActive ? relayFiles?.authStatus ?? null : null}
         liveConfigContents={relayFiles?.configContents ?? ""}
         onProviderConfigChange={editProviderConfigDraft}
+        providerReadOnly={isNew}
       />
       )}
     </div>
@@ -3885,11 +3886,13 @@ function RelayFileEditors({
   authStatus,
   liveConfigContents,
   onProviderConfigChange,
+  providerReadOnly = false,
 }: {
   profile: RelayProfile;
   authStatus: RelayFilesResult["authStatus"] | null;
   liveConfigContents: string;
   onProviderConfigChange: (configContents: string) => void;
+  providerReadOnly?: boolean;
 }) {
   const nativeOfficial = profile.relayMode === "official" && !profile.officialMixApiKey;
   const providerConfig = profile.configContents;
@@ -3903,7 +3906,10 @@ function RelayFileEditors({
         nativeProviderMessage={t("官方原生模式无独立供应商配置；运行时使用右侧实时 config.toml。")}
         onProviderConfigChange={onProviderConfigChange}
         providerConfig={providerConfig}
-        providerHelp={t("只保存模型、供应商、Base URL、目录指针和供应商表；全局配置实时读取。")}
+        providerHelp={providerReadOnly
+          ? t("新供应商首次统一保存前，此处仅预览 canonical TOML；保存后可编辑。")
+          : t("只保存模型、供应商、Base URL、目录指针和供应商表；全局配置实时读取。")}
+        providerReadOnly={providerReadOnly}
         providerTitle={t("供应商配置")}
         unavailableLiveMessage={t("当前 live config.toml 不可用")}
       />
