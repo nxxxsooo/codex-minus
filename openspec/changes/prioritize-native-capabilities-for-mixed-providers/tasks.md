@@ -65,7 +65,7 @@
 - [x] 6.6 Add target-path truth-table tests proving a signed-in Free account may activate and is not itself an image block on an actor-marker path without a Free-plan rejection; report a plan-based block only for an exact verified target/path rule, keep unknown behavior unknown, and never treat a paid plan as success.
 - [x] 6.7 Update Provider Doctor so a successful text Responses probe reports only text connectivity; preserve `compatibilityFallbackUsed` evidence without treating fallback success as native-extension, selected-model, provider-group, or catalog proof.
 - [x] 6.8 Add Chinese and English copy that explains OAuth remains official-client-owned, the provider key authenticates inference, actor authorization only enables eligibility, and upstream/model/account gates still apply.
-- [ ] 6.9 Keep ordinary pure OAuth visibly `native-official`, preserve external pure OAuth as `external`, exclude unadopted external mixed profiles from one-click upgrade, and keep pure API, Chat Completions, aggregate, and legacy paths advanced and non-default.
+- [x] 6.9 Keep ordinary pure OAuth visibly `native-official`, preserve external pure OAuth as `external`, exclude unadopted external mixed profiles from one-click upgrade, and keep pure API, Chat Completions, aggregate, and legacy paths advanced and non-default.
 
 ## 7. Integrate catalog and restart semantics
 
