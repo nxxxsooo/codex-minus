@@ -12,10 +12,10 @@ const baseInput: ProviderCapabilityLedgerInput = {
   localPlan: "unknown",
   actorMarker: "eligible",
   catalogModel: "supported",
-  upstream: "unknown",
+  upstream: { textResponses: "unknown", imageGeneration: "unknown" },
   runtime: "unknown",
   routeKind: "nativePriorityMixed",
-  imagePlanEvidence: "unknown",
+  imagePlanEvidence: { kind: "unknown" },
 };
 
 describe("provider capability evidence ledger", () => {
@@ -23,7 +23,7 @@ describe("provider capability evidence ledger", () => {
     for (const localPlan of ["free", "paid", "unknown"] as const) {
       const ledger = buildProviderCapabilityLedger({ ...baseInput, localPlan });
       assert.equal(ledger.oauth.activationGate, "satisfied");
-      assert.equal(ledger.oauth.mayActivate, true);
+      assert.equal(ledger.oauth.inactiveSaveDisposition, "satisfied");
       assert.equal(ledger.plan.observed, localPlan);
       assert.equal(ledger.plan.provesCapabilitySuccess, false);
     }
@@ -31,28 +31,57 @@ describe("provider capability evidence ledger", () => {
     for (const oauthSession of ["signedOut", "expired"] as const) {
       const ledger = buildProviderCapabilityLedger({ ...baseInput, oauthSession });
       assert.equal(ledger.oauth.activationGate, "blocked");
-      assert.equal(ledger.oauth.mayActivate, false);
-      assert.equal(ledger.inactiveSave, "allowedActionRequired");
+      assert.equal(ledger.oauth.inactiveSaveDisposition, "actionRequired");
     }
 
     const unknown = buildProviderCapabilityLedger({ ...baseInput, oauthSession: "unknown" });
     assert.equal(unknown.oauth.activationGate, "unknown");
-    assert.equal(unknown.oauth.mayActivate, false);
+
+    const pureApi = buildProviderCapabilityLedger({
+      ...baseInput,
+      routeKind: "keyOnlyPureApi",
+      oauthSession: "signedOut",
+      providerContract: "invalid",
+      catalogModel: "stale",
+    });
+    assert.equal(pureApi.oauth.activationGate, "notApplicable");
+    assert.equal(pureApi.oauth.inactiveSaveDisposition, "notApplicable");
+    assert.equal("mayActivate" in pureApi.oauth, false);
+    assert.equal("inactiveSave" in pureApi, false);
+    assert.equal(pureApi.provider.state, "invalid");
+    assert.equal(pureApi.catalogModel.state, "stale");
   });
 
   it("blocks Free image only for one verified affected target path", () => {
+    const affectedTargetPath = {
+      kind: "verifiedTargetPolicy",
+      policySource: "targetCliPolicy",
+      targetVersion: "0.147.0-alpha.6.5",
+      capabilityPath: "providerRoutedImageActorMarker",
+      freePlanRule: "blocked",
+    } as const;
     const affected = buildProviderCapabilityLedger({
       ...baseInput,
       localPlan: "free",
-      imagePlanEvidence: "verifiedFreePlanBlocked",
+      imagePlanEvidence: affectedTargetPath,
     });
     assert.equal(affected.image.planGate, "blocked");
     assert.equal(affected.image.status, "blocked");
+    assert.deepEqual(affected.image.planEvidenceScope, {
+      targetVersion: "0.147.0-alpha.6.5",
+      capabilityPath: "providerRoutedImageActorMarker",
+    });
 
     const unaffected = buildProviderCapabilityLedger({
       ...baseInput,
       localPlan: "free",
-      imagePlanEvidence: "verifiedNoFreePlanBlock",
+      imagePlanEvidence: {
+        kind: "verifiedTargetPolicy",
+        policySource: "targetCliPolicy",
+        targetVersion: "0.147.0-alpha.6.5",
+        capabilityPath: "providerRoutedImageActorMarker",
+        freePlanRule: "notBlocked",
+      },
     });
     assert.equal(unaffected.image.planGate, "notBlocked");
     assert.equal(unaffected.image.status, "unknown");
@@ -60,7 +89,7 @@ describe("provider capability evidence ledger", () => {
     const unknownTarget = buildProviderCapabilityLedger({
       ...baseInput,
       localPlan: "free",
-      imagePlanEvidence: "unknown",
+      imagePlanEvidence: { kind: "unknown" },
     });
     assert.equal(unknownTarget.image.planGate, "unknown");
     assert.equal(unknownTarget.image.status, "unknown");
@@ -68,11 +97,32 @@ describe("provider capability evidence ledger", () => {
     const paid = buildProviderCapabilityLedger({
       ...baseInput,
       localPlan: "paid",
-      upstream: "imagePermissionVerified",
+      upstream: { textResponses: "unknown", imageGeneration: "permissionVerified" },
       runtime: "adopted",
     });
     assert.equal(paid.plan.provesCapabilitySuccess, false);
     assert.notEqual(paid.image.status, "available");
+
+    for (const rejectedScope of [
+      { ...baseInput, routeKind: "keyOnlyPureApi" as const },
+      { ...baseInput, actorMarker: "ineligible" as const },
+    ]) {
+      const ledger = buildProviderCapabilityLedger({
+        ...rejectedScope,
+        localPlan: "free",
+        imagePlanEvidence: affectedTargetPath,
+      });
+      assert.equal(ledger.image.planGate, "unknown");
+      assert.equal(ledger.image.status, "unknown");
+      assert.equal(ledger.image.planEvidenceScope, null);
+    }
+    const blankTarget = buildProviderCapabilityLedger({
+      ...baseInput,
+      localPlan: "free",
+      imagePlanEvidence: { ...affectedTargetPath, targetVersion: " " },
+    });
+    assert.equal(blankTarget.image.planGate, "unknown");
+    assert.equal(blankTarget.image.planEvidenceScope, null);
   });
 
   it("keeps actor, catalog, upstream, and runtime evidence independent and redacted", () => {
@@ -80,15 +130,27 @@ describe("provider capability evidence ledger", () => {
       ...baseInput,
       actorMarker: "eligible",
       catalogModel: "missingMetadata",
-      upstream: "textReachable",
+      upstream: { textResponses: "reachable", imageGeneration: "unknown" },
       runtime: "restartRequired",
     });
     assert.equal(ledger.actor.provesEligibilityOnly, true);
     assert.equal(ledger.catalogModel.state, "missingMetadata");
-    assert.equal(ledger.upstream.state, "textReachable");
+    assert.equal(ledger.upstream.textResponses, "reachable");
+    assert.equal(ledger.upstream.imageGeneration, "unknown");
     assert.equal(ledger.runtime.state, "restartRequired");
     assert.equal(ledger.image.status, "unknown");
     assert.doesNotMatch(JSON.stringify(ledger), /token|account|email|bearer|api.?key/i);
+
+    const textDenied = buildProviderCapabilityLedger({
+      ...baseInput,
+      upstream: { textResponses: "denied", imageGeneration: "unknown" },
+    });
+    assert.equal(textDenied.image.status, "unknown");
+    const imageDenied = buildProviderCapabilityLedger({
+      ...baseInput,
+      upstream: { textResponses: "reachable", imageGeneration: "denied" },
+    });
+    assert.equal(imageDenied.image.status, "blocked");
   });
 
   it("labels key-only routing as pure API or legacy compatibility", () => {

@@ -26,11 +26,10 @@ export type ProviderCatalogModelEvidence =
   | "stale"
   | "unknown";
 
-export type ProviderUpstreamEvidence =
-  | "textReachable"
-  | "imagePermissionVerified"
-  | "denied"
-  | "unknown";
+export type ProviderUpstreamEvidence = {
+  textResponses: "reachable" | "fallbackReachable" | "denied" | "unknown";
+  imageGeneration: "permissionVerified" | "denied" | "unknown";
+};
 
 export type ProviderRuntimeEvidence =
   | "restartRequired"
@@ -44,9 +43,14 @@ export type ProviderRouteKind =
   | "legacyCompatibility";
 
 export type ProviderImagePlanEvidence =
-  | "verifiedFreePlanBlocked"
-  | "verifiedNoFreePlanBlock"
-  | "unknown";
+  | { kind: "unknown" }
+  | {
+      kind: "verifiedTargetPolicy";
+      policySource: "targetCliPolicy";
+      targetVersion: string;
+      capabilityPath: "providerRoutedImageActorMarker";
+      freePlanRule: "blocked" | "notBlocked";
+    };
 
 export type ProviderCapabilityLedgerInput = {
   providerContract: ProviderContractEvidence;
@@ -64,8 +68,8 @@ export type ProviderCapabilityLedger = {
   provider: { state: ProviderContractEvidence };
   oauth: {
     session: ProviderOAuthSessionEvidence;
-    activationGate: "satisfied" | "blocked" | "unknown";
-    mayActivate: boolean;
+    activationGate: "satisfied" | "blocked" | "unknown" | "notApplicable";
+    inactiveSaveDisposition: "satisfied" | "actionRequired" | "notApplicable";
   };
   plan: {
     observed: ProviderLocalPlanEvidence;
@@ -76,44 +80,53 @@ export type ProviderCapabilityLedger = {
     provesEligibilityOnly: true;
   };
   catalogModel: { state: ProviderCatalogModelEvidence };
-  upstream: { state: ProviderUpstreamEvidence };
+  upstream: ProviderUpstreamEvidence;
   runtime: { state: ProviderRuntimeEvidence };
   route: { label: "nativePriorityMixed" | "pureApi" | "compatibility" };
   image: {
     planGate: "blocked" | "notBlocked" | "unknown";
     status: "blocked" | "unknown";
+    planEvidenceScope: {
+      targetVersion: string;
+      capabilityPath: "providerRoutedImageActorMarker";
+    } | null;
   };
-  inactiveSave: "allowed" | "allowedActionRequired";
 };
 
 export function buildProviderCapabilityLedger(
   input: ProviderCapabilityLedgerInput,
 ): ProviderCapabilityLedger {
+  const oauthApplicable = input.routeKind === "nativePriorityMixed";
   const signedIn = input.oauthSession === "signedIn";
-  const oauthActivationGate = signedIn
-    ? "satisfied"
-    : input.oauthSession === "signedOut" || input.oauthSession === "expired"
-      ? "blocked"
-      : "unknown";
-  const imagePlanGate = input.localPlan === "free"
-    ? input.imagePlanEvidence === "verifiedFreePlanBlocked"
-      ? "blocked"
-      : input.imagePlanEvidence === "verifiedNoFreePlanBlock"
-        ? "notBlocked"
-        : "unknown"
-    : "unknown";
-  const routeLabel = input.routeKind === "keyOnlyPureApi"
-    ? "pureApi"
-    : input.routeKind === "legacyCompatibility"
-      ? "compatibility"
-      : "nativePriorityMixed";
+  const oauthActivationGate = !oauthApplicable
+    ? "notApplicable"
+    : signedIn
+      ? "satisfied"
+      : input.oauthSession === "signedOut" || input.oauthSession === "expired"
+        ? "blocked"
+        : "unknown";
+  const verifiedImagePlanScope = input.localPlan === "free"
+    && input.routeKind === "nativePriorityMixed"
+    && input.actorMarker === "eligible"
+    && input.imagePlanEvidence.kind === "verifiedTargetPolicy"
+    && input.imagePlanEvidence.policySource === "targetCliPolicy"
+    && input.imagePlanEvidence.capabilityPath === "providerRoutedImageActorMarker"
+    && input.imagePlanEvidence.targetVersion.trim().length > 0
+    ? input.imagePlanEvidence
+    : null;
+  const imagePlanGate = verifiedImagePlanScope?.freePlanRule ?? "unknown";
+  const routeLabel = providerRouteLabel(input.routeKind);
 
   return {
     provider: { state: input.providerContract },
     oauth: {
       session: input.oauthSession,
       activationGate: oauthActivationGate,
-      mayActivate: signedIn,
+      inactiveSaveDisposition: !oauthApplicable
+        ? "notApplicable"
+        : signedIn
+          ? "satisfied"
+          : "actionRequired",
     },
     plan: {
       observed: input.localPlan,
@@ -124,15 +137,39 @@ export function buildProviderCapabilityLedger(
       provesEligibilityOnly: true,
     },
     catalogModel: { state: input.catalogModel },
-    upstream: { state: input.upstream },
+    upstream: { ...input.upstream },
     runtime: { state: input.runtime },
     route: { label: routeLabel },
     image: {
       planGate: imagePlanGate,
-      status: imagePlanGate === "blocked" || input.upstream === "denied"
+      status: imagePlanGate === "blocked" || input.upstream.imageGeneration === "denied"
         ? "blocked"
         : "unknown",
+      planEvidenceScope: verifiedImagePlanScope
+        ? {
+            targetVersion: verifiedImagePlanScope.targetVersion,
+            capabilityPath: verifiedImagePlanScope.capabilityPath,
+          }
+        : null,
     },
-    inactiveSave: signedIn ? "allowed" : "allowedActionRequired",
   };
+}
+
+function providerRouteLabel(
+  routeKind: ProviderRouteKind,
+): ProviderCapabilityLedger["route"]["label"] {
+  switch (routeKind) {
+    case "nativePriorityMixed":
+      return "nativePriorityMixed";
+    case "keyOnlyPureApi":
+      return "pureApi";
+    case "legacyCompatibility":
+      return "compatibility";
+    default:
+      return assertNever(routeKind);
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unsupported provider route kind: ${String(value)}`);
 }
