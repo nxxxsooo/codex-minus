@@ -557,6 +557,57 @@ fn injected_post_commit_verification_failure_rolls_back_the_complete_prior_gener
 }
 
 #[test]
+fn concurrent_official_auth_update_is_preserved_while_manager_targets_roll_back() {
+    let active = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    let initial = settings_with(vec![active], "sub2api");
+    let fixture = Fixture::new(&initial, &state_with_official());
+    fs::write(
+        fixture.paths.codex_home.join("config.toml"),
+        rich_live_config(),
+    )
+    .unwrap();
+    let persisted = fixture.read_settings();
+    let mut manager_before = fixture.file_generation();
+    manager_before.remove("codex-home/auth.json").unwrap();
+    let mut next = persisted.clone();
+    next.relay_profiles[0] = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://changed.example/v1",
+        "changed-provider-key",
+    );
+    let auth_path = fixture.paths.codex_home.join("auth.json");
+    let newer_auth = b"official-auth-newer".to_vec();
+    let mut auth_updates = 0;
+
+    let error = commit_provider_detail_from_paths_observed(
+        &fixture.paths,
+        request(&persisted, &next, "sub2api", ProviderCommitAction::Save, 57),
+        |checkpoint| {
+            if checkpoint == ProviderCommitCheckpoint::AuthGenerationVerification {
+                fs::write(&auth_path, &newer_auth)?;
+                auth_updates += 1;
+            }
+            Ok(())
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code(), ProviderCommitErrorCode::TransactionFailed);
+    assert!(!error.to_string().contains("official-auth-newer"));
+    assert_eq!(auth_updates, 1);
+    assert_eq!(fs::read(&auth_path).unwrap(), newer_auth);
+    let mut manager_after = fixture.file_generation();
+    manager_after.remove("codex-home/auth.json").unwrap();
+    assert_eq!(manager_after, manager_before);
+}
+
+#[test]
 fn first_and_later_inactive_save_commit_provider_and_catalog_without_live_side_effects() {
     let old = pure_oauth_profile("official");
     let persisted = settings_with(vec![old.clone()], "official");

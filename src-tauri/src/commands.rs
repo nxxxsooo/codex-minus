@@ -1969,6 +1969,7 @@ pub enum ProviderCommitCheckpoint {
     SettingsPersistence,
     LiveConfigCommit,
     ContextVerification,
+    AuthGenerationVerification,
     PostCommitVerification,
 }
 
@@ -2271,6 +2272,7 @@ pub fn commit_provider_detail_from_paths_observed(
                 verify_context_tables(&paths.codex_home, snapshot)?;
                 observe.borrow_mut()(ProviderCommitCheckpoint::ContextVerification)?;
             }
+            observe.borrow_mut()(ProviderCommitCheckpoint::AuthGenerationVerification)?;
             anyhow::ensure!(
                 read_optional_bytes(&auth_path)? == auth_before,
                 "live auth changed concurrently"
