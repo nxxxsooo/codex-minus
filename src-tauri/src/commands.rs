@@ -1975,6 +1975,7 @@ pub struct ProviderCommitFailure {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderCommitCheckpoint {
     Normalization,
+    ActivationScopeVerification,
     CatalogMaterialization,
     SettingsPersistence,
     LiveConfigCommit,
@@ -2116,13 +2117,19 @@ pub fn commit_provider_detail_from_paths_observed(
         )
     })?;
 
-    validate_native_provider_activation_gate(
+    let auth_path = paths.codex_home.join("auth.json");
+    let auth_before = read_optional_bytes(&auth_path).map_err(transaction_failure)?;
+    let activation_scope_verified = validate_native_provider_activation_gate(
         paths,
         &persisted_state,
         &normalized_settings,
         focused_id,
         focused_mode,
     )?;
+    if activation_scope_verified {
+        observe(ProviderCommitCheckpoint::ActivationScopeVerification)
+            .map_err(transaction_failure)?;
+    }
 
     // Re-plan from the normalized projection. The CAS still binds to persisted state; only
     // provider-owned normalized fields are allowed to differ from the submitted draft.
@@ -2148,8 +2155,6 @@ pub fn commit_provider_detail_from_paths_observed(
                 )
             })?;
 
-    let auth_path = paths.codex_home.join("auth.json");
-    let auth_before = read_optional_bytes(&auth_path).map_err(transaction_failure)?;
     let active_commit = plan.settings.active_relay_id == focused_id;
     let mut mutations = materialize_provider_commit_catalogs(paths, &normalized_request, &plan)
         .map_err(|_| {
@@ -2329,9 +2334,9 @@ fn validate_native_provider_activation_gate(
     normalized_settings: &BackendSettings,
     focused_id: &str,
     focused_mode: crate::model_catalog::CatalogMode,
-) -> Result<(), ProviderCommitFailure> {
+) -> Result<bool, ProviderCommitFailure> {
     if normalized_settings.active_relay_id != focused_id {
-        return Ok(());
+        return Ok(false);
     }
     let focused = normalized_settings
         .relay_profiles
@@ -2346,7 +2351,7 @@ fn validate_native_provider_activation_gate(
     let inspection = crate::provider_native_capability::inspect_profile(focused, focused_mode);
     if inspection.state != crate::provider_native_capability::NativeCapabilityState::NativePriority
     {
-        return Ok(());
+        return Ok(false);
     }
 
     let auth_path = paths.codex_home.join("auth.json");
@@ -2387,7 +2392,8 @@ fn validate_native_provider_activation_gate(
             ProviderCommitErrorCode::CatalogScopeStale,
             "provider catalog identity or target scope is stale",
         )
-    })
+    })?;
+    Ok(true)
 }
 
 fn load_provider_commit_settings(path: &Path) -> anyhow::Result<BackendSettings> {
