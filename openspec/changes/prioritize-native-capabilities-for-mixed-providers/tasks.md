@@ -30,10 +30,10 @@
 
 ## 4. Enforce the contract at the unified backend commit boundary
 
-- [ ] 4.1 Add failing tests that first and later inactive Save atomically persist one coherent provider/catalog state, including action-required catalog state when appropriate, without changing live configuration, active provider, restart state, or live auth.
-- [ ] 4.2 Add failing tests that Set-as-current and active Save atomically commit settings, provider config, catalog state, generated catalog, pointer, activation state, and restart state as one generation.
-- [ ] 4.3 Implement a fallible provider-detail normalizer that rejects missing inputs, structured/raw conflicts, reserved/ambiguous provider selection, invalid TOML, and structural catalog errors before any mutation; prevent provider-detail callers from using the old log-and-continue settings path.
-- [ ] 4.4 Re-parse and assert the canonical actor-authorized contract after the pinned core generates staged configuration so upstream defaults cannot silently restore `requires_openai_auth = true` or drop headers.
+- [x] 4.1 Add failing tests that first and later inactive Save atomically persist one coherent provider/catalog state, including action-required catalog state when appropriate, without changing live configuration, active provider, restart state, or live auth.
+- [x] 4.2 Add failing tests that Set-as-current and active Save atomically commit settings, provider config, catalog state, generated catalog, pointer, activation state, and restart state as one generation.
+- [x] 4.3 Implement a fallible provider-detail normalizer that rejects missing inputs, structured/raw conflicts, reserved/ambiguous provider selection, invalid TOML, and structural catalog errors before any mutation; prevent provider-detail callers from using the old log-and-continue settings path.
+- [x] 4.4 Re-parse and assert the canonical actor-authorized contract after the pinned core generates staged configuration so upstream defaults cannot silently restore `requires_openai_auth = true` or drop headers.
 - [ ] 4.5 Add transaction-failure injection tests at normalization, catalog materialization, settings persistence, live-config commit, Context verification, and post-commit verification; prove every persisted artifact returns to the prior generation.
 - [ ] 4.6 Extend success and failure tests to prove protected Context tables remain semantically identical and live `auth.json` remains byte-identical when no official-client update races the transaction.
 - [ ] 4.7 Add regression tests proving unrelated live roots and tables—including review model, reasoning effort, sandbox/network policy, acknowledgements, and feature flags—are preserved from live state and never introduced from profile content.

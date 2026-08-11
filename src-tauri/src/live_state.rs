@@ -107,12 +107,23 @@ pub fn lock() -> anyhow::Result<LiveStateGuard> {
 
 pub fn prepare_secret_paths(codex_home: &Path) -> anyhow::Result<()> {
     let app_state = codex_plus_core::paths::default_app_state_dir();
+    prepare_secret_paths_at(
+        &app_state,
+        &codex_plus_core::paths::default_settings_path(),
+        codex_home,
+    )
+}
+
+pub(crate) fn prepare_secret_paths_at(
+    app_state: &Path,
+    settings_path: &Path,
+    codex_home: &Path,
+) -> anyhow::Result<()> {
     ensure_owner_only_dir(&app_state)?;
     cleanup_interrupted_atomic_temps(&app_state)?;
     cleanup_private_workspaces(&app_state)?;
-    let settings_path = codex_plus_core::paths::default_settings_path();
     if settings_path.exists() {
-        ensure_owner_only_file(&settings_path)?;
+        ensure_owner_only_file(settings_path)?;
     }
     ensure_owner_only_dir(codex_home)?;
     cleanup_interrupted_atomic_temps(codex_home)?;
@@ -259,13 +270,24 @@ pub fn commit_locked_verified(
     mutations: &[FileMutation],
     verify: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    recover_locked()?;
+    commit_locked_verified_at(
+        &codex_plus_core::paths::default_app_state_dir(),
+        mutations,
+        verify,
+    )
+}
+
+pub(crate) fn commit_locked_verified_at(
+    app_state: &Path,
+    mutations: &[FileMutation],
+    verify: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    recover_locked_at(app_state)?;
     validate_mutations(mutations)?;
     if mutations.is_empty() {
         return Ok(());
     }
 
-    let app_state = codex_plus_core::paths::default_app_state_dir();
     ensure_owner_only_dir(&app_state)?;
     let transaction_id = transaction_id();
     let transaction_dir = app_state.join(TRANSACTION_ROOT).join(&transaction_id);
@@ -324,31 +346,31 @@ pub fn commit_locked_verified(
         applied_count: 0,
         entries,
     };
-    if let Err(error) = persist_journal(&journal) {
+    if let Err(error) = persist_journal(app_state, &journal) {
         let _ = fs::remove_dir_all(&transaction_dir);
         return Err(error);
     }
 
     let result = (|| -> anyhow::Result<()> {
         journal.phase = TransactionPhase::Applying;
-        persist_journal(&journal)?;
+        persist_journal(app_state, &journal)?;
         for index in 0..journal.entries.len() {
             apply_entry_target(&journal.entries[index])?;
             verify_entry_target(&journal.entries[index])?;
             journal.applied_count = index + 1;
-            persist_journal(&journal)?;
+            persist_journal(app_state, &journal)?;
         }
         verify().context("live-state post-commit verification failed")?;
         journal.phase = TransactionPhase::Committed;
-        persist_journal(&journal)?;
+        persist_journal(app_state, &journal)?;
         for entry in &journal.entries {
             verify_entry_target(entry)?;
         }
-        cleanup_journal(&journal)
+        cleanup_journal(app_state, &journal)
     })();
 
     if let Err(error) = result {
-        let rollback_error = rollback_journal(&journal).err();
+        let rollback_error = rollback_journal(app_state, &journal).err();
         return match rollback_error {
             Some(rollback_error) => Err(anyhow::anyhow!(
                 "transaction failed: {error}; rollback failed: {rollback_error}"
@@ -360,7 +382,11 @@ pub fn commit_locked_verified(
 }
 
 pub fn recover_locked() -> anyhow::Result<RecoveryOutcome> {
-    let journal_path = journal_path();
+    recover_locked_at(&codex_plus_core::paths::default_app_state_dir())
+}
+
+pub(crate) fn recover_locked_at(app_state: &Path) -> anyhow::Result<RecoveryOutcome> {
+    let journal_path = journal_path(app_state);
     let bytes = match fs::read(&journal_path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -371,18 +397,18 @@ pub fn recover_locked() -> anyhow::Result<RecoveryOutcome> {
     ensure_owner_only_file(&journal_path)?;
     let journal: TransactionJournal =
         serde_json::from_slice(&bytes).context("live-state transaction journal is invalid")?;
-    validate_journal(&journal)?;
+    validate_journal(app_state, &journal)?;
 
     if journal
         .entries
         .iter()
         .all(|entry| verify_entry_target(entry).is_ok())
     {
-        cleanup_journal(&journal)?;
+        cleanup_journal(app_state, &journal)?;
         return Ok(RecoveryOutcome::RolledForward);
     }
 
-    rollback_journal(&journal)?;
+    rollback_journal(app_state, &journal)?;
     Ok(RecoveryOutcome::RolledBack)
 }
 
@@ -405,7 +431,7 @@ fn validate_mutations(mutations: &[FileMutation]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn validate_journal(journal: &TransactionJournal) -> anyhow::Result<()> {
+fn validate_journal(app_state: &Path, journal: &TransactionJournal) -> anyhow::Result<()> {
     ensure!(
         journal.version == 1,
         "unsupported transaction journal version"
@@ -414,7 +440,6 @@ fn validate_journal(journal: &TransactionJournal) -> anyhow::Result<()> {
         !journal.transaction_id.trim().is_empty(),
         "missing transaction id"
     );
-    let app_state = codex_plus_core::paths::default_app_state_dir();
     let expected_dir = app_state
         .join(TRANSACTION_ROOT)
         .join(&journal.transaction_id);
@@ -488,7 +513,7 @@ fn verify_path_hash(path: &Path, expected: Option<&str>) -> anyhow::Result<()> {
     }
 }
 
-fn rollback_journal(journal: &TransactionJournal) -> anyhow::Result<()> {
+fn rollback_journal(app_state: &Path, journal: &TransactionJournal) -> anyhow::Result<()> {
     let mut failures = Vec::new();
     for entry in journal.entries.iter().rev() {
         if let Err(error) = apply_entry_prior(entry).and_then(|_| verify_entry_prior(entry)) {
@@ -496,20 +521,20 @@ fn rollback_journal(journal: &TransactionJournal) -> anyhow::Result<()> {
         }
     }
     ensure!(failures.is_empty(), "{}", failures.join("; "));
-    cleanup_journal(journal)
+    cleanup_journal(app_state, journal)
 }
 
-fn persist_journal(journal: &TransactionJournal) -> anyhow::Result<()> {
+fn persist_journal(app_state: &Path, journal: &TransactionJournal) -> anyhow::Result<()> {
     let bytes = serde_json::to_vec_pretty(journal)?;
-    atomic_write_owner_only(&journal_path(), &bytes)
+    atomic_write_owner_only(&journal_path(app_state), &bytes)
 }
 
-fn cleanup_journal(journal: &TransactionJournal) -> anyhow::Result<()> {
-    let path = journal_path();
+fn cleanup_journal(app_state: &Path, journal: &TransactionJournal) -> anyhow::Result<()> {
+    let path = journal_path(app_state);
     if path.exists() {
         fs::remove_file(&path)?;
     }
-    let transaction_dir = codex_plus_core::paths::default_app_state_dir()
+    let transaction_dir = app_state
         .join(TRANSACTION_ROOT)
         .join(&journal.transaction_id);
     if transaction_dir.exists() {
@@ -521,8 +546,8 @@ fn cleanup_journal(journal: &TransactionJournal) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn journal_path() -> PathBuf {
-    codex_plus_core::paths::default_app_state_dir().join(JOURNAL_FILE)
+fn journal_path(app_state: &Path) -> PathBuf {
+    app_state.join(JOURNAL_FILE)
 }
 
 fn remove_exact_file(path: &Path) -> anyhow::Result<()> {

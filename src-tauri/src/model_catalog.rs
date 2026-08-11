@@ -149,6 +149,8 @@ pub struct ProfileCatalogState {
     pub generated_hash: Option<String>,
     pub generation: u64,
     pub restart_required: bool,
+    pub applied_runtime_fingerprint: Option<String>,
+    pub applied_runtime_generation: u64,
     pub action_required: Option<String>,
     pub provider_evidence: Option<ProviderEvidence>,
 }
@@ -165,6 +167,8 @@ impl Default for ProfileCatalogState {
             generated_hash: None,
             generation: 0,
             restart_required: false,
+            applied_runtime_fingerprint: None,
+            applied_runtime_generation: 0,
             action_required: None,
             provider_evidence: None,
         }
@@ -856,7 +860,7 @@ fn load_and_migrate_state(settings: &BackendSettings, home: &Path) -> anyhow::Re
     load_and_migrate_state_from_path(settings, home, &state_path())
 }
 
-fn load_and_migrate_state_from_path(
+pub(crate) fn load_and_migrate_state_from_path(
     settings: &BackendSettings,
     home: &Path,
     path: &Path,
@@ -1149,13 +1153,17 @@ pub fn prepare_active_profile_context_settings(
 }
 
 fn state_mutation(state: &CatalogState) -> anyhow::Result<FileMutation> {
+    state_mutation_at(state, &state_path())
+}
+
+pub(crate) fn state_mutation_at(state: &CatalogState, path: &Path) -> anyhow::Result<FileMutation> {
     let value = serde_json::to_value(state)?;
     ensure!(
         !contains_forbidden_credential_field(&value),
         "catalog state contains a credential field"
     );
     let bytes = serde_json::to_vec_pretty(&value)?;
-    Ok(FileMutation::bytes(state_path(), bytes))
+    Ok(FileMutation::bytes(path, bytes))
 }
 
 fn contains_forbidden_credential_field(value: &Value) -> bool {
@@ -1986,7 +1994,7 @@ fn catalog_client_version_compatible(catalog: &str, target: &str) -> bool {
     catalog.major == target.major && catalog.minor == target.minor && catalog.patch == target.patch
 }
 
-fn validate_catalog_structure(value: &Value) -> anyhow::Result<()> {
+pub(crate) fn validate_catalog_structure(value: &Value) -> anyhow::Result<()> {
     let models = catalog_models(value)?;
     ensure!(!models.is_empty(), "model catalog is empty");
     let mut slugs = HashSet::new();
@@ -2587,7 +2595,10 @@ fn root_catalog_pointer(config: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn set_root_catalog_pointer(config: &str, pointer: Option<&str>) -> anyhow::Result<String> {
+pub(crate) fn set_root_catalog_pointer(
+    config: &str,
+    pointer: Option<&str>,
+) -> anyhow::Result<String> {
     let mut doc: toml_edit::DocumentMut = config.parse()?;
     match pointer {
         Some(pointer) => doc["model_catalog_json"] = toml_edit::value(pointer),

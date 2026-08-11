@@ -73,6 +73,7 @@ pub fn run() {
             commands::fetch_relay_profile_models,
             commands::switch_relay_profile,
             commands::save_active_relay_profile,
+            commands::commit_provider_detail,
             commands::scan_provider_compatibility,
             commands::adapt_active_sessions_to_current_provider,
             commands::apply_relay_injection,

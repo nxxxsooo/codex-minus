@@ -9,7 +9,12 @@ use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::model_catalog::{self, CatalogMode, CatalogOverlay, CatalogState, UpstreamTopology};
+use crate::model_catalog;
+
+pub use crate::model_catalog::{
+    CatalogMode, CatalogOverlay, CatalogState, CustomModel, OfficialSnapshot, ProfileCatalogState,
+    UpstreamTopology,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
