@@ -117,6 +117,7 @@ import {
   applyProviderDetailInspection,
   beginProviderDetailEdit,
   beginProviderDetailInspection,
+  beginProviderDetailNativePriorityUpgrade,
   beginProviderDetailRawConfigEdit,
   cancelProviderDetailTransition,
   confirmProviderDetailTransition,
@@ -134,8 +135,11 @@ import {
 } from "./provider-detail-draft-state";
 import {
   providerConfigPatchRequiresBackendTransform,
-  type ProviderDraftTransition,
 } from "./provider-config-transform-router";
+import {
+  deriveProviderNativeCapabilityView,
+  providerTransitionDecisionForStructuredPatch,
+} from "./provider-native-capability-view";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 
 
@@ -3149,6 +3153,13 @@ function RelayProfileDetail({
   const draft = detailState.profile;
   const catalogDraft = detailState.catalogDraft;
   const isActive = !isNew && profile.id === form.activeRelayId;
+  const nativeCapabilityView = deriveProviderNativeCapabilityView({
+    inspection: detailState.inspection,
+    officialAuth: {
+      authenticated: relayFiles?.authStatus.authenticated ?? null,
+      localPlan: "unknown",
+    },
+  });
   useEffect(() => {
     const nextDraft = isAggregateRelayProfile(profile)
       ? normalizeAggregateRelayProfile(profile, form)
@@ -3209,23 +3220,6 @@ function RelayProfileDetail({
   const replaceDraft = (next: RelayProfile) => {
     updateDetailState(replaceProviderDetailProfile(detailStateRef.current, next));
   };
-  const transitionForPatch = (
-    current: RelayProfile,
-    patch: Partial<RelayProfile>,
-  ): ProviderDraftTransition | undefined => {
-    if (!("relayMode" in patch || "officialMixApiKey" in patch || "protocol" in patch)) return undefined;
-    const next = { ...current, ...patch };
-    if (next.protocol === "chatCompletions") {
-      return { action: "exitChatCompletions", confirmations: [] };
-    }
-    if (next.relayMode === "pureApi") {
-      return { action: "exitPureApi", confirmations: [] };
-    }
-    if (next.relayMode === "official" && !next.officialMixApiKey) {
-      return { action: "exitPureOAuth", confirmations: [] };
-    }
-    return { action: "enableNativePriority", confirmations: [] };
-  };
   const dispatchProviderDetailStep = (step: ProviderDetailStep<RelayProfile>) => {
     updateDetailState(step.state);
     const effect = step.effects.find((candidate) => candidate.kind === "transform");
@@ -3275,11 +3269,23 @@ function RelayProfileDetail({
     );
     let step;
     try {
-      const transition = target.source === "existing"
-        ? transitionForPatch(current.profile, patch)
-        : undefined;
+      const hasTransitionFields = "relayMode" in patch
+        || "officialMixApiKey" in patch
+        || "protocol" in patch;
+      const decision = target.source === "existing" && hasTransitionFields
+        ? providerTransitionDecisionForStructuredPatch(current.profile, patch)
+        : null;
+      if (decision?.kind === "requiresExplicitUpgrade") {
+        void actions.showMessage(
+          t("原生能力优先"),
+          t("此变更必须通过明确的升级预览操作完成。"),
+          "failed",
+        );
+        return;
+      }
+      const transition = decision?.kind === "transition" ? decision.transition : undefined;
       let routedPatch = patch;
-      if (transition) {
+      if (decision) {
         const {
           relayMode,
           officialMixApiKey,
@@ -3293,11 +3299,14 @@ function RelayProfileDetail({
           });
           current = ordinary.state;
         }
-        routedPatch = {
-          ...(relayMode === undefined ? {} : { relayMode }),
-          ...(officialMixApiKey === undefined ? {} : { officialMixApiKey }),
-          ...(protocol === undefined ? {} : { protocol }),
-        };
+        routedPatch = transition
+          ? {
+              ...(relayMode === undefined ? {} : { relayMode }),
+              ...(officialMixApiKey === undefined ? {} : { officialMixApiKey }),
+              ...(protocol === undefined ? {} : { protocol }),
+            }
+          : ordinaryPatch;
+        if (!Object.keys(routedPatch).length) return;
       }
       step = beginProviderDetailEdit(current, {
         patch: routedPatch,
@@ -3309,6 +3318,15 @@ function RelayProfileDetail({
       return;
     }
     dispatchProviderDetailStep(step);
+  };
+  const upgradeNativePriorityDraft = () => {
+    try {
+      dispatchProviderDetailStep(
+        beginProviderDetailNativePriorityUpgrade(detailStateRef.current),
+      );
+    } catch (error) {
+      void actions.showMessage(t("原生能力优先"), stringifyError(error), "failed");
+    }
   };
   const editProviderConfigDraft = (configContents: string) => {
     const current = detailStateRef.current;
@@ -3441,6 +3459,32 @@ function RelayProfileDetail({
           </Button>
         </Toolbar>
       </div>
+      {isNew || isAggregateRelayProfile(draft) || !detailState.inspection ? null : (
+        <section className="catalog-profile-editor">
+          <div className="catalog-editor-head">
+            <div>
+              <strong>{t("原生能力优先")}</strong>
+              <span>{t("Actor 标记只表示客户端资格；上游、模型和运行时能力仍需独立验证。")}</span>
+            </div>
+            <div className="catalog-editor-actions">
+              <UiBadge variant="outline">
+                {providerNativeCapabilityStateLabel(nativeCapabilityView.state)}
+              </UiBadge>
+              {nativeCapabilityView.upgradeAvailability === "available" ? (
+                <Button
+                  disabled={detailState.pendingTransformRevision !== null}
+                  onClick={upgradeNativePriorityDraft}
+                  size="sm"
+                  type="button"
+                  variant="secondary"
+                >
+                  {t("升级为原生能力优先")}
+                </Button>
+              ) : null}
+            </div>
+          </div>
+        </section>
+      )}
         <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={replaceDraft} onProfileEdit={editDraft} onSwitch={switchDraft} actions={actions} modelWindowRows={modelWindowRows} setModelWindowRows={setModelWindowRows} catalogProfile={catalogProfile} draftCommitBlocked={detailState.pendingTransformRevision !== null || detailState.rawConfigContents !== null || detailState.pendingConfirmation !== null || detailState.blockers.length > 0} />
       {!managedCatalogCapable(draft) ? null : catalogDraft ? (
         <CatalogProfileEditor
@@ -3777,6 +3821,23 @@ function providerTransitionConfirmationMessage(
     );
   }
   return t("切换到兼容模式将失去原生能力优先配置。确认后只更新草稿，仍需点击保存或设为当前才会生效。是否继续？");
+}
+
+function providerNativeCapabilityStateLabel(state: string): string {
+  switch (state) {
+    case "nativePriority":
+      return t("配置就绪");
+    case "upgradeAvailable":
+      return t("可升级");
+    case "degraded":
+      return t("需要处理");
+    case "compatibility":
+      return t("兼容模式");
+    case "notApplicable":
+      return t("不适用");
+    default:
+      return t("状态未知");
+  }
 }
 
 function AggregateRelayProfileEditor({

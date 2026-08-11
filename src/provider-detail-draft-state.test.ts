@@ -5,6 +5,7 @@ import {
   applyProviderDetailInspection,
   beginProviderDetailInspection,
   beginProviderDetailEdit,
+  beginProviderDetailNativePriorityUpgrade,
   beginProviderDetailRawConfigEdit,
   buildProviderDetailCommitEffect,
   cancelProviderDetailTransition,
@@ -118,6 +119,28 @@ const preview = {
 };
 
 describe("provider detail draft state", () => {
+  it("starts an explicit upgrade as a revisioned draft transform and never as a commit", () => {
+    const initial = draftState();
+    const correlation = beginProviderDetailInspection(initial);
+    const observed = applyProviderDetailInspection(initial, correlation, inspection);
+    assert.equal(observed.disposition, "applied");
+    assert.equal(observed.state.profile, initial.profile);
+    assert.deepEqual(observed.effects, []);
+
+    const upgrade = beginProviderDetailNativePriorityUpgrade(observed.state);
+    assert.equal(upgrade.state.profile, initial.profile);
+    assert.equal(upgrade.state.pendingTransformRevision, 1);
+    assert.equal(upgrade.effects.length, 1);
+    assert.equal(upgrade.effects[0].kind, "transform");
+    if (upgrade.effects[0].kind !== "transform") return;
+    assert.equal(upgrade.effects[0].invocation.request.action, "enableNativePriority");
+    assert.deepEqual(upgrade.effects[0].invocation.request.confirmations, []);
+
+    const closed = endProviderDetailSession(upgrade.state, "cancel");
+    assert.deepEqual(closed.effects, []);
+    assert.equal(closed.state.lifecycle, "closed");
+  });
+
   it("registers a backend transform only after building one exact revisioned request", () => {
     const state = draftState();
     const step = beginProviderDetailEdit(state, {

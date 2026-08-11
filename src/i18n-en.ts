@@ -5,6 +5,17 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "原生能力优先": "Native-capability priority",
+  "配置就绪": "Configuration ready",
+  "可升级": "Upgrade available",
+  "兼容模式": "Compatibility mode",
+  "不适用": "Not applicable",
+  "状态未知": "Status unknown",
+  "升级为原生能力优先": "Upgrade to native-capability priority",
+  "此变更必须通过明确的升级预览操作完成。":
+    "This change must use the explicit upgrade preview action.",
+  "Actor 标记只表示客户端资格；上游、模型和运行时能力仍需独立验证。":
+    "The actor marker establishes client eligibility only; upstream, model, and runtime capability still require independent verification.",
   "上游拓扑": "Upstream topology",
   "当前没有等待确认的供应商转换。": "No provider transition is awaiting confirmation.",
   "请先确认或取消供应商兼容模式转换。": "Confirm or cancel the provider compatibility transition first.",

@@ -189,6 +189,27 @@ export function beginProviderDetailInspection<P extends ProviderDetailProfile>(
   };
 }
 
+export function beginProviderDetailNativePriorityUpgrade<
+  P extends ProviderDetailProfile,
+>(state: ProviderDetailDraftState<P>): ProviderDetailStep<P> {
+  assertActive(state);
+  const externalOwnership = state.inspection?.fields.some(
+    (entry) => entry.reason === "externalCatalog",
+  ) ?? false;
+  if (state.inspection?.state !== "upgradeAvailable" || externalOwnership) {
+    throw new Error("This provider is not eligible for the ordinary native-priority upgrade.");
+  }
+  return beginProviderDetailEdit(state, {
+    patch: {
+      relayMode: "official",
+      officialMixApiKey: true,
+      protocol: "responses",
+    },
+    target: { target: "preserveExisting", source: "existing" },
+    transition: { action: "enableNativePriority", confirmations: [] },
+  });
+}
+
 export function beginProviderDetailRawConfigEdit<P extends ProviderDetailProfile>(
   state: ProviderDetailDraftState<P>,
   input: {

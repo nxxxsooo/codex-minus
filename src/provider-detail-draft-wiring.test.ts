@@ -28,6 +28,17 @@ describe("provider detail draft wiring", () => {
     assert.doesNotMatch(source, /nativeCapabilityInspection\s*:/);
   });
 
+  it("wires explicit upgrade availability without letting ordinary controls synthesize enablement", () => {
+    assert.match(source, /deriveProviderNativeCapabilityView/);
+    assert.match(source, /beginProviderDetailNativePriorityUpgrade/);
+    assert.match(source, /providerTransitionDecisionForStructuredPatch/);
+    assert.match(source, /nativeCapabilityView\.upgradeAvailability === "available"/);
+    assert.doesNotMatch(
+      source,
+      /function transitionForPatch[\s\S]*return \{ action: "enableNativePriority"/,
+    );
+  });
+
   it("consumes compatibility-exit preview confirmation only through the draft state machine", () => {
     assert.match(source, /response\.status === "confirmationRequired"/);
     assert.match(source, /window\.confirm\(providerTransitionConfirmationMessage\(settled\.state\)\)/);
