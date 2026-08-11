@@ -31,10 +31,11 @@ export type ProviderDetailTransformPreview = {
 };
 
 export type ProviderDetailDraftState<P extends ProviderDetailProfile> = {
+  sessionToken: string;
   lifecycle: "active" | "closed";
   profile: P;
   catalogDraft: ProfileCatalogDraft | null;
-  latestRevision: number;
+  latestTransformRevision: number;
   pendingTransformRevision: number | null;
   inspection: ProviderDetailInspectionMetadata | null;
   preview: ProviderDetailTransformPreview | null;
@@ -47,8 +48,18 @@ export type ProviderDetailTransformInvocation<P extends ProviderDetailProfile> =
 };
 
 export type ProviderDetailEffect<P extends ProviderDetailProfile> =
-  | { kind: "transform"; invocation: ProviderDetailTransformInvocation<P> }
+  | {
+      kind: "transform";
+      invocation: ProviderDetailTransformInvocation<P>;
+      correlation: ProviderDetailTransformCorrelation;
+    }
   | { kind: "commit"; invocation: ProviderCommitInvocation };
+
+export type ProviderDetailTransformCorrelation = {
+  sessionToken: string;
+  profileId: string;
+  revision: number;
+};
 
 export type ProviderDetailStep<P extends ProviderDetailProfile> = {
   state: ProviderDetailDraftState<P>;
@@ -58,12 +69,18 @@ export type ProviderDetailStep<P extends ProviderDetailProfile> = {
 export function createProviderDetailDraftState<P extends ProviderDetailProfile>(input: {
   profile: P;
   catalogDraft: ProfileCatalogDraft | null;
+  sessionToken: string;
 }): ProviderDetailDraftState<P> {
+  if (!input.sessionToken) throw new Error("Provider detail session token is required.");
+  if (input.catalogDraft && input.catalogDraft.profileId !== input.profile.id) {
+    throw new Error("Provider detail catalog draft belongs to another profile.");
+  }
   return {
+    sessionToken: input.sessionToken,
     lifecycle: "active",
     profile: input.profile,
     catalogDraft: input.catalogDraft,
-    latestRevision: 0,
+    latestTransformRevision: 0,
     pendingTransformRevision: null,
     inspection: null,
     preview: null,
@@ -80,7 +97,7 @@ export function beginProviderDetailEdit<P extends ProviderDetailProfile>(
   },
 ): ProviderDetailStep<P> {
   assertActive(state);
-  const revision = state.latestRevision + 1;
+  const revision = state.latestTransformRevision + 1;
   const routed = routeProviderConfigDraftEdit({
     profile: state.profile,
     patch: input.patch,
@@ -98,7 +115,7 @@ export function beginProviderDetailEdit<P extends ProviderDetailProfile>(
       state: {
         ...state,
         profile: routed.profile,
-        latestRevision: revision,
+        latestTransformRevision: revision,
         pendingTransformRevision: null,
         inspection: null,
         preview: null,
@@ -110,13 +127,21 @@ export function beginProviderDetailEdit<P extends ProviderDetailProfile>(
   return {
     state: {
       ...state,
-      latestRevision: revision,
+      latestTransformRevision: revision,
       pendingTransformRevision: revision,
       inspection: null,
       preview: null,
       blockers: [],
     },
-    effects: [{ kind: "transform", invocation: routed }],
+    effects: [{
+      kind: "transform",
+      invocation: routed,
+      correlation: {
+        sessionToken: state.sessionToken,
+        profileId: state.profile.id,
+        revision,
+      },
+    }],
   };
 }
 
@@ -128,16 +153,22 @@ export type ProviderDetailTransformResponse<P extends ProviderDetailProfile> =
 
 export function settleProviderDetailTransform<P extends ProviderDetailProfile>(
   state: ProviderDetailDraftState<P>,
+  correlation: ProviderDetailTransformCorrelation,
   response: ProviderDetailTransformResponse<P>,
 ): ProviderDetailStep<P> & { disposition: "applied" | "notApplied" | "stale" } {
   if (
     state.lifecycle !== "active"
-    || response.draftRevision !== state.latestRevision
+    || correlation.sessionToken !== state.sessionToken
+    || correlation.profileId !== state.profile.id
+    || correlation.revision !== response.draftRevision
+    || response.draftRevision !== state.latestTransformRevision
     || response.draftRevision !== state.pendingTransformRevision
+    || response.draft.profile.id !== state.profile.id
+    || response.inspection.profileId !== state.profile.id
   ) {
     return { state, effects: [], disposition: "stale" };
   }
-  const applied = applyProviderTransformResponse(state.latestRevision, response);
+  const applied = applyProviderTransformResponse(state.latestTransformRevision, response);
   if (applied.kind === "stale") return { state, effects: [], disposition: "stale" };
   if (applied.kind === "notApplied") {
     return {
@@ -171,12 +202,14 @@ export function settleProviderDetailTransform<P extends ProviderDetailProfile>(
 
 export function settleProviderDetailTransformError<P extends ProviderDetailProfile>(
   state: ProviderDetailDraftState<P>,
-  revision: number,
+  correlation: ProviderDetailTransformCorrelation,
 ): ProviderDetailStep<P> & { disposition: "error" | "stale"; report: boolean } {
   if (
     state.lifecycle !== "active"
-    || revision !== state.latestRevision
-    || revision !== state.pendingTransformRevision
+    || correlation.sessionToken !== state.sessionToken
+    || correlation.profileId !== state.profile.id
+    || correlation.revision !== state.latestTransformRevision
+    || correlation.revision !== state.pendingTransformRevision
   ) {
     return { state, effects: [], disposition: "stale", report: false };
   }
@@ -209,6 +242,7 @@ export function buildProviderDetailCommitEffect<P extends ProviderDetailProfile>
     previousActiveRelayId: string;
     confirmContextCleanup: boolean;
     expectedProviderFingerprint: string;
+    draftRevision: number;
   },
 ): ProviderDetailStep<P> {
   if (state.lifecycle !== "active") {
@@ -217,7 +251,6 @@ export function buildProviderDetailCommitEffect<P extends ProviderDetailProfile>
   if (state.pendingTransformRevision !== null) {
     throw new Error("Cannot commit while a provider draft transform is pending.");
   }
-  const revision = state.latestRevision + 1;
   const existingIndex = input.settings.relayProfiles.findIndex(
     (candidate) => candidate.id === state.profile.id,
   );
@@ -244,11 +277,11 @@ export function buildProviderDetailCommitEffect<P extends ProviderDetailProfile>
     focusedProfileWasPersisted: input.focusedProfileWasPersisted,
     previousActiveRelayId: input.previousActiveRelayId,
     confirmContextCleanup: input.confirmContextCleanup,
-    draftRevision: revision,
+    draftRevision: input.draftRevision,
     expectedProviderFingerprint: input.expectedProviderFingerprint,
   });
   return {
-    state: { ...state, latestRevision: revision },
+    state,
     effects: [{ kind: "commit", invocation }],
   };
 }

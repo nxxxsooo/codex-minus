@@ -59,6 +59,30 @@ const catalogDraft = {
   overlay: { official: {}, custom: [] },
 };
 
+function draftState(
+  sessionToken = "session-default",
+  currentProfile = profile(),
+  currentCatalog = catalogDraft,
+) {
+  return createProviderDetailDraftState({
+    profile: currentProfile,
+    catalogDraft: currentCatalog,
+    sessionToken,
+  });
+}
+
+function transformCorrelation(step: {
+  effects: Array<{
+    kind: string;
+    correlation?: { sessionToken: string; profileId: string; revision: number };
+  }>;
+}) {
+  const effect = step.effects[0];
+  assert.equal(effect?.kind, "transform");
+  assert.ok(effect.correlation);
+  return effect.correlation;
+}
+
 function settings() {
   return {
     relayProfilesEnabled: true,
@@ -90,14 +114,14 @@ const preview = {
 
 describe("provider detail draft state", () => {
   it("registers a backend transform only after building one exact revisioned request", () => {
-    const state = createProviderDetailDraftState({ profile: profile(), catalogDraft });
+    const state = draftState();
     const step = beginProviderDetailEdit(state, {
       patch: { relayMode: "official", officialMixApiKey: true },
       target: existingTarget,
       transition: { action: "enableNativePriority", confirmations: [] },
     });
 
-    assert.equal(step.state.latestRevision, 1);
+    assert.equal(step.state.latestTransformRevision, 1);
     assert.equal(step.state.pendingTransformRevision, 1);
     assert.equal(step.effects.length, 1);
     assert.equal(step.effects[0].kind, "transform");
@@ -109,7 +133,7 @@ describe("provider detail draft state", () => {
   });
 
   it("drops a stale success and stale transport error after a newer ordinary edit", () => {
-    const state = createProviderDetailDraftState({ profile: profile(), catalogDraft });
+    const state = draftState();
     const pending = beginProviderDetailEdit(state, {
       patch: { relayMode: "official", officialMixApiKey: true },
       target: existingTarget,
@@ -119,10 +143,10 @@ describe("provider detail draft state", () => {
       patch: { baseUrl: "https://newer.example/v1" },
       target: existingTarget,
     });
-    assert.equal(edited.state.latestRevision, 2);
+    assert.equal(edited.state.latestTransformRevision, 2);
     assert.equal(edited.effects.length, 0);
 
-    const stale = settleProviderDetailTransform(edited.state, {
+    const stale = settleProviderDetailTransform(edited.state, transformCorrelation(pending), {
       draftRevision: 1,
       status: "ready",
       draft: {
@@ -137,21 +161,96 @@ describe("provider detail draft state", () => {
     assert.equal(stale.disposition, "stale");
     assert.equal(stale.state.profile.baseUrl, "https://newer.example/v1");
 
-    const staleError = settleProviderDetailTransformError(stale.state, 1);
+    const staleError = settleProviderDetailTransformError(
+      stale.state,
+      transformCorrelation(pending),
+    );
     assert.equal(staleError.disposition, "stale");
     assert.equal(staleError.report, false);
     assert.equal(staleError.state.profile.baseUrl, "https://newer.example/v1");
   });
 
+  it("rejects an old response across profile and same-profile reopened sessions", () => {
+    const stateA = draftState("session-a");
+    const pendingA = beginProviderDetailEdit(stateA, {
+      patch: { relayMode: "official", officialMixApiKey: true },
+      target: existingTarget,
+      transition: { action: "enableNativePriority", confirmations: [] },
+    });
+    const profileB = { ...profile(), id: "relay-two", name: "Relay Two" };
+    const catalogB = { ...catalogDraft, profileId: "relay-two" };
+    const pendingB = beginProviderDetailEdit(
+      draftState("session-b", profileB, catalogB),
+      {
+        patch: { relayMode: "official", officialMixApiKey: true },
+        target: existingTarget,
+        transition: { action: "enableNativePriority", confirmations: [] },
+      },
+    );
+    const responseA = {
+      draftRevision: 1,
+      status: "ready" as const,
+      draft: {
+        profile: { ...profile(), configContents: config.replace("keep-provider", "from-a") },
+        structuredApiKey: "provider-key-a",
+        catalogMode: "official-plus-custom" as const,
+      },
+      blockers: [],
+      inspection,
+      preview,
+    };
+
+    const crossProfile = settleProviderDetailTransform(
+      pendingB.state,
+      transformCorrelation(pendingA),
+      responseA,
+    );
+    assert.equal(crossProfile.disposition, "stale");
+    assert.equal(crossProfile.state.profile.id, "relay-two");
+    const crossProfileBlocked = settleProviderDetailTransform(
+      pendingB.state,
+      transformCorrelation(pendingA),
+      {
+        ...responseA,
+        status: "confirmationRequired",
+        blockers: ["actorHeaderValueConflict"],
+      },
+    );
+    assert.equal(crossProfileBlocked.disposition, "stale");
+    const crossProfileError = settleProviderDetailTransformError(
+      pendingB.state,
+      transformCorrelation(pendingA),
+    );
+    assert.equal(crossProfileError.disposition, "stale");
+    assert.equal(crossProfileError.report, false);
+
+    const reopened = beginProviderDetailEdit(
+      draftState("session-a-reopened"),
+      {
+        patch: { relayMode: "official", officialMixApiKey: true },
+        target: existingTarget,
+        transition: { action: "enableNativePriority", confirmations: [] },
+      },
+    );
+    assert.equal(reopened.state.pendingTransformRevision, 1);
+    const sameProfileOldSession = settleProviderDetailTransform(
+      reopened.state,
+      transformCorrelation(pendingA),
+      responseA,
+    );
+    assert.equal(sameProfileOldSession.disposition, "stale");
+    assert.equal(sameProfileOldSession.state.pendingTransformRevision, 1);
+  });
+
   it("adopts only the current ready backend draft and keeps inspection response-only", () => {
-    const state = createProviderDetailDraftState({ profile: profile(), catalogDraft });
+    const state = draftState();
     const pending = beginProviderDetailEdit(state, {
       patch: { relayMode: "official", officialMixApiKey: true },
       target: existingTarget,
       transition: { action: "enableNativePriority", confirmations: [] },
     });
     const transformedConfig = config.replace("keep-provider", "backend-preserved");
-    const settled = settleProviderDetailTransform(pending.state, {
+    const settled = settleProviderDetailTransform(pending.state, transformCorrelation(pending), {
       draftRevision: 1,
       status: "ready",
       draft: {
@@ -173,13 +272,13 @@ describe("provider detail draft state", () => {
   });
 
   it("keeps preview and confirmation steps in memory without creating a commit effect", () => {
-    const state = createProviderDetailDraftState({ profile: profile(), catalogDraft });
+    const state = draftState();
     const pending = beginProviderDetailEdit(state, {
       patch: { officialMixApiKey: false },
       target: existingTarget,
       transition: { action: "exitPureOAuth", confirmations: [] },
     });
-    const blocked = settleProviderDetailTransform(pending.state, {
+    const blocked = settleProviderDetailTransform(pending.state, transformCorrelation(pending), {
       draftRevision: 1,
       status: "confirmationRequired",
       draft: {
@@ -211,7 +310,7 @@ describe("provider detail draft state", () => {
   it("closes, cancels, and navigates without producing persistence effects", () => {
     for (const reason of ["cancel", "close", "navigate"] as const) {
       const ended = endProviderDetailSession(
-        createProviderDetailDraftState({ profile: profile(), catalogDraft }),
+        draftState(`session-${reason}`),
         reason,
       );
       assert.equal(ended.state.lifecycle, "closed", reason);
@@ -226,15 +325,27 @@ describe("provider detail draft state", () => {
           previousActiveRelayId: "relay-old",
           confirmContextCleanup: false,
           expectedProviderFingerprint: "fingerprint-old",
+          draftRevision: 41,
         }),
         /closed provider detail/i,
       );
     }
   });
 
+  it("rejects catalog state owned by a different profile", () => {
+    assert.throws(
+      () => createProviderDetailDraftState({
+        profile: profile(),
+        catalogDraft: { ...catalogDraft, profileId: "relay-other" },
+        sessionToken: "catalog-mismatch",
+      }),
+      /catalog draft belongs to another profile/i,
+    );
+  });
+
   it("builds complete Save and SetCurrent envelopes without response-only metadata", () => {
     const state = {
-      ...createProviderDetailDraftState({ profile: profile(), catalogDraft }),
+      ...draftState(),
       inspection,
       preview,
     };
@@ -248,13 +359,14 @@ describe("provider detail draft state", () => {
         previousActiveRelayId: "relay-old",
         confirmContextCleanup: true,
         expectedProviderFingerprint: "fingerprint-old",
+        draftRevision: 41,
       });
 
       assert.equal(step.effects.length, 1);
       assert.equal(step.effects[0].kind, "commit");
       if (step.effects[0].kind !== "commit") continue;
       const request = step.effects[0].invocation.request;
-      assert.equal(request.draftRevision, 1);
+      assert.equal(request.draftRevision, 41);
       assert.equal(request.action, kind === "setCurrent" ? "setCurrent" : "save");
       assert.equal(request.focusedProfileId, "relay-one");
       assert.equal(request.previousActiveRelayId, "relay-old");
