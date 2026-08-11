@@ -833,7 +833,6 @@ fn parsed_catalog_pointer(config_contents: &str) -> anyhow::Result<Option<String
         Some(item) => Ok(Some(
             item.as_str()
                 .context("model_catalog_json must be a string")?
-                .trim()
                 .to_string(),
         )),
         None => Ok(None),
@@ -1880,6 +1879,62 @@ mod tests {
             ProviderCommitAction::Save,
         );
         assert!(validate_common_request(&persisted, &state, &removed).is_err());
+    }
+
+    #[test]
+    fn external_pointer_identity_rejects_whitespace_wrapped_replacement() {
+        let mut external = mixed_profile("relay-external", "owned-model");
+        external.config_contents = "model_catalog_json = \"models/user-owned.json\"\n".to_string();
+        let persisted = settings_with(vec![external], "relay-external");
+        let mut state = state_with_official();
+        state.profiles.insert(
+            "relay-external".to_string(),
+            ProfileCatalogState {
+                mode: CatalogMode::External,
+                mode_explicit: true,
+                external_pointer: Some("models/user-owned.json".to_string()),
+                ..ProfileCatalogState::default()
+            },
+        );
+        let mut replacement = persisted.clone();
+        replacement.relay_profiles[0].config_contents =
+            "model_catalog_json = \" models/user-owned.json \"\n".to_string();
+        let request = request_for(
+            &persisted,
+            &replacement,
+            None,
+            vec![],
+            ProviderCommitAction::Save,
+        );
+
+        assert!(validate_common_request(&persisted, &state, &request).is_err());
+    }
+
+    #[test]
+    fn external_pointer_identity_accepts_unchanged_pointer_with_spaces() {
+        let pointer = " models/user-owned.json ";
+        let mut external = mixed_profile("relay-external", "owned-model");
+        external.config_contents = format!("model_catalog_json = \"{pointer}\"\n");
+        let persisted = settings_with(vec![external], "relay-external");
+        let mut state = state_with_official();
+        state.profiles.insert(
+            "relay-external".to_string(),
+            ProfileCatalogState {
+                mode: CatalogMode::External,
+                mode_explicit: true,
+                external_pointer: Some(pointer.to_string()),
+                ..ProfileCatalogState::default()
+            },
+        );
+        let request = request_for(
+            &persisted,
+            &persisted,
+            None,
+            vec![],
+            ProviderCommitAction::Save,
+        );
+
+        assert!(validate_common_request(&persisted, &state, &request).is_ok());
     }
 
     #[test]
