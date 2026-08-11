@@ -106,7 +106,13 @@ import {
 import {
   createNewRelayProfileDraft,
   validateNewProviderDraft,
+  type NewProviderTransientTarget,
 } from "./provider-onboarding";
+import {
+  applyProviderConfigPatch,
+  withGeneratedRelayConfig,
+  type ProviderConfigTargetContract,
+} from "./provider-config-draft";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 
 
@@ -250,6 +256,7 @@ export type RelayProfile = {
   modelList: string;
   modelWindows: string;
   userAgent: string;
+  transientTarget?: NewProviderTransientTarget;
   aggregate?: RelayAggregateConfig | null;
 };
 
@@ -3280,7 +3287,11 @@ function RelayProfileEditor({
   const newProviderFieldErrors = isNew ? validateNewProviderDraft(profile) : {};
   const showApiFields = profile.relayMode !== "official" || profile.officialMixApiKey;
   const updateDraft = (patch: Partial<RelayProfile>) => {
-    onProfileChange(applyRelayProfilePatchToFiles(profile, patch, { allowGenerateFiles: isNew }));
+    const target = providerConfigTargetContract({ ...profile, ...patch }, isNew);
+    onProfileChange(applyRelayProfilePatchToFiles(profile, patch, {
+      allowGenerateFiles: isNew,
+      target,
+    }));
   };
   const runProviderDoctor = async () => {
     setDoctorOpen(true);
@@ -4647,46 +4658,39 @@ function relayProfileModeHelp(profile: RelayProfile): string {
 }
 
 
-function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {
+function withGeneratedRelayFiles(
+  profile: RelayProfile,
+  contract: ProviderConfigTargetContract,
+): RelayProfile {
   if (isAggregateRelayProfile(profile)) {
     return { ...profile, configContents: "", authContents: "", aggregate: normalizeAggregateConfig(profile.aggregate, []) };
   }
-  if (profile.relayMode === "official") {
-    return {
-      ...profile,
-      configContents: profile.officialMixApiKey ? buildRelayConfigToml(profile, { includeBearerToken: true }) : "",
-      authContents: "",
-    };
-  }
-  const pureApi = profile.relayMode === "pureApi";
   return {
-    ...profile,
-    configContents: buildRelayConfigToml(profile, { includeBearerToken: true, requiresOpenaiAuth: !pureApi }),
+    ...withGeneratedRelayConfig(profile, contract),
     authContents: "",
   };
 }
 
-function buildRelayConfigToml(
-  profile: Pick<RelayProfile, "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol">,
-  options: { includeBearerToken: boolean; requiresOpenaiAuth?: boolean },
-): string {
-  const baseUrl = profile.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : profile.baseUrl.trim();
-  const apiKey = profile.apiKey.trim();
-  const rootLines = [
-    profile.model.trim() ? `model = "${tomlString(profile.model.trim())}"` : null,
-    'model_provider = "custom"',
-    "",
-  ].filter((line): line is string => line !== null);
-  return [
-    ...rootLines,
-    "[model_providers.custom]",
-    'name = "custom"',
-    'wire_api = "responses"',
-    `requires_openai_auth = ${options.requiresOpenaiAuth ?? true}`,
-    `base_url = "${tomlString(baseUrl)}"`,
-    options.includeBearerToken && apiKey ? `experimental_bearer_token = "${tomlString(apiKey)}"` : null,
-    "",
-  ].filter((line): line is string => line !== null).join("\n");
+function providerConfigTargetContract(
+  profile: RelayProfile,
+  brandNew: boolean,
+): ProviderConfigTargetContract {
+  if (!brandNew) return { target: "preserveExisting", source: "existing" };
+  if (
+    profile.transientTarget === "nativePriority"
+    && profile.relayMode === "official"
+    && profile.officialMixApiKey
+    && profile.protocol === "responses"
+  ) {
+    return { target: "nativePriority", source: "brand-new-empty" };
+  }
+  if (profile.relayMode === "official" && !profile.officialMixApiKey) {
+    return { target: "pureOAuth", source: "brand-new-empty" };
+  }
+  if (profile.relayMode === "pureApi") {
+    return { target: "pureApi", source: "brand-new-empty" };
+  }
+  return { target: "compatibility", source: "brand-new-empty" };
 }
 
 function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
@@ -4719,7 +4723,10 @@ function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
 function applyRelayProfilePatchToFiles(
   profile: RelayProfile,
   patch: Partial<RelayProfile>,
-  options: { allowGenerateFiles?: boolean } = {},
+  options: {
+    allowGenerateFiles?: boolean;
+    target: ProviderConfigTargetContract;
+  },
 ): RelayProfile {
   let next: RelayProfile = { ...profile, ...patch };
   if (isAggregateRelayProfile(next)) {
@@ -4728,50 +4735,20 @@ function applyRelayProfilePatchToFiles(
   const shouldHaveFiles =
     next.relayMode !== "official" || next.officialMixApiKey || next.configContents.trim();
   if (options.allowGenerateFiles && shouldHaveFiles && !next.configContents.trim()) {
-    next = withGeneratedRelayFiles(next);
+    next = withGeneratedRelayFiles(next, options.target);
   }
-
-  if ("model" in patch) {
-    // 模型后缀（如 [1M]）仅供 CodexPlusPlus 内部使用，写入 config.toml 前需剥离，
-    // 否则 codex 会按带后缀的字符串去匹配 catalog slug，导致窗口回退到默认值。
-    const { slug } = parseModelSuffix(patch.model || "");
-    next.configContents = setRootTomlStringKey(next.configContents, "model", slug);
-  }
-  if ("apiKey" in patch) {
-    next.configContents = setCodexExperimentalBearerToken(next.configContents, patch.apiKey || "");
-    if (next.relayMode === "pureApi") next.configContents = setCodexProviderRequiresOpenaiAuth(next.configContents, false);
-  }
-  if ("baseUrl" in patch) {
-    next.upstreamBaseUrl = patch.baseUrl || "";
-  }
-  if ("upstreamBaseUrl" in patch) {
-    next.baseUrl = patch.upstreamBaseUrl || "";
-  }
-  if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch) {
-    const baseUrlForConfig = next.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : next.upstreamBaseUrl || next.baseUrl;
-    next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig);
-    next.configContents = removeRootTomlKey(next.configContents, CHAT_UPSTREAM_BASE_URL_KEY);
-  }
-  if ("contextWindow" in patch) {
-    next.configContents = setRootTomlIntKey(next.configContents, "model_context_window", patch.contextWindow || "");
-  }
-  if ("autoCompactLimit" in patch) {
-    next.configContents = setRootTomlIntKey(
-      next.configContents,
-      "model_auto_compact_token_limit",
-      patch.autoCompactLimit || "",
-    );
-  }
+  next = applyProviderConfigPatch(next, patch, options.target);
   if ("relayMode" in patch || "officialMixApiKey" in patch) {
     if (next.relayMode === "official" && !next.officialMixApiKey) {
       next.configContents = "";
       next.authContents = "";
     } else if (options.allowGenerateFiles && !next.configContents.trim()) {
-      next = withGeneratedRelayFiles(next);
+      next = withGeneratedRelayFiles(next, options.target);
     }
   }
 
   next.authContents = "";
+  if (!next.configContents.trim()) return next;
   return deriveRelayProfileFromFiles(next);
 }
 
@@ -4784,22 +4761,6 @@ function codexModelFromConfig(contents: string): string {
     if (match) return match[2].replace(/\\(["'\\])/g, "$1");
   }
   return "";
-}
-
-/// 解析模型后缀语法，如 deepseek-v4-flash[1M] -> { slug: "deepseek-v4-flash", window: 1000000 }
-/// 非法或没有后缀时返回原串作为 slug。
-function parseModelSuffix(raw: string): { slug: string; window?: number } {
-  const trimmed = raw.trim();
-  const match = /^(.*?)\[(\d+(?:[KkMm])?)\]$/.exec(trimmed);
-  if (!match) return { slug: trimmed };
-  const inner = match[2];
-  const numPart = inner.replace(/[KkMm]$/, "");
-  const multiplier = inner.endsWith("K") || inner.endsWith("k") ? 1_000
-    : inner.endsWith("M") || inner.endsWith("m") ? 1_000_000
-    : 1;
-  const window = Number.parseInt(numPart, 10) * multiplier;
-  if (!Number.isFinite(window) || window <= 0) return { slug: trimmed };
-  return { slug: match[1].trim(), window };
 }
 
 function codexBaseUrlFromConfig(contents: string): string {
@@ -4860,132 +4821,6 @@ function tomlStringAssignmentValue(line: string, key: string): string | null {
   const match = new RegExp(`^\\s*${key}\\s*=\\s*([\"'])(.*)\\1\\s*(?:#.*)?$`).exec(line.trim());
   if (!match) return null;
   return match[2].replace(/\\(["'\\])/g, "$1");
-}
-
-function setRootTomlStringKey(contents: string, key: string, value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return removeRootTomlKey(contents, key);
-  return setRootTomlLine(contents, key, `${key} = "${tomlString(trimmed)}"`);
-}
-
-function setRootTomlIntKey(contents: string, key: string, value: string): string {
-  const trimmed = value.replace(/[^\d]/g, "");
-  if (!trimmed) return removeRootTomlKey(contents, key);
-  return setRootTomlLine(contents, key, `${key} = ${trimmed}`);
-}
-
-function setRootTomlLine(contents: string, key: string, lineText: string): string {
-  const lines = contents.split(/\r?\n/);
-  const firstTable = lines.findIndex((line) => /^\s*\[[^\]]+\]\s*$/.test(line));
-  const rootEnd = firstTable >= 0 ? firstTable : lines.length;
-  for (let index = 0; index < rootEnd; index += 1) {
-    if (new RegExp(`^\\s*${key}\\s*=`).test(lines[index])) {
-      lines[index] = lineText;
-      return ensureTrailingNewline(lines.join("\n").trimEnd());
-    }
-  }
-  const insertAt = key === "model" ? 0 : rootEnd;
-  lines.splice(insertAt, 0, lineText);
-  return ensureTrailingNewline(lines.join("\n").trimEnd());
-}
-
-function setCodexProviderStringKey(contents: string, key: string, value: string): string {
-  const provider = rootTomlStringValue(contents, "model_provider") || "custom";
-  let next = contents;
-  if (!rootTomlStringValue(next, "model_provider")) {
-    next = setRootTomlStringKey(next, "model_provider", provider);
-  }
-  next = ensureCodexProviderDefaults(next, provider);
-  return setTomlSectionStringKey(next, `model_providers.${provider}`, key, value);
-}
-
-function setCodexExperimentalBearerToken(contents: string, apiKey: string): string {
-  const trimmed = apiKey.trim();
-  return trimmed
-    ? setCodexProviderStringKey(contents, "experimental_bearer_token", trimmed)
-    : removeCodexExperimentalBearerToken(contents);
-}
-
-function setCodexProviderRequiresOpenaiAuth(contents: string, required: boolean): string {
-  const provider = rootTomlStringValue(contents, "model_provider") || "custom";
-  let next = contents;
-  if (!rootTomlStringValue(next, "model_provider")) {
-    next = setRootTomlStringKey(next, "model_provider", provider);
-  }
-  next = ensureCodexProviderDefaults(next, provider);
-  return setTomlSectionBoolKey(next, `model_providers.${provider}`, "requires_openai_auth", required);
-}
-
-function removeCodexExperimentalBearerToken(contents: string): string {
-  const provider = rootTomlStringValue(contents, "model_provider") || "custom";
-  return removeTomlSectionKey(contents, `model_providers.${provider}`, "experimental_bearer_token");
-}
-
-function ensureCodexProviderDefaults(contents: string, provider: string): string {
-  let next = contents;
-  const section = `model_providers.${provider}`;
-  next = setTomlSectionStringKey(next, section, "name", provider);
-  next = setTomlSectionStringKey(next, section, "wire_api", "responses");
-  return setTomlSectionBoolKey(next, section, "requires_openai_auth", true);
-}
-
-function setTomlSectionBoolKey(contents: string, sectionName: string, key: string, value: boolean): string {
-  return setTomlSectionRawKey(contents, sectionName, key, value ? "true" : "false");
-}
-
-function setTomlSectionStringKey(contents: string, sectionName: string, key: string, value: string): string {
-  return setTomlSectionRawKey(contents, sectionName, key, `"${tomlString(value.trim())}"`);
-}
-
-function setTomlSectionRawKey(contents: string, sectionName: string, key: string, value: string): string {
-  const lines = contents.split(/\r?\n/);
-  let sectionStart = -1;
-  let sectionEnd = lines.length;
-  for (let index = 0; index < lines.length; index += 1) {
-    const section = tomlSectionName(lines[index]);
-    if (section === null) continue;
-    if (sectionStart >= 0) {
-      sectionEnd = index;
-      break;
-    }
-    if (section === sectionName) sectionStart = index;
-  }
-  if (sectionStart < 0) {
-    const prefix = ensureTrailingNewline(lines.join("\n").trimEnd()).trimEnd();
-    return joinTomlSections([prefix, `[${sectionName}]\n${key} = ${value}`]);
-  }
-  const replacement = `${key} = ${value}`;
-  for (let index = sectionStart + 1; index < sectionEnd; index += 1) {
-    if (new RegExp(`^\\s*${key}\\s*=`).test(lines[index])) {
-      lines[index] = replacement;
-      return ensureTrailingNewline(lines.join("\n").trimEnd());
-    }
-  }
-  let insertAt = sectionEnd;
-  while (insertAt > sectionStart + 1 && lines[insertAt - 1].trim() === "") insertAt -= 1;
-  lines.splice(insertAt, 0, replacement);
-  return ensureTrailingNewline(lines.join("\n").trimEnd());
-}
-
-function removeTomlSectionKey(contents: string, sectionName: string, key: string): string {
-  const lines = contents.split(/\r?\n/);
-  let sectionStart = -1;
-  let sectionEnd = lines.length;
-  for (let index = 0; index < lines.length; index += 1) {
-    const section = tomlSectionName(lines[index]);
-    if (section === null) continue;
-    if (sectionStart >= 0) {
-      sectionEnd = index;
-      break;
-    }
-    if (section === sectionName) sectionStart = index;
-  }
-  if (sectionStart < 0) return contents;
-  const next = lines.filter((line, index) => {
-    if (index <= sectionStart || index >= sectionEnd) return true;
-    return !new RegExp(`^\\s*${key}\\s*=`).test(line);
-  });
-  return ensureTrailingNewline(next.join("\n").trimEnd());
 }
 
 function relayProfileSwitchValidation(profile: RelayProfile): string | null {
@@ -5061,8 +4896,7 @@ function updateRelayProfile(settings: BackendSettings, id: string, patch: Partia
 function createRelayProfile(settings: BackendSettings): RelayProfile {
   const id = `relay-${Date.now().toString(36)}`;
   const contextSelection = contextSelectionForAllEntries(settings);
-  const next = createNewRelayProfileDraft({ id, contextSelection });
-  return withGeneratedRelayFiles(next);
+  return createNewRelayProfileDraft({ id, contextSelection });
 }
 
 function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
@@ -5104,7 +4938,9 @@ function addRelayProfile(settings: BackendSettings, profile: RelayProfile): Back
   const nextWithFiles = isAggregateRelayProfile(profile)
     ? normalizeAggregateRelayProfile(profile, settings)
     : deriveRelayProfileFromFiles(
-        profile.configContents.trim() ? profile : withGeneratedRelayFiles(profile),
+        profile.configContents.trim()
+          ? profile
+          : withGeneratedRelayFiles(profile, providerConfigTargetContract(profile, true)),
       );
   const activeId = settings.relayProfiles.some((item) => item.id === settings.activeRelayId)
     ? settings.activeRelayId
