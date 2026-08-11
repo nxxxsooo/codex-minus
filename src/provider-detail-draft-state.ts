@@ -31,7 +31,7 @@ export type ProviderDetailTransformPreview = {
 };
 
 export type ProviderDetailDraftState<P extends ProviderDetailProfile> = {
-  sessionToken: string;
+  sessionToken: symbol;
   lifecycle: "active" | "closed";
   profile: P;
   catalogDraft: ProfileCatalogDraft | null;
@@ -56,7 +56,7 @@ export type ProviderDetailEffect<P extends ProviderDetailProfile> =
   | { kind: "commit"; invocation: ProviderCommitInvocation };
 
 export type ProviderDetailTransformCorrelation = {
-  sessionToken: string;
+  sessionToken: symbol;
   profileId: string;
   revision: number;
 };
@@ -69,14 +69,12 @@ export type ProviderDetailStep<P extends ProviderDetailProfile> = {
 export function createProviderDetailDraftState<P extends ProviderDetailProfile>(input: {
   profile: P;
   catalogDraft: ProfileCatalogDraft | null;
-  sessionToken: string;
 }): ProviderDetailDraftState<P> {
-  if (!input.sessionToken) throw new Error("Provider detail session token is required.");
   if (input.catalogDraft && input.catalogDraft.profileId !== input.profile.id) {
     throw new Error("Provider detail catalog draft belongs to another profile.");
   }
   return {
-    sessionToken: input.sessionToken,
+    sessionToken: Symbol("provider-detail-session"),
     lifecycle: "active",
     profile: input.profile,
     catalogDraft: input.catalogDraft,

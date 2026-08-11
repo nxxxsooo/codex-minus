@@ -60,21 +60,19 @@ const catalogDraft = {
 };
 
 function draftState(
-  sessionToken = "session-default",
   currentProfile = profile(),
   currentCatalog = catalogDraft,
 ) {
   return createProviderDetailDraftState({
     profile: currentProfile,
     catalogDraft: currentCatalog,
-    sessionToken,
   });
 }
 
 function transformCorrelation(step: {
   effects: Array<{
     kind: string;
-    correlation?: { sessionToken: string; profileId: string; revision: number };
+    correlation?: { sessionToken: symbol; profileId: string; revision: number };
   }>;
 }) {
   const effect = step.effects[0];
@@ -171,7 +169,7 @@ describe("provider detail draft state", () => {
   });
 
   it("rejects an old response across profile and same-profile reopened sessions", () => {
-    const stateA = draftState("session-a");
+    const stateA = draftState();
     const pendingA = beginProviderDetailEdit(stateA, {
       patch: { relayMode: "official", officialMixApiKey: true },
       target: existingTarget,
@@ -180,7 +178,7 @@ describe("provider detail draft state", () => {
     const profileB = { ...profile(), id: "relay-two", name: "Relay Two" };
     const catalogB = { ...catalogDraft, profileId: "relay-two" };
     const pendingB = beginProviderDetailEdit(
-      draftState("session-b", profileB, catalogB),
+      draftState(profileB, catalogB),
       {
         patch: { relayMode: "official", officialMixApiKey: true },
         target: existingTarget,
@@ -225,13 +223,14 @@ describe("provider detail draft state", () => {
     assert.equal(crossProfileError.report, false);
 
     const reopened = beginProviderDetailEdit(
-      draftState("session-a-reopened"),
+      draftState(),
       {
         patch: { relayMode: "official", officialMixApiKey: true },
         target: existingTarget,
         transition: { action: "enableNativePriority", confirmations: [] },
       },
     );
+    assert.notEqual(reopened.state.sessionToken, pendingA.state.sessionToken);
     assert.equal(reopened.state.pendingTransformRevision, 1);
     const sameProfileOldSession = settleProviderDetailTransform(
       reopened.state,
@@ -310,7 +309,7 @@ describe("provider detail draft state", () => {
   it("closes, cancels, and navigates without producing persistence effects", () => {
     for (const reason of ["cancel", "close", "navigate"] as const) {
       const ended = endProviderDetailSession(
-        draftState(`session-${reason}`),
+        draftState(),
         reason,
       );
       assert.equal(ended.state.lifecycle, "closed", reason);
@@ -337,7 +336,6 @@ describe("provider detail draft state", () => {
       () => createProviderDetailDraftState({
         profile: profile(),
         catalogDraft: { ...catalogDraft, profileId: "relay-other" },
-        sessionToken: "catalog-mismatch",
       }),
       /catalog draft belongs to another profile/i,
     );
