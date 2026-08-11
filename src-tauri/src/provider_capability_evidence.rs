@@ -8,8 +8,7 @@ use crate::commands::CommandResult;
 use crate::model_catalog::{CatalogState, ProfileCatalogState};
 use crate::provider_native_capability::{
     NativeCapabilityField, NativeCapabilityOutcome, NativeCapabilityState,
-    ProviderNativeCapabilityInspection, ProviderNativeCapabilityInspectionRequest,
-    inspect_provider_native_capabilities_from_paths,
+    ProviderNativeCapabilityInspection, inspect_profiles,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -80,6 +79,8 @@ pub enum ProviderRouteEvidence {
     NativePriorityMixed,
     KeyOnlyPureApi,
     LegacyCompatibility,
+    NotApplicable,
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -99,15 +100,38 @@ pub enum ImageGenerationEvidence {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ImagePolicySource {
+    TargetCliPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ImageCapabilityPath {
+    ProviderRoutedImageActorMarker,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FreePlanRule {
+    Blocked,
+    NotBlocked,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ImagePlanEvidence {
     Unknown,
     VerifiedTargetPolicy {
-        policy_source: String,
+        #[serde(rename = "policySource")]
+        policy_source: ImagePolicySource,
+        #[serde(rename = "targetVersion")]
         target_version: String,
-        capability_path: String,
-        free_plan_rule: String,
+        #[serde(rename = "capabilityPath")]
+        capability_path: ImageCapabilityPath,
+        #[serde(rename = "freePlanRule")]
+        free_plan_rule: FreePlanRule,
     },
 }
 
@@ -139,7 +163,7 @@ impl Default for ProviderCapabilityEvidencePayload {
             text_responses: TextResponsesEvidence::Unknown,
             image_generation: ImageGenerationEvidence::Unknown,
             runtime: RuntimeEvidence::Unknown,
-            route_kind: ProviderRouteEvidence::LegacyCompatibility,
+            route_kind: ProviderRouteEvidence::Unknown,
             image_plan_evidence: ImagePlanEvidence::Unknown,
         }
     }
@@ -163,20 +187,25 @@ pub fn inspect_provider_capability_evidence_from_paths(
         .iter()
         .find(|profile| profile.id == request.profile_id)
         .context("profile unavailable")?;
-    let inspection_payload = inspect_provider_native_capabilities_from_paths(
-        settings_path,
-        catalog_state_path,
-        ProviderNativeCapabilityInspectionRequest {
-            profile_id: Some(request.profile_id.clone()),
-        },
+    let catalog_state = read_catalog_state(catalog_state_path)?;
+    let catalog_modes =
+        crate::model_catalog::read_only_catalog_modes_from_state(&settings, catalog_state.as_ref());
+    let mut inspection_settings = settings.clone();
+    for profile in &mut inspection_settings.relay_profiles {
+        profile.auth_contents.clear();
+    }
+    let inspections = inspect_profiles(
+        &inspection_settings,
+        &catalog_modes,
+        Some(request.profile_id.as_str()),
     )
     .map_err(|_| anyhow::anyhow!("provider inspection unavailable"))?;
-    let inspection = inspection_payload
-        .inspections
+    let inspection = inspections
         .first()
         .context("provider inspection unavailable")?;
-    let catalog_state = read_catalog_state(catalog_state_path)?;
-    let profile_catalog = catalog_state.profiles.get(&request.profile_id);
+    let profile_catalog = catalog_state
+        .as_ref()
+        .and_then(|state| state.profiles.get(&request.profile_id));
     let auth = codex_plus_core::relay_config::chatgpt_auth_status_from_home(codex_home);
 
     Ok(ProviderCapabilityEvidencePayload {
@@ -204,34 +233,56 @@ pub fn inspect_provider_capability_evidence_from_paths(
 pub async fn inspect_provider_capability_evidence(
     request: ProviderCapabilityEvidenceRequest,
 ) -> CommandResult<ProviderCapabilityEvidencePayload> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let result = inspect_provider_capability_evidence_from_paths(
+    tauri::async_runtime::spawn_blocking(move || match crate::live_state::lock() {
+        Ok(_guard) => inspect_provider_capability_evidence_command_from_paths(
             &codex_plus_core::paths::default_settings_path(),
             &crate::model_catalog::catalog_state_path(),
             &codex_plus_core::relay_config::default_codex_home_dir(),
             request,
-        );
-        match result {
-            Ok(payload) => CommandResult {
-                status: "ok".to_string(),
-                message: "供应商能力证据已读取。".to_string(),
-                payload,
-            },
-            Err(_) => CommandResult {
-                status: "failed".to_string(),
-                message: "供应商能力证据读取失败。".to_string(),
-                payload: ProviderCapabilityEvidencePayload::default(),
-            },
-        }
+        ),
+        Err(error) => capability_evidence_command_result(Err(error)),
     })
     .await
     .expect("blocking command panicked")
 }
 
-fn read_catalog_state(path: &Path) -> anyhow::Result<CatalogState> {
+pub fn inspect_provider_capability_evidence_command_from_paths(
+    settings_path: &Path,
+    catalog_state_path: &Path,
+    codex_home: &Path,
+    request: ProviderCapabilityEvidenceRequest,
+) -> CommandResult<ProviderCapabilityEvidencePayload> {
+    capability_evidence_command_result(inspect_provider_capability_evidence_from_paths(
+        settings_path,
+        catalog_state_path,
+        codex_home,
+        request,
+    ))
+}
+
+pub fn capability_evidence_command_result(
+    result: anyhow::Result<ProviderCapabilityEvidencePayload>,
+) -> CommandResult<ProviderCapabilityEvidencePayload> {
+    match result {
+        Ok(payload) => CommandResult {
+            status: "ok".to_string(),
+            message: "供应商能力证据已读取。".to_string(),
+            payload,
+        },
+        Err(_) => CommandResult {
+            status: "failed".to_string(),
+            message: "供应商能力证据读取失败。".to_string(),
+            payload: ProviderCapabilityEvidencePayload::default(),
+        },
+    }
+}
+
+fn read_catalog_state(path: &Path) -> anyhow::Result<Option<CatalogState>> {
     match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).context("catalog state invalid"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(CatalogState::default()),
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .context("catalog state invalid"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.into()),
     }
 }
@@ -276,7 +327,9 @@ fn actor_marker_evidence(
 
 fn catalog_model_evidence(state: Option<&ProfileCatalogState>) -> CatalogModelEvidence {
     match state {
-        Some(state) if state.action_required.is_some() => CatalogModelEvidence::Stale,
+        // action_required is intentionally free-form and may describe materialization, proxy,
+        // planning, or scope failures. It cannot support a specific stale-model claim.
+        Some(state) if state.action_required.is_some() => CatalogModelEvidence::Unknown,
         // A materialized catalog hash proves only that an artifact exists. It does not prove
         // capability metadata for the selected model, so remain conservative until that exact
         // metadata is projected by a trusted catalog evaluator.
@@ -297,7 +350,11 @@ fn route_evidence(relay_mode: RelayMode, state: NativeCapabilityState) -> Provid
         ProviderRouteEvidence::NativePriorityMixed
     } else if relay_mode == RelayMode::PureApi {
         ProviderRouteEvidence::KeyOnlyPureApi
-    } else {
+    } else if state == NativeCapabilityState::NotApplicable {
+        ProviderRouteEvidence::NotApplicable
+    } else if state == NativeCapabilityState::Compatibility {
         ProviderRouteEvidence::LegacyCompatibility
+    } else {
+        ProviderRouteEvidence::Unknown
     }
 }

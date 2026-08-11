@@ -1,7 +1,9 @@
 use codex_minus_lib::provider_capability_evidence::{
-    ActorMarkerEvidence, CatalogModelEvidence, ImagePlanEvidence, LocalPlanEvidence,
-    OAuthSessionEvidence, ProviderCapabilityEvidenceRequest, ProviderContractEvidence,
-    ProviderRouteEvidence, RuntimeEvidence, inspect_provider_capability_evidence_from_paths,
+    ActorMarkerEvidence, CatalogModelEvidence, FreePlanRule, ImageCapabilityPath,
+    ImagePlanEvidence, ImagePolicySource, LocalPlanEvidence, OAuthSessionEvidence,
+    ProviderCapabilityEvidenceRequest, ProviderContractEvidence, ProviderRouteEvidence,
+    RuntimeEvidence, inspect_provider_capability_evidence_command_from_paths,
+    inspect_provider_capability_evidence_from_paths,
 };
 use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol};
 
@@ -24,6 +26,12 @@ fn trusted_read_only_evidence_is_redacted_and_never_invents_target_policy() {
     let catalog_path = temp.path().join("model-catalog-state.json");
     let codex_home = temp.path().join("codex-home");
     std::fs::create_dir(&codex_home).unwrap();
+    let auth_path = codex_home.join("auth.json");
+    std::fs::write(
+        &auth_path,
+        br#"{"auth_mode":"chatgpt","tokens":{"refresh_token":"oauth-refresh-sentinel","account_id":"account-sentinel","email":"private@example.test"}}"#,
+    )
+    .unwrap();
     let mut profile = RelayProfile {
         id: "relay-one".to_string(),
         name: "Relay One".to_string(),
@@ -53,12 +61,13 @@ fn trusted_read_only_evidence_is_redacted_and_never_invents_target_policy() {
         &catalog_path,
         br#"{
           "target":{"clientVersion":"0.147.0-alpha.6.5","trusted":true},
-          "profiles":{"relay-one":{"mode":"official-plus-custom","modeExplicit":true,"generatedHash":"catalog-hash","restartRequired":true}}
+          "profiles":{"relay-one":{"mode":"official-plus-custom","modeExplicit":true,"generatedHash":"catalog-hash","restartRequired":true,"actionRequired":"materialization failed"}}
         }"#,
     )
     .unwrap();
     let settings_before = std::fs::read(&settings_path).unwrap();
     let catalog_before = std::fs::read(&catalog_path).unwrap();
+    let auth_before = std::fs::read(&auth_path).unwrap();
 
     let payload = inspect_provider_capability_evidence_from_paths(
         &settings_path,
@@ -71,10 +80,10 @@ fn trusted_read_only_evidence_is_redacted_and_never_invents_target_policy() {
     .unwrap();
 
     assert_eq!(payload.provider_contract, ProviderContractEvidence::Ready);
-    assert_eq!(payload.oauth_session, OAuthSessionEvidence::SignedOut);
+    assert_eq!(payload.oauth_session, OAuthSessionEvidence::SignedIn);
     assert_eq!(payload.local_plan, LocalPlanEvidence::Unknown);
     assert_eq!(payload.actor_marker, ActorMarkerEvidence::Eligible);
-    assert_eq!(payload.catalog_model, CatalogModelEvidence::MissingMetadata);
+    assert_eq!(payload.catalog_model, CatalogModelEvidence::Unknown);
     assert_eq!(payload.runtime, RuntimeEvidence::RestartRequired);
     assert_eq!(
         payload.route_kind,
@@ -85,6 +94,8 @@ fn trusted_read_only_evidence_is_redacted_and_never_invents_target_policy() {
     for forbidden in [
         "provider-key-sentinel",
         "oauth-token-sentinel",
+        "oauth-refresh-sentinel",
+        "account-sentinel",
         "private@example.test",
         "configContents",
         "authContents",
@@ -100,4 +111,96 @@ fn trusted_read_only_evidence_is_redacted_and_never_invents_target_policy() {
     }
     assert_eq!(std::fs::read(&settings_path).unwrap(), settings_before);
     assert_eq!(std::fs::read(&catalog_path).unwrap(), catalog_before);
+    assert_eq!(std::fs::read(&auth_path).unwrap(), auth_before);
+
+    std::fs::write(
+        &settings_path,
+        b"oauth-refresh-sentinel private@example.test",
+    )
+    .unwrap();
+    let failed = inspect_provider_capability_evidence_command_from_paths(
+        &settings_path,
+        &catalog_path,
+        &codex_home,
+        ProviderCapabilityEvidenceRequest {
+            profile_id: "relay-one".to_string(),
+        },
+    );
+    assert_eq!(failed.status, "failed");
+    assert_eq!(failed.payload.route_kind, ProviderRouteEvidence::Unknown);
+    let failed_json = serde_json::to_string(&failed).unwrap();
+    assert!(!failed_json.contains("oauth-refresh-sentinel"));
+    assert!(!failed_json.contains("private@example.test"));
+
+    let serialized_policy = serde_json::to_value(ImagePlanEvidence::VerifiedTargetPolicy {
+        policy_source: ImagePolicySource::TargetCliPolicy,
+        target_version: "0.147.0-alpha.6.5".to_string(),
+        capability_path: ImageCapabilityPath::ProviderRoutedImageActorMarker,
+        free_plan_rule: FreePlanRule::Blocked,
+    })
+    .unwrap();
+    assert_eq!(serialized_policy["kind"], "verifiedTargetPolicy");
+    assert_eq!(serialized_policy["policySource"], "targetCliPolicy");
+    assert_eq!(serialized_policy["targetVersion"], "0.147.0-alpha.6.5");
+    assert_eq!(
+        serialized_policy["capabilityPath"],
+        "providerRoutedImageActorMarker"
+    );
+    assert_eq!(serialized_policy["freePlanRule"], "blocked");
+}
+
+#[test]
+fn non_native_routes_are_not_collapsed_into_legacy_or_failure_defaults() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings_path = temp.path().join("settings.json");
+    let catalog_path = temp.path().join("model-catalog-state.json");
+    let codex_home = temp.path().join("codex-home");
+    std::fs::create_dir(&codex_home).unwrap();
+    let base = RelayProfile {
+        id: "pure-oauth".to_string(),
+        name: "Pure OAuth".to_string(),
+        relay_mode: RelayMode::Official,
+        official_mix_api_key: false,
+        protocol: RelayProtocol::Responses,
+        config_contents: String::new(),
+        ..RelayProfile::default()
+    };
+    let aggregate = RelayProfile {
+        id: "aggregate".to_string(),
+        name: "Aggregate".to_string(),
+        relay_mode: RelayMode::Aggregate,
+        ..RelayProfile::default()
+    };
+    let external = RelayProfile {
+        id: "external".to_string(),
+        name: "External".to_string(),
+        relay_mode: RelayMode::Official,
+        official_mix_api_key: true,
+        protocol: RelayProtocol::Responses,
+        config_contents: CONFIG.to_string(),
+        ..RelayProfile::default()
+    };
+    let settings = BackendSettings {
+        relay_profiles: vec![base, aggregate, external],
+        ..BackendSettings::default()
+    };
+    std::fs::write(&settings_path, serde_json::to_vec(&settings).unwrap()).unwrap();
+    std::fs::write(
+        &catalog_path,
+        br#"{"profiles":{"external":{"mode":"external","modeExplicit":true}}}"#,
+    )
+    .unwrap();
+
+    for profile_id in ["pure-oauth", "aggregate", "external"] {
+        let payload = inspect_provider_capability_evidence_from_paths(
+            &settings_path,
+            &catalog_path,
+            &codex_home,
+            ProviderCapabilityEvidenceRequest {
+                profile_id: profile_id.to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(payload.route_kind, ProviderRouteEvidence::NotApplicable);
+    }
 }

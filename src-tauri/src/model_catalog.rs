@@ -951,13 +951,17 @@ pub(crate) fn read_only_catalog_modes_from_path(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(error.into()),
     };
+    Ok(read_only_catalog_modes_from_state(settings, state.as_ref()))
+}
+
+pub(crate) fn read_only_catalog_modes_from_state(
+    settings: &BackendSettings,
+    state: Option<&CatalogState>,
+) -> BTreeMap<String, CatalogMode> {
     let mut modes = BTreeMap::new();
     for profile in &settings.relay_profiles {
         let pointer = root_catalog_pointer(&profile.config_contents);
-        let mode = match state
-            .as_ref()
-            .and_then(|state| state.profiles.get(&profile.id))
-        {
+        let mode = match state.and_then(|state| state.profiles.get(&profile.id)) {
             Some(profile_state) if profile_state.mode == CatalogMode::External => {
                 CatalogMode::External
             }
@@ -974,7 +978,7 @@ pub(crate) fn read_only_catalog_modes_from_path(
         };
         modes.insert(profile.id.clone(), mode);
     }
-    Ok(modes)
+    modes
 }
 
 pub(crate) fn persisted_catalog_mode_from_path(
