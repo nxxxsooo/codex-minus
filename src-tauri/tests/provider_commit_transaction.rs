@@ -234,6 +234,70 @@ enabled = true
 "#
 }
 
+fn semantic_context_tables(config: &str) -> BTreeMap<String, serde_json::Value> {
+    let document: serde_json::Value = toml_edit::de::from_str(config).unwrap();
+    ["mcp_servers", "skills", "plugins"]
+        .into_iter()
+        .map(|name| {
+            (
+                name.to_string(),
+                document
+                    .get(name)
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn successful_active_commit_preserves_context_semantics_and_auth_bytes() {
+    let active = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    let initial = settings_with(vec![active], "sub2api");
+    let fixture = Fixture::new(&initial, &state_with_official());
+    fs::write(
+        fixture.paths.codex_home.join("config.toml"),
+        rich_live_config(),
+    )
+    .unwrap();
+    let persisted = fixture.read_settings();
+    let context_before = semantic_context_tables(rich_live_config());
+    let auth_before = fs::read(fixture.paths.codex_home.join("auth.json")).unwrap();
+    let mut next = persisted.clone();
+    next.relay_profiles[0] = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://changed.example/v1",
+        "changed-provider-key",
+    );
+    let mut context_verifications = 0;
+
+    commit_provider_detail_from_paths_observed(
+        &fixture.paths,
+        request(&persisted, &next, "sub2api", ProviderCommitAction::Save, 56),
+        |checkpoint| {
+            if checkpoint == ProviderCommitCheckpoint::ContextVerification {
+                context_verifications += 1;
+            }
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    let live = fs::read_to_string(fixture.paths.codex_home.join("config.toml")).unwrap();
+    assert_eq!(context_verifications, 1);
+    assert_eq!(semantic_context_tables(&live), context_before);
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
+        auth_before
+    );
+}
+
 #[test]
 fn injected_normalization_failure_preserves_the_complete_prior_generation() {
     let active = canonical_profile(
