@@ -84,8 +84,10 @@ import {
   catalogDraftAvailability,
   managedCatalogCapable,
   providerDeleteAvailable,
+  providerCommitFailureShouldReconcileForm,
   registerProviderCommit,
   settleProviderCommit,
+  type ProviderCommitResponseDisposition,
   type ProfileCatalogDraft,
   type ProviderCommitUiState,
   type ProviderMutationKind,
@@ -1365,6 +1367,16 @@ export function App() {
   const submitProviderCommit = async (invocation: ReturnType<typeof buildProviderMutationInvocation>) => {
     const revision = invocation.request.draftRevision;
     providerCommitState.current = registerProviderCommit(providerCommitState.current, revision);
+    const reconcileTopologyFailure = async (disposition: ProviderCommitResponseDisposition) => {
+      if (!providerCommitFailureShouldReconcileForm(invocation.request.focusedProfileId, disposition)) return;
+      const baseline = providerCommitState.current.baseline;
+      if (baseline) {
+        setSettings(baseline);
+        setSettingsForm(normalizeSettings(baseline.settings));
+      } else {
+        await refreshSettings(true);
+      }
+    };
     let result: ProviderCommitResult;
     try {
       result = await call<ProviderCommitResult>(invocation.command, { request: invocation.request });
@@ -1372,6 +1384,7 @@ export function App() {
       const settled = settleProviderCommit(providerCommitState.current, revision, false, null);
       providerCommitState.current = settled.state;
       if (settled.disposition === "report") {
+        await reconcileTopologyFailure(settled.disposition);
         showNotice(t("调用失败"), stringifyError(error), "failed");
       }
       return false;
@@ -1398,6 +1411,7 @@ export function App() {
     providerCommitState.current = settled.state;
     if (settled.disposition === "ignore") return false;
     if (settled.disposition === "report") {
+      await reconcileTopologyFailure(settled.disposition);
       showNotice(t("保存供应商"), result.message, result.status);
       return false;
     }

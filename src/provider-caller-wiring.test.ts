@@ -18,6 +18,8 @@ describe("provider caller wiring", () => {
     assert.match(source, /actions\.switchRelayProfile\([\s\S]*?catalogDraft/);
     assert.match(source, /registerProviderCommit\(providerCommitState\.current, revision\)/);
     assert.match(source, /settleProviderCommit\(providerCommitState\.current/);
+    assert.match(source, /providerCommitFailureShouldReconcileForm\(invocation\.request\.focusedProfileId, disposition\)/);
+    assert.match(source, /await reconcileTopologyFailure\(settled\.disposition\)/);
     assert.match(source, /catalogDraftAvailability\(!isNew/);
     assert.match(source, /providerDeleteAvailable\(profile\.id/);
     assert.match(source, /catalogEditingAvailability\(isNew \|\| !!summary\?\.managedAvailable\)/);

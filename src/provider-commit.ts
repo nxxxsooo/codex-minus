@@ -121,6 +121,13 @@ export function providerCommitResponseDisposition(
   return succeeded ? "adopt-baseline" : "ignore";
 }
 
+export function providerCommitFailureShouldReconcileForm(
+  focusedProfileId: string | null,
+  disposition: ProviderCommitResponseDisposition,
+): boolean {
+  return focusedProfileId === null && disposition === "report";
+}
+
 export function registerProviderCommit<T>(state: ProviderCommitUiState<T>, revision: number): ProviderCommitUiState<T> {
   if (revision !== state.latestRevision + 1) throw new Error("provider commit revision is not the next submitted revision");
   return { ...state, latestRevision: revision };

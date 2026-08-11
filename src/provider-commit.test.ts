@@ -98,7 +98,16 @@ describe("provider-owned commit request", () => {
     settled = commitModule.settleProviderCommit(settled.state, 3, false, null);
     assert.equal(settled.disposition, "report");
     assert.equal(settled.state.baseline, "persisted-2");
+    assert.equal(
+      commitModule.providerCommitFailureShouldReconcileForm(null, settled.disposition),
+      true,
+    );
+    assert.equal(
+      commitModule.providerCommitFailureShouldReconcileForm("relay-a", settled.disposition),
+      false,
+    );
     assert.equal(commitModule.settleProviderCommit(settled.state, 2, false, null).disposition, "ignore");
+    assert.equal(commitModule.providerCommitFailureShouldReconcileForm(null, "ignore"), false);
   });
 
   it("builds the literal first-save envelope and supplies an implicit mixed catalog draft", () => {
