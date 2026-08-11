@@ -8,6 +8,7 @@ import type { CatalogModeValue } from "./model-catalog-ui.ts";
 export type ProviderCatalogMode = CatalogModeValue;
 
 export type ProviderDraftTransformAction =
+  | "inspect"
   | "enableNativePriority"
   | "exitPureApi"
   | "exitLegacyCompatibility"

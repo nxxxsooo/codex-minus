@@ -116,6 +116,8 @@ import {
 import {
   applyProviderDetailInspection,
   beginProviderDetailEdit,
+  beginProviderDetailInspection,
+  beginProviderDetailRawConfigEdit,
   createProviderDetailDraftState,
   endProviderDetailSession,
   replaceProviderDetailCatalogDraft,
@@ -124,6 +126,7 @@ import {
   settleProviderDetailTransformError,
   type ProviderDetailDraftState,
   type ProviderDetailInspectionMetadata,
+  type ProviderDetailStep,
   type ProviderDetailTransformInvocation,
   type ProviderDetailTransformResponse,
 } from "./provider-detail-draft-state";
@@ -3164,11 +3167,12 @@ function RelayProfileDetail({
     setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || ""));
     let cancelled = false;
     if (!isNew && !isAggregateRelayProfile(nextDraft)) {
+      const inspectionCorrelation = beginProviderDetailInspection(nextState);
       void actions.inspectProviderNativeCapabilities(profile.id).then((inspection) => {
         if (cancelled || !inspection) return;
         const applied = applyProviderDetailInspection(
           detailStateRef.current,
-          nextState.sessionToken,
+          inspectionCorrelation,
           inspection,
         );
         if (applied.disposition === "applied") updateDetailState(applied.state);
@@ -3192,6 +3196,7 @@ function RelayProfileDetail({
     if (
       detailStateRef.current.lifecycle === "active"
       && detailStateRef.current.profile.id === profile.id
+      && JSON.stringify(detailStateRef.current.catalogDraft) !== JSON.stringify(nextCatalogDraft)
     ) {
       updateDetailState(replaceProviderDetailCatalogDraft(detailStateRef.current, nextCatalogDraft));
     }
@@ -3215,6 +3220,35 @@ function RelayProfileDetail({
       return { action: "exitPureOAuth", confirmations: [] };
     }
     return { action: "enableNativePriority", confirmations: [] };
+  };
+  const dispatchProviderDetailStep = (step: ProviderDetailStep<RelayProfile>) => {
+    updateDetailState(step.state);
+    const effect = step.effects.find((candidate) => candidate.kind === "transform");
+    if (!effect || effect.kind !== "transform") return;
+    void actions.transformProviderNativeCapability(effect.invocation).then((response) => {
+      const settled = settleProviderDetailTransform(
+        detailStateRef.current,
+        effect.correlation,
+        response,
+      );
+      if (settled.disposition === "stale") return;
+      updateDetailState(settled.state);
+      if (settled.disposition === "notApplied") {
+        void actions.showMessage(
+          t("供应商配置转换"),
+          response.blockers.join("、") || t("当前供应商配置不能完成该转换。"),
+          "failed",
+        );
+      }
+    }).catch((error) => {
+      const settled = settleProviderDetailTransformError(
+        detailStateRef.current,
+        effect.correlation,
+      );
+      if (!settled.report) return;
+      updateDetailState(settled.state);
+      void actions.showMessage(t("供应商配置转换"), stringifyError(error), "failed");
+    });
   };
   const editDraft = (patch: Partial<RelayProfile>) => {
     let current = detailStateRef.current;
@@ -3257,33 +3291,16 @@ function RelayProfileDetail({
       void actions.showMessage(t("供应商配置转换"), stringifyError(error), "failed");
       return;
     }
-    updateDetailState(step.state);
-    const effect = step.effects.find((candidate) => candidate.kind === "transform");
-    if (!effect || effect.kind !== "transform") return;
-    void actions.transformProviderNativeCapability(effect.invocation).then((response) => {
-      const settled = settleProviderDetailTransform(
-        detailStateRef.current,
-        effect.correlation,
-        response,
-      );
-      if (settled.disposition === "stale") return;
-      updateDetailState(settled.state);
-      if (settled.disposition === "notApplied") {
-        void actions.showMessage(
-          t("供应商配置转换"),
-          response.blockers.join("、") || t("当前供应商配置不能完成该转换。"),
-          "failed",
-        );
-      }
-    }).catch((error) => {
-      const settled = settleProviderDetailTransformError(
-        detailStateRef.current,
-        effect.correlation,
-      );
-      if (!settled.report) return;
-      updateDetailState(settled.state);
-      void actions.showMessage(t("供应商配置转换"), stringifyError(error), "failed");
+    dispatchProviderDetailStep(step);
+  };
+  const editProviderConfigDraft = (configContents: string) => {
+    const current = detailStateRef.current;
+    const step = beginProviderDetailRawConfigEdit(current, {
+      configContents,
+      catalogMode: current.catalogDraft?.mode
+        ?? defaultCatalogMode(current.profile.relayMode, current.profile.officialMixApiKey),
     });
+    dispatchProviderDetailStep(step);
   };
   const newProviderFieldErrors = isNew && !isAggregateRelayProfile(draft)
     ? validateNewProviderDraft(draft)
@@ -3294,7 +3311,9 @@ function RelayProfileDetail({
       ? t("请填写所有必填字段。")
       : detailState.pendingTransformRevision !== null
         ? t("供应商配置转换中。")
-        : null;
+        : detailState.rawConfigContents !== null
+          ? t("供应商配置尚未通过后端验证。")
+          : null;
   const draftWithModelRows = () => {
     const serializedRows = serializeModelWindowRows(modelWindowRows);
     return { ...draft, modelList: serializedRows.modelList, modelWindows: serializedRows.modelWindows };
@@ -3418,10 +3437,12 @@ function RelayProfileDetail({
       )}
       {isAggregateRelayProfile(draft) ? null : (
       <RelayFileEditors
-        profile={draft}
+        profile={detailState.rawConfigContents === null
+          ? draft
+          : { ...draft, configContents: detailState.rawConfigContents }}
         authStatus={isActive ? relayFiles?.authStatus ?? null : null}
         liveConfigContents={relayFiles?.configContents ?? ""}
-        onProfileChange={replaceDraft}
+        onProviderConfigChange={editProviderConfigDraft}
       />
       )}
     </div>
@@ -3856,12 +3877,12 @@ function RelayFileEditors({
   profile,
   authStatus,
   liveConfigContents,
-  onProfileChange,
+  onProviderConfigChange,
 }: {
   profile: RelayProfile;
   authStatus: RelayFilesResult["authStatus"] | null;
   liveConfigContents: string;
-  onProfileChange: (value: RelayProfile) => void;
+  onProviderConfigChange: (configContents: string) => void;
 }) {
   const nativeOfficial = profile.relayMode === "official" && !profile.officialMixApiKey;
   const providerConfig = profile.configContents;
@@ -3873,10 +3894,7 @@ function RelayFileEditors({
         liveTitle={t("实时 config.toml")}
         nativeOfficial={nativeOfficial}
         nativeProviderMessage={t("官方原生模式无独立供应商配置；运行时使用右侧实时 config.toml。")}
-        onProviderConfigChange={(configContents) => onProfileChange(deriveRelayProfileFromFiles({
-          ...profile,
-          configContents,
-        }))}
+        onProviderConfigChange={onProviderConfigChange}
         providerConfig={providerConfig}
         providerHelp={t("只保存模型、供应商、Base URL、目录指针和供应商表；全局配置实时读取。")}
         providerTitle={t("供应商配置")}

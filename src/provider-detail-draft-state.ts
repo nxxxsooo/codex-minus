@@ -40,6 +40,7 @@ export type ProviderDetailDraftState<P extends ProviderDetailProfile> = {
   inspection: ProviderDetailInspectionMetadata | null;
   preview: ProviderDetailTransformPreview | null;
   blockers: string[];
+  rawConfigContents: string | null;
 };
 
 export type ProviderDetailTransformInvocation<P extends ProviderDetailProfile> = {
@@ -60,6 +61,8 @@ export type ProviderDetailTransformCorrelation = {
   profileId: string;
   revision: number;
 };
+
+export type ProviderDetailInspectionCorrelation = ProviderDetailTransformCorrelation;
 
 export type ProviderDetailStep<P extends ProviderDetailProfile> = {
   state: ProviderDetailDraftState<P>;
@@ -83,6 +86,7 @@ export function createProviderDetailDraftState<P extends ProviderDetailProfile>(
     inspection: null,
     preview: null,
     blockers: [],
+    rawConfigContents: null,
   };
 }
 
@@ -95,6 +99,9 @@ export function beginProviderDetailEdit<P extends ProviderDetailProfile>(
   },
 ): ProviderDetailStep<P> {
   assertActive(state);
+  if (state.rawConfigContents !== null) {
+    throw new Error("Verify the raw provider config draft before editing structured fields.");
+  }
   const revision = state.latestTransformRevision + 1;
   const routed = routeProviderConfigDraftEdit({
     profile: state.profile,
@@ -139,6 +146,62 @@ export function beginProviderDetailEdit<P extends ProviderDetailProfile>(
         profileId: state.profile.id,
         revision,
       },
+    }],
+  };
+}
+
+export function beginProviderDetailInspection<P extends ProviderDetailProfile>(
+  state: ProviderDetailDraftState<P>,
+): ProviderDetailInspectionCorrelation {
+  assertActive(state);
+  return {
+    sessionToken: state.sessionToken,
+    profileId: state.profile.id,
+    revision: state.latestTransformRevision,
+  };
+}
+
+export function beginProviderDetailRawConfigEdit<P extends ProviderDetailProfile>(
+  state: ProviderDetailDraftState<P>,
+  input: {
+    configContents: string;
+    catalogMode: ProviderDraftTransformRequest<P>["catalogMode"];
+  },
+): ProviderDetailStep<P> {
+  assertActive(state);
+  const revision = state.latestTransformRevision + 1;
+  const correlation = {
+    sessionToken: state.sessionToken,
+    profileId: state.profile.id,
+    revision,
+  };
+  return {
+    state: {
+      ...state,
+      latestTransformRevision: revision,
+      pendingTransformRevision: revision,
+      inspection: null,
+      preview: null,
+      blockers: [],
+      rawConfigContents: input.configContents,
+    },
+    effects: [{
+      kind: "transform",
+      invocation: {
+        command: "transform_provider_native_capability_draft",
+        request: {
+          draftRevision: revision,
+          profile: {
+            ...state.profile,
+            configContents: input.configContents,
+            authContents: "",
+          },
+          catalogMode: input.catalogMode,
+          action: "inspect",
+          confirmations: [],
+        },
+      },
+      correlation,
     }],
   };
 }
@@ -192,6 +255,7 @@ export function settleProviderDetailTransform<P extends ProviderDetailProfile>(
       inspection: response.inspection,
       preview: response.preview,
       blockers: [],
+      rawConfigContents: null,
     },
     effects: [],
     disposition: "applied",
@@ -221,12 +285,14 @@ export function settleProviderDetailTransformError<P extends ProviderDetailProfi
 
 export function applyProviderDetailInspection<P extends ProviderDetailProfile>(
   state: ProviderDetailDraftState<P>,
-  sessionToken: symbol,
+  correlation: ProviderDetailInspectionCorrelation,
   inspection: ProviderDetailInspectionMetadata,
 ): ProviderDetailStep<P> & { disposition: "applied" | "stale" } {
   if (
     state.lifecycle !== "active"
-    || sessionToken !== state.sessionToken
+    || correlation.sessionToken !== state.sessionToken
+    || correlation.profileId !== state.profile.id
+    || correlation.revision !== state.latestTransformRevision
     || inspection.profileId !== state.profile.id
   ) {
     return { state, effects: [], disposition: "stale" };
@@ -254,6 +320,7 @@ export function replaceProviderDetailProfile<P extends ProviderDetailProfile>(
     inspection: null,
     preview: null,
     blockers: [],
+    rawConfigContents: null,
   };
 }
 
@@ -265,7 +332,15 @@ export function replaceProviderDetailCatalogDraft<P extends ProviderDetailProfil
   if (catalogDraft && catalogDraft.profileId !== state.profile.id) {
     throw new Error("Provider detail catalog draft belongs to another profile.");
   }
-  return { ...state, catalogDraft };
+  return {
+    ...state,
+    catalogDraft,
+    latestTransformRevision: state.latestTransformRevision + 1,
+    pendingTransformRevision: null,
+    inspection: null,
+    preview: null,
+    blockers: [],
+  };
 }
 
 export function endProviderDetailSession<P extends ProviderDetailProfile>(
@@ -297,6 +372,9 @@ export function buildProviderDetailCommitEffect<P extends ProviderDetailProfile>
   }
   if (state.pendingTransformRevision !== null) {
     throw new Error("Cannot commit while a provider draft transform is pending.");
+  }
+  if (state.rawConfigContents !== null) {
+    throw new Error("Cannot commit an unverified raw provider config draft.");
   }
   const existingIndex = input.settings.relayProfiles.findIndex(
     (candidate) => candidate.id === state.profile.id,
