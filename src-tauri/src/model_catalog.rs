@@ -475,7 +475,10 @@ pub(crate) fn applied_runtime_fingerprint(
             )
         } else {
             ensure!(
-                profile_state.mode == CatalogMode::NativeOfficial,
+                matches!(
+                    profile_state.mode,
+                    CatalogMode::NativeOfficial | CatalogMode::External
+                ),
                 "managed provider runtime identity is missing"
             );
             (
@@ -4075,6 +4078,18 @@ http_headers = {{ {actor}"x-unrelated" = "{unrelated_header}" }}
         assert_ne!(
             applied_runtime_fingerprint(&profile, &external_a).unwrap(),
             applied_runtime_fingerprint(&profile, &external_b).unwrap()
+        );
+        let external_pure_oauth = RelayProfile {
+            id: "external-pure-oauth".to_string(),
+            name: "External pure OAuth".to_string(),
+            protocol: codex_plus_core::settings::RelayProtocol::Responses,
+            config_contents: "model = \"native-model\"\n".to_string(),
+            ..RelayProfile::default()
+        };
+        assert!(
+            applied_runtime_fingerprint(&external_pure_oauth, &external_a)
+                .unwrap()
+                .starts_with("sha256:")
         );
         let mut external_noise = external_a.clone();
         external_noise.generated_hash =
