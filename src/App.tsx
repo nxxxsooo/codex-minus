@@ -80,6 +80,9 @@ import {
 } from "./catalog-profile-draft";
 import {
   buildProviderMutationInvocation,
+  catalogDraftAvailability,
+  providerCommitResponseIsCurrent,
+  providerDeleteAvailable,
   type ProfileCatalogDraft,
   type ProviderMutationKind,
 } from "./provider-commit";
@@ -1327,8 +1330,9 @@ export function App() {
     return result && isSuccessStatus(result.status) ? result.models : null;
   };
 
-  const catalogDraftForProfile = (profile: RelayProfile): ProfileCatalogDraft => {
+  const catalogDraftForProfile = (profile: RelayProfile): ProfileCatalogDraft | null => {
     const summary = modelCatalog?.profiles.find((item) => item.profileId === profile.id) ?? null;
+    if (!summary) return null;
     return catalogProfileDraft({
       profileId: profile.id,
       fallbackMode: defaultCatalogMode(profile.relayMode, profile.officialMixApiKey) as CatalogMode,
@@ -1345,6 +1349,9 @@ export function App() {
 
   const submitProviderCommit = async (invocation: ReturnType<typeof buildProviderMutationInvocation>) => {
     const result = await run(() => call<ProviderCommitResult>(invocation.command, { request: invocation.request }));
+    if (result && !providerCommitResponseIsCurrent(result.draftRevision, providerDraftRevision.current)) {
+      return false;
+    }
     if (!result || !isSuccessStatus(result.status) || !result.settings) {
       if (result) showNotice(t("保存供应商"), result.message, result.status);
       return false;
@@ -1472,12 +1479,20 @@ export function App() {
     });
     setRelaySwitching(true);
     try {
+      const selectedCatalogDraft = isAggregateRelayProfile(selectedAfterSave)
+        || selectedAfterSave.protocol === "chatCompletions"
+        ? null
+        : catalogDraftOverride ?? catalogDraftForProfile(selectedAfterSave);
+      if (!isAggregateRelayProfile(selectedAfterSave)
+        && selectedAfterSave.protocol !== "chatCompletions"
+        && !selectedCatalogDraft) {
+        showNotice(t("模型目录不可用"), t("当前供应商的完整模型目录状态尚未加载，请刷新后重试。"), "failed");
+        return;
+      }
       const committed = await commitProviderDetail(
         switchSettings,
         selectedAfterSave.id,
-        isAggregateRelayProfile(selectedAfterSave) || selectedAfterSave.protocol === "chatCompletions"
-          ? null
-          : catalogDraftOverride ?? catalogDraftForProfile(selectedAfterSave),
+        selectedCatalogDraft,
         true,
         "setCurrent",
         confirmContextCleanup,
@@ -2147,6 +2162,7 @@ function CatalogProfileEditor({
   onDraftChange,
   profile,
   summary,
+  isNew = false,
   actions,
 }: {
   catalog: ModelCatalogStatusResult | null;
@@ -2154,12 +2170,13 @@ function CatalogProfileEditor({
   onDraftChange: (draft: ProfileCatalogDraft) => void;
   profile: RelayProfile;
   summary: ProfileCatalogSummary | null;
+  isNew?: boolean;
   actions: Actions;
 }) {
   const { mode, modeExplicit, upstreamTopology, overlay } = draft;
-  const editingAvailability = catalogEditingAvailability(false);
+  const editingAvailability = catalogEditingAvailability(isNew || !!summary?.managedAvailable);
 
-  if (!summary?.managedAvailable) {
+  if (!isNew && !summary?.managedAvailable) {
     return (
       <section className="catalog-profile-editor unavailable">
         <div className="catalog-editor-head">
@@ -2864,6 +2881,7 @@ function SortableRelayProfileCard({
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: profile.id });
   const active = profile.id === form.activeRelayId;
+  const deleteAvailable = providerDeleteAvailable(profile.id, form.activeRelayId, form.relayProfiles.length);
   const style: CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -2953,13 +2971,13 @@ function SortableRelayProfileCard({
             <Copy className="h-4 w-4" />
           </Button>
           <Button
-            disabled={form.relayProfiles.length <= 1}
+            disabled={!deleteAvailable}
             onClick={(event) => {
               event.stopPropagation();
               onFormChange(removeRelayProfile(form, profile.id), "delete");
             }}
             size="icon"
-            title={t("删除供应商")}
+            title={active ? t("当前供应商不能直接删除，请先切换到其他供应商。") : t("删除供应商")}
             variant="ghost"
           >
             <Trash2 className="h-4 w-4" />
@@ -3001,11 +3019,15 @@ function RelayProfileDetail({
     profile.relayMode,
     profile.officialMixApiKey,
   ) as CatalogMode;
-  const [catalogDraft, setCatalogDraft] = useState<ProfileCatalogDraft>(() => catalogProfileDraft({
-    profileId: profile.id,
-    fallbackMode: fallbackCatalogMode,
-    summary: catalogProfile,
-  }));
+  const [catalogDraft, setCatalogDraft] = useState<ProfileCatalogDraft | null>(() => (
+    isNew || catalogProfile
+      ? catalogProfileDraft({
+          profileId: profile.id,
+          fallbackMode: fallbackCatalogMode,
+          summary: catalogProfile,
+        })
+      : null
+  ));
   const isActive = !isNew && profile.id === form.activeRelayId;
   useEffect(() => {
     const nextDraft = isAggregateRelayProfile(profile)
@@ -3019,12 +3041,14 @@ function RelayProfileDetail({
     setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || ""));
   }, [profile.id, profile.configContents, profile.modelList, profile.modelWindows]);
   useEffect(() => {
-    setCatalogDraft(catalogProfileDraft({
-      profileId: profile.id,
-      fallbackMode: defaultCatalogMode(profile.relayMode, profile.officialMixApiKey) as CatalogMode,
-      summary: catalogProfile,
-    }));
-  }, [profile.id, catalogProfile?.effectiveHash]);
+    setCatalogDraft(isNew || catalogProfile
+      ? catalogProfileDraft({
+          profileId: profile.id,
+          fallbackMode: defaultCatalogMode(profile.relayMode, profile.officialMixApiKey) as CatalogMode,
+          summary: catalogProfile,
+        })
+      : null);
+  }, [profile.id, isNew, catalogProfile?.effectiveHash]);
   const newProviderFieldErrors = isNew && !isAggregateRelayProfile(draft)
     ? validateNewProviderDraft(draft)
     : {};
@@ -3047,8 +3071,20 @@ function RelayProfileDetail({
       ? addRelayProfile(form, normalizedDraft)
       : updateRelayProfile(form, profile.id, normalizedDraft);
     try {
+      const catalogCapable = !isAggregateRelayProfile(normalizedDraft)
+        && normalizedDraft.protocol !== "chatCompletions";
+      const catalogAvailability = catalogDraftAvailability(!isNew, catalogCapable, !!catalogProfile);
+      if (catalogAvailability === "unavailable" || (catalogCapable && !catalogDraft)) {
+        await actions.showMessage(
+          t("模型目录不可用"),
+          t("当前供应商的完整模型目录状态尚未加载，请刷新后重试。"),
+          "failed",
+        );
+        return;
+      }
       const managedCatalog = !isAggregateRelayProfile(normalizedDraft)
         && normalizedDraft.protocol !== "chatCompletions"
+        && !!catalogDraft
         && managedCatalogMode(catalogDraft.mode);
       const contextConflicts = isActive && managedCatalog
         ? managedContextConflictKeys(normalizedDraft.configContents)
@@ -3088,7 +3124,7 @@ function RelayProfileDetail({
     void actions.switchRelayProfile(
       next,
       previousActiveRelayId,
-      isAggregateRelayProfile(normalizedDraft) || normalizedDraft.protocol === "chatCompletions"
+      isAggregateRelayProfile(normalizedDraft) || normalizedDraft.protocol === "chatCompletions" || !catalogDraft
         ? undefined
         : catalogDraft,
     );
@@ -3113,15 +3149,26 @@ function RelayProfileDetail({
         </Toolbar>
       </div>
         <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={setDraft} onSwitch={switchDraft} actions={actions} modelWindowRows={modelWindowRows} setModelWindowRows={setModelWindowRows} catalogProfile={catalogProfile} />
-      {isNew || isAggregateRelayProfile(draft) ? null : (
+      {isAggregateRelayProfile(draft) ? null : catalogDraft ? (
         <CatalogProfileEditor
           catalog={modelCatalog}
           draft={catalogDraft}
-          onDraftChange={setCatalogDraft}
+          onDraftChange={(next) => setCatalogDraft(next)}
           profile={draft}
           summary={catalogProfile}
+          isNew={isNew}
           actions={actions}
         />
+      ) : (
+        <section className="catalog-profile-editor unavailable">
+          <div className="catalog-editor-head">
+            <div>
+              <strong>{t("模型目录")}</strong>
+              <span>{t("当前供应商的完整模型目录状态尚未加载，请刷新后重试。")}</span>
+            </div>
+            <UiBadge variant="outline">{t("不可用")}</UiBadge>
+          </div>
+        </section>
       )}
       {isAggregateRelayProfile(draft) ? null : (
       <RelayFileEditors

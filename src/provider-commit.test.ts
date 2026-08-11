@@ -62,6 +62,19 @@ function settingsWith(profiles: Array<ProviderRelayProfileSource & Record<string
 }
 
 describe("provider-owned commit request", () => {
+  it("fails closed for stale responses, missing existing catalog state, and active deletion", () => {
+    assert.ok(commitModule, "provider UI safety helpers must exist");
+    assert.equal(commitModule.providerCommitResponseIsCurrent(8, 9), false);
+    assert.equal(commitModule.providerCommitResponseIsCurrent(9, 9), true);
+    assert.equal(commitModule.catalogDraftAvailability(true, true, false), "unavailable");
+    assert.equal(commitModule.catalogDraftAvailability(true, true, true), "persisted");
+    assert.equal(commitModule.catalogDraftAvailability(false, true, false), "implicit");
+    assert.equal(commitModule.catalogDraftAvailability(true, false, false), "not-required");
+    assert.equal(commitModule.providerDeleteAvailable("relay-a", "relay-a", 2), false);
+    assert.equal(commitModule.providerDeleteAvailable("relay-b", "relay-a", 2), true);
+    assert.equal(commitModule.providerDeleteAvailable("relay-b", "relay-a", 1), false);
+  });
+
   it("builds the literal first-save envelope and supplies an implicit mixed catalog draft", () => {
     assert.ok(commitModule, "provider commit request builders must exist");
     const request = commitModule.buildProviderDetailRequest({

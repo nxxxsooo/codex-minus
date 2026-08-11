@@ -16,6 +16,10 @@ describe("provider caller wiring", () => {
     assert.match(source, /removeRelayProfile\(form, profile\.id\), "delete"/);
     assert.match(source, /actions\.commitProviderDetail\([\s\S]*?"detailSave"/);
     assert.match(source, /actions\.switchRelayProfile\([\s\S]*?catalogDraft/);
+    assert.match(source, /providerCommitResponseIsCurrent\(result\.draftRevision/);
+    assert.match(source, /catalogDraftAvailability\(!isNew/);
+    assert.match(source, /providerDeleteAvailable\(profile\.id/);
+    assert.match(source, /catalogEditingAvailability\(isNew \|\| !!summary\?\.managedAvailable\)/);
     assert.doesNotMatch(source, /call<RelaySwitchResult>\("switch_relay_profile"/);
     assert.doesNotMatch(source, /call<RelaySwitchResult>\("save_active_relay_profile"/);
     assert.doesNotMatch(source, /relayProfileSwitchCommand/);

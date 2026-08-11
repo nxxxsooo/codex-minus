@@ -99,6 +99,26 @@ export type ProviderCommitInvocation = {
   request: ProviderCommitRequest;
 };
 
+export type CatalogDraftAvailability = "not-required" | "implicit" | "persisted" | "unavailable";
+
+export function providerCommitResponseIsCurrent(responseRevision: number, latestRevision: number): boolean {
+  return responseRevision === latestRevision;
+}
+
+export function catalogDraftAvailability(
+  profileWasPersisted: boolean,
+  catalogCapable: boolean,
+  persistedSummaryAvailable: boolean,
+): CatalogDraftAvailability {
+  if (!catalogCapable) return "not-required";
+  if (!profileWasPersisted) return "implicit";
+  return persistedSummaryAvailable ? "persisted" : "unavailable";
+}
+
+export function providerDeleteAvailable(profileId: string, activeProfileId: string, profileCount: number): boolean {
+  return profileCount > 1 && profileId !== activeProfileId;
+}
+
 type CatalogDraftSource = ProfileCatalogDraft & Record<string, unknown>;
 
 type CommonBuilderInput = {
