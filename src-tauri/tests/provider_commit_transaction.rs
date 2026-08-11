@@ -250,6 +250,30 @@ fn semantic_context_tables(config: &str) -> BTreeMap<String, serde_json::Value> 
         .collect()
 }
 
+fn unrelated_live_semantics(config: &str) -> BTreeMap<String, serde_json::Value> {
+    let document: serde_json::Value = toml_edit::de::from_str(config).unwrap();
+    document
+        .as_object()
+        .unwrap()
+        .iter()
+        .filter(|(name, _)| {
+            !matches!(
+                name.as_str(),
+                "model"
+                    | "model_provider"
+                    | "model_catalog_json"
+                    | "base_url"
+                    | "OPENAI_API_KEY"
+                    | "model_context_window"
+                    | "model_auto_compact_token_limit"
+                    | "codex_plus_chat_base_url"
+                    | "model_providers"
+            )
+        })
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect()
+}
+
 #[test]
 fn successful_active_commit_preserves_context_semantics_and_auth_bytes() {
     let active = canonical_profile(
@@ -605,6 +629,60 @@ fn concurrent_official_auth_update_is_preserved_while_manager_targets_roll_back(
     let mut manager_after = fixture.file_generation();
     manager_after.remove("codex-home/auth.json").unwrap();
     assert_eq!(manager_after, manager_before);
+}
+
+#[test]
+fn active_commit_re_grafts_live_globals_and_rejects_profile_global_injection() {
+    let active = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    let initial = settings_with(vec![active], "sub2api");
+    let fixture = Fixture::new(&initial, &state_with_official());
+    fs::write(
+        fixture.paths.codex_home.join("config.toml"),
+        rich_live_config(),
+    )
+    .unwrap();
+    let persisted = fixture.read_settings();
+    let live_globals_before = unrelated_live_semantics(rich_live_config());
+    let mut injected = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://changed.example/v1",
+        "changed-provider-key",
+    );
+    let mut document = injected
+        .config_contents
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap();
+    document["review_model"] = toml_edit::value("profile-review-must-not-leak");
+    document["model_reasoning_effort"] = toml_edit::value("low");
+    document["sandbox_mode"] = toml_edit::value("danger-full-access");
+    document["network_access"] = toml_edit::value("disabled");
+    document["windows_wsl_setup_acknowledged"] = toml_edit::value(false);
+    document["features"]["goals"] = toml_edit::value(true);
+    document["profile_only_table"]["leak"] = toml_edit::value("must-not-leak");
+    document["mcp_servers"]["intruder"]["command"] = toml_edit::value("must-not-leak");
+    injected.config_contents = document.to_string();
+    let mut next = persisted.clone();
+    next.relay_profiles[0] = injected;
+
+    commit_provider_detail_from_paths_observed(
+        &fixture.paths,
+        request(&persisted, &next, "sub2api", ProviderCommitAction::Save, 58),
+        |_| Ok(()),
+    )
+    .unwrap();
+
+    let live = fs::read_to_string(fixture.paths.codex_home.join("config.toml")).unwrap();
+    assert_eq!(unrelated_live_semantics(&live), live_globals_before);
+    assert!(!live.contains("profile-review-must-not-leak"));
+    assert!(!live.contains("must-not-leak"));
+    let saved = fixture.read_settings();
+    assert!(unrelated_live_semantics(&saved.relay_profiles[0].config_contents).is_empty());
 }
 
 #[test]
