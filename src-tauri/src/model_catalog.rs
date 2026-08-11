@@ -3001,6 +3001,24 @@ mod tests {
             ),
             CatalogMode::External
         );
+        let mut missing_official_base_url = official_mixed.clone();
+        missing_official_base_url.base_url.clear();
+        assert!(
+            validate_upstream_topology(
+                &missing_official_base_url,
+                UpstreamTopology::ServerSideComposite,
+            )
+            .is_err()
+        );
+        let mut missing_official_key = official_mixed.clone();
+        missing_official_key.api_key.clear();
+        assert!(
+            validate_upstream_topology(
+                &missing_official_key,
+                UpstreamTopology::ServerSideComposite,
+            )
+            .is_err()
+        );
 
         let pure_oauth = RelayProfile {
             relay_mode: RelayMode::Official,

@@ -9,6 +9,37 @@ const nativeCapabilitySource = readFileSync(
 );
 const handler = source.match(/\.invoke_handler\(tauri::generate_handler!\[([\s\S]*?)\]\)/)?.[1];
 
+const allowedNativeCatalogApis = new Set([
+  "catalog_state_path",
+  "default_catalog_mode_for_profile",
+  "persisted_catalog_mode_from_path",
+  "read_only_catalog_modes_from_path",
+]);
+
+function nativeCatalogAuthorityViolations(candidate: string): string[] {
+  const violations: string[] = [];
+  const catalogImports = candidate.match(/^\s*(?:pub\s+)?use\s+[^;]*model_catalog[^;]*;/gm) ?? [];
+  if (catalogImports.some((entry) => entry.trim() !== "pub use crate::model_catalog::CatalogMode;")) {
+    violations.push("catalog-authority-import");
+  }
+
+  const disallowedQualifiedApis = [...candidate.matchAll(/crate::model_catalog::([a-z_]+)/g)]
+    .map((match) => match[1])
+    .filter((name, index, names) => names.indexOf(name) === index)
+    .filter((name) => !allowedNativeCatalogApis.has(name));
+  const localAuthoritySymbol = /\b(?:[A-Z][A-Z0-9_]*(?:CATALOG|BASELINE|UPDATE_CHANNEL)[A-Z0-9_]*|(?:refresh|compose|materialize|update|write)_[a-z0-9_]*catalog[a-z0-9_]*)\b/;
+  if (disallowedQualifiedApis.length > 0 || localAuthoritySymbol.test(candidate)) {
+    violations.push("catalog-authority-symbol");
+  }
+  if (/\binclude_(?:str|bytes)!\s*\(/.test(candidate)) {
+    violations.push("catalog-bundled-source");
+  }
+  if (/\b(?:std::fs::write|fs::write|File::create|OpenOptions)\b/.test(candidate)) {
+    violations.push("catalog-write-surface");
+  }
+  return violations;
+}
+
 describe("provider command registration boundary", () => {
   it("exposes only the unified provider commit and explicit external-adoption write paths", () => {
     assert.ok(handler, "the Tauri invoke handler must remain statically auditable");
@@ -38,15 +69,24 @@ describe("provider command registration boundary", () => {
     ]);
     assert.match(handler, /model_catalog::refresh_official_model_catalog/);
 
-    const catalogApis = [...nativeCapabilitySource.matchAll(/crate::model_catalog::([a-z_]+)/g)]
-      .map((match) => match[1])
-      .filter((name, index, names) => names.indexOf(name) === index)
-      .sort();
-    assert.deepEqual(catalogApis, [
-      "catalog_state_path",
-      "default_catalog_mode_for_profile",
-      "persisted_catalog_mode_from_path",
-      "read_only_catalog_modes_from_path",
+    assert.deepEqual(nativeCatalogAuthorityViolations(nativeCapabilitySource), []);
+  });
+
+  it("rejects imported, aliased, or locally bundled catalog authority", () => {
+    const competingAuthority = `
+      use crate::model_catalog::refresh_official_model_catalog as refresh;
+      const OFFICIAL_CATALOG_BASELINE: &str = include_str!("official-models.json");
+      fn refresh_native_catalog() {
+        std::fs::write("models.json", OFFICIAL_CATALOG_BASELINE).unwrap();
+        let _ = refresh();
+      }
+    `;
+
+    assert.deepEqual(nativeCatalogAuthorityViolations(competingAuthority), [
+      "catalog-authority-import",
+      "catalog-authority-symbol",
+      "catalog-bundled-source",
+      "catalog-write-surface",
     ]);
   });
 });
