@@ -1196,6 +1196,107 @@ fn generic_settings_save_rejects_a_concurrent_persisted_provider_generation_chan
 }
 
 #[test]
+fn topology_adapter_commits_list_mutations_through_the_shared_provider_transaction() {
+    let a = canonical_profile(
+        "relay-a",
+        "official-a",
+        "https://a.example/v1",
+        "provider-key-a",
+    );
+    let b = canonical_profile(
+        "relay-b",
+        "official-a",
+        "https://b.example/v1",
+        "provider-key-b",
+    );
+    let c = canonical_profile(
+        "relay-c",
+        "official-a",
+        "https://c.example/v1",
+        "provider-key-c",
+    );
+    let aggregate = RelayProfile {
+        id: "aggregate".to_string(),
+        name: "Aggregate".to_string(),
+        relay_mode: RelayMode::Aggregate,
+        ..RelayProfile::default()
+    };
+    let mut initial = settings_with(vec![a.clone(), b.clone(), c, aggregate.clone()], "relay-a");
+    initial.aggregate_relay_profiles = vec![AggregateRelayProfile {
+        id: "aggregate".to_string(),
+        name: "Aggregate".to_string(),
+        strategy: AggregateRelayStrategy::Failover,
+        members: vec![
+            AggregateRelayMember {
+                relay_id: "relay-b".to_string(),
+                weight: 2,
+            },
+            AggregateRelayMember {
+                relay_id: "relay-c".to_string(),
+                weight: 1,
+            },
+        ],
+    }];
+    let fixture = Fixture::new(&initial, &state_with_official());
+    let persisted = fixture.read_settings();
+    let mut copy = b.clone();
+    copy.id = "relay-copy".to_string();
+    copy.name = "Relay B copy".to_string();
+    let mut next = settings_with(vec![b, a, copy, aggregate], "relay-a");
+    next.relay_profiles_enabled = false;
+    next.relay_test_model = "topology-test-model".to_string();
+    next.aggregate_relay_profiles = vec![AggregateRelayProfile {
+        id: "aggregate".to_string(),
+        name: "Aggregate".to_string(),
+        strategy: AggregateRelayStrategy::Failover,
+        members: vec![AggregateRelayMember {
+            relay_id: "relay-b".to_string(),
+            weight: 2,
+        }],
+    }];
+    let request = ProviderCommitRequest {
+        topology: ProviderOwnedTopologyDraft::from_settings(&next),
+        catalog_drafts: vec![catalog_draft("relay-copy")],
+        focused_profile_id: None,
+        action: ProviderCommitAction::Save,
+        previous_active_relay_id: persisted.active_relay_id.clone(),
+        confirm_context_cleanup: false,
+        draft_revision: 41,
+        expected_provider_fingerprint: provider_owned_fingerprint(
+            &ProviderOwnedTopologyDraft::from_settings(&persisted),
+        )
+        .unwrap(),
+    };
+    let live_before = fs::read(fixture.paths.codex_home.join("config.toml")).unwrap();
+    let auth_before = fs::read(fixture.paths.codex_home.join("auth.json")).unwrap();
+
+    let payload = commit_provider_detail_from_paths(&fixture.paths, request).unwrap();
+
+    let saved = fixture.read_settings();
+    assert_eq!(payload.draft_revision, 41);
+    assert!(!payload.restart_required);
+    assert!(!saved.relay_profiles_enabled);
+    assert_eq!(saved.relay_test_model, "topology-test-model");
+    assert_eq!(
+        saved
+            .relay_profiles
+            .iter()
+            .map(|profile| profile.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["relay-b", "relay-a", "relay-copy", "aggregate"]
+    );
+    assert_eq!(saved.aggregate_relay_profiles[0].members.len(), 1);
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join("config.toml")).unwrap(),
+        live_before
+    );
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
+        auth_before
+    );
+}
+
+#[test]
 fn persisted_legacy_auth_migrates_only_api_key_only_payloads() {
     let active = pure_oauth_profile("official");
     let mut api_only =

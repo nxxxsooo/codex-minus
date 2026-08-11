@@ -2332,7 +2332,9 @@ pub fn commit_provider_detail_from_paths_observed(
     mut observe: impl FnMut(ProviderCommitCheckpoint) -> anyhow::Result<()>,
 ) -> Result<ProviderCommitPayload, ProviderCommitFailure> {
     use crate::model_catalog::CatalogMode;
-    use crate::provider_commit::{ProviderOwnedTopologyDraft, plan_provider_detail_commit};
+    use crate::provider_commit::{
+        ProviderOwnedTopologyDraft, plan_provider_detail_commit, plan_provider_topology_commit,
+    };
 
     let transaction_failure = |_| {
         provider_commit_failure(
@@ -2367,28 +2369,38 @@ pub fn commit_provider_detail_from_paths_observed(
     // and authContents ownership are decided before normalization can change evidence.
     validate_provider_commit_cas(&persisted_settings, &request)?;
     validate_provider_commit_catalog_structure(&request)?;
-    crate::provider_commit::validate_provider_detail_request(
-        &persisted_settings,
-        &persisted_state,
-        &request,
-    )
-    .map_err(|_| {
-        provider_commit_failure(
-            ProviderCommitErrorCode::InvalidDraft,
-            "provider draft validation failed",
+    let focused_id = request.focused_profile_id.clone();
+    if focused_id.is_some() {
+        crate::provider_commit::validate_provider_detail_request(
+            &persisted_settings,
+            &persisted_state,
+            &request,
         )
-    })?;
-    let focused_id = request.focused_profile_id.as_deref().ok_or_else(|| {
-        provider_commit_failure(
-            ProviderCommitErrorCode::InvalidDraft,
-            "focused provider profile is required",
-        )
-    })?;
-    let focused_mode = request
-        .catalog_drafts
-        .iter()
-        .find(|draft| draft.profile_id == focused_id)
-        .map(|draft| draft.mode)
+        .map_err(|_| {
+            provider_commit_failure(
+                ProviderCommitErrorCode::InvalidDraft,
+                "provider draft validation failed",
+            )
+        })?;
+    } else {
+        plan_provider_topology_commit(&persisted_settings, &persisted_state, &request).map_err(
+            |_| {
+                provider_commit_failure(
+                    ProviderCommitErrorCode::InvalidDraft,
+                    "provider topology validation failed",
+                )
+            },
+        )?;
+    }
+    let focused_mode = focused_id
+        .as_deref()
+        .and_then(|focused_id| {
+            request
+                .catalog_drafts
+                .iter()
+                .find(|draft| draft.profile_id == focused_id)
+                .map(|draft| draft.mode)
+        })
         .unwrap_or(CatalogMode::NativeOfficial);
     observe(ProviderCommitCheckpoint::Normalization).map_err(|_| {
         provider_commit_failure(
@@ -2396,11 +2408,19 @@ pub fn commit_provider_detail_from_paths_observed(
             "provider draft normalization failed",
         )
     })?;
-    let normalized_settings = normalize_provider_detail_settings_fallible(
-        request.topology.apply_to(&persisted_settings),
-        focused_id,
-        focused_mode,
-    )
+    let normalized_settings = if let Some(focused_id) = focused_id.as_deref() {
+        normalize_provider_detail_settings_fallible(
+            request.topology.apply_to(&persisted_settings),
+            focused_id,
+            focused_mode,
+        )
+    } else {
+        normalize_provider_topology_settings_fallible(
+            request.topology.apply_to(&persisted_settings),
+            &request,
+            &persisted_state,
+        )
+    }
     .map_err(|error| {
         provider_commit_failure(
             ProviderCommitErrorCode::InvalidDraft,
@@ -2410,13 +2430,16 @@ pub fn commit_provider_detail_from_paths_observed(
 
     let auth_path = paths.codex_home.join("auth.json");
     let auth_before = read_optional_bytes(&auth_path).map_err(transaction_failure)?;
-    let activation_scope_verified = validate_native_provider_activation_gate(
-        paths,
-        &persisted_state,
-        &normalized_settings,
-        focused_id,
-        focused_mode,
-    )?;
+    let activation_scope_verified = match focused_id.as_deref() {
+        Some(focused_id) => validate_native_provider_activation_gate(
+            paths,
+            &persisted_state,
+            &normalized_settings,
+            focused_id,
+            focused_mode,
+        )?,
+        None => false,
+    };
     if activation_scope_verified {
         observe(ProviderCommitCheckpoint::ActivationScopeVerification)
             .map_err(transaction_failure)?;
@@ -2426,27 +2449,38 @@ pub fn commit_provider_detail_from_paths_observed(
     // provider-owned normalized fields are allowed to differ from the submitted draft.
     let mut normalized_request = request.clone();
     normalized_request.topology = ProviderOwnedTopologyDraft::from_settings(&normalized_settings);
-    crate::provider_commit::validate_provider_detail_request(
-        &persisted_settings,
-        &persisted_state,
-        &normalized_request,
-    )
-    .map_err(|_| {
-        provider_commit_failure(
-            ProviderCommitErrorCode::InvalidDraft,
-            "normalized provider draft is invalid",
+    let mut plan = if focused_id.is_some() {
+        crate::provider_commit::validate_provider_detail_request(
+            &persisted_settings,
+            &persisted_state,
+            &normalized_request,
         )
-    })?;
-    let mut plan =
+        .map_err(|_| {
+            provider_commit_failure(
+                ProviderCommitErrorCode::InvalidDraft,
+                "normalized provider draft is invalid",
+            )
+        })?;
         plan_provider_detail_commit(&persisted_settings, &persisted_state, &normalized_request)
             .map_err(|_| {
                 provider_commit_failure(
                     ProviderCommitErrorCode::CatalogUnavailable,
                     "normalized provider catalog planning failed",
                 )
-            })?;
+            })?
+    } else {
+        plan_provider_topology_commit(&persisted_settings, &persisted_state, &normalized_request)
+            .map_err(|_| {
+                provider_commit_failure(
+                    ProviderCommitErrorCode::CatalogUnavailable,
+                    "normalized provider topology planning failed",
+                )
+            })?
+    };
 
-    let active_commit = plan.settings.active_relay_id == focused_id;
+    let active_commit = focused_id
+        .as_deref()
+        .is_some_and(|focused_id| plan.settings.active_relay_id == focused_id);
     let mut mutations = materialize_provider_commit_catalogs(paths, &normalized_request, &plan)
         .map_err(|_| {
             provider_commit_failure(
@@ -2596,11 +2630,12 @@ pub fn commit_provider_detail_from_paths_observed(
     )
     .map_err(transaction_failure)?;
 
-    let restart_required = plan
-        .catalog_state
-        .profiles
-        .get(focused_id)
-        .is_some_and(|state| state.restart_required);
+    let restart_required = focused_id.as_deref().is_some_and(|focused_id| {
+        plan.catalog_state
+            .profiles
+            .get(focused_id)
+            .is_some_and(|state| state.restart_required)
+    });
     let provider_fingerprint = crate::provider_commit::provider_owned_fingerprint(
         &ProviderOwnedTopologyDraft::from_settings(&plan.settings),
     )
@@ -2796,6 +2831,48 @@ fn validate_provider_commit_catalog_structure(
         })?;
     }
     Ok(())
+}
+
+fn normalize_provider_topology_settings_fallible(
+    mut settings: BackendSettings,
+    request: &crate::provider_commit::ProviderCommitRequest,
+    persisted_state: &crate::model_catalog::CatalogState,
+) -> anyhow::Result<BackendSettings> {
+    use crate::model_catalog::CatalogMode;
+
+    settings.relay_common_config_contents.clear();
+    settings.relay_context_config_contents.clear();
+    for profile in &mut settings.relay_profiles {
+        anyhow::ensure!(
+            profile.auth_contents.is_empty(),
+            "incoming authContents is prohibited"
+        );
+        let mode = request
+            .catalog_drafts
+            .iter()
+            .find(|draft| draft.profile_id == profile.id)
+            .map(|draft| draft.mode)
+            .or_else(|| {
+                persisted_state
+                    .profiles
+                    .get(&profile.id)
+                    .map(|state| state.mode)
+            })
+            .unwrap_or(CatalogMode::NativeOfficial);
+        if profile.relay_mode != codex_plus_core::settings::RelayMode::Aggregate {
+            reconcile_provider_detail_raw_fields(profile)?;
+            validate_provider_detail_contract(profile, mode)?;
+        }
+        codex_plus_core::relay_config::normalize_relay_profile_for_storage(profile)
+            .map_err(|_| anyhow::anyhow!("provider profile normalization failed"))?;
+        sanitize_profile_after_core_normalize_fallible(profile)?;
+        profile.config_contents = retain_provider_owned_profile_config(&profile.config_contents)
+            .map_err(|_| anyhow::anyhow!("provider config ownership normalization failed"))?;
+        if profile.relay_mode != codex_plus_core::settings::RelayMode::Aggregate {
+            validate_provider_detail_contract(profile, mode)?;
+        }
+    }
+    Ok(settings)
 }
 
 fn normalize_provider_detail_settings_fallible(
