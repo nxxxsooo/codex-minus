@@ -1084,6 +1084,9 @@ fn generic_settings_save_accepts_first_run_ui_shape_and_active_aggregate_ui_proj
     fs::remove_file(&first_run.paths.settings_path).unwrap();
     let mut first_run_ui = BackendSettings::default();
     first_run_ui.relay_profiles[0].context_selection_initialized = true;
+    first_run_ui.relay_base_url = first_run_ui.relay_profiles[0].base_url.clone();
+    first_run_ui.relay_api_key = first_run_ui.relay_profiles[0].api_key.clone();
+    first_run_ui.active_aggregate_relay_id.clear();
     first_run_ui.codex_goals_enabled = true;
     save_settings_with_provider_guard_at(&first_run.paths, first_run_ui).unwrap();
 
