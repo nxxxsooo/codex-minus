@@ -1237,12 +1237,39 @@ fn topology_adapter_commits_list_mutations_through_the_shared_provider_transacti
             },
         ],
     }];
-    let fixture = Fixture::new(&initial, &state_with_official());
+    let mut catalog_state = state_with_official();
+    for profile_id in ["relay-a", "relay-b", "relay-c"] {
+        catalog_state
+            .profiles
+            .entry(profile_id.to_string())
+            .or_default()
+            .mode = CatalogMode::OfficialPlusCustom;
+    }
+    let fixture = Fixture::new(&initial, &catalog_state);
     let persisted = fixture.read_settings();
-    let mut copy = b.clone();
+    let persisted_a = persisted
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == "relay-a")
+        .unwrap()
+        .clone();
+    let persisted_b = persisted
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == "relay-b")
+        .unwrap()
+        .clone();
+    let persisted_aggregate = persisted
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == "aggregate")
+        .unwrap()
+        .clone();
+    let mut copy = persisted_b.clone();
     copy.id = "relay-copy".to_string();
     copy.name = "Relay B copy".to_string();
-    let mut next = settings_with(vec![b, a, copy, aggregate], "relay-a");
+    let mut next = persisted.clone();
+    next.relay_profiles = vec![persisted_b, persisted_a, copy, persisted_aggregate];
     next.relay_profiles_enabled = false;
     next.relay_test_model = "topology-test-model".to_string();
     next.aggregate_relay_profiles = vec![AggregateRelayProfile {
@@ -1286,6 +1313,13 @@ fn topology_adapter_commits_list_mutations_through_the_shared_provider_transacti
         vec!["relay-b", "relay-a", "relay-copy", "aggregate"]
     );
     assert_eq!(saved.aggregate_relay_profiles[0].members.len(), 1);
+    let saved_catalog: CatalogState =
+        serde_json::from_slice(&fs::read(&fixture.paths.catalog_state_path).unwrap()).unwrap();
+    assert!(!saved_catalog.profiles.contains_key("relay-c"));
+    let copied_catalog = saved_catalog.profiles.get("relay-copy").unwrap();
+    assert_eq!(copied_catalog.mode, CatalogMode::OfficialPlusCustom);
+    let copied_path = copied_catalog.generated_path.as_deref().unwrap();
+    assert!(fixture.paths.codex_home.join(copied_path).is_file());
     assert_eq!(
         fs::read(fixture.paths.codex_home.join("config.toml")).unwrap(),
         live_before
@@ -1294,6 +1328,65 @@ fn topology_adapter_commits_list_mutations_through_the_shared_provider_transacti
         fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
         auth_before
     );
+}
+
+#[test]
+fn topology_adapter_rejects_active_detail_and_catalog_bypasses_without_mutation() {
+    let active = canonical_profile(
+        "relay-a",
+        "official-a",
+        "https://a.example/v1",
+        "provider-key-a",
+    );
+    let initial = settings_with(vec![active], "relay-a");
+    let mut catalog_state = state_with_official();
+    catalog_state
+        .profiles
+        .entry("relay-a".to_string())
+        .or_default()
+        .mode = CatalogMode::OfficialPlusCustom;
+
+    for mutate in ["detail", "catalog"] {
+        let fixture = Fixture::new(&initial, &catalog_state);
+        let persisted = fixture.read_settings();
+        let mut next = persisted.clone();
+        let mut catalog_drafts = Vec::new();
+        if mutate == "detail" {
+            let profile = &mut next.relay_profiles[0];
+            profile.model = "changed-model".to_string();
+            profile.base_url = "https://changed.example/v1".to_string();
+            profile.upstream_base_url = profile.base_url.clone();
+            profile.api_key = "changed-provider-key".to_string();
+            profile.config_contents = profile
+                .config_contents
+                .replace("official-a", "changed-model")
+                .replace("https://a.example/v1", "https://changed.example/v1")
+                .replace("provider-key-a", "changed-provider-key");
+        } else {
+            let mut draft = catalog_draft("relay-a");
+            draft.mode_explicit = true;
+            catalog_drafts.push(draft);
+        }
+        let request = ProviderCommitRequest {
+            topology: ProviderOwnedTopologyDraft::from_settings(&next),
+            catalog_drafts,
+            focused_profile_id: None,
+            action: ProviderCommitAction::Save,
+            previous_active_relay_id: persisted.active_relay_id.clone(),
+            confirm_context_cleanup: false,
+            draft_revision: 42,
+            expected_provider_fingerprint: provider_owned_fingerprint(
+                &ProviderOwnedTopologyDraft::from_settings(&persisted),
+            )
+            .unwrap(),
+        };
+        let before = fixture.file_generation();
+
+        let error = commit_provider_detail_from_paths(&fixture.paths, request).unwrap_err();
+
+        assert_eq!(error.code(), ProviderCommitErrorCode::InvalidDraft);
+        assert_eq!(fixture.file_generation(), before);
+    }
 }
 
 #[test]
