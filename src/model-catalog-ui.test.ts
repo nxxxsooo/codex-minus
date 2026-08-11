@@ -6,6 +6,7 @@ import {
   adoptionPreviewSummary,
   catalogDiffSummary,
   catalogModeChangeDecision,
+  catalogModeDraftController,
   catalogModePresentation,
   catalogRefreshGate,
   defaultCatalogMode,
@@ -14,6 +15,7 @@ import {
   profileCatalogFlags,
   providerEvidenceState,
   validateCatalogDraft,
+  type CatalogModeValue,
   type CatalogOverlayDraft,
 } from "./model-catalog-ui.ts";
 
@@ -49,7 +51,29 @@ describe("model catalog UI state", () => {
       path: null,
       restart: false,
       dormantCustomCount: 7,
+      pendingDormantCustomCount: 0,
+      pathUnavailable: null,
     });
+  });
+
+  it("keeps a native draft unsaved until its managed or external catalog is persisted", () => {
+    for (const persistedMode of ["official-plus-custom", "external"] as const) {
+      assert.deepEqual(catalogModePresentation({
+        selectedMode: "native-official",
+        persistedMode,
+        generatedPath: "model-catalogs/current.json",
+        externalPointer: "models/external.json",
+        restartRequired: true,
+        customModelCount: 7,
+      }), {
+        source: "unsaved",
+        path: null,
+        restart: false,
+        dormantCustomCount: 0,
+        pendingDormantCustomCount: 7,
+        pathUnavailable: null,
+      });
+    }
   });
 
   it("managed presentation exposes only the matching persisted generation", () => {
@@ -65,6 +89,8 @@ describe("model catalog UI state", () => {
       path: "model-catalogs/current.json",
       restart: true,
       dormantCustomCount: 0,
+      pendingDormantCustomCount: 0,
+      pathUnavailable: null,
     });
     assert.equal(catalogModePresentation({
       selectedMode: "custom-only",
@@ -74,6 +100,64 @@ describe("model catalog UI state", () => {
       restartRequired: true,
       customModelCount: 7,
     }).source, "unsaved");
+  });
+
+  it("marks persisted catalog modes with missing paths for explicit UI copy", () => {
+    assert.equal(catalogModePresentation({
+      selectedMode: "official-plus-custom",
+      persistedMode: "official-plus-custom",
+      generatedPath: null,
+      externalPointer: null,
+      restartRequired: false,
+      customModelCount: 0,
+    }).pathUnavailable, "managed");
+    assert.equal(catalogModePresentation({
+      selectedMode: "external",
+      persistedMode: "external",
+      generatedPath: null,
+      externalPointer: null,
+      restartRequired: false,
+      customModelCount: 0,
+    }).pathUnavailable, "external");
+  });
+
+  it("keeps cancel, confirm, and restore catalog controls draft-only", () => {
+    let selectedMode: CatalogModeValue = "official-plus-custom";
+    let modeExplicit = false;
+    let saveCalls = 0;
+    const saveProfileCatalog = () => { saveCalls += 1; };
+    const updateDraftMode = (nextMode: CatalogModeValue) => {
+      selectedMode = nextMode;
+      modeExplicit = true;
+    };
+    const cancelled = catalogModeDraftController({
+      currentMode: selectedMode,
+      externalPointer: null,
+      customModelCount: 7,
+      confirmDiscard: () => false,
+      actions: { updateDraftMode, saveProfileCatalog },
+    });
+    assert.equal(cancelled.requestMode("native-official"), false);
+    assert.equal(selectedMode, "official-plus-custom");
+    assert.equal(modeExplicit, false);
+    assert.equal(saveCalls, 0);
+
+    const confirmed = catalogModeDraftController({
+      currentMode: selectedMode,
+      externalPointer: null,
+      customModelCount: 7,
+      confirmDiscard: () => true,
+      actions: { updateDraftMode, saveProfileCatalog },
+    });
+    assert.equal(confirmed.requestMode("native-official"), true);
+    assert.equal(selectedMode, "native-official");
+    assert.equal(modeExplicit, true);
+    assert.equal(saveCalls, 0);
+
+    confirmed.restoreOfficialPlusCustom();
+    assert.equal(selectedMode, "official-plus-custom");
+    assert.equal(modeExplicit, true);
+    assert.equal(saveCalls, 0);
   });
 
   it("gates refresh on target capability, credentials, and loading", () => {

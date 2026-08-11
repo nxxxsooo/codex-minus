@@ -64,7 +64,7 @@ import {
   addCatalogCandidate,
   adoptionPreviewSummary,
   catalogDiffSummary,
-  catalogModeChangeDecision,
+  catalogModeDraftController,
   catalogModePresentation,
   catalogRefreshGate,
   defaultCatalogMode,
@@ -2264,17 +2264,21 @@ function CatalogProfileEditor({
       templateProvenance: "user-created",
     }] });
   };
-  const requestMode = (requestedMode: CatalogMode) => {
-    const decision = catalogModeChangeDecision(mode, requestedMode, summary?.externalPointer ?? null, overlay.custom.length);
-    const confirmation = decision === "confirm-discard-external"
+  const modeActions = catalogModeDraftController({
+    currentMode: mode,
+    externalPointer: summary?.externalPointer ?? null,
+    customModelCount: overlay.custom.length,
+    confirmDiscard: (decision) => window.confirm(decision === "confirm-discard-external"
       ? t("切换到原生目录模式将停止管理外部目录。当前目录会在保存成功前继续生效。是否继续？")
-      : decision === "confirm-discard-custom"
-        ? t("切换到原生目录模式将不再使用自定义模型。当前目录会在保存成功前继续生效。是否继续？")
-        : null;
-    if (confirmation && !window.confirm(confirmation)) return;
-    setMode(requestedMode);
-    setModeExplicit(true);
-  };
+      : t("切换到原生目录模式将不再使用自定义模型。当前目录会在保存成功前继续生效。是否继续？")),
+    actions: {
+      updateDraftMode: (nextMode) => {
+        setMode(nextMode);
+        setModeExplicit(true);
+      },
+      saveProfileCatalog: () => actions.saveProfileCatalog(profile.id, mode, overlay, upstreamTopology, modeExplicit),
+    },
+  });
   const save = async () => {
     const confirmContextCleanup = summary?.contextConflicts.length
       ? window.confirm(tf("托管模型目录将移除这些全局上下文设置，让每个模型使用自己的窗口：\n\n{0}", [summary.contextConflicts.join("\n")]))
@@ -2325,8 +2329,8 @@ function CatalogProfileEditor({
           <span>{presentation.source === "native"
             ? t("使用 Codex 原生动态目录")
             : presentation.source === "unsaved"
-              ? t("目录模式尚未保存")
-              : presentation.path}</span>
+              ? t("目录模式尚未保存；保存后使用 Codex 原生动态目录")
+              : presentation.path ?? t(presentation.pathUnavailable === "external" ? "未识别外部目录指针" : "托管目录路径不可用")}</span>
         </div>
         <div className="catalog-editor-actions">
           {presentation.restart ? <UiBadge variant="secondary">{t("需重启 Codex")}</UiBadge> : null}
@@ -2343,7 +2347,7 @@ function CatalogProfileEditor({
           ["custom-only", t("仅自定义")],
           ...(summary?.externalPointer || summary?.mode === "external" ? [["external", t("外部目录")]] : []),
         ] as Array<[CatalogMode, string]>).map(([value, label]) => (
-          <button className={mode === value ? "active" : ""} key={value} onClick={() => requestMode(value)} type="button">
+          <button className={mode === value ? "active" : ""} key={value} onClick={() => modeActions.requestMode(value)} type="button">
             {label}
           </button>
         ))}
@@ -2368,7 +2372,15 @@ function CatalogProfileEditor({
       {presentation.dormantCustomCount > 0 ? (
         <div className="catalog-inline-error">
           <span>{tf("原生目录模式下有 {0} 个自定义模型暂不生效。", [presentation.dormantCustomCount])}</span>
-          <Button onClick={() => { setMode("official-plus-custom"); setModeExplicit(true); }} size="sm" variant="secondary">
+          <Button onClick={modeActions.restoreOfficialPlusCustom} size="sm" variant="secondary">
+            {t("恢复官方＋自定义")}
+          </Button>
+        </div>
+      ) : null}
+      {presentation.pendingDormantCustomCount > 0 ? (
+        <div className="catalog-inline-error">
+          <span>{tf("保存后，{0} 个自定义模型将暂不生效。", [presentation.pendingDormantCustomCount])}</span>
+          <Button onClick={modeActions.restoreOfficialPlusCustom} size="sm" variant="secondary">
             {t("恢复官方＋自定义")}
           </Button>
         </div>

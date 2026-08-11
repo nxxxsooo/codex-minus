@@ -39,6 +39,38 @@ export function catalogModeChangeDecision(
   return "select";
 }
 
+export function catalogModeDraftController(input: {
+  currentMode: CatalogModeValue;
+  externalPointer: string | null;
+  customModelCount: number;
+  confirmDiscard: (decision: "confirm-discard-external" | "confirm-discard-custom") => boolean;
+  actions: {
+    updateDraftMode: (mode: CatalogModeValue) => void;
+    saveProfileCatalog: () => unknown;
+  };
+}): {
+  requestMode: (requestedMode: CatalogModeValue) => boolean;
+  restoreOfficialPlusCustom: () => void;
+} {
+  const updateDraftMode = (mode: CatalogModeValue) => input.actions.updateDraftMode(mode);
+  return {
+    requestMode(requestedMode) {
+      const decision = catalogModeChangeDecision(
+        input.currentMode,
+        requestedMode,
+        input.externalPointer,
+        input.customModelCount,
+      );
+      if (decision !== "select" && !input.confirmDiscard(decision)) return false;
+      updateDraftMode(requestedMode);
+      return true;
+    },
+    restoreOfficialPlusCustom() {
+      updateDraftMode("official-plus-custom");
+    },
+  };
+}
+
 export function catalogModePresentation(input: {
   selectedMode: CatalogModeValue;
   persistedMode: CatalogModeValue | null;
@@ -51,17 +83,47 @@ export function catalogModePresentation(input: {
   path: string | null;
   restart: boolean;
   dormantCustomCount: number;
+  pendingDormantCustomCount: number;
+  pathUnavailable: "managed" | "external" | null;
 } {
-  if (input.selectedMode === "native-official") {
-    return { source: "native", path: null, restart: false, dormantCustomCount: input.customModelCount };
-  }
   if (input.selectedMode !== input.persistedMode) {
-    return { source: "unsaved", path: null, restart: false, dormantCustomCount: 0 };
+    return {
+      source: "unsaved",
+      path: null,
+      restart: false,
+      dormantCustomCount: 0,
+      pendingDormantCustomCount: input.selectedMode === "native-official" ? input.customModelCount : 0,
+      pathUnavailable: null,
+    };
+  }
+  if (input.selectedMode === "native-official") {
+    return {
+      source: "native",
+      path: null,
+      restart: false,
+      dormantCustomCount: input.customModelCount,
+      pendingDormantCustomCount: 0,
+      pathUnavailable: null,
+    };
   }
   if (input.selectedMode === "external") {
-    return { source: "external", path: input.externalPointer, restart: input.restartRequired, dormantCustomCount: 0 };
+    return {
+      source: "external",
+      path: input.externalPointer,
+      restart: input.restartRequired,
+      dormantCustomCount: 0,
+      pendingDormantCustomCount: 0,
+      pathUnavailable: input.externalPointer ? null : "external",
+    };
   }
-  return { source: "managed", path: input.generatedPath, restart: input.restartRequired, dormantCustomCount: 0 };
+  return {
+    source: "managed",
+    path: input.generatedPath,
+    restart: input.restartRequired,
+    dormantCustomCount: 0,
+    pendingDormantCustomCount: 0,
+    pathUnavailable: input.generatedPath ? null : "managed",
+  };
 }
 
 export function defaultCatalogMode(

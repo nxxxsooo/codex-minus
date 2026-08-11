@@ -11,8 +11,9 @@ export const EN_PLAIN: Record<string, string> = {
   "切换到原生目录模式将不再使用自定义模型。当前目录会在保存成功前继续生效。是否继续？":
     "Switching to native catalog mode stops using custom models. The current catalog remains active until Save succeeds. Continue?",
   "使用 Codex 原生动态目录": "Using Codex's native dynamic catalog",
-  "目录模式尚未保存": "Catalog mode has not been saved",
-  "原生目录模式下有 {0} 个自定义模型暂不生效。": "{0} custom model(s) are dormant in native catalog mode.",
+  "目录模式尚未保存；保存后使用 Codex 原生动态目录": "Catalog mode has not been saved; Codex's native dynamic catalog will be used after Save.",
+  "托管目录路径不可用": "Managed catalog path unavailable",
+  "未识别外部目录指针": "Unrecognized external catalog pointer",
   "恢复官方＋自定义": "Restore official + custom",
   "直连 API": "Direct API",
   "服务端复合": "Server-side composite",
@@ -760,6 +761,8 @@ export const EN_PLAIN: Record<string, string> = {
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
   "\n...以及另外 {0} 个会话": "\n...and {0} more session(s)",
+  "原生目录模式下有 {0} 个自定义模型暂不生效。": "{0} custom model(s) are dormant in native catalog mode.",
+  "保存后，{0} 个自定义模型将暂不生效。": "After Save, {0} custom model(s) will be dormant.",
   "{0}（{1}）": "{0} ({1})",
   "{0} · {1} 个成员": "{0} · {1} member(s)",
   "{0} 个": "{0}",
