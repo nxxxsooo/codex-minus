@@ -1,5 +1,8 @@
+use std::cell::RefCell;
 use std::collections::HashSet;
-use std::fs::{self, File, OpenOptions};
+#[cfg(unix)]
+use std::fs::File;
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -13,6 +16,26 @@ const JOURNAL_FILE: &str = "live-state-transaction.json";
 const TRANSACTION_ROOT: &str = "live-state-transactions";
 
 static LIVE_STATE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+thread_local! {
+    static ACTIVE_PERMISSION_CACHE: RefCell<Option<HashSet<PermissionTarget>>> = const { RefCell::new(None) };
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum PermissionTarget {
+    Directory(PathBuf),
+    File(PathBuf),
+}
+
+pub struct LiveStateGuard {
+    _guard: MutexGuard<'static, ()>,
+}
+
+impl Drop for LiveStateGuard {
+    fn drop(&mut self) {
+        ACTIVE_PERMISSION_CACHE.with(|cache| *cache.borrow_mut() = None);
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct FileMutation {
@@ -71,11 +94,15 @@ struct JournalEntry {
     prior_hash: Option<String>,
 }
 
-pub fn lock() -> anyhow::Result<MutexGuard<'static, ()>> {
-    LIVE_STATE_LOCK
+pub fn lock() -> anyhow::Result<LiveStateGuard> {
+    let guard = LIVE_STATE_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .map_err(|_| anyhow::anyhow!("live-state coordinator lock is poisoned"))
+        .map_err(|_| anyhow::anyhow!("live-state coordinator lock is poisoned"))?;
+    ACTIVE_PERMISSION_CACHE.with(|cache| {
+        *cache.borrow_mut() = Some(HashSet::new());
+    });
+    Ok(LiveStateGuard { _guard: guard })
 }
 
 pub fn prepare_secret_paths(codex_home: &Path) -> anyhow::Result<()> {
@@ -144,8 +171,14 @@ fn cleanup_private_workspaces(app_state: &Path) -> anyhow::Result<()> {
 pub fn ensure_owner_only_dir(path: &Path) -> anyhow::Result<()> {
     fs::create_dir_all(path)
         .with_context(|| format!("failed to create private directory {}", path.display()))?;
+    let target = PermissionTarget::Directory(path.to_path_buf());
+    if permission_is_cached(&target) {
+        return Ok(());
+    }
     apply_owner_only_dir(path)?;
-    verify_owner_only_dir(path)
+    verify_owner_only_dir(path)?;
+    remember_permission(target);
+    Ok(())
 }
 
 pub fn ensure_owner_only_file(path: &Path) -> anyhow::Result<()> {
@@ -154,8 +187,31 @@ pub fn ensure_owner_only_file(path: &Path) -> anyhow::Result<()> {
         "private file is missing: {}",
         path.display()
     );
+    let target = PermissionTarget::File(path.to_path_buf());
+    if permission_is_cached(&target) {
+        return Ok(());
+    }
     apply_owner_only_file(path)?;
-    verify_owner_only_file(path)
+    verify_owner_only_file(path)?;
+    remember_permission(target);
+    Ok(())
+}
+
+fn permission_is_cached(target: &PermissionTarget) -> bool {
+    ACTIVE_PERMISSION_CACHE.with(|cache| {
+        cache
+            .borrow()
+            .as_ref()
+            .is_some_and(|secured| secured.contains(target))
+    })
+}
+
+fn remember_permission(target: PermissionTarget) {
+    ACTIVE_PERMISSION_CACHE.with(|cache| {
+        if let Some(secured) = cache.borrow_mut().as_mut() {
+            secured.insert(target);
+        }
+    });
 }
 
 pub fn atomic_write_owner_only(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
@@ -569,14 +625,13 @@ fn verify_owner_only_file(path: &Path) -> anyhow::Result<()> {
 
 #[cfg(windows)]
 fn apply_windows_acl(path: &Path, directory: bool) -> anyhow::Result<()> {
-    use std::process::Command;
     let user = std::env::var("USERNAME").context("USERNAME is unavailable")?;
     let grant = if directory {
         format!("{user}:(OI)(CI)F")
     } else {
         format!("{user}:F")
     };
-    let status = Command::new("icacls")
+    let status = crate::platform_command::background_command("icacls")
         .arg(path)
         .args(["/inheritance:r", "/grant:r", &grant])
         .status()?;
@@ -586,8 +641,9 @@ fn apply_windows_acl(path: &Path, directory: bool) -> anyhow::Result<()> {
 
 #[cfg(windows)]
 fn verify_windows_acl(path: &Path) -> anyhow::Result<()> {
-    use std::process::Command;
-    let output = Command::new("icacls").arg(path).output()?;
+    let output = crate::platform_command::background_command("icacls")
+        .arg(path)
+        .output()?;
     ensure!(
         output.status.success(),
         "cannot verify ACL for {}",
@@ -726,6 +782,18 @@ mod tests {
             thread.join().unwrap();
         }
         assert_eq!(peak.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn permission_cache_is_scoped_to_one_coordinator_guard() {
+        let target = PermissionTarget::Directory(PathBuf::from("permission-cache-test"));
+        assert!(!permission_is_cached(&target));
+        {
+            let _guard = lock().unwrap();
+            remember_permission(target.clone());
+            assert!(permission_is_cached(&target));
+        }
+        assert!(!permission_is_cached(&target));
     }
 
     #[test]

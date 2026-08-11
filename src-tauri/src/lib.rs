@@ -1,6 +1,8 @@
 pub mod commands;
 mod live_state;
 mod model_catalog;
+mod network_policy;
+mod platform_command;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -25,8 +27,8 @@ pub fn run() {
     let Some(_guard) = acquire_single_instance_guard() else {
         return;
     };
-    commands::scrub_managed_context_store();
-    let run_result = tauri::Builder::default()
+    commands::scrub_legacy_managed_config_store();
+    let app_result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
             let url = "/index.html";
@@ -41,6 +43,7 @@ pub fn run() {
             let main_window = main_window_builder.build()?;
             install_tray(app)?;
             register_main_window_events(main_window);
+            install_instance_activation_listener(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -77,16 +80,40 @@ pub fn run() {
             model_catalog::refresh_official_model_catalog,
             model_catalog::save_profile_catalog,
             model_catalog::adopt_external_model_catalog,
+            network_policy::manager_network_policy_status,
+            network_policy::save_manager_network_policy,
+            network_policy::test_manager_network_policy,
             update_tray_labels
         ])
-        .run(tauri::generate_context!());
-    if let Err(error) = run_result {
-        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-            "manager.run_failed",
-            serde_json::json!({
-                "error": error.to_string()
-            }),
-        );
+        .build(tauri::generate_context!());
+    match app_result {
+        Ok(app) => app.run(|app_handle, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen {
+                has_visible_windows,
+                ..
+            } = event
+            {
+                let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                    "manager.reopen",
+                    serde_json::json!({
+                        "had_visible_windows": has_visible_windows
+                    }),
+                );
+                show_main_window(app_handle);
+            }
+
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app_handle, event);
+        }),
+        Err(error) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.run_failed",
+                serde_json::json!({
+                    "error": error.to_string()
+                }),
+            );
+        }
     }
 }
 
@@ -137,8 +164,10 @@ fn register_main_window_events<R: tauri::Runtime>(window: tauri::WebviewWindow<R
     let close_event_window = event_window.clone();
 
     event_window.on_window_event(move |event| match event {
-        WindowEvent::Resized(_) => {
-            if matches!(minimized_window.is_minimized(), Ok(true)) {
+        WindowEvent::Resized(size) => {
+            if should_query_minimized_state(size.width, size.height, cfg!(windows))
+                && matches!(minimized_window.is_minimized(), Ok(true))
+            {
                 let _ = minimized_window.hide();
             }
         }
@@ -152,6 +181,10 @@ fn register_main_window_events<R: tauri::Runtime>(window: tauri::WebviewWindow<R
         }
         _ => {}
     });
+}
+
+fn should_query_minimized_state(width: u32, height: u32, is_windows: bool) -> bool {
+    !is_windows || width == 0 || height == 0
 }
 
 #[tauri::command]
@@ -183,10 +216,13 @@ fn show_main_window<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
     }
 }
 
-/// Restores and focuses an existing manager window on Windows.
-///
-/// This is a no-op on other platforms.
+/// Restores and focuses an existing manager window.
 pub fn focus_existing_manager_window() {
+    #[cfg(unix)]
+    if notify_existing_manager(&instance_activation_socket_path()) {
+        return;
+    }
+
     #[cfg(windows)]
     {
         let current_process_id = std::process::id();
@@ -200,6 +236,81 @@ pub fn focus_existing_manager_window() {
             }
         }
     }
+}
+
+#[cfg(unix)]
+fn instance_activation_socket_path() -> std::path::PathBuf {
+    codex_plus_core::paths::default_app_state_dir().join("manager-activate.sock")
+}
+
+#[cfg(unix)]
+fn notify_existing_manager(socket_path: &std::path::Path) -> bool {
+    for _ in 0..20 {
+        if std::os::unix::net::UnixStream::connect(socket_path).is_ok() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    false
+}
+
+#[cfg(unix)]
+fn install_instance_activation_listener<R: tauri::Runtime>(app_handle: tauri::AppHandle<R>) {
+    use std::io::ErrorKind;
+    use std::os::unix::net::UnixListener;
+
+    let socket_path = instance_activation_socket_path();
+    if let Some(parent) = socket_path.parent()
+        && let Err(error) = std::fs::create_dir_all(parent)
+    {
+        log_instance_activation_listener_error(&socket_path, &error);
+        return;
+    }
+    if let Err(error) = std::fs::remove_file(&socket_path)
+        && error.kind() != ErrorKind::NotFound
+    {
+        log_instance_activation_listener_error(&socket_path, &error);
+        return;
+    }
+
+    let listener = match UnixListener::bind(&socket_path) {
+        Ok(listener) => listener,
+        Err(error) => {
+            log_instance_activation_listener_error(&socket_path, &error);
+            return;
+        }
+    };
+
+    std::thread::spawn(move || {
+        for connection in listener.incoming() {
+            match connection {
+                Ok(_) => {
+                    let activation_app = app_handle.clone();
+                    let _ = app_handle.run_on_main_thread(move || {
+                        show_main_window(&activation_app);
+                    });
+                }
+                Err(error) => {
+                    log_instance_activation_listener_error(&socket_path, &error);
+                    break;
+                }
+            }
+        }
+    });
+}
+
+#[cfg(not(unix))]
+fn install_instance_activation_listener<R: tauri::Runtime>(_app_handle: tauri::AppHandle<R>) {}
+
+#[cfg(unix)]
+fn log_instance_activation_listener_error(socket_path: &std::path::Path, error: &std::io::Error) {
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "manager.activation_listener_failed",
+        serde_json::json!({
+            "socket_path": socket_path,
+            "error": error.to_string()
+        }),
+    );
 }
 
 fn install_panic_logger() {
@@ -281,5 +392,29 @@ fn acquire_single_instance_guard() -> Option<codex_plus_core::ports::LoopbackPor
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_instance_notification_connects_to_activation_socket() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let socket_path = temp_dir.path().join("manager-activate.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+
+        assert!(notify_existing_manager(&socket_path));
+        assert!(listener.accept().is_ok());
+    }
+
+    #[test]
+    fn windows_normal_resize_skips_synchronous_minimized_query() {
+        assert!(!should_query_minimized_state(1180, 820, true));
+        assert!(should_query_minimized_state(0, 820, true));
+        assert!(should_query_minimized_state(1180, 0, true));
+        assert!(should_query_minimized_state(1180, 820, false));
     }
 }

@@ -6,12 +6,60 @@
 
 ## Changelog
 
+### 2026-08-11
+
+- **fix/model-catalogs**: made native-official catalog selection a confirmed draft until Save, described every unsaved mode by its actual destination, kept dormant custom models recoverable, and wired the production mode controls without pre-Save persistence
+  - why: selecting official native could display stale managed-catalog state or the wrong model source, while a control regression could silently save or discard catalog ownership before explicit confirmation
+  - verified: all 32 frontend tests pass, including production-control cancel/confirm/restore coverage; TypeScript and Vite production builds pass
+  - refs: `src/model-catalog-ui.ts`, `src/catalog-mode-controls.ts`, `src/App.tsx`
+- **fix/providers**: made live `config.toml` the only global-config source, reduced stored profile TOML to provider-owned fields, and added an upgrade-time scrub for legacy common/context copies and global fields embedded in profiles
+  - why: Manager-owned global copies became stale and made provider detail ambiguous; native official mode needs an explicit no-provider-config state while preserving live settings such as `[agents] max_concurrent_threads_per_session = 8`
+  - verified: 67 Rust tests pass with one live-OAuth test intentionally ignored, including upgrade scrub, provider-only normalization, and live-global-preservation regressions; Rust formatting, diff checks, TypeScript, all 32 frontend tests, Vite production build, and the full ad-hoc-signed macOS Tauri bundle build pass
+  - refs: `src-tauri/src/commands.rs`, `src/relay-config-panels.ts`, `src/App.tsx`
+
 ### 2026-08-10
 
 - **fix/providers**: made Quick Test and Provider Doctor retry one strictly allowlisted Responses HTTP 400 without the optional `max_output_tokens` field, while preserving the original status, final endpoint, redacted preview, and an explicit compatibility marker
   - why: the configured relay returned a generic `upstream_error` for the synthetic output limit even though the same model and request succeeded when that optional field was omitted, causing the Manager to report a false provider failure
   - verified: a live controlled probe reproduced HTTP 400 with the field and HTTP 200 without it; 65 Rust tests pass with one live-OAuth test intentionally ignored, including five new classifier, retry, negative-path, redaction, Quick Test, and Provider Doctor regressions; all 19 frontend tests, TypeScript check, Vite production build, Rust formatting, diff checks, and the full ad-hoc-signed macOS Tauri bundle build pass
   - refs: `src-tauri/src/commands.rs`, `src/App.tsx`, `README.md`
+- **feat/model-catalogs**: distinguished server-side composite relays from the removed local aggregation proxy, added rich official/custom metadata overlays, made per-model context authoritative in managed modes, and made external version mismatches explicit review evidence
+  - why: one upstream Responses Base URL and key can legitimately route multiple vendors server-side, while global context keys and thin overlays silently distorted mixed OpenAI/Claude catalogs
+  - verified: strict OpenSpec validation; 60 Rust tests pass with one live-OAuth test intentionally ignored, including composite single-provider/pointer/no-auth, 95-percent context, reasoning/tool metadata, external version, Context, journal, and auth-ownership regressions; all 19 frontend tests, TypeScript, Vite production build, Rust formatting, diff checks, and the full signed macOS Tauri bundle build pass
+  - refs: OpenSpec `support-server-side-composite-catalogs`, `src-tauri/src/model_catalog.rs`, `src-tauri/src/commands.rs`, `src/App.tsx`, `src/model-catalog-ui.ts`, `README.md`
+
+### 2026-08-09
+
+- **fix/windows**: launched ACL, target CLI, session, proxy, and signature-verification subprocesses as detached no-window processes, cached ACL checks within one coordinator transaction and unchanged target verification results within the process, skipped the synchronous minimized-state query on normal Windows resizes, and removed unnecessary screen animation promotion
+  - why: every save applied and verified owner-only paths through dozens of `icacls` calls; the x64 release opened a Windows Terminal for each call, making one save flash repeatedly and take about 20.6 seconds
+  - verified: the installed native ARM64 build completed a real UI active-profile save with `ok`; all 64 `icacls` processes created zero console hosts, while the app created zero PowerShell, Windows Terminal, or visible console processes; 55 Rust tests pass with one live-OAuth test intentionally ignored, all 18 frontend tests pass, TypeScript and Vite production builds pass, and both Windows release targets cross-compile
+  - refs: `src-tauri/src/platform_command.rs`, `src-tauri/src/live_state.rs`, `src-tauri/src/commands.rs`, `src-tauri/src/model_catalog.rs`, `src-tauri/src/lib.rs`, `src/styles.css`
+- **build/windows**: added native Windows ARM64 MSI and NSIS builds alongside x64, with architecture-specific artifacts, release names, checksums, and install guidance
+  - why: the available Windows release was x64-only and ran through emulation on ARM devices
+  - verified: local release builds produce PE32+ GUI executables for x86-64 and AArch64; workflow YAML and artifact-count checks parse cleanly
+  - refs: `.github/workflows/build.yml`
+- **fix/ux**: made provider saves immediately enter a disabled `保存中` state with a spinner, reject duplicate clicks, keep failures in the editor, and show an explicit success toast before returning to the list
+  - why: the full active-profile transaction takes about three seconds, while the previous button stayed visually unchanged and made a successful click look ineffective
+  - verified: Windows WebView UI automation confirmed the pending button text, spinner, `aria-busy`, and disabled state, then observed the success toast and detail-page exit; the save path no longer performs an unrelated model-catalog status refresh; TypeScript, all 18 frontend tests, Vite production build, and final x64 and ARM64 release builds pass
+  - refs: `src/App.tsx`, `src/i18n-en.ts`
+
+### 2026-08-08
+
+- **fix/macos**: restored and focused the tray-hidden main window when Finder or another app copy launches the existing Manager instance, and made local macOS bundles receive a complete ad-hoc signature during `npm run build`
+  - why: the inherited port guard detected duplicate launches but could not signal a hidden macOS instance, while unsigned local bundles could retain an incompatible resource signature when copied over an installed app
+  - verified: 52 Rust tests pass with one live-OAuth test intentionally ignored; TypeScript check, all 18 frontend tests, Vite production build, full signed Tauri app build, strict deep code-sign verification, Gatekeeper assessment, and a real close/reopen cycle against `/Applications/Codex-- Manager.app` pass with one process and one restored foreground window
+  - refs: `src-tauri/src/lib.rs`, `src-tauri/tauri.conf.json`
+
+### 2026-08-07
+
+- **feat/safety**: added a Manager-scoped network policy with Auto / Direct / Custom modes, coherent process-or-system proxy resolution, credentialless route testing, redacted diagnostics, and immutable proxy snapshots for official catalog refreshes
+  - why: official catalog refresh previously inherited whatever proxy environment happened to launch the app, turning local Stash or system-route failures into misleading model-cache errors with no inspectable or controllable Manager policy
+  - verified: strict OpenSpec validation; 51 Rust tests pass with one live-OAuth test intentionally ignored, including macOS and Windows discovery fixtures, precedence, conflict, credential, direct, custom, bundled-fallback, and auth-preservation regressions; all 18 frontend tests, TypeScript check, Vite production build, full Tauri macOS app bundle build, Rust formatting, and diff checks pass
+  - refs: OpenSpec `add-manager-network-policy`, `src-tauri/src/network_policy.rs`, `src-tauri/src/model_catalog.rs`, `src/network-policy-ui.ts`
+- **fix**: accepted official refresh caches that omit CLI-hydrated `base_instructions` while keeping the verified target CLI's complete output authoritative and rejecting every other cache/output mismatch
+  - why: ChatGPT's embedded Codex `0.147.0-alpha.6.5` can receive sparse remote cache entries and deterministically hydrate their instructions, but the manager still applied the older all-fields-present contract to both representations and failed refresh with `model has no instructions`
+  - verified: an offline target-CLI probe changed only the omitted instruction field; 42 Rust tests pass with one live-OAuth test intentionally ignored, including new omission and conflict regressions; all 14 frontend tests, TypeScript check, Vite production build, and full Tauri macOS app bundle build pass
+  - refs: `src-tauri/src/model_catalog.rs`
 
 ### 2026-08-06
 

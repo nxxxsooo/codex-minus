@@ -5,6 +5,41 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "上游拓扑": "Upstream topology",
+  "切换到原生目录模式将停止管理外部目录。当前目录会在保存成功前继续生效。是否继续？":
+    "Switching to native catalog mode stops managing the external catalog. The current catalog remains active until Save succeeds. Continue?",
+  "切换到原生目录模式将不再使用自定义模型。当前目录会在保存成功前继续生效。是否继续？":
+    "Switching to native catalog mode stops using custom models. The current catalog remains active until Save succeeds. Continue?",
+  "使用 Codex 原生动态目录": "Using Codex's native dynamic catalog",
+  "目录模式尚未保存；保存后使用 Codex 原生动态目录": "Catalog mode has not been saved; Codex's native dynamic catalog will be used after Save.",
+  "目录模式尚未保存；保存后使用外部目录": "Catalog mode has not been saved; the external catalog will be used after Save.",
+  "目录模式尚未保存；保存后使用托管目录": "Catalog mode has not been saved; the managed catalog will be used after Save.",
+  "托管目录路径不可用": "Managed catalog path unavailable",
+  "未识别外部目录指针": "Unrecognized external catalog pointer",
+  "恢复官方＋自定义": "Restore official + custom",
+  "实时 config.toml": "Live config.toml",
+  "直接读取 Codex 当前文件；Manager 不保存副本，切换时只替换供应商字段。":
+    "Read directly from Codex's current file. Manager stores no copy and replaces only provider-owned fields when switching.",
+  "官方原生模式无独立供应商配置；运行时使用右侧实时 config.toml。":
+    "Native official mode has no separate provider config; it uses the live config.toml shown on the right.",
+  "只保存模型、供应商、Base URL、目录指针和供应商表；全局配置实时读取。":
+    "Only model, provider, Base URL, catalog pointer, and provider tables are stored; global config is read live.",
+  "当前 live config.toml 不可用": "The live config.toml is currently unavailable",
+  "直连 API": "Direct API",
+  "服务端复合": "Server-side composite",
+  "一个 Responses Base URL 和 Key；模型聚合由上游完成。": "One Responses Base URL and key; model aggregation is handled upstream.",
+  "一个直接 API 上游。": "One direct API upstream.",
+  "本地聚合（不可用）": "Local aggregation (unavailable)",
+  "本地成员轮转依赖已移除的 127.0.0.1:57321 代理，不能应用。": "Local member rotation depends on the removed 127.0.0.1:57321 proxy and cannot be applied.",
+  "有效上下文百分比": "Effective context percentage",
+  "推理级别": "Reasoning levels",
+  "默认推理": "Default reasoning",
+  "工具": "Tools",
+  "托管模型目录使用每个模型自己的上下文窗口；全局窗口在确认后移除。": "Managed catalogs use each model's own context window; global limits are removed after confirmation.",
+  "自定义模型显示名不能为空。": "Custom model display name cannot be empty.",
+  "有效上下文百分比必须为 1 到 100。": "Effective context percentage must be between 1 and 100.",
+  "推理级别不能为空或重复。": "Reasoning levels cannot be empty or duplicated.",
+  "默认推理级别必须包含在支持列表中。": "The default reasoning level must be in the supported list.",
   "API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。":
     "Expands plugin marketplace requests in API Key mode to show the full plugin list. Usually unnecessary in official/mixed mode.",
   "API Key 环境变量": "API Key environment variable",
@@ -29,6 +64,47 @@ export const EN_PLAIN: Record<string, string> = {
   "Helper 端口": "Helper port",
   "MCP、Skills、Plugins 作为全局配置独立管理，切换任意供应商都会合并。":
     "MCP, Skills and Plugins are managed independently as global config and merged in whenever you switch providers.",
+  "Manager 网络": "Manager network",
+  "Manager 网络测试": "Manager network test",
+  "Manager 网络模式": "Manager network mode",
+  "仅用于 Manager 连接测试和隔离的官方目录刷新；不会修改系统代理或 Codex 对话路由。":
+    "Used only for the Manager connection test and isolated official catalog refresh; it does not change the system proxy or Codex conversation routing.",
+  "自动": "Auto",
+  "直连": "Direct",
+  "自定义": "Custom",
+  "代理地址": "Proxy URL",
+  "来源": "Source",
+  "端点": "Endpoint",
+  "绕过条目": "Bypass entries",
+  "无": "None",
+  "已解析": "Resolved",
+  "需要处理": "Action required",
+  "读取中": "Loading",
+  "保存 Manager 网络策略": "Save Manager network policy",
+  "请先保存网络策略": "Save the network policy first",
+  "测试 Manager 网络": "Test Manager network",
+  "自定义模式必须填写代理地址。": "Custom mode requires a proxy URL.",
+  "代理地址仅支持 HTTP、HTTPS、SOCKS5 或 SOCKS5H。":
+    "The proxy URL supports only HTTP, HTTPS, SOCKS5, or SOCKS5H.",
+  "v1 不支持在代理地址中保存用户名、密码或令牌。":
+    "V1 does not store a username, password, or token in the proxy URL.",
+  "NO_PROXY 条目过多或过长。": "The NO_PROXY list has too many or overly long entries.",
+  "代理地址无效；请只填写协议、主机和端口。":
+    "The proxy URL is invalid; enter only the scheme, host, and port.",
+  "macOS 系统代理": "macOS system proxy",
+  "Windows 系统代理": "Windows system proxy",
+  "自定义代理": "Custom proxy",
+  "自动直连": "Automatic direct connection",
+  "连接成功": "Connected",
+  "DNS 失败": "DNS failure",
+  "代理连接失败": "Proxy connection failure",
+  "代理认证不受支持": "Proxy authentication unsupported",
+  "TLS 失败": "TLS failure",
+  "连接超时": "Connection timeout",
+  "策略不受支持": "Policy unsupported",
+  "已回退 bundled 模型": "Bundled-model fallback",
+  "连接失败": "Connection failed",
+  "处理中": "Working",
   "Markdown 导出": "Markdown export",
   "Provider 同步目标": "Provider sync target",
   "Stepwise 直接发送": "Stepwise direct send",
@@ -113,6 +189,7 @@ export const EN_PLAIN: Record<string, string> = {
   "供应商测试": "Provider test",
   "供应商测试模型": "Provider test model",
   "供应商配置": "Provider configuration",
+  "供应商配置已保存。": "Provider configuration saved.",
   "供应商配置可能不正确": "Provider configuration may be incorrect",
   "供应商配置已关闭": "Provider configuration disabled",
   "供应商配置总开关已关闭": "The provider configuration master switch is off",
@@ -120,6 +197,8 @@ export const EN_PLAIN: Record<string, string> = {
     "The provider configuration master switch is off; changes are only saved, not written to Codex live files",
   "供应商预设列表": "Provider preset list",
   "保存": "Save",
+  "保存中": "Saving",
+  "保存供应商": "Save provider",
   "保存为默认路径": "Save as default path",
   "保存到 Codex++ state，不改写 Zed settings。": "Saved to Codex++ state, does not modify Zed settings.",
   "保存增强设置": "Save enhancement settings",
@@ -692,6 +771,8 @@ export const EN_PLAIN: Record<string, string> = {
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
   "\n...以及另外 {0} 个会话": "\n...and {0} more session(s)",
+  "原生目录模式下有 {0} 个自定义模型暂不生效。": "{0} custom model(s) are dormant in native catalog mode.",
+  "保存后，{0} 个自定义模型将暂不生效。": "After Save, {0} custom model(s) will be dormant.",
   "{0}（{1}）": "{0} ({1})",
   "{0} · {1} 个成员": "{0} · {1} member(s)",
   "{0} 个": "{0}",
@@ -760,6 +841,35 @@ export const EN_TEMPLATE: Record<string, string> = {
 // at the display layer (showNotice wraps message with t()). Exact-match first,
 // then pattern-based for messages that embed dynamic values.
 export const EN_BACKEND: Record<string, string> = {
+  "Manager 网络策略已解析。": "Manager network policy resolved.",
+  "Manager 网络策略已保存。": "Manager network policy saved.",
+  "Manager 网络策略不可用。": "Manager network policy is unavailable.",
+  "Manager 网络策略需要处理。": "Manager network policy needs attention.",
+  "Manager 网络策略已保存，但当前不可用。": "Manager network policy was saved, but it is currently unavailable.",
+  "Manager 网络连接测试通过。": "Manager network connection test passed.",
+  "代理要求认证；v1 不读取或保存代理凭据。":
+    "The proxy requires authentication; v1 does not read or store proxy credentials.",
+  "Manager 网络连接测试超时；请检查代理进程、节点与分流规则。":
+    "Manager network test timed out. Check the proxy process, node, and routing rules.",
+  "Manager 网络无法解析测试域名；请检查 DNS 或代理解析模式。":
+    "Manager network could not resolve the test host. Check DNS or proxy DNS mode.",
+  "Manager 网络 TLS 验证失败；请检查代理证书与系统信任。":
+    "Manager network TLS validation failed. Check the proxy certificate and system trust.",
+  "Manager 网络无法建立连接；请检查代理地址、进程与节点。":
+    "Manager network could not connect. Check the proxy URL, process, and node.",
+  "Manager 网络连接测试失败；请检查当前网络策略。":
+    "Manager network test failed. Check the current network policy.",
+  "无法读取 macOS 系统代理；请选择直连或自定义代理。":
+    "Could not read the macOS system proxy. Choose Direct or Custom.",
+  "无法启动 macOS 系统代理检查；请选择直连或自定义代理。":
+    "Could not start the macOS system proxy check. Choose Direct or Custom.",
+  "无法读取 Windows 系统代理；请选择直连或自定义代理。":
+    "Could not read the Windows system proxy. Choose Direct or Custom.",
+  "当前平台不支持系统代理发现。": "System proxy discovery is not supported on this platform.",
+  "检测到 macOS PAC/WPAD 自动代理；v1 不能安全投影，请选择直连或自定义代理。":
+    "A macOS PAC/WPAD proxy is enabled. V1 cannot project it safely; choose Direct or Custom.",
+  "检测到 Windows PAC/WPAD 自动代理；v1 不能安全投影，请选择直连或自定义代理。":
+    "A Windows PAC/WPAD proxy is enabled. V1 cannot project it safely; choose Direct or Custom.",
   "会话归档设置已加载。": "Session archive settings loaded.",
   "会话归档设置已保存。": "Session archive settings saved.",
   "归档候选预览已生成，尚未修改任何会话。": "Archive preview generated; no sessions were modified.",
@@ -859,6 +969,11 @@ export const EN_BACKEND: Record<string, string> = {
 // Pattern-based backend translations: [regex, replacement template].
 // Checked when EN_BACKEND exact match fails — covers messages with dynamic values.
 export const EN_BACKEND_PATTERNS: Array<[RegExp, string]> = [
+  [/^Manager 网络策略读取失败：(.+)$/, "Failed to read Manager network policy: $1"],
+  [/^Manager 网络策略保存失败：(.+)$/, "Failed to save Manager network policy: $1"],
+  [/^(.+) 不是受支持的代理 URL；请修正后重启 Manager。$/, "$1 is not a supported proxy URL. Fix it and restart Manager."],
+  [/^检测到互相冲突的 (.+) 大小写环境变量；请统一后重启 Manager。$/, "Conflicting case variants of $1 are set. Make them consistent and restart Manager."],
+  [/^官方模型目录刷新失败：目标 CLI 未创建远端模型缓存，已回退 bundled 模型；Manager 网络来源：(.+)。请先在 Manager 网络中测试连接$/, "Official catalog refresh failed: the target CLI created no remote cache and fell back to bundled models. Manager network source: $1. Test the route in Manager network first."],
   [/^启动静默入口失败：(.+)$/, "Failed to launch silent entrypoint: $1"],
   [/^无法启动 (.+?)：(.+)$/, "Cannot launch $1: $2"],
   [/^设置已保存。(.*)$/, "Settings saved.$1"],

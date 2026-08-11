@@ -2,7 +2,10 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+#[cfg(any(target_os = "macos", test))]
+use std::process::Command;
+use std::process::Stdio;
+use std::sync::{Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, ensure};
@@ -16,7 +19,7 @@ use sha2::{Digest, Sha256};
 use crate::commands::{CommandResult, discover_target_codex_cli};
 use crate::live_state::{self, FileMutation};
 
-const STATE_VERSION: u32 = 1;
+const STATE_VERSION: u32 = 2;
 const STATE_FILE: &str = "model-catalog-state.json";
 const GENERATED_DIR: &str = "model-catalogs";
 const GENERATED_PREFIX: &str = "codex-minus-";
@@ -24,7 +27,28 @@ const REFRESH_TIMEOUT: Duration = Duration::from_secs(45);
 const CAPABILITY_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_COMMAND_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
 const MIN_SUPPORTED_CLI: &str = "0.147.0-alpha.1";
+#[cfg(any(target_os = "macos", test))]
 const OPENAI_MAC_TEAM_IDS: &[&str] = &["2DC432GLL2"];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TargetVerificationCacheKey {
+    app_path: PathBuf,
+    app_len: u64,
+    app_modified: Option<SystemTime>,
+    cli_path: PathBuf,
+    cli_len: u64,
+    cli_modified: Option<SystemTime>,
+}
+
+static TARGET_VERIFICATION_CACHE: OnceLock<
+    StdMutex<Option<(TargetVerificationCacheKey, TargetVerificationCacheValue)>>,
+> = OnceLock::new();
+
+#[derive(Debug, Clone)]
+enum TargetVerificationCacheValue {
+    Verified(VerifiedTargetIdentity),
+    Failed(String),
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -105,11 +129,20 @@ pub enum CatalogMode {
     External,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum UpstreamTopology {
+    #[default]
+    Direct,
+    ServerSideComposite,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ProfileCatalogState {
     pub mode: CatalogMode,
     pub mode_explicit: bool,
+    pub upstream_topology: UpstreamTopology,
     pub overlay: CatalogOverlay,
     pub external_pointer: Option<String>,
     pub generated_path: Option<String>,
@@ -125,6 +158,7 @@ impl Default for ProfileCatalogState {
         Self {
             mode: CatalogMode::NativeOfficial,
             mode_explicit: false,
+            upstream_topology: UpstreamTopology::Direct,
             overlay: CatalogOverlay::default(),
             external_pointer: None,
             generated_path: None,
@@ -147,9 +181,31 @@ pub struct CatalogOverlay {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct OfficialOverride {
+    pub display_name: Option<String>,
     pub visible: Option<bool>,
     pub context_window: Option<u64>,
+    pub effective_context_window_percent: Option<u8>,
     pub order: Option<i64>,
+    pub supported_reasoning_levels: Option<Vec<ReasoningLevel>>,
+    pub default_reasoning_level: Option<String>,
+    pub supported_tools: Option<Vec<String>>,
+    pub tool_capabilities: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ReasoningLevel {
+    pub effort: String,
+    pub description: String,
+}
+
+impl Default for ReasoningLevel {
+    fn default() -> Self {
+        Self {
+            effort: String::new(),
+            description: String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,8 +214,13 @@ pub struct CustomModel {
     pub slug: String,
     pub display_name: String,
     pub context_window: u64,
+    pub effective_context_window_percent: u8,
     pub visible: bool,
     pub order: i64,
+    pub supported_reasoning_levels: Vec<ReasoningLevel>,
+    pub default_reasoning_level: Option<String>,
+    pub supported_tools: Vec<String>,
+    pub tool_capabilities: Option<Value>,
     pub template_provenance: String,
 }
 
@@ -169,8 +230,13 @@ impl Default for CustomModel {
             slug: String::new(),
             display_name: String::new(),
             context_window: 272_000,
+            effective_context_window_percent: 100,
             visible: true,
             order: 0,
+            supported_reasoning_levels: Vec::new(),
+            default_reasoning_level: None,
+            supported_tools: Vec::new(),
+            tool_capabilities: None,
             template_provenance: "pinned-upstream-bundled-template".to_string(),
         }
     }
@@ -227,7 +293,10 @@ pub struct OfficialModelSummary {
 pub struct ProfileCatalogSummary {
     pub profile_id: String,
     pub mode: CatalogMode,
+    pub mode_explicit: bool,
+    pub upstream_topology: UpstreamTopology,
     pub managed_available: bool,
+    pub context_conflicts: Vec<String>,
     pub external_pointer: Option<String>,
     pub generated_path: Option<String>,
     pub effective_hash: Option<String>,
@@ -248,6 +317,12 @@ pub struct SaveProfileCatalogRequest {
     pub profile_id: String,
     pub mode: CatalogMode,
     #[serde(default)]
+    pub mode_explicit: bool,
+    #[serde(default)]
+    pub upstream_topology: UpstreamTopology,
+    #[serde(default)]
+    pub confirm_context_cleanup: bool,
+    #[serde(default)]
     pub overlay: CatalogOverlay,
 }
 
@@ -257,6 +332,16 @@ pub struct AdoptCatalogRequest {
     pub profile_id: String,
     #[serde(default)]
     pub commit: bool,
+    #[serde(default)]
+    pub expected_source_hash: Option<String>,
+    #[serde(default)]
+    pub expected_target_client_version: Option<String>,
+    #[serde(default)]
+    pub expected_version_status: Option<String>,
+    #[serde(default)]
+    pub accept_version_mismatch: bool,
+    #[serde(default)]
+    pub confirm_context_cleanup: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -267,6 +352,10 @@ pub struct AdoptionPreviewPayload {
     pub official_override_count: usize,
     pub custom_models: Vec<CustomModel>,
     pub collisions: Vec<String>,
+    pub source_hash: String,
+    pub catalog_client_version: Option<String>,
+    pub target_client_version: String,
+    pub version_status: String,
     pub committed: bool,
 }
 
@@ -336,25 +425,24 @@ fn model_catalog_status_blocking() -> CommandResult<CatalogStatusPayload> {
 fn refresh_official_model_catalog_blocking() -> CommandResult<CatalogStatusPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let result = (|| -> anyhow::Result<CatalogStatusPayload> {
+        let network = crate::network_policy::resolve_current_policy()?;
+        network.ensure_supported()?;
         let _guard = live_state::lock()?;
         live_state::prepare_secret_paths(&home)?;
         live_state::recover_locked()?;
         let settings = sanitized_settings()?;
         let mut state = load_and_migrate_state(&settings, &home)?;
-        let target = verify_target_cli()?;
+        let target = verify_target_cli_fresh()?;
         ensure!(target.trusted, "目标 Codex CLI 未通过平台信任校验");
         ensure!(target.capability_available, "{}", target.capability_message);
         let auth_path = home.join("auth.json");
         let auth = snapshot_live_auth(&auth_path, &state.scope_salt)?;
-        let raw = run_isolated_refresh(&target, &auth.projection)?;
+        let raw = run_isolated_refresh(&target, &auth.projection, &network)?;
         let cache = raw.cache;
         let output = raw.output;
         validate_catalog(&output, &target.client_version)?;
-        validate_catalog(&cache, &target.client_version)?;
-        ensure!(
-            model_map_hash(&output)? == model_map_hash(&cache)?,
-            "目标 CLI 输出与隔离缓存不一致"
-        );
+        validate_refresh_cache(&cache, &target.client_version)?;
+        validate_refresh_cache_matches_output(&output, &cache)?;
         let current_auth = snapshot_live_auth(&auth_path, &state.scope_salt)?;
         ensure!(
             auth_snapshot_matches(&auth, &current_auth),
@@ -398,7 +486,7 @@ fn refresh_official_model_catalog_blocking() -> CommandResult<CatalogStatusPaylo
 
         let mut mutations = materialize_inactive_profiles(&mut state, &settings, &home)?;
         let live_config = fs::read_to_string(home.join("config.toml")).unwrap_or_default();
-        match plan_active_profile_with_state(&home, &settings, &live_config, &mut state) {
+        match plan_active_profile_with_state(&home, &settings, &live_config, &mut state, false) {
             Ok(plan) => {
                 mutations.extend(plan.mutations);
                 if plan.config_contents != live_config {
@@ -429,21 +517,24 @@ fn save_profile_catalog_blocking(
         let _guard = live_state::lock()?;
         live_state::prepare_secret_paths(&home)?;
         live_state::recover_locked()?;
-        let settings = sanitized_settings()?;
-        let profile = settings
+        let mut settings = sanitized_settings()?;
+        let profile_index = settings
             .relay_profiles
             .iter()
-            .find(|profile| profile.id == request.profile_id)
+            .position(|profile| profile.id == request.profile_id)
             .context("供应商不存在")?;
+        let profile = &settings.relay_profiles[profile_index];
         ensure!(
             managed_catalog_capable(profile),
             "该供应商不支持托管模型目录"
         );
+        validate_upstream_topology(profile, request.upstream_topology)?;
         validate_overlay(&request.overlay)?;
         let mut state = load_and_migrate_state(&settings, &home)?;
         let profile_state = state.profiles.entry(profile.id.clone()).or_default();
+        profile_state.upstream_topology = request.upstream_topology;
         profile_state.mode = request.mode;
-        profile_state.mode_explicit = true;
+        profile_state.mode_explicit = request.mode_explicit;
         profile_state.overlay = request.overlay;
         if request.mode != CatalogMode::External {
             profile_state.external_pointer = None;
@@ -452,9 +543,35 @@ fn save_profile_catalog_blocking(
         state.operation_generation = state.operation_generation.saturating_add(1);
 
         let mut mutations = Vec::new();
+        let saved_conflicts = if managed_mode(request.mode) {
+            global_context_conflicts(&profile.config_contents)
+        } else {
+            Vec::new()
+        };
+        if !saved_conflicts.is_empty() {
+            ensure!(
+                request.confirm_context_cleanup,
+                "托管目录需要移除全局上下文设置：{}",
+                saved_conflicts.join(", ")
+            );
+            settings.relay_profiles[profile_index].config_contents = remove_global_context_keys(
+                &settings.relay_profiles[profile_index].config_contents,
+            )?;
+            mutations.push(FileMutation::bytes(
+                codex_plus_core::paths::default_settings_path(),
+                serde_json::to_vec_pretty(&settings)?,
+            ));
+        }
+        let profile = &settings.relay_profiles[profile_index];
         if profile.id == settings.active_relay_id {
             let live_config = fs::read_to_string(home.join("config.toml"))?;
-            let plan = plan_active_profile_with_state(&home, &settings, &live_config, &mut state)?;
+            let plan = plan_active_profile_with_state(
+                &home,
+                &settings,
+                &live_config,
+                &mut state,
+                request.confirm_context_cleanup,
+            )?;
             mutations.extend(plan.mutations);
             mutations.push(FileMutation::text(
                 home.join("config.toml"),
@@ -484,12 +601,13 @@ fn adopt_external_model_catalog_blocking(
         let _guard = live_state::lock()?;
         live_state::prepare_secret_paths(&home)?;
         live_state::recover_locked()?;
-        let settings = sanitized_settings()?;
-        let profile = settings
+        let mut settings = sanitized_settings()?;
+        let profile_index = settings
             .relay_profiles
             .iter()
-            .find(|profile| profile.id == request.profile_id)
+            .position(|profile| profile.id == request.profile_id)
             .context("供应商不存在")?;
+        let profile = settings.relay_profiles[profile_index].clone();
         let mut state = load_and_migrate_state(&settings, &home)?;
         let profile_state = state.profiles.get(&profile.id).context("缺少目录状态")?;
         ensure!(
@@ -501,8 +619,15 @@ fn adopt_external_model_catalog_blocking(
             .clone()
             .context("外部目录指针为空")?;
         let source = resolve_catalog_pointer(&home, &pointer)?;
-        let raw: Value = serde_json::from_slice(&fs::read(&source)?)?;
+        let source_bytes = fs::read(&source)?;
+        let source_hash = content_hash(&source_bytes);
+        let raw: Value = serde_json::from_slice(&source_bytes)?;
         validate_catalog_structure(&raw)?;
+        validate_effective_catalog_offline(&raw)?;
+        let target = verify_target_cli_fresh()?;
+        let catalog_client_version = catalog_declared_version(&raw);
+        let version_status =
+            external_version_status(catalog_client_version.as_deref(), &target.client_version);
         let (overlay, collisions) = overlay_from_catalog(state.official.as_ref(), &raw)?;
         let payload = AdoptionPreviewPayload {
             profile_id: profile.id.clone(),
@@ -510,10 +635,31 @@ fn adopt_external_model_catalog_blocking(
             official_override_count: overlay.official.len(),
             custom_models: overlay.custom.clone(),
             collisions,
+            source_hash: source_hash.clone(),
+            catalog_client_version,
+            target_client_version: target.client_version,
+            version_status: version_status.clone(),
             committed: request.commit,
         };
         if request.commit {
             ensure!(payload.collisions.is_empty(), "外部目录含冲突 slug");
+            ensure!(
+                request.expected_source_hash.as_deref() == Some(source_hash.as_str()),
+                "外部目录已在预览后变化，请重新预览"
+            );
+            ensure!(
+                request.expected_target_client_version.as_deref()
+                    == Some(payload.target_client_version.as_str())
+                    && request.expected_version_status.as_deref()
+                        == Some(payload.version_status.as_str()),
+                "目标 CLI 或版本兼容状态已在预览后变化，请重新预览"
+            );
+            if version_status == "mismatch" {
+                ensure!(
+                    request.accept_version_mismatch,
+                    "需要明确接受外部目录版本不匹配警告"
+                );
+            }
             let profile_state = state.profiles.get_mut(&profile.id).unwrap();
             profile_state.mode = if state.official.is_some() {
                 CatalogMode::OfficialPlusCustom
@@ -524,6 +670,22 @@ fn adopt_external_model_catalog_blocking(
             profile_state.overlay = overlay;
             profile_state.external_pointer = None;
             state.operation_generation = state.operation_generation.saturating_add(1);
+            let saved_conflicts = global_context_conflicts(&profile.config_contents);
+            let mut settings_mutation = None;
+            if !saved_conflicts.is_empty() {
+                ensure!(
+                    request.confirm_context_cleanup,
+                    "采用托管目录需要移除全局上下文设置：{}",
+                    saved_conflicts.join(", ")
+                );
+                settings.relay_profiles[profile_index].config_contents =
+                    remove_global_context_keys(&profile.config_contents)?;
+                settings_mutation = Some(FileMutation::bytes(
+                    codex_plus_core::paths::default_settings_path(),
+                    serde_json::to_vec_pretty(&settings)?,
+                ));
+            }
+            let profile = &settings.relay_profiles[profile_index];
             let source_config = if profile.id == settings.active_relay_id {
                 fs::read_to_string(home.join("config.toml"))?
             } else {
@@ -533,9 +695,17 @@ fn adopt_external_model_catalog_blocking(
                 adoption_backup_path(&profile.id),
                 sanitize_nonsecret_config_backup(&source_config)?,
             )];
+            if let Some(mutation) = settings_mutation {
+                mutations.push(mutation);
+            }
             if profile.id == settings.active_relay_id {
-                let plan =
-                    plan_active_profile_with_state(&home, &settings, &source_config, &mut state)?;
+                let plan = plan_active_profile_with_state(
+                    &home,
+                    &settings,
+                    &source_config,
+                    &mut state,
+                    request.confirm_context_cleanup,
+                )?;
                 mutations.extend(plan.mutations);
                 mutations.push(FileMutation::text(
                     home.join("config.toml"),
@@ -556,9 +726,16 @@ pub fn plan_active_profile(
     home: &Path,
     settings: &BackendSettings,
     provider_config: &str,
+    confirm_context_cleanup: bool,
 ) -> anyhow::Result<ActiveCatalogPlan> {
     let mut state = load_and_migrate_state(settings, home)?;
-    let mut plan = plan_active_profile_with_state(home, settings, provider_config, &mut state)?;
+    let mut plan = plan_active_profile_with_state(
+        home,
+        settings,
+        provider_config,
+        &mut state,
+        confirm_context_cleanup,
+    )?;
     state.operation_generation = state.operation_generation.saturating_add(1);
     plan.mutations.push(state_mutation(&state)?);
     Ok(plan)
@@ -569,6 +746,7 @@ fn plan_active_profile_with_state(
     settings: &BackendSettings,
     provider_config: &str,
     state: &mut CatalogState,
+    confirm_context_cleanup: bool,
 ) -> anyhow::Result<ActiveCatalogPlan> {
     let profile = settings.active_relay_profile();
     let profile_state = state
@@ -597,6 +775,16 @@ fn plan_active_profile_with_state(
                 managed_catalog_capable(&profile),
                 "该供应商不支持托管模型目录"
             );
+            validate_upstream_topology(&profile, profile_state.upstream_topology)?;
+            let conflicts = global_context_conflicts(&config);
+            if !conflicts.is_empty() {
+                ensure!(
+                    confirm_context_cleanup,
+                    "托管目录需要移除全局上下文设置：{}",
+                    conflicts.join(", ")
+                );
+                config = remove_global_context_keys(&config)?;
+            }
             let catalog = compose_profile_catalog(&state, &profile, &profile_state)?;
             validate_catalog_structure(&catalog)?;
             validate_effective_catalog_offline(&catalog)?;
@@ -700,7 +888,11 @@ fn load_and_migrate_state(settings: &BackendSettings, home: &Path) -> anyhow::Re
         let state_has_profile = state.profiles.contains_key(&profile.id);
         let entry = state.profiles.entry(profile.id.clone()).or_default();
         if !state_has_profile {
-            entry.mode = default_mode(profile, existing_pointer.as_deref());
+            entry.mode = default_mode(
+                profile,
+                existing_pointer.as_deref(),
+                entry.upstream_topology,
+            );
             if entry.mode == CatalogMode::External {
                 entry.external_pointer = existing_pointer.clone();
             }
@@ -748,6 +940,7 @@ fn migrate_legacy_overlay(
                         context_window: window,
                         order: Some(order as i64),
                         visible: None,
+                        ..OfficialOverride::default()
                     },
                 );
             }
@@ -759,6 +952,7 @@ fn migrate_legacy_overlay(
                 visible: true,
                 order: order as i64,
                 template_provenance: "legacy-model-list".to_string(),
+                ..CustomModel::default()
             });
         }
     }
@@ -766,16 +960,135 @@ fn migrate_legacy_overlay(
     Ok(overlay)
 }
 
-fn default_mode(profile: &RelayProfile, pointer: Option<&str>) -> CatalogMode {
+fn default_mode(
+    profile: &RelayProfile,
+    pointer: Option<&str>,
+    topology: UpstreamTopology,
+) -> CatalogMode {
     if pointer.is_some() {
         return CatalogMode::External;
     }
     match profile.relay_mode {
         RelayMode::Official if !profile.official_mix_api_key => CatalogMode::NativeOfficial,
         RelayMode::Official | RelayMode::MixedApi => CatalogMode::OfficialPlusCustom,
+        RelayMode::PureApi if topology == UpstreamTopology::ServerSideComposite => {
+            CatalogMode::OfficialPlusCustom
+        }
         RelayMode::PureApi => CatalogMode::CustomOnly,
         RelayMode::Aggregate => CatalogMode::NativeOfficial,
     }
+}
+
+fn managed_mode(mode: CatalogMode) -> bool {
+    matches!(
+        mode,
+        CatalogMode::OfficialPlusCustom | CatalogMode::CustomOnly
+    )
+}
+
+fn validate_upstream_topology(
+    profile: &RelayProfile,
+    topology: UpstreamTopology,
+) -> anyhow::Result<()> {
+    if topology == UpstreamTopology::Direct {
+        return Ok(());
+    }
+    ensure!(
+        profile.relay_mode == RelayMode::PureApi,
+        "服务端复合供应商必须使用纯 API 模式"
+    );
+    ensure!(
+        profile.protocol == codex_plus_core::settings::RelayProtocol::Responses,
+        "服务端复合供应商必须使用 Responses API"
+    );
+    ensure!(
+        !codex_plus_core::relay_config::relay_profile_base_url(profile)
+            .trim()
+            .is_empty(),
+        "服务端复合供应商缺少 Base URL"
+    );
+    ensure!(
+        !codex_plus_core::relay_config::relay_profile_api_key(profile)
+            .trim()
+            .is_empty(),
+        "服务端复合供应商缺少 provider bearer token"
+    );
+    Ok(())
+}
+
+const GLOBAL_CONTEXT_KEYS: [&str; 2] = ["model_context_window", "model_auto_compact_token_limit"];
+
+fn global_context_conflicts(config: &str) -> Vec<String> {
+    let Ok(doc) = config.parse::<toml_edit::DocumentMut>() else {
+        return Vec::new();
+    };
+    GLOBAL_CONTEXT_KEYS
+        .iter()
+        .filter(|key| doc.as_table().contains_key(**key))
+        .map(|key| (*key).to_string())
+        .collect()
+}
+
+fn remove_global_context_keys(config: &str) -> anyhow::Result<String> {
+    let mut doc: toml_edit::DocumentMut = config.parse()?;
+    for key in GLOBAL_CONTEXT_KEYS {
+        doc.as_table_mut().remove(key);
+    }
+    Ok(doc.to_string())
+}
+
+pub fn ensure_active_config_context_compatible(config: &str) -> anyhow::Result<()> {
+    let settings = sanitized_settings()?;
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    let state = load_and_migrate_state(&settings, &home)?;
+    let profile = settings.active_relay_profile();
+    let mode = state
+        .profiles
+        .get(&profile.id)
+        .map(|item| item.mode)
+        .unwrap_or(CatalogMode::NativeOfficial);
+    if managed_mode(mode) {
+        let conflicts = global_context_conflicts(config);
+        ensure!(
+            conflicts.is_empty(),
+            "托管目录不能写入全局上下文设置：{}",
+            conflicts.join(", ")
+        );
+    }
+    Ok(())
+}
+
+pub fn prepare_active_profile_context_settings(
+    settings: &mut BackendSettings,
+    confirm_context_cleanup: bool,
+) -> anyhow::Result<()> {
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    let state = load_and_migrate_state(settings, &home)?;
+    let active_id = settings.active_relay_id.clone();
+    let mode = state
+        .profiles
+        .get(&active_id)
+        .map(|item| item.mode)
+        .unwrap_or(CatalogMode::NativeOfficial);
+    if !managed_mode(mode) {
+        return Ok(());
+    }
+    let profile = settings
+        .relay_profiles
+        .iter_mut()
+        .find(|profile| profile.id == active_id)
+        .context("当前供应商不存在")?;
+    let conflicts = global_context_conflicts(&profile.config_contents);
+    if conflicts.is_empty() {
+        return Ok(());
+    }
+    ensure!(
+        confirm_context_cleanup,
+        "托管目录需要移除全局上下文设置：{}",
+        conflicts.join(", ")
+    );
+    profile.config_contents = remove_global_context_keys(&profile.config_contents)?;
+    Ok(())
 }
 
 fn state_mutation(state: &CatalogState) -> anyhow::Result<FileMutation> {
@@ -845,15 +1158,38 @@ fn status_payload(
         .map(|profile| {
             let item = state.profiles.get(&profile.id).cloned().unwrap_or_default();
             let evidence = item.provider_evidence.as_ref();
+            let mut context_conflicts = if managed_mode(item.mode) {
+                global_context_conflicts(&profile.config_contents)
+            } else {
+                Vec::new()
+            };
+            if managed_mode(item.mode) && profile.id == settings.active_relay_id {
+                if let Ok(live_config) = fs::read_to_string(home.join("config.toml")) {
+                    context_conflicts.extend(global_context_conflicts(&live_config));
+                    context_conflicts.sort();
+                    context_conflicts.dedup();
+                }
+            }
+            let action_required = item.action_required.clone().or_else(|| {
+                (!context_conflicts.is_empty()).then(|| {
+                    format!(
+                        "全局上下文设置会覆盖托管目录：{}；确认后移除。",
+                        context_conflicts.join(", ")
+                    )
+                })
+            });
             ProfileCatalogSummary {
                 profile_id: profile.id.clone(),
                 mode: item.mode,
+                mode_explicit: item.mode_explicit,
+                upstream_topology: item.upstream_topology,
                 managed_available: managed_catalog_capable(profile),
+                context_conflicts,
                 external_pointer: item.external_pointer,
                 generated_path: item.generated_path,
                 effective_hash: item.generated_hash,
                 restart_required: item.restart_required,
-                action_required: item.action_required,
+                action_required,
                 official_override_count: item.overlay.official.len(),
                 custom_count: item.overlay.custom.len(),
                 provider_evidence_at_ms: evidence.map(|value| value.fetched_at_ms),
@@ -925,62 +1261,136 @@ fn status_payload(
 }
 
 fn verify_target_cli() -> anyhow::Result<VerifiedTargetIdentity> {
+    verify_target_cli_with_cache(true)
+}
+
+fn verify_target_cli_fresh() -> anyhow::Result<VerifiedTargetIdentity> {
+    verify_target_cli_with_cache(false)
+}
+
+fn verify_target_cli_with_cache(
+    reuse_cached_failure: bool,
+) -> anyhow::Result<VerifiedTargetIdentity> {
     let cli = discover_target_codex_cli()?;
     let canonical_cli = fs::canonicalize(&cli)?;
     let app = application_bundle_for_cli(&canonical_cli)?;
     let canonical_app = fs::canonicalize(&app)?;
     verify_bundle_relationship(&canonical_app, &canonical_cli)?;
+    let cache_key = target_verification_cache_key(&canonical_app, &canonical_cli)?;
+    if let Some(result) = cached_target_verification(&cache_key, reuse_cached_failure) {
+        return result;
+    }
 
-    let version_output = run_bounded_command(
-        &canonical_cli,
-        &["--version"],
-        None,
-        CAPABILITY_TIMEOUT,
-        false,
-    )?;
-    let version = parse_cli_version(&version_output.stdout)?;
-    let supported = semver::Version::parse(&version)
-        .ok()
-        .zip(semver::Version::parse(MIN_SUPPORTED_CLI).ok())
-        .is_some_and(|(current, minimum)| current >= minimum);
-
-    let (trusted, publisher) = verify_platform_publisher(&canonical_app, &canonical_cli)?;
-    let capability = run_bounded_command(
-        &canonical_cli,
-        &["debug", "models", "--bundled"],
-        None,
-        CAPABILITY_TIMEOUT,
-        true,
-    );
-    let capability_available = supported
-        && capability
-            .as_ref()
+    let result = (|| -> anyhow::Result<VerifiedTargetIdentity> {
+        let version_output = run_bounded_command(
+            &canonical_cli,
+            &["--version"],
+            None,
+            CAPABILITY_TIMEOUT,
+            false,
+            None,
+        )?;
+        let version = parse_cli_version(&version_output.stdout)?;
+        let supported = semver::Version::parse(&version)
             .ok()
-            .and_then(|result| serde_json::from_slice::<Value>(&result.stdout).ok())
-            .and_then(|value| value.get("models").and_then(Value::as_array).map(Vec::len))
-            .is_some_and(|count| count > 0);
-    let identity_hash = hash_text(&format!(
-        "{}:{}:{}",
-        canonical_cli.display(),
-        version,
-        publisher
-    ));
-    Ok(VerifiedTargetIdentity {
-        app_path: canonical_app.to_string_lossy().to_string(),
-        cli_path: canonical_cli.to_string_lossy().to_string(),
-        client_version: version,
-        publisher,
-        identity_hash,
-        trusted,
-        capability_available,
-        capability_message: if !supported {
-            format!("目标 CLI 版本低于支持下限 {MIN_SUPPORTED_CLI}")
-        } else if capability_available {
-            "目标 CLI 支持 debug models。".to_string()
-        } else {
-            "目标 CLI 的 bundled models 能力探测失败。".to_string()
-        },
+            .zip(semver::Version::parse(MIN_SUPPORTED_CLI).ok())
+            .is_some_and(|(current, minimum)| current >= minimum);
+
+        let (trusted, publisher) = verify_platform_publisher(&canonical_app, &canonical_cli)?;
+        let capability = run_bounded_command(
+            &canonical_cli,
+            &["debug", "models", "--bundled"],
+            None,
+            CAPABILITY_TIMEOUT,
+            true,
+            None,
+        );
+        let capability_available = supported
+            && capability
+                .as_ref()
+                .ok()
+                .and_then(|result| serde_json::from_slice::<Value>(&result.stdout).ok())
+                .and_then(|value| value.get("models").and_then(Value::as_array).map(Vec::len))
+                .is_some_and(|count| count > 0);
+        let identity_hash = hash_text(&format!(
+            "{}:{}:{}",
+            canonical_cli.display(),
+            version,
+            publisher
+        ));
+        Ok(VerifiedTargetIdentity {
+            app_path: canonical_app.to_string_lossy().to_string(),
+            cli_path: canonical_cli.to_string_lossy().to_string(),
+            client_version: version,
+            publisher,
+            identity_hash,
+            trusted,
+            capability_available,
+            capability_message: if !supported {
+                format!("目标 CLI 版本低于支持下限 {MIN_SUPPORTED_CLI}")
+            } else if capability_available {
+                "目标 CLI 支持 debug models。".to_string()
+            } else {
+                "目标 CLI 的 bundled models 能力探测失败。".to_string()
+            },
+        })
+    })();
+    remember_target_verification(cache_key, &result);
+    result
+}
+
+fn target_verification_cache_key(
+    app: &Path,
+    cli: &Path,
+) -> anyhow::Result<TargetVerificationCacheKey> {
+    let app_metadata = fs::metadata(app)?;
+    let cli_metadata = fs::metadata(cli)?;
+    Ok(TargetVerificationCacheKey {
+        app_path: app.to_path_buf(),
+        app_len: app_metadata.len(),
+        app_modified: app_metadata.modified().ok(),
+        cli_path: cli.to_path_buf(),
+        cli_len: cli_metadata.len(),
+        cli_modified: cli_metadata.modified().ok(),
     })
+}
+
+fn cached_target_verification(
+    key: &TargetVerificationCacheKey,
+    reuse_cached_failure: bool,
+) -> Option<anyhow::Result<VerifiedTargetIdentity>> {
+    TARGET_VERIFICATION_CACHE
+        .get_or_init(|| StdMutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|cached| {
+            let (_, value) = cached
+                .as_ref()
+                .filter(|(cached_key, _)| cached_key == key)?;
+            match value {
+                TargetVerificationCacheValue::Verified(target) => Some(Ok(target.clone())),
+                TargetVerificationCacheValue::Failed(message) if reuse_cached_failure => {
+                    Some(Err(anyhow::anyhow!(message.clone())))
+                }
+                TargetVerificationCacheValue::Failed(_) => None,
+            }
+        })
+}
+
+fn remember_target_verification(
+    key: TargetVerificationCacheKey,
+    result: &anyhow::Result<VerifiedTargetIdentity>,
+) {
+    if let Ok(mut cached) = TARGET_VERIFICATION_CACHE
+        .get_or_init(|| StdMutex::new(None))
+        .lock()
+    {
+        let value = match result {
+            Ok(target) => TargetVerificationCacheValue::Verified(target.clone()),
+            Err(error) => TargetVerificationCacheValue::Failed(error.to_string()),
+        };
+        *cached = Some((key, value));
+    }
 }
 
 fn application_bundle_for_cli(cli: &Path) -> anyhow::Result<PathBuf> {
@@ -1065,6 +1475,7 @@ fn verify_platform_publisher(app: &Path, cli: &Path) -> anyhow::Result<(bool, St
     Ok((true, format!("OpenAI Team {team_id}")))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn supported_mac_team_id(team_id: &str) -> bool {
     OPENAI_MAC_TEAM_IDS.contains(&team_id)
 }
@@ -1076,8 +1487,15 @@ fn verify_platform_publisher(app: &Path, cli: &Path) -> anyhow::Result<(bool, St
         "$s=Get-AuthenticodeSignature -LiteralPath '{}'; Write-Output $s.Status; Write-Output $s.SignerCertificate.Subject",
         cli.to_string_lossy().replace('\'', "''")
     );
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+    let output = crate::platform_command::background_command("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            &script,
+        ])
         .output()?;
     ensure!(output.status.success(), "Authenticode verification failed");
     let text = String::from_utf8_lossy(&output.stdout);
@@ -1208,6 +1626,7 @@ fn json_path_string(value: &Value, path: &[&str]) -> Option<String> {
         .map(ToString::to_string)
 }
 
+#[derive(Debug)]
 struct IsolatedRefreshResult {
     output: Value,
     cache: Value,
@@ -1216,6 +1635,7 @@ struct IsolatedRefreshResult {
 fn run_isolated_refresh(
     target: &VerifiedTargetIdentity,
     auth_projection: &Value,
+    network: &crate::network_policy::ResolvedNetworkPolicy,
 ) -> anyhow::Result<IsolatedRefreshResult> {
     let root = codex_plus_core::paths::default_app_state_dir().join("catalog-refresh");
     live_state::ensure_owner_only_dir(&root)?;
@@ -1244,7 +1664,9 @@ fn run_isolated_refresh(
             Some(&home),
             REFRESH_TIMEOUT,
             true,
-        )?;
+            Some(network),
+        )
+        .with_context(|| format!("Manager 网络请求失败（来源：{}）", network.source))?;
         let projected_after: Value = serde_json::from_slice(&fs::read(home.join("auth.json"))?)?;
         let projected_tokens = projected_after
             .get("tokens")
@@ -1261,7 +1683,8 @@ fn run_isolated_refresh(
         let cache_path = home.join("models_cache.json");
         ensure!(
             cache_path.is_file(),
-            "target CLI did not create isolated models_cache.json"
+            "目标 CLI 未创建远端模型缓存，已回退 bundled 模型；Manager 网络来源：{}。请先在 Manager 网络中测试连接",
+            network.source
         );
         let command_json: Value = serde_json::from_slice(&output.stdout)
             .context("target CLI model output is malformed")?;
@@ -1281,7 +1704,7 @@ fn run_isolated_refresh(
 }
 
 fn validate_effective_catalog_offline(catalog: &Value) -> anyhow::Result<()> {
-    let target = verify_target_cli()?;
+    let target = verify_target_cli_fresh()?;
     ensure!(target.capability_available, "目标 CLI 不支持静态目录验证");
     let root = codex_plus_core::paths::default_app_state_dir().join("catalog-validation");
     live_state::ensure_owner_only_dir(&root)?;
@@ -1306,6 +1729,7 @@ fn validate_effective_catalog_offline(catalog: &Value) -> anyhow::Result<()> {
             Some(&home),
             CAPABILITY_TIMEOUT,
             true,
+            None,
         )?;
         ensure!(
             !home.join("auth.json").exists(),
@@ -1338,6 +1762,7 @@ fn run_bounded_command(
     codex_home: Option<&Path>,
     timeout: Duration,
     clear_environment: bool,
+    network: Option<&crate::network_policy::ResolvedNetworkPolicy>,
 ) -> anyhow::Result<BoundedOutput> {
     let output_root = codex_plus_core::paths::default_app_state_dir().join("command-output");
     live_state::ensure_owner_only_dir(&output_root)?;
@@ -1351,7 +1776,7 @@ fn run_bounded_command(
     create_private_empty_file(&stderr_path)?;
     let stdout_file = OpenOptions::new().append(true).open(&stdout_path)?;
     let stderr_file = OpenOptions::new().append(true).open(&stderr_path)?;
-    let mut command = Command::new(cli);
+    let mut command = crate::platform_command::background_command(cli);
     command
         .args(args)
         .stdin(Stdio::null())
@@ -1359,7 +1784,7 @@ fn run_bounded_command(
         .stderr(stderr_file);
     if clear_environment {
         command.env_clear();
-        for (name, value) in safe_child_environment(std::env::vars_os()) {
+        for (name, value) in isolated_child_environment(std::env::vars_os(), network) {
             command.env(name, value);
         }
         command.env("LANG", "C.UTF-8");
@@ -1401,18 +1826,21 @@ fn run_bounded_command(
     result
 }
 
-fn safe_child_environment(
+fn isolated_child_environment(
+    source: impl IntoIterator<Item = (OsString, OsString)>,
+    network: Option<&crate::network_policy::ResolvedNetworkPolicy>,
+) -> Vec<(OsString, OsString)> {
+    let mut environment = safe_non_network_child_environment(source);
+    if let Some(network) = network {
+        environment.extend(network.environment.iter().cloned());
+    }
+    environment
+}
+
+fn safe_non_network_child_environment(
     source: impl IntoIterator<Item = (OsString, OsString)>,
 ) -> Vec<(OsString, OsString)> {
-    const COMMON: &[&str] = &[
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-        "NO_PROXY",
-        "SSL_CERT_FILE",
-        "SSL_CERT_DIR",
-        "TMPDIR",
-    ];
+    const COMMON: &[&str] = &["SSL_CERT_FILE", "SSL_CERT_DIR", "TMPDIR"];
     #[cfg(windows)]
     const PLATFORM: &[&str] = &["SystemRoot", "WINDIR", "TEMP", "TMP", "PATH"];
     #[cfg(not(windows))]
@@ -1435,6 +1863,37 @@ fn create_private_empty_file(path: &Path) -> anyhow::Result<()> {
 
 fn validate_catalog(value: &Value, client_version: &str) -> anyhow::Result<()> {
     validate_catalog_structure(value)?;
+    validate_catalog_client_version(value, client_version)?;
+    let models = catalog_models(value)?;
+    for model in models {
+        validate_rich_model(model)?;
+        ensure!(
+            model
+                .get("base_instructions")
+                .and_then(Value::as_str)
+                .is_some(),
+            "model has no instructions"
+        );
+    }
+    Ok(())
+}
+
+fn validate_refresh_cache(value: &Value, client_version: &str) -> anyhow::Result<()> {
+    validate_catalog_structure(value)?;
+    validate_catalog_client_version(value, client_version)?;
+    for model in catalog_models(value)? {
+        validate_rich_model(model)?;
+        ensure!(
+            model
+                .get("base_instructions")
+                .is_none_or(|instructions| instructions.is_null() || instructions.is_string()),
+            "cached model has invalid instructions"
+        );
+    }
+    Ok(())
+}
+
+fn validate_catalog_client_version(value: &Value, client_version: &str) -> anyhow::Result<()> {
     if let Some(version) = value
         .get("client_version")
         .or_else(|| value.get("clientVersion"))
@@ -1445,27 +1904,21 @@ fn validate_catalog(value: &Value, client_version: &str) -> anyhow::Result<()> {
             "catalog client version mismatch: catalog={version}, target={client_version}"
         );
     }
-    let models = catalog_models(value)?;
-    for model in models {
-        ensure!(
-            model.get("display_name").and_then(Value::as_str).is_some(),
-            "model is not rich"
-        );
-        ensure!(
-            model
-                .get("context_window")
-                .and_then(Value::as_u64)
-                .is_some(),
-            "model has no context window"
-        );
-        ensure!(
-            model
-                .get("base_instructions")
-                .and_then(Value::as_str)
-                .is_some(),
-            "model has no instructions"
-        );
-    }
+    Ok(())
+}
+
+fn validate_rich_model(model: &Value) -> anyhow::Result<()> {
+    ensure!(
+        model.get("display_name").and_then(Value::as_str).is_some(),
+        "model is not rich"
+    );
+    ensure!(
+        model
+            .get("context_window")
+            .and_then(Value::as_u64)
+            .is_some(),
+        "model has no context window"
+    );
     Ok(())
 }
 
@@ -1526,17 +1979,40 @@ fn catalog_slugs(value: &Value) -> anyhow::Result<BTreeSet<String>> {
         .collect())
 }
 
-fn model_map_hash(value: &Value) -> anyhow::Result<String> {
-    let map = catalog_models(value)?
-        .iter()
-        .filter_map(|model| {
-            model
-                .get("slug")
-                .and_then(Value::as_str)
-                .map(|slug| (slug.to_string(), model.clone()))
-        })
-        .collect::<BTreeMap<_, _>>();
-    canonical_json_hash(&serde_json::to_value(map)?)
+fn validate_refresh_cache_matches_output(output: &Value, cache: &Value) -> anyhow::Result<()> {
+    let output = model_value_map(output)?;
+    let cache = model_value_map(cache)?;
+    ensure!(
+        output.keys().eq(cache.keys()),
+        "目标 CLI 输出与隔离缓存的模型集合不一致"
+    );
+    for (slug, cached_model) in cache {
+        let mut output_model = output
+            .get(&slug)
+            .cloned()
+            .context("目标 CLI 输出缺少缓存模型")?;
+        let mut cached_model = cached_model;
+        // The CLI may hydrate instructions omitted by its raw cache. A supplied cache value
+        // remains authoritative for this comparison and must still match exactly.
+        if cached_model
+            .get("base_instructions")
+            .is_none_or(Value::is_null)
+        {
+            output_model
+                .as_object_mut()
+                .context("目标 CLI 输出模型不是对象")?
+                .remove("base_instructions");
+            cached_model
+                .as_object_mut()
+                .context("隔离缓存模型不是对象")?
+                .remove("base_instructions");
+        }
+        ensure!(
+            output_model == cached_model,
+            "目标 CLI 输出与隔离缓存不一致：{slug}"
+        );
+    }
+    Ok(())
 }
 
 fn catalog_compatibility_projection(
@@ -1650,9 +2126,15 @@ fn compose_profile_catalog(
             apply_official_override(
                 model,
                 &OfficialOverride {
+                    display_name: Some(custom.display_name.clone()),
                     visible: Some(custom.visible),
                     context_window: Some(custom.context_window),
+                    effective_context_window_percent: Some(custom.effective_context_window_percent),
                     order: Some(custom.order),
+                    supported_reasoning_levels: Some(custom.supported_reasoning_levels.clone()),
+                    default_reasoning_level: custom.default_reasoning_level.clone(),
+                    supported_tools: Some(custom.supported_tools.clone()),
+                    tool_capabilities: custom.tool_capabilities.clone(),
                 },
             )?;
         }
@@ -1712,6 +2194,21 @@ fn compose_profile_catalog(
                 model["visibility"] = json!(if custom.visible { "list" } else { "hide" });
                 model["priority"] = json!(custom.order);
                 strip_official_only_capabilities(&mut model);
+                model["effective_context_window_percent"] =
+                    json!(custom.effective_context_window_percent);
+                if !custom.supported_reasoning_levels.is_empty() {
+                    model["supported_reasoning_levels"] =
+                        serde_json::to_value(&custom.supported_reasoning_levels)?;
+                }
+                if let Some(default) = custom.default_reasoning_level.as_deref() {
+                    model["default_reasoning_level"] = json!(default);
+                }
+                if !custom.supported_tools.is_empty() {
+                    model["supported_tools"] = json!(custom.supported_tools);
+                }
+                if let Some(capabilities) = custom.tool_capabilities.as_ref() {
+                    model["tool_capabilities"] = capabilities.clone();
+                }
             }
             models.push(model);
         }
@@ -1736,6 +2233,13 @@ fn compose_profile_catalog(
 }
 
 fn apply_official_override(model: &mut Value, overlay: &OfficialOverride) -> anyhow::Result<()> {
+    if let Some(display_name) = overlay.display_name.as_deref() {
+        ensure!(
+            !display_name.trim().is_empty(),
+            "display name must not be empty"
+        );
+        model["display_name"] = json!(display_name.trim());
+    }
     if let Some(visible) = overlay.visible {
         model["visibility"] = json!(if visible { "list" } else { "hide" });
     }
@@ -1743,10 +2247,34 @@ fn apply_official_override(model: &mut Value, overlay: &OfficialOverride) -> any
         ensure!(window > 0, "official context window must be positive");
         model["context_window"] = json!(window);
         model["max_context_window"] = json!(window);
-        model["effective_context_window_percent"] = json!(100);
+    }
+    if let Some(percent) = overlay.effective_context_window_percent {
+        ensure!(
+            (1..=100).contains(&percent),
+            "effective context percent must be 1-100"
+        );
+        model["effective_context_window_percent"] = json!(percent);
     }
     if let Some(order) = overlay.order {
         model["priority"] = json!(order);
+    }
+    if let Some(levels) = overlay.supported_reasoning_levels.as_ref() {
+        validate_reasoning(levels, overlay.default_reasoning_level.as_deref())?;
+        model["supported_reasoning_levels"] = serde_json::to_value(levels)?;
+    }
+    if let Some(default) = overlay.default_reasoning_level.as_deref() {
+        model["default_reasoning_level"] = json!(default);
+    }
+    if let Some(tools) = overlay.supported_tools.as_ref() {
+        validate_supported_tools(tools)?;
+        model["supported_tools"] = json!(tools);
+    }
+    if let Some(capabilities) = overlay.tool_capabilities.as_ref() {
+        ensure!(
+            capabilities.is_object(),
+            "tool capabilities must be an object"
+        );
+        model["tool_capabilities"] = capabilities.clone();
     }
     Ok(())
 }
@@ -1779,11 +2307,86 @@ fn validate_overlay(overlay: &CatalogOverlay) -> anyhow::Result<()> {
         if let Some(window) = value.context_window {
             ensure!(window > 0, "context window must be positive");
         }
+        if let Some(display_name) = value.display_name.as_deref() {
+            ensure!(
+                !display_name.trim().is_empty(),
+                "display name must not be empty"
+            );
+        }
+        if let Some(percent) = value.effective_context_window_percent {
+            ensure!(
+                (1..=100).contains(&percent),
+                "effective context percent must be 1-100"
+            );
+        }
+        if let Some(levels) = value.supported_reasoning_levels.as_ref() {
+            validate_reasoning(levels, value.default_reasoning_level.as_deref())?;
+        }
+        if let Some(tools) = value.supported_tools.as_ref() {
+            validate_supported_tools(tools)?;
+        }
+        if let Some(capabilities) = value.tool_capabilities.as_ref() {
+            ensure!(
+                capabilities.is_object(),
+                "tool capabilities must be an object"
+            );
+        }
     }
     for custom in &overlay.custom {
         validate_slug(&custom.slug)?;
+        ensure!(
+            !custom.display_name.trim().is_empty(),
+            "display name must not be empty"
+        );
         ensure!(custom.context_window > 0, "context window must be positive");
+        ensure!(
+            (1..=100).contains(&custom.effective_context_window_percent),
+            "effective context percent must be 1-100"
+        );
+        validate_reasoning(
+            &custom.supported_reasoning_levels,
+            custom.default_reasoning_level.as_deref(),
+        )?;
+        validate_supported_tools(&custom.supported_tools)?;
+        if let Some(capabilities) = custom.tool_capabilities.as_ref() {
+            ensure!(
+                capabilities.is_object(),
+                "tool capabilities must be an object"
+            );
+        }
         ensure!(slugs.insert(custom.slug.clone()), "duplicate custom slug");
+    }
+    Ok(())
+}
+
+fn validate_reasoning(levels: &[ReasoningLevel], default: Option<&str>) -> anyhow::Result<()> {
+    let mut efforts = HashSet::new();
+    for level in levels {
+        let effort = level.effort.trim();
+        ensure!(
+            !effort.is_empty() && effort.len() <= 32,
+            "reasoning effort is invalid"
+        );
+        ensure!(efforts.insert(effort), "duplicate reasoning effort");
+    }
+    if let Some(default) = default {
+        ensure!(
+            efforts.contains(default),
+            "default reasoning effort is not supported"
+        );
+    }
+    Ok(())
+}
+
+fn validate_supported_tools(tools: &[String]) -> anyhow::Result<()> {
+    let mut seen = HashSet::new();
+    for tool in tools {
+        let tool = tool.trim();
+        ensure!(
+            !tool.is_empty() && tool.len() <= 80,
+            "supported tool is invalid"
+        );
+        ensure!(seen.insert(tool), "duplicate supported tool");
     }
     Ok(())
 }
@@ -2006,36 +2609,115 @@ fn overlay_from_catalog(
             .and_then(Value::as_u64)
             .unwrap_or(272_000);
         let visible = model.get("visibility").and_then(Value::as_str) != Some("hide");
+        let display_name = model
+            .get("display_name")
+            .and_then(Value::as_str)
+            .unwrap_or(&slug)
+            .to_string();
+        let effective_percent = model
+            .get("effective_context_window_percent")
+            .and_then(Value::as_u64)
+            .and_then(|value| u8::try_from(value).ok())
+            .unwrap_or(100);
+        let reasoning_levels = model
+            .get("supported_reasoning_levels")
+            .cloned()
+            .and_then(|value| serde_json::from_value::<Vec<ReasoningLevel>>(value).ok())
+            .unwrap_or_default();
+        let default_reasoning = model
+            .get("default_reasoning_level")
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
+        let supported_tools = model
+            .get("supported_tools")
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let tool_capabilities = model.get("tool_capabilities").cloned();
         if let Some(base) = official_map.get(&slug) {
             let base_window = base.get("context_window").and_then(Value::as_u64);
             let base_visible = base.get("visibility").and_then(Value::as_str) != Some("hide");
-            if base_window != Some(context_window) || base_visible != visible {
-                overlay.official.insert(
-                    slug,
-                    OfficialOverride {
-                        visible: (base_visible != visible).then_some(visible),
-                        context_window: (base_window != Some(context_window))
-                            .then_some(context_window),
-                        order: Some(order as i64),
-                    },
-                );
+            let candidate = OfficialOverride {
+                display_name: (base.get("display_name").and_then(Value::as_str)
+                    != Some(display_name.as_str()))
+                .then_some(display_name),
+                visible: (base_visible != visible).then_some(visible),
+                context_window: (base_window != Some(context_window)).then_some(context_window),
+                effective_context_window_percent: (base
+                    .get("effective_context_window_percent")
+                    .and_then(Value::as_u64)
+                    != Some(u64::from(effective_percent)))
+                .then_some(effective_percent),
+                order: Some(order as i64),
+                supported_reasoning_levels: (base.get("supported_reasoning_levels")
+                    != model.get("supported_reasoning_levels"))
+                .then_some(reasoning_levels),
+                default_reasoning_level: (base.get("default_reasoning_level")
+                    != model.get("default_reasoning_level"))
+                .then_some(default_reasoning)
+                .flatten(),
+                supported_tools: (base.get("supported_tools") != model.get("supported_tools"))
+                    .then_some(supported_tools),
+                tool_capabilities: (base.get("tool_capabilities")
+                    != model.get("tool_capabilities"))
+                .then_some(tool_capabilities)
+                .flatten(),
+            };
+            if official_override_has_values(&candidate) {
+                overlay.official.insert(slug, candidate);
             }
         } else {
             overlay.custom.push(CustomModel {
                 slug: slug.clone(),
-                display_name: model
-                    .get("display_name")
-                    .and_then(Value::as_str)
-                    .unwrap_or(&slug)
-                    .to_string(),
+                display_name,
                 context_window,
+                effective_context_window_percent: effective_percent,
                 visible,
                 order: order as i64,
+                supported_reasoning_levels: reasoning_levels,
+                default_reasoning_level: default_reasoning,
+                supported_tools,
+                tool_capabilities,
                 template_provenance: "adopted-external-catalog".to_string(),
             });
         }
     }
     Ok((overlay, collisions))
+}
+
+fn official_override_has_values(value: &OfficialOverride) -> bool {
+    value.display_name.is_some()
+        || value.visible.is_some()
+        || value.context_window.is_some()
+        || value.effective_context_window_percent.is_some()
+        || value.order.is_some()
+        || value.supported_reasoning_levels.is_some()
+        || value.default_reasoning_level.is_some()
+        || value.supported_tools.is_some()
+        || value.tool_capabilities.is_some()
+}
+
+fn catalog_declared_version(catalog: &Value) -> Option<String> {
+    catalog
+        .get("client_version")
+        .or_else(|| catalog.get("clientVersion"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+}
+
+fn external_version_status(catalog: Option<&str>, target: &str) -> String {
+    match catalog {
+        None => "unknown",
+        Some(catalog) if catalog == target => "match",
+        Some(_) => "mismatch",
+    }
+    .to_string()
 }
 
 fn profile_default_model(profile: &RelayProfile) -> Option<String> {
@@ -2109,6 +2791,10 @@ impl Default for AdoptionPreviewPayload {
             official_override_count: 0,
             custom_models: Vec::new(),
             collisions: Vec::new(),
+            source_hash: String::new(),
+            catalog_client_version: None,
+            target_client_version: String::new(),
+            version_status: "unknown".to_string(),
             committed: false,
         }
     }
@@ -2149,6 +2835,18 @@ mod tests {
 
     static FAKE_REFRESH_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+    fn direct_network() -> crate::network_policy::ResolvedNetworkPolicy {
+        crate::network_policy::ResolvedNetworkPolicy {
+            mode: crate::network_policy::NetworkPolicyMode::Direct,
+            source: "direct".to_string(),
+            environment: Vec::new(),
+            endpoint: None,
+            bypass_count: 0,
+            supported: true,
+            action_required: None,
+        }
+    }
+
     fn official_catalog() -> Value {
         json!({
             "models": [
@@ -2160,6 +2858,7 @@ mod tests {
                     "priority": 1,
                     "context_window": 100000,
                     "max_context_window": 100000,
+                    "effective_context_window_percent": 95,
                     "base_instructions": "keep exactly",
                     "unknown_future_field": { "kept": true }
                 },
@@ -2214,6 +2913,174 @@ mod tests {
         assert_eq!(models[0]["unknown_future_field"]["kept"], true);
         assert!(models.iter().any(|model| model["slug"] == "hidden-b"));
         assert_eq!(models[0]["context_window"], 300000);
+        assert_eq!(models[0]["effective_context_window_percent"], 95);
+    }
+
+    #[test]
+    fn server_side_composite_is_explicit_and_keeps_proxy_modes_blocked() {
+        let profile = RelayProfile {
+            relay_mode: RelayMode::PureApi,
+            protocol: codex_plus_core::settings::RelayProtocol::Responses,
+            base_url: "https://relay.example/v1".to_string(),
+            api_key: "provider-key".to_string(),
+            ..RelayProfile::default()
+        };
+        validate_upstream_topology(&profile, UpstreamTopology::ServerSideComposite).unwrap();
+        assert_eq!(
+            default_mode(&profile, None, UpstreamTopology::Direct),
+            CatalogMode::CustomOnly
+        );
+        assert_eq!(
+            default_mode(&profile, None, UpstreamTopology::ServerSideComposite),
+            CatalogMode::OfficialPlusCustom
+        );
+
+        let mut aggregate = profile.clone();
+        aggregate.relay_mode = RelayMode::Aggregate;
+        assert!(
+            validate_upstream_topology(&aggregate, UpstreamTopology::ServerSideComposite).is_err()
+        );
+        assert!(!managed_catalog_capable(&aggregate));
+
+        let mut chat = profile;
+        chat.protocol = codex_plus_core::settings::RelayProtocol::ChatCompletions;
+        assert!(validate_upstream_topology(&chat, UpstreamTopology::ServerSideComposite).is_err());
+        assert!(!managed_catalog_capable(&chat));
+    }
+
+    #[test]
+    fn rich_custom_metadata_round_trips_and_rejects_invalid_defaults() {
+        let levels = vec![
+            ReasoningLevel {
+                effort: "low".to_string(),
+                description: "Fast".to_string(),
+            },
+            ReasoningLevel {
+                effort: "high".to_string(),
+                description: "Deep".to_string(),
+            },
+        ];
+        let overlay = CatalogOverlay {
+            custom: vec![CustomModel {
+                slug: "claude-haiku".to_string(),
+                display_name: "Haiku".to_string(),
+                context_window: 1_000_000,
+                effective_context_window_percent: 95,
+                supported_reasoning_levels: levels.clone(),
+                default_reasoning_level: Some("low".to_string()),
+                supported_tools: vec!["web_search".to_string()],
+                tool_capabilities: Some(json!({"web_search": true})),
+                ..CustomModel::default()
+            }],
+            ..CatalogOverlay::default()
+        };
+        validate_overlay(&overlay).unwrap();
+
+        let profile = RelayProfile {
+            config_contents: "model = \"claude-haiku\"\n".to_string(),
+            ..RelayProfile::default()
+        };
+        let state = CatalogState::default();
+        let profile_state = ProfileCatalogState {
+            mode: CatalogMode::CustomOnly,
+            overlay,
+            ..ProfileCatalogState::default()
+        };
+        let output = compose_profile_catalog(&state, &profile, &profile_state).unwrap();
+        let model = &catalog_models(&output).unwrap()[0];
+        assert_eq!(model["display_name"], "Haiku");
+        assert_eq!(model["effective_context_window_percent"], 95);
+        assert_eq!(model["default_reasoning_level"], "low");
+        assert_eq!(model["supported_reasoning_levels"][1]["effort"], "high");
+        assert_eq!(model["supported_tools"][0], "web_search");
+        assert_eq!(model["tool_capabilities"]["web_search"], true);
+        assert_eq!(model["service_tiers"], json!([]));
+
+        let mut invalid = profile_state.overlay.clone();
+        invalid.custom[0].default_reasoning_level = Some("ultra".to_string());
+        assert!(validate_overlay(&invalid).is_err());
+    }
+
+    #[test]
+    fn managed_context_cleanup_is_scoped_and_deterministic() {
+        let config = "model = \"m\"\nmodel_context_window = 372000\nmodel_auto_compact_token_limit = 330000\n[mcp_servers.memory]\ncommand = \"memory\"\n";
+        assert_eq!(
+            global_context_conflicts(config),
+            GLOBAL_CONTEXT_KEYS.map(str::to_string)
+        );
+        let cleaned = remove_global_context_keys(config).unwrap();
+        assert!(global_context_conflicts(&cleaned).is_empty());
+        assert!(cleaned.contains("[mcp_servers.memory]"));
+        assert!(cleaned.contains("command = \"memory\""));
+    }
+
+    #[test]
+    fn external_version_status_is_evidence_not_official_compatibility() {
+        assert_eq!(external_version_status(None, "0.147.0"), "unknown");
+        assert_eq!(external_version_status(Some("0.147.0"), "0.147.0"), "match");
+        assert_eq!(
+            external_version_status(Some("0.145.0"), "0.147.0"),
+            "mismatch"
+        );
+        assert!(!catalog_client_version_compatible("0.145.0", "0.147.0"));
+    }
+
+    #[test]
+    fn composite_plan_stages_one_provider_pointer_and_no_auth_mutation() {
+        let profile = RelayProfile {
+            id: "composite".to_string(),
+            relay_mode: RelayMode::PureApi,
+            protocol: codex_plus_core::settings::RelayProtocol::Responses,
+            base_url: "https://relay.example/v1".to_string(),
+            api_key: "provider-key".to_string(),
+            config_contents: "model = \"codex-minus-test-model\"\n".to_string(),
+            ..RelayProfile::default()
+        };
+        let settings = BackendSettings {
+            active_relay_id: profile.id.clone(),
+            relay_profiles: vec![profile],
+            ..BackendSettings::default()
+        };
+        let mut state = CatalogState::default();
+        state.profiles.insert(
+            "composite".to_string(),
+            ProfileCatalogState {
+                mode: CatalogMode::CustomOnly,
+                upstream_topology: UpstreamTopology::ServerSideComposite,
+                overlay: CatalogOverlay {
+                    custom: vec![CustomModel {
+                        slug: "codex-minus-test-model".to_string(),
+                        display_name: "Codex Minus Test Model".to_string(),
+                        supported_reasoning_levels: vec![ReasoningLevel {
+                            effort: "low".to_string(),
+                            description: "Fast".to_string(),
+                        }],
+                        default_reasoning_level: Some("low".to_string()),
+                        ..CustomModel::default()
+                    }],
+                    ..CatalogOverlay::default()
+                },
+                ..ProfileCatalogState::default()
+            },
+        );
+        let provider_config = "model = \"codex-minus-test-model\"\nmodel_provider = \"relay\"\n[model_providers.relay]\nbase_url = \"https://relay.example/v1\"\nexperimental_bearer_token = \"provider-key\"\n";
+        let home = tempfile::tempdir().unwrap();
+        let plan = plan_active_profile_with_state(
+            home.path(),
+            &settings,
+            provider_config,
+            &mut state,
+            false,
+        )
+        .unwrap();
+        assert_eq!(plan.config_contents.matches("[model_providers.").count(), 1);
+        assert_eq!(
+            plan.config_contents.matches("model_catalog_json").count(),
+            1
+        );
+        assert!(plan.mutations.iter().all(|mutation| {
+            mutation.path.file_name().and_then(|name| name.to_str()) != Some("auth.json")
+        }));
     }
 
     #[test]
@@ -2241,7 +3108,7 @@ mod tests {
         let official = BTreeSet::from(["official-a".to_string()]);
         let overlay = migrate_legacy_overlay(&profile, &official).unwrap();
         assert_eq!(
-            default_mode(&profile, None),
+            default_mode(&profile, None, UpstreamTopology::Direct),
             CatalogMode::OfficialPlusCustom
         );
         assert_eq!(overlay.official["official-a"].context_window, Some(300_000));
@@ -2256,7 +3123,11 @@ mod tests {
         assert_eq!(profile.model_list, "official-a\ncustom-x");
         assert_eq!(profile.api_key, "provider-secret");
 
-        let external = default_mode(&profile, Some("/tmp/user-owned.json"));
+        let external = default_mode(
+            &profile,
+            Some("/tmp/user-owned.json"),
+            UpstreamTopology::Direct,
+        );
         assert_eq!(external, CatalogMode::External);
         assert_eq!(
             default_mode(
@@ -2265,6 +3136,7 @@ mod tests {
                     ..RelayProfile::default()
                 },
                 None,
+                UpstreamTopology::Direct,
             ),
             CatalogMode::CustomOnly
         );
@@ -2339,6 +3211,7 @@ mod tests {
                     visible: false,
                     order: 99,
                     template_provenance: "legacy".to_string(),
+                    ..CustomModel::default()
                 }],
                 ..CatalogOverlay::default()
             },
@@ -2351,7 +3224,7 @@ mod tests {
             .filter(|model| model["slug"] == "official-a")
             .collect::<Vec<_>>();
         assert_eq!(promoted.len(), 1);
-        assert_eq!(promoted[0]["display_name"], "Official A");
+        assert_eq!(promoted[0]["display_name"], "Old custom");
         assert_eq!(promoted[0]["context_window"], 444000);
         assert_eq!(promoted[0]["visibility"], "hide");
         assert_eq!(promoted[0]["unknown_future_field"]["kept"], true);
@@ -2474,10 +3347,52 @@ mod tests {
     }
 
     #[test]
-    fn isolated_child_environment_drops_credentials_and_provider_overrides() {
+    fn refresh_cache_may_omit_only_cli_hydrated_instructions() {
+        let output = official_catalog();
+        let mut cache = output.clone();
+        cache["models"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("base_instructions");
+        cache["models"][1]["base_instructions"] = Value::Null;
+
+        validate_catalog(&output, "0.147.0-alpha.6.5").unwrap();
+        validate_refresh_cache(&cache, "0.147.0-alpha.6.5").unwrap();
+        validate_refresh_cache_matches_output(&output, &cache).unwrap();
+
+        let mut conflicting_instructions = cache.clone();
+        conflicting_instructions["models"][0]["base_instructions"] = json!("different");
+        assert!(validate_refresh_cache_matches_output(&output, &conflicting_instructions).is_err());
+
+        let mut conflicting_metadata = cache.clone();
+        conflicting_metadata["models"][0]["context_window"] = json!(999);
+        assert!(validate_refresh_cache_matches_output(&output, &conflicting_metadata).is_err());
+
+        let mut missing_model = cache.clone();
+        missing_model["models"].as_array_mut().unwrap().pop();
+        assert!(validate_refresh_cache_matches_output(&output, &missing_model).is_err());
+
+        let mut invalid_instructions = cache.clone();
+        invalid_instructions["models"][0]["base_instructions"] = json!(false);
+        assert!(validate_refresh_cache(&invalid_instructions, "0.147.0-alpha.6.5").is_err());
+
+        let mut incomplete_output = output.clone();
+        incomplete_output["models"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("base_instructions");
+        assert!(validate_catalog(&incomplete_output, "0.147.0-alpha.6.5").is_err());
+    }
+
+    #[test]
+    fn isolated_child_environment_uses_only_the_resolved_proxy_snapshot() {
         let source = vec![
-            (OsString::from("HTTPS_PROXY"), OsString::from("proxy")),
+            (
+                OsString::from("HTTPS_PROXY"),
+                OsString::from("http://ambient:7890"),
+            ),
             (OsString::from("NO_PROXY"), OsString::from("localhost")),
+            (OsString::from("SSL_CERT_FILE"), OsString::from("/cert.pem")),
             (OsString::from("OPENAI_API_KEY"), OsString::from("secret")),
             (
                 OsString::from("OPENAI_BASE_URL"),
@@ -2492,16 +3407,48 @@ mod tests {
                 OsString::from("aws-secret"),
             ),
         ];
-        let filtered = safe_child_environment(source)
+        let direct = direct_network();
+        let filtered = isolated_child_environment(source.clone(), Some(&direct))
             .into_iter()
             .map(|(name, _)| name.to_string_lossy().to_string())
             .collect::<BTreeSet<_>>();
-        assert!(filtered.contains("HTTPS_PROXY"));
-        assert!(filtered.contains("NO_PROXY"));
+        assert!(filtered.contains("SSL_CERT_FILE"));
+        assert!(!filtered.contains("HTTPS_PROXY"));
+        assert!(!filtered.contains("NO_PROXY"));
         assert!(!filtered.contains("OPENAI_API_KEY"));
         assert!(!filtered.contains("OPENAI_BASE_URL"));
         assert!(!filtered.contains("CODEX_AUTHAPI_BASE_URL"));
         assert!(!filtered.contains("AWS_ACCESS_KEY_ID"));
+
+        let custom = crate::network_policy::ResolvedNetworkPolicy {
+            mode: crate::network_policy::NetworkPolicyMode::Custom,
+            source: "custom".to_string(),
+            environment: vec![
+                (
+                    OsString::from("HTTPS_PROXY"),
+                    OsString::from("http://resolved:7890"),
+                ),
+                (
+                    OsString::from("https_proxy"),
+                    OsString::from("http://resolved:7890"),
+                ),
+            ],
+            endpoint: Some("http://resolved:7890".to_string()),
+            bypass_count: 0,
+            supported: true,
+            action_required: None,
+        };
+        let proxied = isolated_child_environment(source, Some(&custom))
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            proxied.get(&OsString::from("HTTPS_PROXY")),
+            Some(&OsString::from("http://resolved:7890"))
+        );
+        assert_ne!(
+            proxied.get(&OsString::from("HTTPS_PROXY")),
+            Some(&OsString::from("http://ambient:7890"))
+        );
     }
 
     #[cfg(unix)]
@@ -2545,7 +3492,7 @@ mod tests {
                     .collect::<BTreeSet<_>>()
             })
             .unwrap_or_default();
-        let result = run_isolated_refresh(&target, &projection).unwrap();
+        let result = run_isolated_refresh(&target, &projection, &direct_network()).unwrap();
         assert_eq!(
             catalog_slugs(&result.output).unwrap(),
             BTreeSet::from(["m".to_string()])
@@ -2572,7 +3519,8 @@ mod tests {
             ..VerifiedTargetIdentity::default()
         };
         let projection = json!({"auth_mode":"chatgpt","tokens":{"id_token":"id","access_token":"access","refresh_token":""}});
-        assert!(run_isolated_refresh(&target, &projection).is_err());
+        let error = run_isolated_refresh(&target, &projection, &direct_network()).unwrap_err();
+        assert!(error.to_string().contains("bundled"));
 
         let (_temp, malformed) =
             fake_cli("#!/bin/sh\nprintf '{'\nprintf '{' > \"$CODEX_HOME/models_cache.json\"\n");
@@ -2580,10 +3528,12 @@ mod tests {
             cli_path: malformed.to_string_lossy().to_string(),
             ..VerifiedTargetIdentity::default()
         };
-        assert!(run_isolated_refresh(&target, &projection).is_err());
+        assert!(run_isolated_refresh(&target, &projection, &direct_network()).is_err());
 
         let (_temp, slow) = fake_cli("#!/bin/sh\nsleep 2\n");
-        assert!(run_bounded_command(&slow, &[], None, Duration::from_millis(30), true).is_err());
+        assert!(
+            run_bounded_command(&slow, &[], None, Duration::from_millis(30), true, None).is_err()
+        );
 
         let (_temp, rejected) = fake_cli("#!/bin/sh\nexit 23\n");
         let projection_before = projection.clone();
@@ -2591,7 +3541,7 @@ mod tests {
             cli_path: rejected.to_string_lossy().to_string(),
             ..VerifiedTargetIdentity::default()
         };
-        assert!(run_isolated_refresh(&target, &projection).is_err());
+        assert!(run_isolated_refresh(&target, &projection, &direct_network()).is_err());
         assert_eq!(projection, projection_before);
     }
 
@@ -2616,7 +3566,7 @@ mod tests {
             ..VerifiedTargetIdentity::default()
         };
         let projection = json!({"auth_mode":"chatgpt","tokens":{"id_token":"id","access_token":"access","refresh_token":""}});
-        let refreshed = run_isolated_refresh(&target, &projection).unwrap();
+        let refreshed = run_isolated_refresh(&target, &projection, &direct_network()).unwrap();
         assert_eq!(
             catalog_slugs(&refreshed.output).unwrap(),
             BTreeSet::from(["m".to_string()])

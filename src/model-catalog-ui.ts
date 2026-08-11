@@ -1,24 +1,148 @@
 export type CatalogModeValue = "native-official" | "official-plus-custom" | "custom-only" | "external";
 
 export type CatalogOverlayDraft = {
-  official: Record<string, { visible: boolean | null; contextWindow: number | null; order: number | null }>;
+  official: Record<string, {
+    displayName: string | null;
+    visible: boolean | null;
+    contextWindow: number | null;
+    effectiveContextWindowPercent: number | null;
+    order: number | null;
+    supportedReasoningLevels: Array<{ effort: string; description: string }> | null;
+    defaultReasoningLevel: string | null;
+    supportedTools: string[] | null;
+    toolCapabilities: Record<string, unknown> | null;
+  }>;
   custom: Array<{
     slug: string;
     displayName: string;
     contextWindow: number;
+    effectiveContextWindowPercent: number;
     visible: boolean;
     order: number;
+    supportedReasoningLevels: Array<{ effort: string; description: string }>;
+    defaultReasoningLevel: string | null;
+    supportedTools: string[];
+    toolCapabilities: Record<string, unknown> | null;
     templateProvenance: string;
   }>;
 };
+
+export function catalogModeChangeDecision(
+  currentMode: CatalogModeValue,
+  requestedMode: CatalogModeValue,
+  externalPointer: string | null,
+  customModelCount: number,
+): "select" | "confirm-discard-external" | "confirm-discard-custom" {
+  if (requestedMode !== "native-official" || requestedMode === currentMode) return "select";
+  if (externalPointer) return "confirm-discard-external";
+  if (customModelCount > 0) return "confirm-discard-custom";
+  return "select";
+}
+
+export function catalogModeDraftController(input: {
+  currentMode: CatalogModeValue;
+  externalPointer: string | null;
+  customModelCount: number;
+  confirmDiscard: (decision: "confirm-discard-external" | "confirm-discard-custom") => boolean;
+  actions: {
+    updateDraftMode: (mode: CatalogModeValue) => void;
+    saveProfileCatalog: () => unknown;
+  };
+}): {
+  requestMode: (requestedMode: CatalogModeValue) => boolean;
+  restoreOfficialPlusCustom: () => void;
+} {
+  const updateDraftMode = (mode: CatalogModeValue) => input.actions.updateDraftMode(mode);
+  return {
+    requestMode(requestedMode) {
+      const decision = catalogModeChangeDecision(
+        input.currentMode,
+        requestedMode,
+        input.externalPointer,
+        input.customModelCount,
+      );
+      if (decision !== "select" && !input.confirmDiscard(decision)) return false;
+      updateDraftMode(requestedMode);
+      return true;
+    },
+    restoreOfficialPlusCustom() {
+      updateDraftMode("official-plus-custom");
+    },
+  };
+}
+
+export function catalogModePresentation(input: {
+  selectedMode: CatalogModeValue;
+  persistedMode: CatalogModeValue | null;
+  generatedPath: string | null;
+  externalPointer: string | null;
+  restartRequired: boolean;
+  customModelCount: number;
+}): {
+  source: "native" | "managed" | "external" | "unsaved";
+  pendingSource: "native" | "managed" | "external" | null;
+  path: string | null;
+  restart: boolean;
+  dormantCustomCount: number;
+  pendingDormantCustomCount: number;
+  pathUnavailable: "managed" | "external" | null;
+} {
+  if (input.selectedMode !== input.persistedMode) {
+    return {
+      source: "unsaved",
+      pendingSource: input.selectedMode === "native-official"
+        ? "native"
+        : input.selectedMode === "external"
+          ? "external"
+          : "managed",
+      path: null,
+      restart: false,
+      dormantCustomCount: 0,
+      pendingDormantCustomCount: input.selectedMode === "native-official" ? input.customModelCount : 0,
+      pathUnavailable: null,
+    };
+  }
+  if (input.selectedMode === "native-official") {
+    return {
+      source: "native",
+      pendingSource: null,
+      path: null,
+      restart: false,
+      dormantCustomCount: input.customModelCount,
+      pendingDormantCustomCount: 0,
+      pathUnavailable: null,
+    };
+  }
+  if (input.selectedMode === "external") {
+    return {
+      source: "external",
+      pendingSource: null,
+      path: input.externalPointer,
+      restart: input.restartRequired,
+      dormantCustomCount: 0,
+      pendingDormantCustomCount: 0,
+      pathUnavailable: input.externalPointer ? null : "external",
+    };
+  }
+  return {
+    source: "managed",
+    pendingSource: null,
+    path: input.generatedPath,
+    restart: input.restartRequired,
+    dormantCustomCount: 0,
+    pendingDormantCustomCount: 0,
+    pathUnavailable: input.generatedPath ? null : "managed",
+  };
+}
 
 export function defaultCatalogMode(
   relayMode: string,
   officialMixApiKey: boolean,
   externalPointer?: string | null,
+  upstreamTopology: "direct" | "server-side-composite" = "direct",
 ): CatalogModeValue {
   if (externalPointer) return "external";
-  if (relayMode === "pureApi") return "custom-only";
+  if (relayMode === "pureApi") return upstreamTopology === "server-side-composite" ? "official-plus-custom" : "custom-only";
   if (relayMode === "official" && !officialMixApiKey) return "native-official";
   return "official-plus-custom";
 }
@@ -52,8 +176,13 @@ export function addCatalogCandidate(
         slug: normalized,
         displayName: normalized,
         contextWindow: 272000,
+        effectiveContextWindowPercent: 100,
         visible: true,
         order: overlay.custom.length,
+        supportedReasoningLevels: [],
+        defaultReasoningLevel: null,
+        supportedTools: [],
+        toolCapabilities: null,
         templateProvenance: "provider-candidate",
       },
     ],
@@ -71,8 +200,13 @@ export function validateCatalogDraft(
   for (const custom of overlay.custom) {
     const slug = custom.slug.trim();
     if (!slug) return "empty-custom-slug";
+    if (!custom.displayName.trim()) return "empty-display-name";
     if (seen.has(slug)) return "duplicate-custom-slug";
     if (!Number.isFinite(custom.contextWindow) || custom.contextWindow <= 0) return "invalid-context-window";
+    if (!Number.isInteger(custom.effectiveContextWindowPercent) || custom.effectiveContextWindowPercent < 1 || custom.effectiveContextWindowPercent > 100) return "invalid-effective-percent";
+    const efforts = custom.supportedReasoningLevels.map((level) => level.effort.trim());
+    if (new Set(efforts).size !== efforts.length || efforts.some((effort) => !effort)) return "invalid-reasoning-levels";
+    if (custom.defaultReasoningLevel && !efforts.includes(custom.defaultReasoningLevel)) return "invalid-reasoning-default";
     seen.add(slug);
   }
   const effective = new Set(mode === "official-plus-custom" ? officialSlugs : []);
@@ -109,4 +243,14 @@ export function profileCatalogFlags(profile: {
     restart: profile.restartRequired,
     partialFailure: !!profile.actionRequired,
   };
+}
+
+export function managedContextConflictKeys(config: string): string[] {
+  return ["model_context_window", "model_auto_compact_token_limit"].filter((key) =>
+    new RegExp(`^\\s*${key}\\s*=`, "m").test(config),
+  );
+}
+
+export function externalVersionRequiresAcceptance(status: string): boolean {
+  return status === "mismatch";
 }

@@ -1,11 +1,11 @@
-# Build Codex-- Manager for macOS (arm64) and Windows (x86_64)
+# Build Codex-- Manager for macOS (arm64) and Windows (x64 + arm64)
 #
 # Triggered by:
 #   - push/PR to master
 #   - tags matching v*
 #
 # macOS: builds aarch64 .app bundle (ad-hoc signed)
-# Windows: builds x86_64 .msi + .exe (NSIS) installers
+# Windows: builds native x64 and arm64 .msi + .exe (NSIS) installers
 
 name: Build
 
@@ -89,11 +89,21 @@ jobs:
           path: src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Codex--Manager_*.app.zip
           if-no-files-found: error
 
-  # ─── Windows (x86_64) ─────────────────────────────────────────────────
+  # ─── Windows (x64 + arm64) ─────────────────────────────────────────────
   windows:
-    name: Windows x86_64
+    name: Windows ${{ matrix.arch }}
     runs-on: windows-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            target: x86_64-pc-windows-msvc
+            run_tests: true
+          - arch: arm64
+            target: aarch64-pc-windows-msvc
+            run_tests: false
 
     steps:
       - uses: actions/checkout@v4
@@ -111,23 +121,30 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-msvc
+          targets: ${{ matrix.target }}
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          shared-key: windows-${{ matrix.target }}
           save-if: ${{ github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/') }}
 
       - name: Build frontend
         run: npm run vite:build
 
       - name: Run Rust tests
+        if: matrix.run_tests
         working-directory: src-tauri
-        run: cargo test --target x86_64-pc-windows-msvc
+        run: cargo test --target ${{ matrix.target }}
+
+      - name: Check Rust ARM64 target
+        if: matrix.run_tests == false
+        working-directory: src-tauri
+        run: cargo check --target ${{ matrix.target }}
 
       - name: Build Tauri Windows bundle (MSI + NSIS)
-        run: npx tauri build --bundles msi,nsis --target x86_64-pc-windows-msvc
+        run: npx tauri build --bundles msi,nsis --target ${{ matrix.target }}
         env:
           TAURI_SIGNING_PRIVATE_KEY: ""
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
@@ -135,18 +152,18 @@ jobs:
       - name: Upload Windows MSI artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Codex--Manager-Windows-x86_64
-          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+          name: Codex--Manager-Windows-${{ matrix.arch }}-MSI
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
           compression-level: 0
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - name: Upload Windows NSIS artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Codex--Manager-Windows-x86_64-NSIS
-          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          name: Codex--Manager-Windows-${{ matrix.arch }}-NSIS
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
           compression-level: 0
-          if-no-files-found: warn
+          if-no-files-found: error
 
   # ─── Release (tag push only) ──────────────────────────────────────────
   release:
@@ -179,24 +196,26 @@ jobs:
             cp "$MAC_DIR"/Codex--Manager_*.app.zip dist/ 2>/dev/null || true
           fi
 
-          # Windows: copy installers
-          WIN_MSI_DIR="Codex--Manager-Windows-x86_64"
-          MSI_SOURCES=( "$WIN_MSI_DIR"/*.msi )
-          [ "${#MSI_SOURCES[@]}" -eq 1 ] || { echo "::error::Expected one Windows MSI artifact"; exit 1; }
-          cp "${MSI_SOURCES[0]}" "dist/Codex--Manager_${GITHUB_REF_NAME#v}_x64.msi"
+          # Windows: require one MSI and one NSIS installer per architecture.
+          for WIN_ARCH in x64 arm64; do
+            WIN_MSI_DIR="Codex--Manager-Windows-${WIN_ARCH}-MSI"
+            MSI_SOURCES=( "$WIN_MSI_DIR"/*.msi )
+            [ "${#MSI_SOURCES[@]}" -eq 1 ] || { echo "::error::Expected one Windows ${WIN_ARCH} MSI artifact"; exit 1; }
+            cp "${MSI_SOURCES[0]}" "dist/Codex--Manager_${GITHUB_REF_NAME#v}_${WIN_ARCH}.msi"
 
-          WIN_NSIS_DIR="Codex--Manager-Windows-x86_64-NSIS"
-          EXE_SOURCES=( "$WIN_NSIS_DIR"/*.exe )
-          [ "${#EXE_SOURCES[@]}" -eq 1 ] || { echo "::error::Expected one Windows NSIS artifact"; exit 1; }
-          cp "${EXE_SOURCES[0]}" "dist/Codex--Manager_${GITHUB_REF_NAME#v}_x64-setup.exe"
+            WIN_NSIS_DIR="Codex--Manager-Windows-${WIN_ARCH}-NSIS"
+            EXE_SOURCES=( "$WIN_NSIS_DIR"/*.exe )
+            [ "${#EXE_SOURCES[@]}" -eq 1 ] || { echo "::error::Expected one Windows ${WIN_ARCH} NSIS artifact"; exit 1; }
+            cp "${EXE_SOURCES[0]}" "dist/Codex--Manager_${GITHUB_REF_NAME#v}_${WIN_ARCH}-setup.exe"
+          done
 
           cd dist
           MAC_FILES=( *.app.zip )
           MSI_FILES=( *.msi )
           EXE_FILES=( *.exe )
           [ "${#MAC_FILES[@]}" -eq 1 ] || { echo "::error::Expected one macOS app archive"; exit 1; }
-          [ "${#MSI_FILES[@]}" -eq 1 ] || { echo "::error::Expected one Windows MSI"; exit 1; }
-          [ "${#EXE_FILES[@]}" -eq 1 ] || { echo "::error::Expected one Windows NSIS installer"; exit 1; }
+          [ "${#MSI_FILES[@]}" -eq 2 ] || { echo "::error::Expected two Windows MSI files"; exit 1; }
+          [ "${#EXE_FILES[@]}" -eq 2 ] || { echo "::error::Expected two Windows NSIS installers"; exit 1; }
           sha256sum "${MAC_FILES[@]}" "${MSI_FILES[@]}" "${EXE_FILES[@]}" > SHA256SUMS
           ls -lh
 
@@ -212,8 +231,8 @@ jobs:
             | 平台 | 架构 | 格式 |
             |------|------|------|
             | macOS | arm64 | .app.zip |
-            | Windows | x86_64 | .msi |
-            | Windows | x86_64 | .exe (NSIS) |
+            | Windows | x64 | .msi / .exe (NSIS) |
+            | Windows | arm64 | .msi / .exe (NSIS) |
 
             各平台的安装包与本页面的 `SHA256SUMS` 已作为附件附加到本 Release。
 
@@ -228,7 +247,7 @@ jobs:
 
             **macOS**: 解压后将 `Codex-- Manager.app` 移入 `/Applications`。首次启动如被拦截，在「系统设置 → 隐私与安全性」中选择「仍要打开」。
 
-            **Windows**: 运行 `.msi` 或 `.exe` 安装程序，按提示完成安装。
+            **Windows**: ARM 设备请选择 `arm64`，Intel／AMD 设备请选择 `x64`；运行对应的 `.msi` 或 `.exe` 安装程序。
           files: |
             artifacts/dist/*
           fail_on_unmatched_files: true
