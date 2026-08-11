@@ -1,7 +1,11 @@
+use std::cell::Cell;
+
 use codex_minus_lib::provider_native_capability::{
     CatalogMode, NativeCapabilityDraftAction, NativeCapabilityDraftConfirmation,
-    NativeCapabilityDraftStatus, NativeCapabilityReason, ProviderNativeCapabilityDraftRequest,
-    draft_provider_native_capability, transform_provider_native_capability_draft,
+    NativeCapabilityDraftStatus, NativeCapabilityReason,
+    ProviderNativeCapabilityDraftReadOnlyBoundary, ProviderNativeCapabilityDraftRequest,
+    draft_provider_native_capability, draft_provider_native_capability_with_boundary,
+    inspect_profile, transform_provider_native_capability_draft,
 };
 use codex_plus_core::settings::{RelayMode, RelayProfile, RelayProtocol};
 use toml_edit::{DocumentMut, Item};
@@ -37,7 +41,7 @@ fn request(
 fn parsed(
     payload: &codex_minus_lib::provider_native_capability::ProviderNativeCapabilityDraftPayload,
 ) -> DocumentMut {
-    payload.profile.config_contents.parse().unwrap()
+    payload.draft.profile.config_contents.parse().unwrap()
 }
 
 fn provider<'a>(document: &'a DocumentMut, provider_id: &str) -> &'a dyn toml_edit::TableLike {
@@ -91,11 +95,11 @@ fn enabling_edits_only_owned_fields_and_preserves_nonlegacy_identity_evidence_an
             "{header_shape}"
         );
         assert_eq!(payload.draft_revision, 41);
-        assert_eq!(payload.catalog_mode, CatalogMode::OfficialPlusCustom);
-        assert_eq!(payload.profile.relay_mode, RelayMode::Official);
-        assert!(payload.profile.official_mix_api_key);
-        assert_eq!(payload.profile.protocol, RelayProtocol::Responses);
-        assert_eq!(payload.structured_api_key, "same-secret");
+        assert_eq!(payload.draft.catalog_mode, CatalogMode::OfficialPlusCustom);
+        assert_eq!(payload.draft.profile.relay_mode, RelayMode::Official);
+        assert!(payload.draft.profile.official_mix_api_key);
+        assert_eq!(payload.draft.profile.protocol, RelayProtocol::Responses);
+        assert_eq!(payload.draft.structured_api_key, "same-secret");
 
         let document = parsed(&payload);
         assert_eq!(document["model_provider"].as_str(), Some("RelayOne"));
@@ -229,7 +233,10 @@ arbitrary = "custom-content"
         NativeCapabilityDraftAction::EnableNativePriority,
     ));
     assert_eq!(blocked.status, NativeCapabilityDraftStatus::Blocked);
-    assert_eq!(blocked.profile.config_contents, original.config_contents);
+    assert_eq!(
+        blocked.draft.profile.config_contents,
+        original.config_contents
+    );
     assert_eq!(
         blocked.blockers,
         vec![NativeCapabilityReason::ReplacementProviderIdRequired]
@@ -271,7 +278,7 @@ arbitrary = "custom-content"
             NativeCapabilityDraftStatus::Blocked,
             "{invalid}"
         );
-        assert_eq!(rejected.profile.config_contents, source, "{invalid}");
+        assert_eq!(rejected.draft.profile.config_contents, source, "{invalid}");
     }
 }
 
@@ -297,7 +304,10 @@ http_headers = { "x-openai-actor-authorization" = "customer-owned", extra = "kee
         blocked.status,
         NativeCapabilityDraftStatus::ConfirmationRequired
     );
-    assert_eq!(blocked.profile.config_contents, original.config_contents);
+    assert_eq!(
+        blocked.draft.profile.config_contents,
+        original.config_contents
+    );
     assert_eq!(
         blocked.blockers,
         vec![NativeCapabilityReason::ActorHeaderValueConflict]
@@ -348,7 +358,7 @@ http_headers = { "x-openai-actor-authorization" = "customer-owned", extra = "kee
         rejected.blockers,
         vec![NativeCapabilityReason::DuplicateActorHeader]
     );
-    assert_eq!(rejected.profile.config_contents, duplicate);
+    assert_eq!(rejected.draft.profile.config_contents, duplicate);
 }
 
 #[test]
@@ -368,7 +378,10 @@ fn structured_key_bearer_mismatch_blocks_until_one_explicit_sync_direction_is_ch
         blocked.blockers,
         vec![NativeCapabilityReason::StructuredKeyBearerConflict]
     );
-    assert_eq!(blocked.profile.config_contents, original.config_contents);
+    assert_eq!(
+        blocked.draft.profile.config_contents,
+        original.config_contents
+    );
     let redacted = serde_json::to_string(&blocked.blockers).unwrap();
     assert!(!redacted.contains("raw-secret"));
     assert!(!redacted.contains("structured-secret"));
@@ -400,7 +413,37 @@ fn structured_key_bearer_mismatch_blocks_until_one_explicit_sync_direction_is_ch
         .push(NativeCapabilityDraftConfirmation::UseProviderBearer);
     let synchronized = draft_provider_native_capability(&use_bearer);
     assert_eq!(synchronized.status, NativeCapabilityDraftStatus::Ready);
-    assert_eq!(synchronized.structured_api_key, "raw-secret");
+    assert_eq!(synchronized.draft.structured_api_key, "raw-secret");
+}
+
+#[test]
+fn matching_bearer_keeps_its_exact_lexical_item_and_credential_bytes() {
+    let source = r#"model = "gpt-5"
+model_provider = "RelayOne"
+
+[model_providers.RelayOne]
+name = "custom"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = '  padded-secret  ' # preserve-bearer-lexical
+http_headers = { extra = "keep" }
+"#;
+    let payload = draft_provider_native_capability(&request(
+        mixed_profile("lexical", "  padded-secret  ", source),
+        CatalogMode::OfficialPlusCustom,
+        NativeCapabilityDraftAction::EnableNativePriority,
+    ));
+
+    assert_eq!(payload.status, NativeCapabilityDraftStatus::Ready);
+    assert_eq!(payload.draft.structured_api_key, "  padded-secret  ");
+    assert!(
+        payload
+            .draft
+            .profile
+            .config_contents
+            .contains("experimental_bearer_token = '  padded-secret  ' # preserve-bearer-lexical")
+    );
 }
 
 #[test]
@@ -425,7 +468,10 @@ fn exits_cannot_bypass_a_structured_key_bearer_conflict() {
         blocked.blockers,
         vec![NativeCapabilityReason::StructuredKeyBearerConflict]
     );
-    assert_eq!(blocked.profile.config_contents, original.config_contents);
+    assert_eq!(
+        blocked.draft.profile.config_contents,
+        original.config_contents
+    );
 
     pure_api
         .confirmations
@@ -461,8 +507,14 @@ fn exits_cannot_bypass_a_structured_key_bearer_conflict() {
         .push(NativeCapabilityDraftConfirmation::UseProviderBearer);
     let synchronized = draft_provider_native_capability(&pure_oauth);
     assert_eq!(synchronized.status, NativeCapabilityDraftStatus::Ready);
-    assert!(synchronized.structured_api_key.is_empty());
-    assert!(!synchronized.profile.config_contents.contains("raw-secret"));
+    assert!(synchronized.draft.structured_api_key.is_empty());
+    assert!(
+        !synchronized
+            .draft
+            .profile
+            .config_contents
+            .contains("raw-secret")
+    );
 }
 
 fn enabled_exit_source() -> &'static str {
@@ -512,7 +564,7 @@ fn pure_api_and_legacy_exits_preserve_unowned_provider_content() {
             "{action:?}"
         );
         assert!(payload.preview.capability_loss);
-        assert_eq!(payload.profile.relay_mode, expected_mode);
+        assert_eq!(payload.draft.profile.relay_mode, expected_mode);
         let document = parsed(&payload);
         assert_eq!(document["unrelated_root"].as_str(), Some("keep-root"));
         let selected = provider(&document, "RelayOne");
@@ -555,7 +607,7 @@ fn pure_oauth_requires_destructive_confirmation_then_removes_the_complete_select
             NativeCapabilityDraftStatus::ConfirmationRequired
         );
         assert_eq!(
-            unconfirmed.profile.config_contents,
+            unconfirmed.draft.profile.config_contents,
             original.config_contents
         );
         assert!(unconfirmed.preview.removes_provider_table);
@@ -584,11 +636,11 @@ fn pure_oauth_requires_destructive_confirmation_then_removes_the_complete_select
             .push(NativeCapabilityDraftConfirmation::ConfirmDestructivePureOAuth);
         let confirmed = draft_provider_native_capability(&confirmed_request);
         assert_eq!(confirmed.status, NativeCapabilityDraftStatus::Ready);
-        assert_eq!(confirmed.profile.relay_mode, RelayMode::Official);
-        assert!(!confirmed.profile.official_mix_api_key);
-        assert!(confirmed.structured_api_key.is_empty());
+        assert_eq!(confirmed.draft.profile.relay_mode, RelayMode::Official);
+        assert!(!confirmed.draft.profile.official_mix_api_key);
+        assert!(confirmed.draft.structured_api_key.is_empty());
         assert_eq!(
-            confirmed.catalog_mode,
+            confirmed.draft.catalog_mode,
             if starting_mode == CatalogMode::External {
                 CatalogMode::External
             } else {
@@ -622,9 +674,9 @@ fn protocol_change_to_chat_completions_is_an_explicit_capability_loss_exit() {
         unconfirmed.status,
         NativeCapabilityDraftStatus::ConfirmationRequired
     );
-    assert_eq!(unconfirmed.profile.protocol, RelayProtocol::Responses);
+    assert_eq!(unconfirmed.draft.profile.protocol, RelayProtocol::Responses);
     assert_eq!(
-        unconfirmed.profile.config_contents,
+        unconfirmed.draft.profile.config_contents,
         original.config_contents
     );
 
@@ -638,7 +690,10 @@ fn protocol_change_to_chat_completions_is_an_explicit_capability_loss_exit() {
         .push(NativeCapabilityDraftConfirmation::ConfirmCapabilityLoss);
     let confirmed = draft_provider_native_capability(&confirmed_request);
     assert_eq!(confirmed.status, NativeCapabilityDraftStatus::Ready);
-    assert_eq!(confirmed.profile.protocol, RelayProtocol::ChatCompletions);
+    assert_eq!(
+        confirmed.draft.profile.protocol,
+        RelayProtocol::ChatCompletions
+    );
     assert!(confirmed.preview.capability_loss);
     assert_eq!(
         provider(&parsed(&confirmed), "RelayOne")
@@ -646,6 +701,43 @@ fn protocol_change_to_chat_completions_is_an_explicit_capability_loss_exit() {
             .and_then(Item::as_str),
         Some("keep-provider")
     );
+}
+
+#[test]
+fn every_compatibility_exit_rejects_a_non_string_semantic_actor_header() {
+    let malformed = enabled_exit_source().replace(
+        "\"x-openai-actor-authorization\" = \"local-image-extension\"",
+        "\"x-openai-actor-authorization\" = 123",
+    );
+    for action in [
+        NativeCapabilityDraftAction::ExitPureApi,
+        NativeCapabilityDraftAction::ExitLegacyCompatibility,
+        NativeCapabilityDraftAction::ExitChatCompletions,
+    ] {
+        let mut request = request(
+            mixed_profile("malformed-exit", "same-secret", &malformed),
+            CatalogMode::OfficialPlusCustom,
+            action,
+        );
+        request
+            .confirmations
+            .push(NativeCapabilityDraftConfirmation::ConfirmCapabilityLoss);
+        let blocked = draft_provider_native_capability(&request);
+        assert_eq!(
+            blocked.status,
+            NativeCapabilityDraftStatus::Blocked,
+            "{action:?}"
+        );
+        assert_eq!(
+            blocked.blockers,
+            vec![NativeCapabilityReason::MalformedHeaderStructure],
+            "{action:?}"
+        );
+        assert_eq!(
+            blocked.draft.profile.config_contents, malformed,
+            "{action:?}"
+        );
+    }
 }
 
 #[test]
@@ -661,74 +753,155 @@ fn external_ownership_blocks_enablement_and_is_never_silently_adopted() {
         blocked.blockers,
         vec![NativeCapabilityReason::ExternalCatalog]
     );
-    assert_eq!(blocked.catalog_mode, CatalogMode::External);
-    assert_eq!(blocked.profile.config_contents, original.config_contents);
+    assert_eq!(blocked.draft.catalog_mode, CatalogMode::External);
+    assert_eq!(
+        blocked.draft.profile.config_contents,
+        original.config_contents
+    );
 }
 
 #[test]
-fn revisioned_command_echoes_revision_and_cannot_mutate_any_filesystem_store() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = [
-        temp.path().join("settings.json"),
-        temp.path().join("model-catalog-state.json"),
-        temp.path().join("config.toml"),
-        temp.path().join("auth.json"),
-    ];
-    for (index, path) in paths.iter().enumerate() {
-        std::fs::write(path, format!("sentinel-{index}")).unwrap();
+fn revisioned_command_uses_only_the_injected_read_only_inspection_boundary() {
+    #[derive(Default)]
+    struct AuditBoundary {
+        inspection_calls: Cell<usize>,
     }
-    let before = paths
-        .iter()
-        .map(|path| std::fs::read(path).unwrap())
-        .collect::<Vec<_>>();
-    let entries_before = std::fs::read_dir(temp.path())
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name())
-        .collect::<Vec<_>>();
+    impl ProviderNativeCapabilityDraftReadOnlyBoundary for AuditBoundary {
+        fn inspect(
+            &self,
+            profile: &RelayProfile,
+            catalog_mode: CatalogMode,
+        ) -> codex_minus_lib::provider_native_capability::ProviderNativeCapabilityInspection
+        {
+            self.inspection_calls
+                .set(self.inspection_calls.get().saturating_add(1));
+            inspect_profile(profile, catalog_mode)
+        }
+    }
 
     let request = request(
         mixed_profile("pure", "same-secret", &canonical_source("inline")),
         CatalogMode::OfficialPlusCustom,
-        NativeCapabilityDraftAction::Inspect,
+        NativeCapabilityDraftAction::EnableNativePriority,
     );
-    let payload = transform_provider_native_capability_draft(request);
-    assert_eq!(payload.draft_revision, 41);
-    assert_eq!(payload.status, NativeCapabilityDraftStatus::Ready);
+    let audit = AuditBoundary::default();
+    let audited = draft_provider_native_capability_with_boundary(&request, &audit);
+    assert_eq!(audit.inspection_calls.get(), 2);
+
+    let command_payload = transform_provider_native_capability_draft(request);
+    assert_eq!(command_payload.draft_revision, 41);
+    assert_eq!(command_payload.status, NativeCapabilityDraftStatus::Ready);
     assert_eq!(
-        serde_json::to_value(&payload).unwrap()["draftRevision"],
+        serde_json::to_value(&command_payload).unwrap(),
+        serde_json::to_value(&audited).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(&command_payload).unwrap()["draftRevision"],
         serde_json::json!(41)
-    );
-    for (path, expected) in paths.iter().zip(before) {
-        assert_eq!(
-            std::fs::read(path).unwrap(),
-            expected,
-            "mutated {}",
-            path.display()
-        );
-    }
-    assert_eq!(
-        std::fs::read_dir(temp.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect::<Vec<_>>(),
-        entries_before
     );
 }
 
 #[test]
-fn zero_revision_is_rejected_without_transforming_the_draft() {
-    let original = mixed_profile("zero", "same-secret", &canonical_source("inline"));
+fn zero_revision_is_echoed_without_business_semantics() {
     let mut request = request(
-        original.clone(),
+        mixed_profile("zero", "same-secret", &canonical_source("inline")),
         CatalogMode::OfficialPlusCustom,
         NativeCapabilityDraftAction::EnableNativePriority,
     );
     request.draft_revision = 0;
     let payload = draft_provider_native_capability(&request);
-    assert_eq!(payload.status, NativeCapabilityDraftStatus::Blocked);
-    assert_eq!(
-        payload.blockers,
-        vec![NativeCapabilityReason::InvalidDraftRevision]
+    assert_eq!(payload.draft_revision, 0);
+    assert_eq!(payload.status, NativeCapabilityDraftStatus::Ready);
+    assert!(payload.blockers.is_empty());
+}
+
+fn string_paths_containing(value: &serde_json::Value, needle: &str) -> Vec<String> {
+    fn visit(value: &serde_json::Value, needle: &str, path: &str, found: &mut Vec<String>) {
+        match value {
+            serde_json::Value::String(text) if text.contains(needle) => {
+                found.push(path.to_string());
+            }
+            serde_json::Value::Array(values) => {
+                for (index, value) in values.iter().enumerate() {
+                    visit(value, needle, &format!("{path}/{index}"), found);
+                }
+            }
+            serde_json::Value::Object(values) => {
+                for (key, value) in values {
+                    visit(value, needle, &format!("{path}/{key}"), found);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    visit(value, needle, "", &mut found);
+    found.sort();
+    found
+}
+
+#[test]
+fn direct_command_rejects_auth_contents_and_never_echoes_them() {
+    for auth_contents in ["oauth-auth-sentinel", " \t "] {
+        let mut profile = mixed_profile(
+            "auth-rejected",
+            "provider-secret-sentinel",
+            &canonical_source("inline").replace("same-secret", "provider-secret-sentinel"),
+        );
+        profile.auth_contents = auth_contents.to_string();
+        let payload = transform_provider_native_capability_draft(request(
+            profile,
+            CatalogMode::OfficialPlusCustom,
+            NativeCapabilityDraftAction::Inspect,
+        ));
+        assert_eq!(payload.status, NativeCapabilityDraftStatus::Blocked);
+        assert_eq!(
+            payload.blockers,
+            vec![NativeCapabilityReason::AuthContentsForbidden]
+        );
+        assert!(payload.draft.profile.auth_contents.is_empty());
+        let serialized = serde_json::to_string(&payload).unwrap();
+        assert!(!serialized.contains(auth_contents));
+    }
+}
+
+#[test]
+fn complete_response_keeps_provider_secret_only_in_declared_local_draft_fields() {
+    let secret = "provider-secret-sentinel";
+    let profile = mixed_profile(
+        "secret-placement",
+        secret,
+        &canonical_source("inline").replace("same-secret", secret),
     );
-    assert_eq!(payload.profile.config_contents, original.config_contents);
+    let payload = transform_provider_native_capability_draft(request(
+        profile,
+        CatalogMode::OfficialPlusCustom,
+        NativeCapabilityDraftAction::Inspect,
+    ));
+    let serialized = serde_json::to_value(&payload).unwrap();
+
+    assert_eq!(
+        string_paths_containing(&serialized, secret),
+        vec![
+            "/draft/profile/configContents".to_string(),
+            "/draft/structuredApiKey".to_string(),
+        ]
+    );
+    assert_eq!(serialized["draft"]["profile"]["authContents"], "");
+    assert!(
+        !serde_json::to_string(&serialized["blockers"])
+            .unwrap()
+            .contains(secret)
+    );
+    assert!(
+        !serde_json::to_string(&serialized["preview"])
+            .unwrap()
+            .contains(secret)
+    );
+    assert!(
+        !serde_json::to_string(&serialized["inspection"])
+            .unwrap()
+            .contains(secret)
+    );
+    assert!(serialized.get("error").is_none());
 }

@@ -93,7 +93,7 @@ pub enum NativeCapabilityReason {
     ActorHeaderValueConflict,
     DuplicateActorHeader,
     MalformedHeaderStructure,
-    InvalidDraftRevision,
+    AuthContentsForbidden,
     ReplacementProviderIdRequired,
     ReplacementProviderIdInvalid,
     ReplacementProviderIdUnavailable,
@@ -155,15 +155,41 @@ pub struct ProviderNativeCapabilityDraftPreview {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderNativeCapabilityDraftPayload {
-    pub draft_revision: u64,
-    pub status: NativeCapabilityDraftStatus,
+pub struct ProviderNativeCapabilityDraft {
     pub profile: RelayProfile,
     pub structured_api_key: String,
     pub catalog_mode: CatalogMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderNativeCapabilityDraftPayload {
+    pub draft_revision: u64,
+    pub status: NativeCapabilityDraftStatus,
+    pub draft: ProviderNativeCapabilityDraft,
     pub inspection: ProviderNativeCapabilityInspection,
     pub blockers: Vec<NativeCapabilityReason>,
     pub preview: ProviderNativeCapabilityDraftPreview,
+}
+
+pub trait ProviderNativeCapabilityDraftReadOnlyBoundary {
+    fn inspect(
+        &self,
+        profile: &RelayProfile,
+        catalog_mode: CatalogMode,
+    ) -> ProviderNativeCapabilityInspection;
+}
+
+struct EvaluatorDraftReadOnlyBoundary;
+
+impl ProviderNativeCapabilityDraftReadOnlyBoundary for EvaluatorDraftReadOnlyBoundary {
+    fn inspect(
+        &self,
+        profile: &RelayProfile,
+        catalog_mode: CatalogMode,
+    ) -> ProviderNativeCapabilityInspection {
+        inspect_profile(profile, catalog_mode)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -649,11 +675,19 @@ pub fn inspect_profiles(
 pub fn draft_provider_native_capability(
     request: &ProviderNativeCapabilityDraftRequest,
 ) -> ProviderNativeCapabilityDraftPayload {
-    if request.draft_revision == 0 {
+    draft_provider_native_capability_with_boundary(request, &EvaluatorDraftReadOnlyBoundary)
+}
+
+pub fn draft_provider_native_capability_with_boundary(
+    request: &ProviderNativeCapabilityDraftRequest,
+    boundary: &dyn ProviderNativeCapabilityDraftReadOnlyBoundary,
+) -> ProviderNativeCapabilityDraftPayload {
+    if !request.profile.auth_contents.is_empty() {
         return unchanged_draft_payload(
             request,
+            boundary,
             NativeCapabilityDraftStatus::Blocked,
-            vec![NativeCapabilityReason::InvalidDraftRevision],
+            vec![NativeCapabilityReason::AuthContentsForbidden],
             ProviderNativeCapabilityDraftPreview::default(),
         );
     }
@@ -661,15 +695,20 @@ pub fn draft_provider_native_capability(
     match request.action {
         NativeCapabilityDraftAction::Inspect => ready_draft_payload(
             request,
+            boundary,
             request.profile.clone(),
             request.catalog_mode,
             ProviderNativeCapabilityDraftPreview::default(),
         ),
-        NativeCapabilityDraftAction::EnableNativePriority => enable_native_priority_draft(request),
+        NativeCapabilityDraftAction::EnableNativePriority => {
+            enable_native_priority_draft(request, boundary)
+        }
         NativeCapabilityDraftAction::ExitPureApi
         | NativeCapabilityDraftAction::ExitLegacyCompatibility
-        | NativeCapabilityDraftAction::ExitChatCompletions => compatibility_exit_draft(request),
-        NativeCapabilityDraftAction::ExitPureOAuth => pure_oauth_exit_draft(request),
+        | NativeCapabilityDraftAction::ExitChatCompletions => {
+            compatibility_exit_draft(request, boundary)
+        }
+        NativeCapabilityDraftAction::ExitPureOAuth => pure_oauth_exit_draft(request, boundary),
     }
 }
 
@@ -682,10 +721,12 @@ pub fn transform_provider_native_capability_draft(
 
 fn enable_native_priority_draft(
     request: &ProviderNativeCapabilityDraftRequest,
+    boundary: &dyn ProviderNativeCapabilityDraftReadOnlyBoundary,
 ) -> ProviderNativeCapabilityDraftPayload {
     if request.catalog_mode == CatalogMode::External {
         return unchanged_draft_payload(
             request,
+            boundary,
             NativeCapabilityDraftStatus::Blocked,
             vec![NativeCapabilityReason::ExternalCatalog],
             ProviderNativeCapabilityDraftPreview::default(),
@@ -698,6 +739,7 @@ fn enable_native_priority_draft(
         Err(_) => {
             return unchanged_draft_payload(
                 request,
+                boundary,
                 NativeCapabilityDraftStatus::Blocked,
                 vec![NativeCapabilityReason::MalformedToml],
                 ProviderNativeCapabilityDraftPreview::default(),
@@ -709,6 +751,7 @@ fn enable_native_priority_draft(
         Err(reason) => {
             return unchanged_draft_payload(
                 request,
+                boundary,
                 NativeCapabilityDraftStatus::Blocked,
                 vec![reason],
                 ProviderNativeCapabilityDraftPreview::default(),
@@ -725,6 +768,7 @@ fn enable_native_priority_draft(
             Err(reason) => {
                 return unchanged_draft_payload(
                     request,
+                    boundary,
                     NativeCapabilityDraftStatus::Blocked,
                     vec![reason],
                     ProviderNativeCapabilityDraftPreview::default(),
@@ -735,6 +779,7 @@ fn enable_native_priority_draft(
         if provider_id == RESERVED_PROVIDER_ID {
             return unchanged_draft_payload(
                 request,
+                boundary,
                 NativeCapabilityDraftStatus::Blocked,
                 vec![NativeCapabilityReason::ReservedProviderId],
                 ProviderNativeCapabilityDraftPreview::default(),
@@ -748,6 +793,7 @@ fn enable_native_priority_draft(
         Err(reason) => {
             return unchanged_draft_payload(
                 request,
+                boundary,
                 NativeCapabilityDraftStatus::Blocked,
                 vec![reason],
                 ProviderNativeCapabilityDraftPreview::default(),
@@ -763,36 +809,48 @@ fn enable_native_priority_draft(
     if use_structured && use_bearer {
         return unchanged_draft_payload(
             request,
+            boundary,
             NativeCapabilityDraftStatus::Blocked,
             vec![NativeCapabilityReason::ConflictingKeySynchronization],
             ProviderNativeCapabilityDraftPreview::default(),
         );
     }
-    let structured_key = profile.api_key.trim().to_string();
-    let raw_bearer = raw_bearer.map(|value| value.trim().to_string());
-    let selected_bearer = match (structured_key.is_empty(), raw_bearer.as_deref()) {
-        (true, None | Some("")) => {
+    let structured_key = profile.api_key.clone();
+    let structured_nonblank = !structured_key.trim().is_empty();
+    let raw_nonblank = raw_bearer
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
+    let bearer_to_write = match (structured_nonblank, raw_nonblank) {
+        (false, false) => {
             return unchanged_draft_payload(
                 request,
+                boundary,
                 NativeCapabilityDraftStatus::Blocked,
                 vec![NativeCapabilityReason::MissingProviderBearer],
                 ProviderNativeCapabilityDraftPreview::default(),
             );
         }
-        (true, Some(raw)) => {
-            profile.api_key = raw.to_string();
-            raw.to_string()
+        (false, true) => {
+            profile.api_key = raw_bearer
+                .as_ref()
+                .expect("nonblank raw bearer must be present")
+                .clone();
+            None
         }
-        (false, None | Some("")) => structured_key,
-        (false, Some(raw)) if raw == structured_key => structured_key,
-        (false, Some(_)) if use_structured => structured_key,
-        (false, Some(raw)) if use_bearer => {
-            profile.api_key = raw.to_string();
-            raw.to_string()
+        (true, false) => Some(structured_key),
+        (true, true) if raw_bearer.as_deref() == Some(structured_key.as_str()) => None,
+        (true, true) if use_structured => Some(structured_key),
+        (true, true) if use_bearer => {
+            profile.api_key = raw_bearer
+                .as_ref()
+                .expect("nonblank raw bearer must be present")
+                .clone();
+            None
         }
-        (false, Some(_)) => {
+        (true, true) => {
             return unchanged_draft_payload(
                 request,
+                boundary,
                 NativeCapabilityDraftStatus::ConfirmationRequired,
                 vec![NativeCapabilityReason::StructuredKeyBearerConflict],
                 ProviderNativeCapabilityDraftPreview::default(),
@@ -809,6 +867,7 @@ fn enable_native_priority_draft(
         {
             return unchanged_draft_payload(
                 request,
+                boundary,
                 NativeCapabilityDraftStatus::ConfirmationRequired,
                 vec![NativeCapabilityReason::ActorHeaderValueConflict],
                 ProviderNativeCapabilityDraftPreview::default(),
@@ -817,6 +876,7 @@ fn enable_native_priority_draft(
         ActorHeaderDraftState::Duplicate => {
             return unchanged_draft_payload(
                 request,
+                boundary,
                 NativeCapabilityDraftStatus::Blocked,
                 vec![NativeCapabilityReason::DuplicateActorHeader],
                 ProviderNativeCapabilityDraftPreview::default(),
@@ -825,6 +885,7 @@ fn enable_native_priority_draft(
         ActorHeaderDraftState::Malformed => {
             return unchanged_draft_payload(
                 request,
+                boundary,
                 NativeCapabilityDraftStatus::Blocked,
                 vec![NativeCapabilityReason::MalformedHeaderStructure],
                 ProviderNativeCapabilityDraftPreview::default(),
@@ -842,14 +903,16 @@ fn enable_native_priority_draft(
     set_string_preserving_decor(provider, "name", MANAGED_PROVIDER_NAME);
     set_string_preserving_decor(provider, "wire_api", MANAGED_WIRE_API);
     set_bool_preserving_decor(provider, "requires_openai_auth", false);
-    set_string_preserving_decor(provider, "experimental_bearer_token", &selected_bearer);
+    if let Some(bearer) = bearer_to_write {
+        set_string_preserving_decor(provider, "experimental_bearer_token", &bearer);
+    }
     set_canonical_actor_header(provider, actor_header);
 
     profile.relay_mode = RelayMode::Official;
     profile.official_mix_api_key = true;
     profile.protocol = RelayProtocol::Responses;
     profile.config_contents = document.to_string();
-    let inspection = inspect_profile(&profile, CatalogMode::OfficialPlusCustom);
+    let inspection = boundary.inspect(&profile, CatalogMode::OfficialPlusCustom);
     if inspection.state != NativeCapabilityState::NativePriority {
         let blockers = inspection
             .fields
@@ -859,6 +922,7 @@ fn enable_native_priority_draft(
             .collect();
         return unchanged_draft_payload(
             request,
+            boundary,
             NativeCapabilityDraftStatus::Blocked,
             blockers,
             ProviderNativeCapabilityDraftPreview::default(),
@@ -866,6 +930,7 @@ fn enable_native_priority_draft(
     }
     ready_draft_payload(
         request,
+        boundary,
         profile,
         CatalogMode::OfficialPlusCustom,
         ProviderNativeCapabilityDraftPreview::default(),
@@ -874,6 +939,7 @@ fn enable_native_priority_draft(
 
 fn compatibility_exit_draft(
     request: &ProviderNativeCapabilityDraftRequest,
+    boundary: &dyn ProviderNativeCapabilityDraftReadOnlyBoundary,
 ) -> ProviderNativeCapabilityDraftPayload {
     let preview = ProviderNativeCapabilityDraftPreview {
         capability_loss: true,
@@ -885,6 +951,7 @@ fn compatibility_exit_draft(
     ) {
         return unchanged_draft_payload(
             request,
+            boundary,
             NativeCapabilityDraftStatus::ConfirmationRequired,
             vec![NativeCapabilityReason::CapabilityLossConfirmationRequired],
             preview,
@@ -897,6 +964,7 @@ fn compatibility_exit_draft(
         Err(_) => {
             return unchanged_draft_payload(
                 request,
+                boundary,
                 NativeCapabilityDraftStatus::Blocked,
                 vec![NativeCapabilityReason::MalformedToml],
                 preview,
@@ -908,6 +976,7 @@ fn compatibility_exit_draft(
         Err(reason) => {
             return unchanged_draft_payload(
                 request,
+                boundary,
                 NativeCapabilityDraftStatus::Blocked,
                 vec![reason],
                 preview,
@@ -924,6 +993,7 @@ fn compatibility_exit_draft(
         None => {
             return unchanged_draft_payload(
                 request,
+                boundary,
                 NativeCapabilityDraftStatus::Blocked,
                 vec![NativeCapabilityReason::MalformedProviderTable],
                 preview,
@@ -932,21 +1002,20 @@ fn compatibility_exit_draft(
     };
     match provider_key_resolution(request, &profile, provider) {
         Ok(ProviderKeyResolution::Unchanged) => {}
-        Ok(ProviderKeyResolution::UseStructured) => set_string_preserving_decor(
-            provider,
-            "experimental_bearer_token",
-            profile.api_key.trim(),
-        ),
+        Ok(ProviderKeyResolution::UseStructured) => {
+            set_string_preserving_decor(provider, "experimental_bearer_token", &profile.api_key)
+        }
         Ok(ProviderKeyResolution::UseProvider(raw_bearer)) => {
             profile.api_key = raw_bearer;
         }
         Err((status, reason)) => {
-            return unchanged_draft_payload(request, status, vec![reason], preview);
+            return unchanged_draft_payload(request, boundary, status, vec![reason], preview);
         }
     }
     if let Err(reason) = remove_manager_actor_header(provider) {
         return unchanged_draft_payload(
             request,
+            boundary,
             NativeCapabilityDraftStatus::Blocked,
             vec![reason],
             preview,
@@ -981,17 +1050,19 @@ fn compatibility_exit_draft(
         _ => unreachable!("only compatibility exit actions reach this helper"),
     }
     profile.config_contents = document.to_string();
-    ready_draft_payload(request, profile, catalog_mode, preview)
+    ready_draft_payload(request, boundary, profile, catalog_mode, preview)
 }
 
 fn pure_oauth_exit_draft(
     request: &ProviderNativeCapabilityDraftRequest,
+    boundary: &dyn ProviderNativeCapabilityDraftReadOnlyBoundary,
 ) -> ProviderNativeCapabilityDraftPayload {
     let document = match request.profile.config_contents.parse::<DocumentMut>() {
         Ok(document) => document,
         Err(_) => {
             return unchanged_draft_payload(
                 request,
+                boundary,
                 NativeCapabilityDraftStatus::Blocked,
                 vec![NativeCapabilityReason::MalformedToml],
                 ProviderNativeCapabilityDraftPreview::default(),
@@ -1003,6 +1074,7 @@ fn pure_oauth_exit_draft(
         Err(reason) => {
             return unchanged_draft_payload(
                 request,
+                boundary,
                 NativeCapabilityDraftStatus::Blocked,
                 vec![reason],
                 ProviderNativeCapabilityDraftPreview::default(),
@@ -1019,6 +1091,7 @@ fn pure_oauth_exit_draft(
         None => {
             return unchanged_draft_payload(
                 request,
+                boundary,
                 NativeCapabilityDraftStatus::Blocked,
                 vec![NativeCapabilityReason::MalformedProviderTable],
                 ProviderNativeCapabilityDraftPreview::default(),
@@ -1032,7 +1105,7 @@ fn pure_oauth_exit_draft(
         removed_provider_fields: provider.iter().map(|(key, _)| key.to_string()).collect(),
     };
     if let Err((status, reason)) = provider_key_resolution(request, &request.profile, provider) {
-        return unchanged_draft_payload(request, status, vec![reason], preview);
+        return unchanged_draft_payload(request, boundary, status, vec![reason], preview);
     }
     if !has_confirmation(
         request,
@@ -1040,6 +1113,7 @@ fn pure_oauth_exit_draft(
     ) {
         return unchanged_draft_payload(
             request,
+            boundary,
             NativeCapabilityDraftStatus::ConfirmationRequired,
             vec![NativeCapabilityReason::DestructiveExitConfirmationRequired],
             preview,
@@ -1070,7 +1144,7 @@ fn pure_oauth_exit_draft(
     } else {
         CatalogMode::NativeOfficial
     };
-    ready_draft_payload(request, profile, catalog_mode, preview)
+    ready_draft_payload(request, boundary, profile, catalog_mode, preview)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1092,9 +1166,11 @@ fn provider_key_resolution(
             NativeCapabilityReason::MalformedProviderBearer,
         ))?,
     };
-    let raw_bearer = raw_bearer.trim();
-    let structured_key = profile.api_key.trim();
-    if raw_bearer.is_empty() || structured_key.is_empty() || raw_bearer == structured_key {
+    let structured_key = profile.api_key.as_str();
+    if raw_bearer.trim().is_empty()
+        || structured_key.trim().is_empty()
+        || raw_bearer == structured_key
+    {
         return Ok(ProviderKeyResolution::Unchanged);
     }
 
@@ -1308,6 +1384,12 @@ fn remove_manager_actor_header(provider: &mut dyn TableLike) -> Result<(), Nativ
     if matches.len() > 1 {
         return Err(NativeCapabilityReason::DuplicateActorHeader);
     }
+    if matches
+        .first()
+        .is_some_and(|(_, header_value)| header_value.is_none())
+    {
+        return Err(NativeCapabilityReason::MalformedHeaderStructure);
+    }
     if let Some((name, Some(header_value))) = matches.first()
         && name == MANAGED_ACTOR_HEADER_NAME
         && header_value == MANAGED_ACTOR_HEADER_VALUE
@@ -1349,17 +1431,22 @@ fn has_confirmation(
 
 fn unchanged_draft_payload(
     request: &ProviderNativeCapabilityDraftRequest,
+    boundary: &dyn ProviderNativeCapabilityDraftReadOnlyBoundary,
     status: NativeCapabilityDraftStatus,
     blockers: Vec<NativeCapabilityReason>,
     preview: ProviderNativeCapabilityDraftPreview,
 ) -> ProviderNativeCapabilityDraftPayload {
+    let mut profile = request.profile.clone();
+    profile.auth_contents.clear();
     ProviderNativeCapabilityDraftPayload {
         draft_revision: request.draft_revision,
         status,
-        profile: request.profile.clone(),
-        structured_api_key: request.profile.api_key.clone(),
-        catalog_mode: request.catalog_mode,
-        inspection: inspect_profile(&request.profile, request.catalog_mode),
+        draft: ProviderNativeCapabilityDraft {
+            structured_api_key: profile.api_key.clone(),
+            profile: profile.clone(),
+            catalog_mode: request.catalog_mode,
+        },
+        inspection: boundary.inspect(&profile, request.catalog_mode),
         blockers,
         preview,
     }
@@ -1367,17 +1454,21 @@ fn unchanged_draft_payload(
 
 fn ready_draft_payload(
     request: &ProviderNativeCapabilityDraftRequest,
-    profile: RelayProfile,
+    boundary: &dyn ProviderNativeCapabilityDraftReadOnlyBoundary,
+    mut profile: RelayProfile,
     catalog_mode: CatalogMode,
     preview: ProviderNativeCapabilityDraftPreview,
 ) -> ProviderNativeCapabilityDraftPayload {
+    profile.auth_contents.clear();
     ProviderNativeCapabilityDraftPayload {
         draft_revision: request.draft_revision,
         status: NativeCapabilityDraftStatus::Ready,
-        structured_api_key: profile.api_key.clone(),
-        inspection: inspect_profile(&profile, catalog_mode),
-        profile,
-        catalog_mode,
+        draft: ProviderNativeCapabilityDraft {
+            structured_api_key: profile.api_key.clone(),
+            profile: profile.clone(),
+            catalog_mode,
+        },
+        inspection: boundary.inspect(&profile, catalog_mode),
         blockers: Vec::new(),
         preview,
     }
