@@ -1,7 +1,8 @@
 use std::fs;
 
 use codex_minus_lib::commands::{
-    ProviderCommitPaths, assert_staged_native_provider_contract, commit_provider_detail_from_paths,
+    ProviderCommitErrorCode, ProviderCommitPaths, ProviderCommitPayload,
+    assert_staged_native_provider_contract, commit_provider_detail_from_paths,
 };
 use codex_minus_lib::provider_commit::{
     CatalogMode, CatalogOverlay, CatalogState, CustomModel, OfficialSnapshot, ProfileCatalogDraft,
@@ -157,6 +158,18 @@ impl Fixture {
             serde_json::from_slice(&fs::read(&self.paths.settings_path).unwrap()).unwrap();
         for profile in &mut settings.relay_profiles {
             codex_plus_core::relay_config::normalize_relay_profile_for_storage(profile).unwrap();
+            if profile.relay_mode == RelayMode::PureApi {
+                let mut document = profile
+                    .config_contents
+                    .parse::<toml_edit::DocumentMut>()
+                    .unwrap();
+                let provider_id = document["model_provider"].as_str().unwrap().to_string();
+                document["model_providers"][&provider_id]["experimental_bearer_token"] =
+                    toml_edit::value(profile.api_key.trim());
+                document["model_providers"][&provider_id]["requires_openai_auth"] =
+                    toml_edit::value(false);
+                profile.config_contents = document.to_string();
+            }
             profile.auth_contents.clear();
         }
         settings
@@ -319,8 +332,6 @@ fn set_current_commits_settings_catalog_pointer_activation_and_restart_together(
     let state = fixture.read_state();
     let profile_state = &state.profiles["sub2api"];
     assert!(profile_state.restart_required);
-    assert!(profile_state.applied_runtime_fingerprint.is_some());
-    assert_eq!(profile_state.applied_runtime_generation, 1);
     let generated = fixture
         .paths
         .codex_home
@@ -356,11 +367,6 @@ fn set_current_commits_settings_catalog_pointer_activation_and_restart_together(
     .unwrap();
     assert_eq!(second.draft_revision, 5);
     assert!(second.restart_required);
-    let updated_state = fixture.read_state();
-    assert_eq!(
-        updated_state.profiles["sub2api"].applied_runtime_generation,
-        2
-    );
     let updated_live = fs::read_to_string(fixture.paths.codex_home.join("config.toml")).unwrap();
     assert!(updated_live.contains("https://relay-updated.example/v1"));
     assert_eq!(
@@ -371,47 +377,195 @@ fn set_current_commits_settings_catalog_pointer_activation_and_restart_together(
 
 #[test]
 fn fallible_normalizer_rejects_structured_raw_conflicts_before_any_mutation() {
-    let active = canonical_profile(
+    let canonical = canonical_profile(
         "sub2api",
         "official-a",
         "https://relay.example/v1",
         "provider-key",
     );
-    let persisted = settings_with(vec![active.clone()], "sub2api");
-    let fixture = Fixture::new(&persisted, &state_with_official());
-    let persisted = fixture.read_settings();
-    let before = [
-        fs::read(&fixture.paths.settings_path).unwrap(),
-        fs::read(&fixture.paths.catalog_state_path).unwrap(),
-        fs::read(fixture.paths.codex_home.join("config.toml")).unwrap(),
-        fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
-    ];
-    let mut conflicted = persisted.relay_profiles[0].clone();
-    conflicted.base_url = "https://structured-conflict.example/v1".to_string();
-    let mut next = persisted.clone();
-    next.relay_profiles[0] = conflicted;
+    let mut legacy = canonical.clone();
+    legacy.config_contents = legacy.config_contents.replace("RelayOne", "CodexPP");
+    let mut pure_api = canonical.clone();
+    pure_api.relay_mode = RelayMode::PureApi;
 
-    let error = commit_provider_detail_from_paths(
-        &fixture.paths,
-        request(&persisted, &next, "sub2api", ProviderCommitAction::Save, 5),
+    for (index, (active, conflict_field)) in [
+        (canonical, "base-url"),
+        (legacy, "model"),
+        (pure_api, "key"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let persisted = settings_with(vec![active], "sub2api");
+        let fixture = Fixture::new(&persisted, &state_with_official());
+        let persisted = fixture.read_settings();
+        let before = [
+            fs::read(&fixture.paths.settings_path).unwrap(),
+            fs::read(&fixture.paths.catalog_state_path).unwrap(),
+            fs::read(fixture.paths.codex_home.join("config.toml")).unwrap(),
+            fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
+        ];
+        let mut conflicted = persisted.relay_profiles[0].clone();
+        match conflict_field {
+            "base-url" => {
+                conflicted.base_url = "https://structured-conflict.example/v1".to_string()
+            }
+            "model" => conflicted.model = "structured-conflict-model".to_string(),
+            "key" => conflicted.api_key = "structured-conflict-key".to_string(),
+            _ => unreachable!(),
+        }
+        let mut next = persisted.clone();
+        next.relay_profiles[0] = conflicted;
+
+        let error = commit_provider_detail_from_paths(
+            &fixture.paths,
+            request(
+                &persisted,
+                &next,
+                "sub2api",
+                ProviderCommitAction::Save,
+                5 + index as u64,
+            ),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.code(),
+            ProviderCommitErrorCode::InvalidDraft,
+            "profile variant {index}: {error}"
+        );
+        assert!(error.to_string().contains("conflict"));
+        assert!(!error.to_string().contains("structured-conflict"));
+        assert_eq!(fs::read(&fixture.paths.settings_path).unwrap(), before[0]);
+        assert_eq!(
+            fs::read(&fixture.paths.catalog_state_path).unwrap(),
+            before[1]
+        );
+        assert_eq!(
+            fs::read(fixture.paths.codex_home.join("config.toml")).unwrap(),
+            before[2]
+        );
+        assert_eq!(
+            fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
+            before[3]
+        );
+    }
+}
+
+#[test]
+fn provider_commit_failures_are_typed_and_failure_payloads_are_secret_free() {
+    let active = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key-sentinel",
+    );
+    let persisted = settings_with(vec![active], "sub2api");
+
+    let stale_fixture = Fixture::new(&persisted, &state_with_official());
+    let stale_persisted = stale_fixture.read_settings();
+    let mut stale = request(
+        &stale_persisted,
+        &stale_persisted,
+        "sub2api",
+        ProviderCommitAction::Save,
+        40,
+    );
+    stale.expected_provider_fingerprint = "sha256:stale".to_string();
+    let stale_error = commit_provider_detail_from_paths(&stale_fixture.paths, stale).unwrap_err();
+    assert_eq!(stale_error.code(), ProviderCommitErrorCode::StaleState);
+
+    let invalid_fixture = Fixture::new(&persisted, &state_with_official());
+    let invalid_persisted = invalid_fixture.read_settings();
+    let mut invalid_next = invalid_persisted.clone();
+    invalid_next.relay_profiles[0].auth_contents =
+        r#"{"OPENAI_API_KEY":"provider-key-sentinel"}"#.to_string();
+    let invalid_error = commit_provider_detail_from_paths(
+        &invalid_fixture.paths,
+        request(
+            &invalid_persisted,
+            &invalid_next,
+            "sub2api",
+            ProviderCommitAction::Save,
+            41,
+        ),
     )
-    .unwrap_err()
-    .to_string();
-    assert!(error.contains("base URL conflict"));
-    assert!(!error.contains("structured-conflict.example"));
-    assert_eq!(fs::read(&fixture.paths.settings_path).unwrap(), before[0]);
-    assert_eq!(
-        fs::read(&fixture.paths.catalog_state_path).unwrap(),
-        before[1]
+    .unwrap_err();
+    assert_eq!(invalid_error.code(), ProviderCommitErrorCode::InvalidDraft);
+
+    let catalog_fixture = Fixture::new(&persisted, &state_with_official());
+    let catalog_persisted = catalog_fixture.read_settings();
+    let mut catalog_request = request(
+        &catalog_persisted,
+        &catalog_persisted,
+        "sub2api",
+        ProviderCommitAction::Save,
+        42,
     );
+    catalog_request.catalog_drafts[0]
+        .overlay
+        .custom
+        .push(CustomModel::default());
+    let catalog_error =
+        commit_provider_detail_from_paths(&catalog_fixture.paths, catalog_request).unwrap_err();
     assert_eq!(
-        fs::read(fixture.paths.codex_home.join("config.toml")).unwrap(),
-        before[2]
+        catalog_error.code(),
+        ProviderCommitErrorCode::CatalogUnavailable
     );
+
+    let staging_fixture = Fixture::new(&persisted, &state_with_official());
+    let staging_persisted = staging_fixture.read_settings();
+    let mut staging_next = staging_persisted.clone();
+    staging_next.relay_profiles_enabled = false;
+    let staging_error = commit_provider_detail_from_paths(
+        &staging_fixture.paths,
+        request(
+            &staging_persisted,
+            &staging_next,
+            "sub2api",
+            ProviderCommitAction::Save,
+            43,
+        ),
+    )
+    .unwrap_err();
     assert_eq!(
-        fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
-        before[3]
+        staging_error.code(),
+        ProviderCommitErrorCode::StagingRejected
     );
+
+    let transaction_fixture = Fixture::new(&persisted, &state_with_official());
+    let transaction_persisted = transaction_fixture.read_settings();
+    let mut broken_paths = transaction_fixture.paths.clone();
+    broken_paths.app_state = transaction_fixture.paths.settings_path.clone();
+    let transaction_error = commit_provider_detail_from_paths(
+        &broken_paths,
+        request(
+            &transaction_persisted,
+            &transaction_persisted,
+            "sub2api",
+            ProviderCommitAction::Save,
+            44,
+        ),
+    )
+    .unwrap_err();
+    assert_eq!(
+        transaction_error.code(),
+        ProviderCommitErrorCode::TransactionFailed
+    );
+
+    for (revision, error) in [
+        (40, stale_error),
+        (41, invalid_error),
+        (42, catalog_error),
+        (43, staging_error),
+        (44, transaction_error),
+    ] {
+        let serialized =
+            serde_json::to_string(&ProviderCommitPayload::failure(revision, error.code())).unwrap();
+        assert!(!serialized.contains("provider-key-sentinel"));
+        assert!(!serialized.contains("apiKey"));
+        assert!(!serialized.contains("configContents"));
+        assert!(!serialized.contains("settings"));
+    }
 }
 
 #[test]
@@ -434,6 +588,13 @@ fn commit_boundary_rejects_missing_reserved_ambiguous_malformed_and_structural_c
     let mut reserved = base_profile.clone();
     reserved.config_contents = reserved.config_contents.replace("RelayOne", "openai");
     invalid_profiles.push(reserved);
+
+    let mut reserved_pure_api = base_profile.clone();
+    reserved_pure_api.relay_mode = RelayMode::PureApi;
+    reserved_pure_api.config_contents = reserved_pure_api
+        .config_contents
+        .replace("RelayOne", "openai");
+    invalid_profiles.push(reserved_pure_api);
 
     let mut ambiguous_header = base_profile.clone();
     ambiguous_header.config_contents = ambiguous_header.config_contents.replace(

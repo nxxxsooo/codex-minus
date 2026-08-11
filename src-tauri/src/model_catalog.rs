@@ -149,8 +149,6 @@ pub struct ProfileCatalogState {
     pub generated_hash: Option<String>,
     pub generation: u64,
     pub restart_required: bool,
-    pub applied_runtime_fingerprint: Option<String>,
-    pub applied_runtime_generation: u64,
     pub action_required: Option<String>,
     pub provider_evidence: Option<ProviderEvidence>,
 }
@@ -167,8 +165,6 @@ impl Default for ProfileCatalogState {
             generated_hash: None,
             generation: 0,
             restart_required: false,
-            applied_runtime_fingerprint: None,
-            applied_runtime_generation: 0,
             action_required: None,
             provider_evidence: None,
         }

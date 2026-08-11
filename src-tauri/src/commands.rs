@@ -1922,14 +1922,27 @@ impl ProviderCommitPaths {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderCommitPayload {
-    pub settings: BackendSettings,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<BackendSettings>,
     pub draft_revision: u64,
     pub provider_fingerprint: String,
     pub restart_required: bool,
     pub error_code: Option<ProviderCommitErrorCode>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+impl ProviderCommitPayload {
+    pub fn failure(draft_revision: u64, error_code: ProviderCommitErrorCode) -> Self {
+        Self {
+            settings: None,
+            draft_revision,
+            provider_fingerprint: String::new(),
+            restart_required: false,
+            error_code: Some(error_code),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ProviderCommitErrorCode {
     InputUnavailable,
@@ -1938,6 +1951,37 @@ pub enum ProviderCommitErrorCode {
     CatalogUnavailable,
     StagingRejected,
     TransactionFailed,
+}
+
+#[derive(Debug)]
+pub struct ProviderCommitFailure {
+    code: ProviderCommitErrorCode,
+    message: &'static str,
+}
+
+impl ProviderCommitFailure {
+    fn new(code: ProviderCommitErrorCode, message: &'static str) -> Self {
+        Self { code, message }
+    }
+
+    pub fn code(&self) -> ProviderCommitErrorCode {
+        self.code
+    }
+}
+
+impl std::fmt::Display for ProviderCommitFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.message)
+    }
+}
+
+impl std::error::Error for ProviderCommitFailure {}
+
+fn provider_commit_failure(
+    code: ProviderCommitErrorCode,
+    message: &'static str,
+) -> ProviderCommitFailure {
+    ProviderCommitFailure::new(code, message)
 }
 
 #[tauri::command]
@@ -1950,16 +1994,7 @@ pub async fn commit_provider_detail(
             Ok(payload) => ok("供应商与模型目录已作为同一代提交。", payload),
             Err(error) => failed(
                 "供应商提交失败；已保留原有设置与 live 配置。",
-                ProviderCommitPayload {
-                    settings: SettingsStore::default()
-                        .load()
-                        .map(sanitize_settings_for_output)
-                        .unwrap_or_default(),
-                    draft_revision,
-                    provider_fingerprint: String::new(),
-                    restart_required: false,
-                    error_code: Some(provider_commit_error_code(&error)),
-                },
+                ProviderCommitPayload::failure(draft_revision, error.code()),
             ),
         }
     })
@@ -1970,35 +2005,67 @@ pub async fn commit_provider_detail(
 pub fn commit_provider_detail_from_paths(
     paths: &ProviderCommitPaths,
     request: crate::provider_commit::ProviderCommitRequest,
-) -> anyhow::Result<ProviderCommitPayload> {
+) -> Result<ProviderCommitPayload, ProviderCommitFailure> {
     use crate::model_catalog::CatalogMode;
     use crate::provider_commit::{ProviderOwnedTopologyDraft, plan_provider_detail_commit};
 
-    let _guard = live_state::lock()?;
-    live_state::prepare_secret_paths_at(&paths.app_state, &paths.settings_path, &paths.codex_home)?;
-    live_state::recover_locked_at(&paths.app_state)?;
+    let transaction_failure = |_| {
+        provider_commit_failure(
+            ProviderCommitErrorCode::TransactionFailed,
+            "provider transaction failed",
+        )
+    };
+    let _guard = live_state::lock().map_err(transaction_failure)?;
+    live_state::prepare_secret_paths_at(&paths.app_state, &paths.settings_path, &paths.codex_home)
+        .map_err(transaction_failure)?;
+    live_state::recover_locked_at(&paths.app_state).map_err(transaction_failure)?;
 
-    let persisted_settings = load_provider_commit_settings(&paths.settings_path)?;
+    let persisted_settings = load_provider_commit_settings(&paths.settings_path).map_err(|_| {
+        provider_commit_failure(
+            ProviderCommitErrorCode::InputUnavailable,
+            "provider settings are unavailable",
+        )
+    })?;
     let persisted_state = crate::model_catalog::load_and_migrate_state_from_path(
         &persisted_settings,
         &paths.codex_home,
         &paths.catalog_state_path,
     )
-    .map_err(|_| anyhow::anyhow!("provider catalog state is unavailable"))?;
+    .map_err(|_| {
+        provider_commit_failure(
+            ProviderCommitErrorCode::CatalogUnavailable,
+            "provider catalog state is unavailable",
+        )
+    })?;
 
     // Validate the unmodified request first so compare-and-swap, structural catalog rules,
     // and authContents ownership are decided before normalization can change evidence.
+    validate_provider_commit_cas(&persisted_settings, &request)?;
+    validate_provider_commit_catalog_structure(&request)?;
+    crate::provider_commit::validate_provider_detail_request(
+        &persisted_settings,
+        &persisted_state,
+        &request,
+    )
+    .map_err(|_| {
+        provider_commit_failure(
+            ProviderCommitErrorCode::InvalidDraft,
+            "provider draft validation failed",
+        )
+    })?;
     let raw_plan = plan_provider_detail_commit(&persisted_settings, &persisted_state, &request)
-        .map_err(|error| {
-            anyhow::anyhow!(
-                "provider commit request is invalid or stale: {}",
-                sanitized_provider_commit_error(&error)
+        .map_err(|_| {
+            provider_commit_failure(
+                ProviderCommitErrorCode::CatalogUnavailable,
+                "provider catalog planning failed",
             )
         })?;
-    let focused_id = request
-        .focused_profile_id
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("focused provider profile is required"))?;
+    let focused_id = request.focused_profile_id.as_deref().ok_or_else(|| {
+        provider_commit_failure(
+            ProviderCommitErrorCode::InvalidDraft,
+            "focused provider profile is required",
+        )
+    })?;
     let focused_mode = request
         .catalog_drafts
         .iter()
@@ -2006,29 +2073,65 @@ pub fn commit_provider_detail_from_paths(
         .map(|draft| draft.mode)
         .unwrap_or(CatalogMode::NativeOfficial);
     let normalized_settings =
-        normalize_provider_detail_settings_fallible(raw_plan.settings, focused_id, focused_mode)?;
+        normalize_provider_detail_settings_fallible(raw_plan.settings, focused_id, focused_mode)
+            .map_err(|error| {
+                provider_commit_failure(
+                    ProviderCommitErrorCode::InvalidDraft,
+                    sanitized_provider_normalization_error(&error),
+                )
+            })?;
 
     // Re-plan from the normalized projection. The CAS still binds to persisted state; only
     // provider-owned normalized fields are allowed to differ from the submitted draft.
     let mut normalized_request = request.clone();
     normalized_request.topology = ProviderOwnedTopologyDraft::from_settings(&normalized_settings);
+    crate::provider_commit::validate_provider_detail_request(
+        &persisted_settings,
+        &persisted_state,
+        &normalized_request,
+    )
+    .map_err(|_| {
+        provider_commit_failure(
+            ProviderCommitErrorCode::InvalidDraft,
+            "normalized provider draft is invalid",
+        )
+    })?;
     let mut plan =
         plan_provider_detail_commit(&persisted_settings, &persisted_state, &normalized_request)
-            .map_err(|_| anyhow::anyhow!("normalized provider commit is invalid"))?;
+            .map_err(|_| {
+                provider_commit_failure(
+                    ProviderCommitErrorCode::CatalogUnavailable,
+                    "normalized provider catalog planning failed",
+                )
+            })?;
 
     let auth_path = paths.codex_home.join("auth.json");
-    let auth_before = read_optional_bytes(&auth_path)?;
+    let auth_before = read_optional_bytes(&auth_path).map_err(transaction_failure)?;
     let active_commit = plan.settings.active_relay_id == focused_id;
-    let mut mutations = materialize_provider_commit_catalogs(paths, &normalized_request, &plan)?;
+    let mut mutations = materialize_provider_commit_catalogs(paths, &normalized_request, &plan)
+        .map_err(|_| {
+            provider_commit_failure(
+                ProviderCommitErrorCode::CatalogUnavailable,
+                "provider catalog materialization failed",
+            )
+        })?;
     let mut context_snapshot = None;
 
     if active_commit {
-        anyhow::ensure!(
-            plan.settings.relay_profiles_enabled,
-            "provider routing is disabled"
-        );
+        if !plan.settings.relay_profiles_enabled {
+            return Err(provider_commit_failure(
+                ProviderCommitErrorCode::StagingRejected,
+                "provider routing is disabled",
+            ));
+        }
         let staged =
-            stage_active_relay_config_at(&paths.codex_home, &paths.app_state, &plan.settings)?;
+            stage_active_relay_config_at(&paths.codex_home, &paths.app_state, &plan.settings)
+                .map_err(|_| {
+                    provider_commit_failure(
+                        ProviderCommitErrorCode::StagingRejected,
+                        "provider staging failed",
+                    )
+                })?;
         let active_profile = plan.settings.active_relay_profile();
         let active_state = plan
             .catalog_state
@@ -2041,44 +2144,65 @@ pub fn commit_provider_detail_from_paths(
         if inspection.state
             == crate::provider_native_capability::NativeCapabilityState::NativePriority
         {
-            assert_staged_native_provider_contract(&active_profile, &staged, active_state.mode)?;
+            assert_staged_native_provider_contract(&active_profile, &staged, active_state.mode)
+                .map_err(|_| {
+                    provider_commit_failure(
+                        ProviderCommitErrorCode::StagingRejected,
+                        "staged provider contract was rejected",
+                    )
+                })?;
         }
 
         let staged = match active_state.mode {
             CatalogMode::NativeOfficial => {
-                crate::model_catalog::set_root_catalog_pointer(&staged, None)?
+                crate::model_catalog::set_root_catalog_pointer(&staged, None).map_err(|_| {
+                    provider_commit_failure(
+                        ProviderCommitErrorCode::CatalogUnavailable,
+                        "provider catalog pointer is invalid",
+                    )
+                })?
             }
             CatalogMode::External => crate::model_catalog::set_root_catalog_pointer(
                 &staged,
                 active_state.external_pointer.as_deref(),
-            )?,
+            )
+            .map_err(|_| {
+                provider_commit_failure(
+                    ProviderCommitErrorCode::CatalogUnavailable,
+                    "external catalog pointer is invalid",
+                )
+            })?,
             CatalogMode::OfficialPlusCustom | CatalogMode::CustomOnly => {
-                anyhow::ensure!(
-                    active_state.action_required.is_none() && plan.active_catalog.is_some(),
-                    "active provider catalog is not ready"
-                );
-                let pointer = active_state
-                    .generated_path
-                    .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("active provider catalog pointer is missing"))?;
-                crate::model_catalog::set_root_catalog_pointer(&staged, Some(pointer))?
+                if active_state.action_required.is_some() || plan.active_catalog.is_none() {
+                    return Err(provider_commit_failure(
+                        ProviderCommitErrorCode::CatalogUnavailable,
+                        "active provider catalog is not ready",
+                    ));
+                }
+                let pointer = active_state.generated_path.as_deref().ok_or_else(|| {
+                    provider_commit_failure(
+                        ProviderCommitErrorCode::CatalogUnavailable,
+                        "active provider catalog pointer is missing",
+                    )
+                })?;
+                crate::model_catalog::set_root_catalog_pointer(&staged, Some(pointer)).map_err(
+                    |_| {
+                        provider_commit_failure(
+                            ProviderCommitErrorCode::CatalogUnavailable,
+                            "active provider catalog pointer is invalid",
+                        )
+                    },
+                )?
             }
         };
-        let (protected, snapshot) = context_protected_config(&paths.codex_home, &staged)?;
-        let runtime_fingerprint =
-            provider_runtime_fingerprint(&protected, &plan.catalog_state, &active_profile.id)?;
+        let (protected, snapshot) =
+            context_protected_config(&paths.codex_home, &staged).map_err(transaction_failure)?;
         let active_state = plan
             .catalog_state
             .profiles
             .entry(active_profile.id.clone())
             .or_default();
-        if active_state.applied_runtime_fingerprint.as_deref() != Some(runtime_fingerprint.as_str())
-        {
-            active_state.applied_runtime_fingerprint = Some(runtime_fingerprint);
-            active_state.applied_runtime_generation =
-                active_state.applied_runtime_generation.saturating_add(1);
-            active_state.restart_required = true;
-        }
+        active_state.restart_required = true;
         context_snapshot = Some(snapshot);
         mutations.push(FileMutation::text(
             paths.codex_home.join("config.toml"),
@@ -2088,12 +2212,12 @@ pub fn commit_provider_detail_from_paths(
 
     mutations.push(FileMutation::bytes(
         paths.settings_path.clone(),
-        serialize_settings_without_profile_auth(&plan.settings)?,
+        serialize_settings_without_profile_auth(&plan.settings).map_err(transaction_failure)?,
     ));
-    mutations.push(crate::model_catalog::state_mutation_at(
-        &plan.catalog_state,
-        &paths.catalog_state_path,
-    )?);
+    mutations.push(
+        crate::model_catalog::state_mutation_at(&plan.catalog_state, &paths.catalog_state_path)
+            .map_err(transaction_failure)?,
+    );
 
     live_state::commit_locked_verified_at(&paths.app_state, &mutations, || {
         if let Some(snapshot) = context_snapshot.as_ref() {
@@ -2104,7 +2228,8 @@ pub fn commit_provider_detail_from_paths(
             "live auth changed concurrently"
         );
         Ok(())
-    })?;
+    })
+    .map_err(transaction_failure)?;
 
     let restart_required = plan
         .catalog_state
@@ -2113,9 +2238,15 @@ pub fn commit_provider_detail_from_paths(
         .is_some_and(|state| state.restart_required);
     let provider_fingerprint = crate::provider_commit::provider_owned_fingerprint(
         &ProviderOwnedTopologyDraft::from_settings(&plan.settings),
-    )?;
+    )
+    .map_err(|_| {
+        provider_commit_failure(
+            ProviderCommitErrorCode::InvalidDraft,
+            "provider fingerprint generation failed",
+        )
+    })?;
     Ok(ProviderCommitPayload {
-        settings: sanitize_settings_for_output(plan.settings),
+        settings: Some(sanitize_settings_for_output(plan.settings)),
         draft_revision: plan.draft_revision,
         provider_fingerprint,
         restart_required,
@@ -2136,40 +2267,58 @@ fn load_provider_commit_settings(path: &Path) -> anyhow::Result<BackendSettings>
     Ok(settings)
 }
 
-fn sanitized_provider_commit_error(error: &anyhow::Error) -> &'static str {
+fn sanitized_provider_normalization_error(error: &anyhow::Error) -> &'static str {
     let message = error.to_string();
-    for (needle, code) in [
-        ("fingerprint", "fingerprint-conflict"),
-        ("provider state changed", "fingerprint-conflict"),
-        ("active provider", "active-provider-conflict"),
-        ("catalog draft", "catalog-draft-invalid"),
-        ("catalog", "catalog-invalid"),
-        ("authContents", "auth-contents-prohibited"),
-        ("provider profile", "provider-profile-invalid"),
-        ("provider", "provider-request-invalid"),
+    for (needle, safe) in [
+        ("base URL conflict", "provider base URL conflict"),
+        ("model conflict", "provider model conflict"),
+        ("key conflict", "provider key conflict"),
+        ("TOML", "provider config TOML is invalid"),
+        ("authContents", "incoming authContents is prohibited"),
     ] {
         if message.contains(needle) {
-            return code;
+            return safe;
         }
     }
-    "request-invalid"
+    "provider draft normalization failed"
 }
 
-fn provider_commit_error_code(error: &anyhow::Error) -> ProviderCommitErrorCode {
-    let message = error.to_string();
-    if message.contains("settings unavailable") || message.contains("settings are invalid") {
-        ProviderCommitErrorCode::InputUnavailable
-    } else if message.contains("fingerprint-conflict") || message.contains("stale") {
-        ProviderCommitErrorCode::StaleState
-    } else if message.contains("catalog") {
-        ProviderCommitErrorCode::CatalogUnavailable
-    } else if message.contains("staged") || message.contains("routing is disabled") {
-        ProviderCommitErrorCode::StagingRejected
-    } else if message.contains("transaction") || message.contains("live auth changed") {
-        ProviderCommitErrorCode::TransactionFailed
-    } else {
-        ProviderCommitErrorCode::InvalidDraft
+fn validate_provider_commit_cas(
+    persisted_settings: &BackendSettings,
+    request: &crate::provider_commit::ProviderCommitRequest,
+) -> Result<(), ProviderCommitFailure> {
+    let expected = crate::provider_commit::provider_owned_fingerprint(
+        &crate::provider_commit::ProviderOwnedTopologyDraft::from_settings(persisted_settings),
+    )
+    .map_err(|_| {
+        provider_commit_failure(
+            ProviderCommitErrorCode::InvalidDraft,
+            "provider fingerprint validation failed",
+        )
+    })?;
+    if request.expected_provider_fingerprint != expected
+        || request.previous_active_relay_id != persisted_settings.active_relay_id
+    {
+        return Err(provider_commit_failure(
+            ProviderCommitErrorCode::StaleState,
+            "provider state changed; reload or merge before saving",
+        ));
     }
+    Ok(())
+}
+
+fn validate_provider_commit_catalog_structure(
+    request: &crate::provider_commit::ProviderCommitRequest,
+) -> Result<(), ProviderCommitFailure> {
+    for draft in &request.catalog_drafts {
+        crate::model_catalog::validate_overlay(&draft.overlay).map_err(|_| {
+            provider_commit_failure(
+                ProviderCommitErrorCode::CatalogUnavailable,
+                "provider catalog structure is invalid",
+            )
+        })?;
+    }
+    Ok(())
 }
 
 fn normalize_provider_detail_settings_fallible(
@@ -2179,9 +2328,10 @@ fn normalize_provider_detail_settings_fallible(
 ) -> anyhow::Result<BackendSettings> {
     let focused = settings
         .relay_profiles
-        .iter()
+        .iter_mut()
         .find(|profile| profile.id == focused_id)
         .ok_or_else(|| anyhow::anyhow!("focused provider profile is missing"))?;
+    reconcile_provider_detail_raw_fields(focused)?;
     validate_provider_detail_contract(focused, focused_mode)?;
 
     // Provider-detail commits do not own a stored copy of live common/context configuration.
@@ -2205,6 +2355,74 @@ fn normalize_provider_detail_settings_fallible(
         .ok_or_else(|| anyhow::anyhow!("focused provider profile is missing"))?;
     validate_provider_detail_contract(focused, focused_mode)?;
     Ok(settings)
+}
+
+fn reconcile_provider_detail_raw_fields(profile: &mut RelayProfile) -> anyhow::Result<()> {
+    let document = profile
+        .config_contents
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|_| anyhow::anyhow!("provider config TOML is invalid"))?;
+
+    if let Some(raw_model) = document.get("model") {
+        let raw_model = raw_model
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("provider model is malformed"))?;
+        reconcile_provider_string(&mut profile.model, raw_model, "provider model conflict")?;
+    }
+
+    let Some(provider_id_item) = document.get("model_provider") else {
+        return Ok(());
+    };
+    let provider_id = provider_id_item
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("provider selection is invalid"))?;
+    anyhow::ensure!(
+        provider_id != "openai",
+        "reserved provider selection is invalid"
+    );
+    let provider = document
+        .get("model_providers")
+        .and_then(toml_edit::Item::as_table_like)
+        .and_then(|providers| providers.get(provider_id))
+        .and_then(toml_edit::Item::as_table_like)
+        .ok_or_else(|| anyhow::anyhow!("selected provider table is invalid"))?;
+
+    if let Some(raw_base_url) = provider.get("base_url") {
+        let raw_base_url = raw_base_url
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("provider base URL is malformed"))?;
+        reconcile_provider_string(
+            &mut profile.base_url,
+            raw_base_url,
+            "provider base URL conflict",
+        )?;
+        if profile.upstream_base_url.trim().is_empty() {
+            profile.upstream_base_url = profile.base_url.clone();
+        }
+    }
+    if let Some(raw_key) = provider.get("experimental_bearer_token") {
+        let raw_key = raw_key
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("provider bearer is malformed"))?;
+        reconcile_provider_string(&mut profile.api_key, raw_key, "provider key conflict")?;
+    }
+    Ok(())
+}
+
+fn reconcile_provider_string(
+    structured: &mut String,
+    raw: &str,
+    conflict: &'static str,
+) -> anyhow::Result<()> {
+    let raw = raw.trim();
+    if structured.trim().is_empty() {
+        *structured = raw.to_string();
+    } else {
+        anyhow::ensure!(structured.trim() == raw, conflict);
+    }
+    Ok(())
 }
 
 fn sanitize_profile_after_core_normalize_fallible(
@@ -2358,53 +2576,6 @@ fn materialize_provider_commit_catalogs(
         }
     }
     Ok(mutations)
-}
-
-fn provider_runtime_fingerprint(
-    config: &str,
-    state: &crate::model_catalog::CatalogState,
-    profile_id: &str,
-) -> anyhow::Result<String> {
-    let document = config
-        .parse::<toml_edit::DocumentMut>()
-        .map_err(|_| anyhow::anyhow!("staged provider config is invalid"))?;
-    let provider_id = document
-        .get("model_provider")
-        .and_then(toml_edit::Item::as_str)
-        .unwrap_or("openai");
-    let provider = document
-        .get("model_providers")
-        .and_then(toml_edit::Item::as_table_like)
-        .and_then(|providers| providers.get(provider_id))
-        .map(|item| {
-            let mut rendered = toml_edit::DocumentMut::new();
-            // Graft the complete selected table into a real document before rendering;
-            // rendering an implicit/nested table item in isolation can produce an empty string.
-            rendered["provider"] = item.clone();
-            rendered.to_string()
-        })
-        .unwrap_or_default();
-    let catalog = state
-        .profiles
-        .get(profile_id)
-        .map(|profile| {
-            format!(
-                "{:?}:{}:{}",
-                profile.mode,
-                profile
-                    .generated_hash
-                    .as_deref()
-                    .unwrap_or("native-official"),
-                profile.external_pointer.as_deref().unwrap_or("")
-            )
-        })
-        .unwrap_or_else(|| "native-official".to_string());
-    let source = serde_json::to_vec(&json!({
-        "providerId": provider_id,
-        "provider": provider,
-        "catalog": catalog,
-    }))?;
-    Ok(format!("sha256:{:x}", Sha256::digest(source)))
 }
 
 #[tauri::command]
