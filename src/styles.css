@@ -1265,10 +1265,26 @@ body {
 }
 
 .catalog-inline-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   padding: 8px 10px;
   border-left: 3px solid hsl(var(--status-warning));
   background: hsl(var(--status-warning) / 0.08);
   font-size: 12px;
+}
+
+.catalog-inline-action {
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: hsl(var(--secondary));
+  color: hsl(var(--secondary-foreground));
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .relay-file-auth-status {
@@ -2063,6 +2079,11 @@ body {
   font-family: Consolas, "SFMono-Regular", monospace;
   font-size: 12px;
   line-height: 1.45;
+}
+
+.relay-file-textarea.live-config-readonly {
+  color: hsl(var(--muted-foreground));
+  background: hsl(var(--surface-sunken));
 }
 
 .relay-file-textarea.compact {

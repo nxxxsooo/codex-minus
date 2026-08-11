@@ -27,7 +27,7 @@ pub fn run() {
     let Some(_guard) = acquire_single_instance_guard() else {
         return;
     };
-    commands::scrub_managed_context_store();
+    commands::scrub_legacy_managed_config_store();
     let app_result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {

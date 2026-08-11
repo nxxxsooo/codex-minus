@@ -1447,6 +1447,17 @@ fn normalize_settings_before_save(mut settings: BackendSettings) -> BackendSetti
             );
         }
         sanitize_profile_after_core_normalize(profile);
+        match retain_provider_owned_profile_config(&profile.config_contents) {
+            Ok(config) => profile.config_contents = config,
+            Err(error) => log_manager_event(
+                "manager.retain_provider_owned_profile_config.failed",
+                json!({
+                    "profileId": profile.id,
+                    "profileName": profile.name,
+                    "error": error.to_string()
+                }),
+            ),
+        }
     }
     let common_config = relay_combined_common_config(&settings);
     if !common_config.trim().is_empty() {
@@ -1477,7 +1488,7 @@ fn normalize_settings_before_save(mut settings: BackendSettings) -> BackendSetti
         .provider_sync_last_selected_provider
         .trim()
         .to_string();
-    scrub_managed_context_state(&mut settings);
+    scrub_legacy_managed_config_state(&mut settings);
     settings
 }
 
@@ -2977,6 +2988,24 @@ fn is_provider_owned_root_item(name: &str) -> bool {
     )
 }
 
+fn retain_provider_owned_profile_config(config: &str) -> anyhow::Result<String> {
+    if config.trim().is_empty() {
+        return Ok(String::new());
+    }
+    let mut doc: toml_edit::DocumentMut = config.parse()?;
+    let keys = doc
+        .as_table()
+        .iter()
+        .map(|(name, _)| name.to_string())
+        .collect::<Vec<_>>();
+    for name in keys {
+        if !is_provider_owned_root_item(&name) {
+            doc.as_table_mut().remove(&name);
+        }
+    }
+    Ok(doc.to_string())
+}
+
 fn render_toml_item(name: &str, item: Option<&toml_edit::Item>) -> String {
     match item {
         Some(item) => {
@@ -2988,15 +3017,34 @@ fn render_toml_item(name: &str, item: Option<&toml_edit::Item>) -> String {
     }
 }
 
-/// 销毁 settings 存储中的 managed context 副本：残缺的 `[mcp_servers.*]` 拷贝
-/// 曾经就存在这里，切换时会被回填、下次再被合并/过滤写回 config.toml。
-fn scrub_managed_context_state(settings: &mut BackendSettings) -> bool {
+/// 销毁 settings 中旧版 Manager 保存的全局 config 副本。
+/// live config.toml 是唯一事实源；供应商档案只保留供应商拥有的字段。
+fn scrub_legacy_managed_config_state(settings: &mut BackendSettings) -> bool {
     let mut dirty = false;
+    if !settings.relay_common_config_contents.is_empty() {
+        settings.relay_common_config_contents = String::new();
+        dirty = true;
+    }
     if !settings.relay_context_config_contents.is_empty() {
         settings.relay_context_config_contents = String::new();
         dirty = true;
     }
     for profile in &mut settings.relay_profiles {
+        match retain_provider_owned_profile_config(&profile.config_contents) {
+            Ok(config) if config != profile.config_contents => {
+                profile.config_contents = config;
+                dirty = true;
+            }
+            Ok(_) => {}
+            Err(error) => log_manager_event(
+                "manager.retain_provider_owned_profile_config.failed",
+                json!({
+                    "profileId": profile.id,
+                    "profileName": profile.name,
+                    "error": error.to_string()
+                }),
+            ),
+        }
         if profile.context_selection_initialized
             || profile.context_selection != RelayContextSelection::default()
         {
@@ -3008,7 +3056,7 @@ fn scrub_managed_context_state(settings: &mut BackendSettings) -> bool {
     dirty
 }
 
-pub fn scrub_managed_context_store() {
+pub fn scrub_legacy_managed_config_store() {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let result = (|| -> anyhow::Result<bool> {
         let _guard = live_state::lock()?;
@@ -3016,7 +3064,7 @@ pub fn scrub_managed_context_store() {
         live_state::recover_locked()?;
         migrate_legacy_profile_auth_locked()?;
         let mut settings = SettingsStore::default().load()?;
-        let dirty = scrub_managed_context_state(&mut settings);
+        let dirty = scrub_legacy_managed_config_state(&mut settings);
         settings = normalize_settings_before_save(settings);
         if dirty {
             live_state::commit_locked(&[FileMutation::bytes(
@@ -3027,10 +3075,10 @@ pub fn scrub_managed_context_store() {
         Ok(dirty)
     })();
     match result {
-        Ok(true) => log_manager_event("manager.context_guard.store_scrubbed", json!({})),
+        Ok(true) => log_manager_event("manager.live_config.store_scrubbed", json!({})),
         Ok(false) => {}
         Err(error) => log_manager_event(
-            "manager.context_guard.store_scrub_failed",
+            "manager.live_config.store_scrub_failed",
             json!({ "error": error.to_string() }),
         ),
     }
@@ -3572,8 +3620,9 @@ enabled = true
     }
 
     #[test]
-    fn scrub_clears_managed_copy_and_selections() {
+    fn scrub_clears_legacy_global_copies_and_selections() {
         let mut settings = BackendSettings::default();
+        settings.relay_common_config_contents = "[agents]\nmax_threads = 1000\n".to_string();
         settings.relay_context_config_contents =
             "[mcp_servers.memory]\nenabled = true\n".to_string();
         let mut profile = RelayProfile::default();
@@ -3581,7 +3630,8 @@ enabled = true
         profile.context_selection_initialized = true;
         settings.relay_profiles.push(profile);
 
-        assert!(scrub_managed_context_state(&mut settings));
+        assert!(scrub_legacy_managed_config_state(&mut settings));
+        assert!(settings.relay_common_config_contents.is_empty());
         assert!(settings.relay_context_config_contents.is_empty());
         assert!(!settings.relay_profiles[0].context_selection_initialized);
         assert!(
@@ -3591,7 +3641,69 @@ enabled = true
                 .is_empty()
         );
         // 二次执行应为 no-op
-        assert!(!scrub_managed_context_state(&mut settings));
+        assert!(!scrub_legacy_managed_config_state(&mut settings));
+    }
+
+    #[test]
+    fn scrub_removes_global_profile_config_without_a_common_copy() {
+        let mut settings = BackendSettings::default();
+        settings.relay_profiles = vec![RelayProfile {
+            id: "api".to_string(),
+            config_contents: r#"model_provider = "custom"
+
+[model_providers.custom]
+base_url = "https://example.test/v1"
+
+[agents]
+max_threads = 1000
+"#
+            .to_string(),
+            ..RelayProfile::default()
+        }];
+
+        assert!(scrub_legacy_managed_config_state(&mut settings));
+        let config = &settings.relay_profiles[0].config_contents;
+        assert!(config.contains("[model_providers.custom]"));
+        assert!(!config.contains("[agents]"));
+        assert!(!config.contains("max_threads"));
+        assert!(!scrub_legacy_managed_config_state(&mut settings));
+    }
+
+    #[test]
+    fn normalization_keeps_only_provider_owned_profile_config() {
+        let mut settings = BackendSettings::default();
+        settings.relay_profiles = vec![RelayProfile {
+            id: "mixed".to_string(),
+            relay_mode: codex_plus_core::settings::RelayMode::Official,
+            official_mix_api_key: true,
+            config_contents: r#"model = "gpt-5.5"
+model_provider = "custom"
+model_catalog_json = "model-catalogs/mixed.json"
+approval_policy = "never"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://example.test/v1"
+experimental_bearer_token = "sk-test"
+
+[agents]
+max_threads = 1000
+"#
+            .to_string(),
+            ..RelayProfile::default()
+        }];
+
+        let normalized = normalize_settings_before_save(settings);
+        let config = &normalized.relay_profiles[0].config_contents;
+        assert!(config.contains(r#"model = "gpt-5.5""#));
+        assert!(config.contains(r#"model_provider = "custom""#));
+        assert!(config.contains(r#"model_catalog_json = "model-catalogs/mixed.json""#));
+        assert!(config.contains("[model_providers.custom]"));
+        assert!(!config.contains("approval_policy"));
+        assert!(!config.contains("[agents]"));
+        assert!(!config.contains("max_threads"));
     }
 
     #[test]
@@ -3641,7 +3753,7 @@ enabled = true
         let home = tempfile::tempdir().unwrap();
         std::fs::write(
             home.path().join("config.toml"),
-            format!("{LIVE_CONFIG}\napproval_policy = \"never\"\n[profiles.work]\nmodel = \"x\"\n"),
+            format!("{LIVE_CONFIG}\napproval_policy = \"never\"\n[profiles.work]\nmodel = \"x\"\n\n[agents]\nmax_concurrent_threads_per_session = 8\n"),
         )
         .unwrap();
         let candidate = r#"model_provider = "Other"
@@ -3650,11 +3762,16 @@ model = "other"
 [model_providers.Other]
 name = "Other"
 base_url = "https://other.test"
+
+[agents]
+max_threads = 1000
 "#;
         let (protected, snapshot) = context_protected_config(home.path(), candidate).unwrap();
         assert!(protected.contains("approval_policy = \"never\""));
         assert!(protected.contains("[profiles.work]"));
         assert!(protected.contains("[mcp_servers.memory]"));
+        assert!(protected.contains("max_concurrent_threads_per_session = 8"));
+        assert!(!protected.contains("max_threads = 1000"));
         live_state::atomic_write_owner_only(&home.path().join("config.toml"), protected.as_bytes())
             .unwrap();
         verify_context_tables(home.path(), &snapshot).unwrap();

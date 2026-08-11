@@ -64,7 +64,6 @@ import {
   addCatalogCandidate,
   adoptionPreviewSummary,
   catalogDiffSummary,
-  catalogModeDraftController,
   catalogModePresentation,
   catalogRefreshGate,
   defaultCatalogMode,
@@ -73,6 +72,8 @@ import {
   providerEvidenceState,
   validateCatalogDraft,
 } from "./model-catalog-ui";
+import { CatalogModeControls } from "./catalog-mode-controls";
+import { providerConfigDraft, RelayConfigPanels } from "./relay-config-panels";
 import {
   networkPolicyDirty,
   networkPolicyDraft,
@@ -1873,7 +1874,7 @@ function RelayScreen({
     return (
       <RelayProfileDetail
         profile={detailProfile}
-        relayFiles={!isNewProfile && detailProfile.id === normalized.activeRelayId ? relayFiles : null}
+        relayFiles={relayFiles}
         modelCatalog={modelCatalog}
         catalogProfile={catalogProfile}
         form={normalized}
@@ -2264,21 +2265,6 @@ function CatalogProfileEditor({
       templateProvenance: "user-created",
     }] });
   };
-  const modeActions = catalogModeDraftController({
-    currentMode: mode,
-    externalPointer: summary?.externalPointer ?? null,
-    customModelCount: overlay.custom.length,
-    confirmDiscard: (decision) => window.confirm(decision === "confirm-discard-external"
-      ? t("切换到原生目录模式将停止管理外部目录。当前目录会在保存成功前继续生效。是否继续？")
-      : t("切换到原生目录模式将不再使用自定义模型。当前目录会在保存成功前继续生效。是否继续？")),
-    actions: {
-      updateDraftMode: (nextMode) => {
-        setMode(nextMode);
-        setModeExplicit(true);
-      },
-      saveProfileCatalog: () => actions.saveProfileCatalog(profile.id, mode, overlay, upstreamTopology, modeExplicit),
-    },
-  });
   const save = async () => {
     const confirmContextCleanup = summary?.contextConflicts.length
       ? window.confirm(tf("托管模型目录将移除这些全局上下文设置，让每个模型使用自己的窗口：\n\n{0}", [summary.contextConflicts.join("\n")]))
@@ -2329,7 +2315,11 @@ function CatalogProfileEditor({
           <span>{presentation.source === "native"
             ? t("使用 Codex 原生动态目录")
             : presentation.source === "unsaved"
-              ? t("目录模式尚未保存；保存后使用 Codex 原生动态目录")
+              ? t(presentation.pendingSource === "native"
+                ? "目录模式尚未保存；保存后使用 Codex 原生动态目录"
+                : presentation.pendingSource === "external"
+                  ? "目录模式尚未保存；保存后使用外部目录"
+                  : "目录模式尚未保存；保存后使用托管目录")
               : presentation.path ?? t(presentation.pathUnavailable === "external" ? "未识别外部目录指针" : "托管目录路径不可用")}</span>
         </div>
         <div className="catalog-editor-actions">
@@ -2340,18 +2330,32 @@ function CatalogProfileEditor({
           </Button>
         </div>
       </div>
-      <div className="segmented catalog-mode-control">
-        {([
-          ["native-official", t("官方原生")],
-          ["official-plus-custom", t("官方 + 自定义")],
-          ["custom-only", t("仅自定义")],
-          ...(summary?.externalPointer || summary?.mode === "external" ? [["external", t("外部目录")]] : []),
-        ] as Array<[CatalogMode, string]>).map(([value, label]) => (
-          <button className={mode === value ? "active" : ""} key={value} onClick={() => modeActions.requestMode(value)} type="button">
-            {label}
-          </button>
-        ))}
-      </div>
+      <CatalogModeControls
+        confirmDiscard={(decision) => window.confirm(decision === "confirm-discard-external"
+          ? t("切换到原生目录模式将停止管理外部目录。当前目录会在保存成功前继续生效。是否继续？")
+          : t("切换到原生目录模式将不再使用自定义模型。当前目录会在保存成功前继续生效。是否继续？"))}
+        currentMode={mode}
+        customModelCount={overlay.custom.length}
+        dormantCustomCount={presentation.dormantCustomCount}
+        dormantMessage={tf("原生目录模式下有 {0} 个自定义模型暂不生效。", [presentation.dormantCustomCount])}
+        externalPointer={summary?.externalPointer ?? null}
+        modeOptions={[
+          { value: "native-official", label: t("官方原生") },
+          { value: "official-plus-custom", label: t("官方 + 自定义") },
+          { value: "custom-only", label: t("仅自定义") },
+          ...(summary?.externalPointer || summary?.mode === "external"
+            ? [{ value: "external" as CatalogMode, label: t("外部目录") }]
+            : []),
+        ]}
+        pendingDormantCustomCount={presentation.pendingDormantCustomCount}
+        pendingMessage={tf("保存后，{0} 个自定义模型将暂不生效。", [presentation.pendingDormantCustomCount])}
+        restoreLabel={t("恢复官方＋自定义")}
+        saveProfileCatalog={() => actions.saveProfileCatalog(profile.id, mode, overlay, upstreamTopology, modeExplicit)}
+        updateDraftMode={(nextMode) => {
+          setMode(nextMode);
+          setModeExplicit(true);
+        }}
+      />
       {profile.relayMode === "pureApi" && profile.protocol === "responses" ? (
         <div className="catalog-topology-control">
           <span>{t("上游拓扑")}</span>
@@ -2369,22 +2373,6 @@ function CatalogProfileEditor({
         </div>
       ) : null}
       {summary?.actionRequired || draftError ? <div className="catalog-inline-error">{summary?.actionRequired || catalogDraftErrorLabel(draftError)}</div> : null}
-      {presentation.dormantCustomCount > 0 ? (
-        <div className="catalog-inline-error">
-          <span>{tf("原生目录模式下有 {0} 个自定义模型暂不生效。", [presentation.dormantCustomCount])}</span>
-          <Button onClick={modeActions.restoreOfficialPlusCustom} size="sm" variant="secondary">
-            {t("恢复官方＋自定义")}
-          </Button>
-        </div>
-      ) : null}
-      {presentation.pendingDormantCustomCount > 0 ? (
-        <div className="catalog-inline-error">
-          <span>{tf("保存后，{0} 个自定义模型将暂不生效。", [presentation.pendingDormantCustomCount])}</span>
-          <Button onClick={modeActions.restoreOfficialPlusCustom} size="sm" variant="secondary">
-            {t("恢复官方＋自定义")}
-          </Button>
-        </div>
-      ) : null}
       {mode === "external" ? (
         <div className="catalog-external-row">
           <span>{summary?.externalPointer || t("未识别外部目录指针")}</span>
@@ -3053,22 +3041,17 @@ function RelayProfileDetail({
     modelWindowRowsFromProfile(profile.modelList, profile.modelWindows || ""),
   );
   const isActive = !isNew && profile.id === form.activeRelayId;
-  const profileUsesLiveFiles = relayProfileUsesLiveFiles(profile);
   useEffect(() => {
     const nextDraft = isAggregateRelayProfile(profile)
       ? normalizeAggregateRelayProfile(profile, form)
-      : deriveRelayProfileFromFiles(
-          isActive && profileUsesLiveFiles && relayFiles
-            ? {
-              ...profile,
-              configContents: relayFiles.configContents,
-              authContents: "",
-            }
-            : profile,
-        );
+      : deriveRelayProfileFromFiles({
+          ...profile,
+          configContents: providerConfigDraft(profile.configContents, relayFiles?.configContents ?? ""),
+          authContents: "",
+        });
     setDraft(nextDraft);
     setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || ""));
-  }, [profile.id, profile.modelList, profile.modelWindows, profileUsesLiveFiles, isActive, isNew, relayFiles?.configContents]);
+  }, [profile.id, profile.configContents, profile.modelList, profile.modelWindows]);
   const validationError = isAggregateRelayProfile(draft) ? aggregateRelayProfileValidation(draft) : null;
   const draftWithModelRows = () => {
     const serializedRows = serializeModelWindowRows(modelWindowRows);
@@ -3137,15 +3120,10 @@ function RelayProfileDetail({
       )}
       {isAggregateRelayProfile(draft) ? null : (
       <RelayFileEditors
-        contextProfile={profile}
         profile={draft}
-        form={form}
-        isActive={isActive}
-        authStatus={relayFiles?.authStatus ?? null}
-        profileId={profile.id}
-        onFormChange={onFormChange}
+        authStatus={isActive ? relayFiles?.authStatus ?? null : null}
+        liveConfigContents={relayFiles?.configContents ?? ""}
         onProfileChange={setDraft}
-        actions={actions}
       />
       )}
     </div>
@@ -3562,138 +3540,36 @@ function AggregateRelayProfileEditor({
 }
 
 
-function SyncedTextarea({
-  value,
-  onValueChange,
-  className,
-}: {
-  value: string;
-  onValueChange: (value: string) => void;
-  className?: string;
-}) {
-  const [localValue, setLocalValue] = useState(value);
-  const isFocusedRef = useRef(false);
-  const latestExternalValueRef = useRef(value);
-
-  useEffect(() => {
-    latestExternalValueRef.current = value;
-    if (!isFocusedRef.current) {
-      setLocalValue(value);
-    }
-  }, [value]);
-
-  return (
-    <Textarea
-      className={className}
-      value={localValue}
-      onBlur={() => {
-        isFocusedRef.current = false;
-        setLocalValue(latestExternalValueRef.current);
-      }}
-      onChange={(event) => {
-        const next = event.currentTarget.value;
-        setLocalValue(next);
-        onValueChange(next);
-      }}
-      onFocus={() => {
-        isFocusedRef.current = true;
-      }}
-      spellCheck={false}
-    />
-  );
-}
-
 function RelayFileEditors({
-  contextProfile,
   profile,
-  form,
-  isActive,
   authStatus,
-  profileId,
-  onFormChange,
+  liveConfigContents,
   onProfileChange,
-  actions,
 }: {
-  contextProfile: RelayProfile;
   profile: RelayProfile;
-  form: BackendSettings;
-  isActive: boolean;
   authStatus: RelayFilesResult["authStatus"] | null;
-  profileId: string;
-  onFormChange: (value: BackendSettings) => void;
+  liveConfigContents: string;
   onProfileChange: (value: RelayProfile) => void;
-  actions: Actions;
 }) {
-  const configPreview = effectiveRelayConfigPreview(profile, form, contextProfile);
-  const entries = contextEntriesForProfile(form, contextProfile);
+  const nativeOfficial = profile.relayMode === "official" && !profile.officialMixApiKey;
+  const providerConfig = applyContextLimitPreview(profile.configContents, profile);
   return (
     <div className="relay-file-grid">
-      <div className="relay-file-panel">
-        <div className="relay-file-head">
-          <div>
-            <strong>{t("config.toml 预览")}</strong>
-            <span>{isActive ? t("当前供应商切换后会写入的预览；上下文开关变化会立即反映") : t("切换到此供应商时会写入的预览；上下文开关变化会立即反映")}</span>
-          </div>
-        </div>
-        <SyncedTextarea
-          className="relay-file-textarea"
-          value={configPreview}
-          onValueChange={(value) => {
-            const withoutCommon = stripCommonConfigTextFallback(
-              value,
-              relayCombinedCommonConfig(form),
-            );
-            const configContents = stripContextEntriesFromConfig(withoutCommon, entries);
-            onProfileChange(deriveRelayProfileFromFiles({
-              ...profile,
-              configContents,
-            }));
-          }}
-        />
-      </div>
-      <div className="relay-file-panel">
-        <div className="relay-file-head">
-          <div>
-            <strong>{t("通用配置文件")}</strong>
-            <span>{t("只保留非 MCP、Skills、Plugins 的跨供应商配置；工具与插件在独立页面管理。")}</span>
-          </div>
-          <Button
-            onClick={async () => {
-              const extracted = await actions.extractRelayCommonConfig(profile.configContents || "");
-              if (!extracted) return;
-              const split = splitContextConfigText(extracted.commonConfigContents || "");
-              if (!split.common.trim() && !split.context.trim()) {
-                await actions.showMessage(t("通用配置文件"), t("当前供应商 config.toml 里没有可提取的通用配置。"), "failed");
-                return;
-              }
-              const promotedProfile = {
-                ...profile,
-                configContents: extracted.profileConfigContents,
-              };
-              const next = syncLegacyRelayFields({
-                ...form,
-                relayCommonConfigContents: split.common,
-                relayContextConfigContents: joinTomlSectionsRootFirst([form.relayContextConfigContents || "", split.context]),
-                relayProfiles: form.relayProfiles.map((item) => (item.id === profileId ? promotedProfile : item)),
-              });
-              onFormChange(next);
-              onProfileChange(promotedProfile);
-              await actions.saveSettingsValue(next, false);
-            }}
-            size="sm"
-            type="button"
-            variant="secondary"
-          >
-            <Download className="h-4 w-4" />
-            {t("提取当前供应商配置")}
-          </Button>
-        </div>
-        <SyncedTextarea
-          className="relay-file-textarea"
-          value={form.relayCommonConfigContents}
-          onValueChange={(value) => onFormChange({ ...form, relayCommonConfigContents: value })}
-        />
-      </div>
+      <RelayConfigPanels
+        liveConfig={liveConfigContents}
+        liveHelp={t("直接读取 Codex 当前文件；Manager 不保存副本，切换时只替换供应商字段。")}
+        liveTitle={t("实时 config.toml")}
+        nativeOfficial={nativeOfficial}
+        nativeProviderMessage={t("官方原生模式无独立供应商配置；运行时使用右侧实时 config.toml。")}
+        onProviderConfigChange={(configContents) => onProfileChange(deriveRelayProfileFromFiles({
+          ...profile,
+          configContents,
+        }))}
+        providerConfig={providerConfig}
+        providerHelp={t("只保存模型、供应商、Base URL、目录指针和供应商表；全局配置实时读取。")}
+        providerTitle={t("供应商配置")}
+        unavailableLiveMessage={t("当前 live config.toml 不可用")}
+      />
       <div className="relay-file-panel">
         <div className="relay-file-head">
           <div>
@@ -4178,24 +4054,6 @@ function setCodexGoalsFeatureInConfig(configContents: string, enabled: boolean):
   return ensureTrailingNewline(next.join("\n").trimEnd());
 }
 
-function effectiveRelayConfigPreview(profile: RelayProfile, settings: BackendSettings, contextProfile = profile): string {
-  const entries = contextEntriesForProfile(settings, contextProfile);
-  const isolatedConfig = stripContextEntriesFromConfig(profile.configContents, entries);
-  const configWithLimits = applyContextLimitPreview(isolatedConfig, profile);
-  return joinTomlSectionsRootFirst([configWithLimits, settings.relayCommonConfigContents || "", selectedContextConfigToml(entries)]);
-}
-
-function selectedContextConfigToml(entries: CodexContextEntries): string {
-  const sections: string[] = [];
-  for (const option of contextKindOptions) {
-    for (const entry of dedupeContextEntryList(contextEntriesByKind(entries, option.kind))) {
-      if (!entry.enabled) continue;
-      sections.push(contextEntryToTomlSection(option.tableName, entry));
-    }
-  }
-  return ensureTrailingNewline(sections.join("\n\n"));
-}
-
 function allContextConfigToml(entries: CodexContextEntries): string {
   const sections: string[] = [];
   for (const option of contextKindOptions) {
@@ -4222,11 +4080,6 @@ function relativeContextSubtableToAbsolute(line: string, tableName: string, id: 
   const subtable = match[1].trim();
   if (!subtable || subtable.includes(".")) return line;
   return `[${tableName}.${tomlKey(id)}.${tomlKey(subtable)}]`;
-}
-
-
-function relayCombinedCommonConfig(settings: BackendSettings): string {
-  return joinTomlSectionsRootFirst([settings.relayCommonConfigContents || "", settings.relayContextConfigContents || ""]);
 }
 
 function splitContextConfigText(configContents: string): { common: string; context: string } {
@@ -4258,49 +4111,6 @@ function stripContextEntriesFromConfig(configContents: string, entries: CodexCon
   }
 
   return ensureTrailingNewline(kept.join("\n").trimEnd());
-}
-
-function stripCommonConfigTextFallback(configContents: string, commonConfig: string): string {
-  const anchors = commonConfigAnchors(commonConfig);
-  if (!anchors.rootKeys.size && !anchors.tableHeaders.size) return ensureTrailingNewline(configContents.trimEnd());
-
-  const kept: string[] = [];
-  let skippingTable = false;
-
-  for (const line of configContents.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (/^\[[^\]]+\]$/.test(trimmed)) {
-      skippingTable = anchors.tableHeaders.has(trimmed);
-      if (skippingTable) continue;
-    }
-    if (skippingTable) continue;
-    const key = tomlRootKeyFromLine(trimmed);
-    if (key && anchors.rootKeys.has(key)) continue;
-    kept.push(line);
-  }
-
-  return ensureTrailingNewline(kept.join("\n").trimEnd());
-}
-
-function commonConfigAnchors(commonConfig: string): { rootKeys: Set<string>; tableHeaders: Set<string> } {
-  const rootKeys = new Set<string>();
-  const tableHeaders = new Set<string>();
-  let inRoot = true;
-
-  for (const line of commonConfig.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (/^\[[^\]]+\]$/.test(trimmed)) {
-      inRoot = false;
-      tableHeaders.add(trimmed);
-      continue;
-    }
-    if (inRoot) {
-      const key = tomlRootKeyFromLine(trimmed);
-      if (key) rootKeys.add(key);
-    }
-  }
-
-  return { rootKeys, tableHeaders };
 }
 
 function tomlRootKeyFromLine(line: string): string | null {

@@ -6,6 +6,17 @@
 
 ## Changelog
 
+### 2026-08-11
+
+- **fix/model-catalogs**: made native-official catalog selection a confirmed draft until Save, described every unsaved mode by its actual destination, kept dormant custom models recoverable, and wired the production mode controls without pre-Save persistence
+  - why: selecting official native could display stale managed-catalog state or the wrong model source, while a control regression could silently save or discard catalog ownership before explicit confirmation
+  - verified: all 32 frontend tests pass, including production-control cancel/confirm/restore coverage; TypeScript and Vite production builds pass
+  - refs: `src/model-catalog-ui.ts`, `src/catalog-mode-controls.ts`, `src/App.tsx`
+- **fix/providers**: made live `config.toml` the only global-config source, reduced stored profile TOML to provider-owned fields, and added an upgrade-time scrub for legacy common/context copies and global fields embedded in profiles
+  - why: Manager-owned global copies became stale and made provider detail ambiguous; native official mode needs an explicit no-provider-config state while preserving live settings such as `[agents] max_concurrent_threads_per_session = 8`
+  - verified: 67 Rust tests pass with one live-OAuth test intentionally ignored, including upgrade scrub, provider-only normalization, and live-global-preservation regressions; Rust formatting, diff checks, TypeScript, all 32 frontend tests, Vite production build, and the full ad-hoc-signed macOS Tauri bundle build pass
+  - refs: `src-tauri/src/commands.rs`, `src/relay-config-panels.ts`, `src/App.tsx`
+
 ### 2026-08-10
 
 - **fix/providers**: made Quick Test and Provider Doctor retry one strictly allowlisted Responses HTTP 400 without the optional `max_output_tokens` field, while preserving the original status, final endpoint, redacted preview, and an explicit compatibility marker

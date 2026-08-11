@@ -80,6 +80,7 @@ export function catalogModePresentation(input: {
   customModelCount: number;
 }): {
   source: "native" | "managed" | "external" | "unsaved";
+  pendingSource: "native" | "managed" | "external" | null;
   path: string | null;
   restart: boolean;
   dormantCustomCount: number;
@@ -89,6 +90,11 @@ export function catalogModePresentation(input: {
   if (input.selectedMode !== input.persistedMode) {
     return {
       source: "unsaved",
+      pendingSource: input.selectedMode === "native-official"
+        ? "native"
+        : input.selectedMode === "external"
+          ? "external"
+          : "managed",
       path: null,
       restart: false,
       dormantCustomCount: 0,
@@ -99,6 +105,7 @@ export function catalogModePresentation(input: {
   if (input.selectedMode === "native-official") {
     return {
       source: "native",
+      pendingSource: null,
       path: null,
       restart: false,
       dormantCustomCount: input.customModelCount,
@@ -109,6 +116,7 @@ export function catalogModePresentation(input: {
   if (input.selectedMode === "external") {
     return {
       source: "external",
+      pendingSource: null,
       path: input.externalPointer,
       restart: input.restartRequired,
       dormantCustomCount: 0,
@@ -118,6 +126,7 @@ export function catalogModePresentation(input: {
   }
   return {
     source: "managed",
+    pendingSource: null,
     path: input.generatedPath,
     restart: input.restartRequired,
     dormantCustomCount: 0,

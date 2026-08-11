@@ -12,9 +12,19 @@ export const EN_PLAIN: Record<string, string> = {
     "Switching to native catalog mode stops using custom models. The current catalog remains active until Save succeeds. Continue?",
   "使用 Codex 原生动态目录": "Using Codex's native dynamic catalog",
   "目录模式尚未保存；保存后使用 Codex 原生动态目录": "Catalog mode has not been saved; Codex's native dynamic catalog will be used after Save.",
+  "目录模式尚未保存；保存后使用外部目录": "Catalog mode has not been saved; the external catalog will be used after Save.",
+  "目录模式尚未保存；保存后使用托管目录": "Catalog mode has not been saved; the managed catalog will be used after Save.",
   "托管目录路径不可用": "Managed catalog path unavailable",
   "未识别外部目录指针": "Unrecognized external catalog pointer",
   "恢复官方＋自定义": "Restore official + custom",
+  "实时 config.toml": "Live config.toml",
+  "直接读取 Codex 当前文件；Manager 不保存副本，切换时只替换供应商字段。":
+    "Read directly from Codex's current file. Manager stores no copy and replaces only provider-owned fields when switching.",
+  "官方原生模式无独立供应商配置；运行时使用右侧实时 config.toml。":
+    "Native official mode has no separate provider config; it uses the live config.toml shown on the right.",
+  "只保存模型、供应商、Base URL、目录指针和供应商表；全局配置实时读取。":
+    "Only model, provider, Base URL, catalog pointer, and provider tables are stored; global config is read live.",
+  "当前 live config.toml 不可用": "The live config.toml is currently unavailable",
   "直连 API": "Direct API",
   "服务端复合": "Server-side composite",
   "一个 Responses Base URL 和 Key；模型聚合由上游完成。": "One Responses Base URL and key; model aggregation is handled upstream.",

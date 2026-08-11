@@ -48,6 +48,7 @@ describe("model catalog UI state", () => {
       customModelCount: 7,
     }), {
       source: "native",
+      pendingSource: null,
       path: null,
       restart: false,
       dormantCustomCount: 7,
@@ -67,12 +68,36 @@ describe("model catalog UI state", () => {
         customModelCount: 7,
       }), {
         source: "unsaved",
+        pendingSource: "native",
         path: null,
         restart: false,
         dormantCustomCount: 0,
         pendingDormantCustomCount: 7,
         pathUnavailable: null,
       });
+    }
+  });
+
+  it("describes every unsaved catalog draft by the mode that Save will activate", () => {
+    const cases = [
+      ["native-official", "native"],
+      ["official-plus-custom", "managed"],
+      ["custom-only", "managed"],
+      ["external", "external"],
+    ] as const;
+    for (const [selectedMode, expectedPendingSource] of cases) {
+      const presentation = catalogModePresentation({
+        selectedMode,
+        persistedMode: selectedMode === "native-official" ? "official-plus-custom" : "native-official",
+        generatedPath: "model-catalogs/current.json",
+        externalPointer: "models/external.json",
+        restartRequired: true,
+        customModelCount: 2,
+      });
+      assert.equal(
+        (presentation as typeof presentation & { pendingSource?: string }).pendingSource,
+        expectedPendingSource,
+      );
     }
   });
 
@@ -86,6 +111,7 @@ describe("model catalog UI state", () => {
       customModelCount: 7,
     }), {
       source: "managed",
+      pendingSource: null,
       path: "model-catalogs/current.json",
       restart: true,
       dormantCustomCount: 0,
