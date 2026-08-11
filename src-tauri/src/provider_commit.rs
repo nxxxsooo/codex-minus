@@ -2,24 +2,104 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, ensure};
 use codex_plus_core::settings::{
-    AggregateRelayProfile, BackendSettings, RelayContextSelection, RelayMode, RelayModelInsertMode,
-    RelayProfile, RelayProtocol,
+    AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
+    RelayContextSelection, RelayMode, RelayModelInsertMode, RelayProfile, RelayProtocol,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::model_catalog::{self, CatalogMode, CatalogOverlay, CatalogState, UpstreamTopology};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum ProviderCommitAction {
     Save,
     SetCurrent,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderContextSelectionDraft {
+    pub mcp_servers: Vec<String>,
+    pub skills: Vec<String>,
+    pub plugins: Vec<String>,
+}
+
+impl From<&RelayContextSelection> for ProviderContextSelectionDraft {
+    fn from(selection: &RelayContextSelection) -> Self {
+        Self {
+            mcp_servers: selection.mcp_servers.clone(),
+            skills: selection.skills.clone(),
+            plugins: selection.plugins.clone(),
+        }
+    }
+}
+
+impl From<&ProviderContextSelectionDraft> for RelayContextSelection {
+    fn from(selection: &ProviderContextSelectionDraft) -> Self {
+        Self {
+            mcp_servers: selection.mcp_servers.clone(),
+            skills: selection.skills.clone(),
+            plugins: selection.plugins.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderAggregateMemberDraft {
+    pub relay_id: String,
+    pub weight: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderAggregateDraft {
+    pub id: String,
+    pub name: String,
+    pub strategy: AggregateRelayStrategy,
+    pub members: Vec<ProviderAggregateMemberDraft>,
+}
+
+impl From<&AggregateRelayProfile> for ProviderAggregateDraft {
+    fn from(aggregate: &AggregateRelayProfile) -> Self {
+        Self {
+            id: aggregate.id.clone(),
+            name: aggregate.name.clone(),
+            strategy: aggregate.strategy,
+            members: aggregate
+                .members
+                .iter()
+                .map(|member| ProviderAggregateMemberDraft {
+                    relay_id: member.relay_id.clone(),
+                    weight: member.weight,
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<&ProviderAggregateDraft> for AggregateRelayProfile {
+    fn from(aggregate: &ProviderAggregateDraft) -> Self {
+        Self {
+            id: aggregate.id.clone(),
+            name: aggregate.name.clone(),
+            strategy: aggregate.strategy,
+            members: aggregate
+                .members
+                .iter()
+                .map(|member| AggregateRelayMember {
+                    relay_id: member.relay_id.clone(),
+                    weight: member.weight,
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderRelayProfileDraft {
     pub id: String,
     pub name: String,
@@ -34,7 +114,7 @@ pub struct ProviderRelayProfileDraft {
     pub config_contents: String,
     pub auth_contents: String,
     pub use_common_config: bool,
-    pub context_selection: RelayContextSelection,
+    pub context_selection: ProviderContextSelectionDraft,
     pub context_selection_initialized: bool,
     pub context_window: String,
     pub auto_compact_limit: String,
@@ -60,7 +140,7 @@ impl From<&RelayProfile> for ProviderRelayProfileDraft {
             config_contents: profile.config_contents.clone(),
             auth_contents: profile.auth_contents.clone(),
             use_common_config: profile.use_common_config,
-            context_selection: profile.context_selection.clone(),
+            context_selection: ProviderContextSelectionDraft::from(&profile.context_selection),
             context_selection_initialized: profile.context_selection_initialized,
             context_window: profile.context_window.clone(),
             auto_compact_limit: profile.auto_compact_limit.clone(),
@@ -88,7 +168,7 @@ impl From<&ProviderRelayProfileDraft> for RelayProfile {
             config_contents: profile.config_contents.clone(),
             auth_contents: profile.auth_contents.clone(),
             use_common_config: profile.use_common_config,
-            context_selection: profile.context_selection.clone(),
+            context_selection: RelayContextSelection::from(&profile.context_selection),
             context_selection_initialized: profile.context_selection_initialized,
             context_window: profile.context_window.clone(),
             auto_compact_limit: profile.auto_compact_limit.clone(),
@@ -101,11 +181,11 @@ impl From<&ProviderRelayProfileDraft> for RelayProfile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderOwnedTopologyDraft {
     pub relay_profiles_enabled: bool,
     pub relay_profiles: Vec<ProviderRelayProfileDraft>,
-    pub aggregate_relay_profiles: Vec<AggregateRelayProfile>,
+    pub aggregate_relay_profiles: Vec<ProviderAggregateDraft>,
     pub active_relay_id: String,
     pub active_aggregate_relay_id: String,
     pub relay_base_url: String,
@@ -124,7 +204,11 @@ impl ProviderOwnedTopologyDraft {
                 .iter()
                 .map(ProviderRelayProfileDraft::from)
                 .collect(),
-            aggregate_relay_profiles: settings.aggregate_relay_profiles.clone(),
+            aggregate_relay_profiles: settings
+                .aggregate_relay_profiles
+                .iter()
+                .map(ProviderAggregateDraft::from)
+                .collect(),
             active_relay_id: settings.active_relay_id.clone(),
             active_aggregate_relay_id: settings.active_aggregate_relay_id.clone(),
             relay_base_url: settings.relay_base_url.clone(),
@@ -139,7 +223,11 @@ impl ProviderOwnedTopologyDraft {
         let mut next = persisted.clone();
         next.relay_profiles_enabled = self.relay_profiles_enabled;
         next.relay_profiles = self.relay_profiles.iter().map(RelayProfile::from).collect();
-        next.aggregate_relay_profiles = self.aggregate_relay_profiles.clone();
+        next.aggregate_relay_profiles = self
+            .aggregate_relay_profiles
+            .iter()
+            .map(AggregateRelayProfile::from)
+            .collect();
         next.active_relay_id = self.active_relay_id.clone();
         next.active_aggregate_relay_id = self.active_aggregate_relay_id.clone();
         next.relay_base_url = self.relay_base_url.clone();
@@ -152,34 +240,159 @@ impl ProviderOwnedTopologyDraft {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProfileCatalogDraft {
     pub profile_id: String,
     pub mode: CatalogMode,
-    #[serde(default)]
     pub mode_explicit: bool,
-    #[serde(default)]
     pub upstream_topology: UpstreamTopology,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub external_pointer: Option<String>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_catalog_overlay_strict")]
     pub overlay: CatalogOverlay,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderCommitRequest {
     pub topology: ProviderOwnedTopologyDraft,
-    #[serde(default)]
     pub catalog_drafts: Vec<ProfileCatalogDraft>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_option")]
     pub focused_profile_id: Option<String>,
     pub action: ProviderCommitAction,
     pub previous_active_relay_id: String,
-    #[serde(default)]
     pub confirm_context_cleanup: bool,
     pub draft_revision: u64,
     pub expected_provider_fingerprint: String,
+}
+
+fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
+
+fn deserialize_catalog_overlay_strict<'de, D>(deserializer: D) -> Result<CatalogOverlay, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    validate_catalog_overlay_shape(&value).map_err(D::Error::custom)?;
+    serde_json::from_value(value).map_err(D::Error::custom)
+}
+
+fn validate_catalog_overlay_shape(value: &Value) -> Result<(), String> {
+    const OVERLAY_FIELDS: &[&str] = &["official", "custom"];
+    const OFFICIAL_FIELDS: &[&str] = &[
+        "displayName",
+        "visible",
+        "contextWindow",
+        "effectiveContextWindowPercent",
+        "order",
+        "supportedReasoningLevels",
+        "defaultReasoningLevel",
+        "supportedTools",
+        "toolCapabilities",
+    ];
+    const CUSTOM_FIELDS: &[&str] = &[
+        "slug",
+        "displayName",
+        "contextWindow",
+        "effectiveContextWindowPercent",
+        "visible",
+        "order",
+        "supportedReasoningLevels",
+        "defaultReasoningLevel",
+        "supportedTools",
+        "toolCapabilities",
+        "templateProvenance",
+    ];
+    const REASONING_FIELDS: &[&str] = &["effort", "description"];
+
+    let overlay = exact_object(value, "catalog overlay", OVERLAY_FIELDS)?;
+    let official = overlay["official"]
+        .as_object()
+        .ok_or_else(|| "catalog overlay official must be an object".to_string())?;
+    for (slug, override_value) in official {
+        let item = exact_object(
+            override_value,
+            &format!("official override {slug}"),
+            OFFICIAL_FIELDS,
+        )?;
+        validate_optional_reasoning_levels(
+            &item["supportedReasoningLevels"],
+            "official supportedReasoningLevels",
+            REASONING_FIELDS,
+        )?;
+        validate_nullable_object(&item["toolCapabilities"], "official toolCapabilities")?;
+    }
+    let custom = overlay["custom"]
+        .as_array()
+        .ok_or_else(|| "catalog overlay custom must be an array".to_string())?;
+    for (index, custom_value) in custom.iter().enumerate() {
+        let item = exact_object(
+            custom_value,
+            &format!("custom model {index}"),
+            CUSTOM_FIELDS,
+        )?;
+        let reasoning = item["supportedReasoningLevels"]
+            .as_array()
+            .ok_or_else(|| "custom supportedReasoningLevels must be an array".to_string())?;
+        for level in reasoning {
+            exact_object(level, "custom reasoning level", REASONING_FIELDS)?;
+        }
+        validate_nullable_object(&item["toolCapabilities"], "custom toolCapabilities")?;
+    }
+    Ok(())
+}
+
+fn exact_object<'a>(
+    value: &'a Value,
+    label: &str,
+    fields: &[&str],
+) -> Result<&'a serde_json::Map<String, Value>, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| format!("{label} must be an object"))?;
+    for field in fields {
+        if !object.contains_key(*field) {
+            return Err(format!("{label} is missing required field {field}"));
+        }
+    }
+    if let Some(field) = object
+        .keys()
+        .find(|field| !fields.contains(&field.as_str()))
+    {
+        return Err(format!("{label} contains unknown field {field}"));
+    }
+    Ok(object)
+}
+
+fn validate_optional_reasoning_levels(
+    value: &Value,
+    label: &str,
+    fields: &[&str],
+) -> Result<(), String> {
+    if value.is_null() {
+        return Ok(());
+    }
+    let levels = value
+        .as_array()
+        .ok_or_else(|| format!("{label} must be an array or null"))?;
+    for level in levels {
+        exact_object(level, label, fields)?;
+    }
+    Ok(())
+}
+
+fn validate_nullable_object(value: &Value, label: &str) -> Result<(), String> {
+    if value.is_null() || value.is_object() {
+        Ok(())
+    } else {
+        Err(format!("{label} must be an object or null"))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -223,33 +436,34 @@ pub fn validate_provider_detail_request(
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .context("focused provider profile is required")?;
-    ensure!(
-        request
-            .topology
-            .relay_profiles
-            .iter()
-            .any(|profile| profile.id == focused_id),
-        "focused provider profile is missing from the topology draft"
-    );
+    let focused_profile = request
+        .topology
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == focused_id)
+        .context("focused provider profile is missing from the topology draft")?;
     if request.action == ProviderCommitAction::SetCurrent {
         ensure!(
             request.topology.active_relay_id == focused_id,
             "setCurrent must select the focused provider profile"
         );
+    } else {
+        ensure!(
+            request.topology.active_relay_id == persisted_settings.active_relay_id,
+            "save cannot change the active provider profile"
+        );
     }
-    let is_new = !persisted_settings
-        .relay_profiles
-        .iter()
-        .any(|profile| profile.id == focused_id);
     let supplied = request
         .catalog_drafts
         .iter()
         .filter(|draft| draft.profile_id == focused_id)
         .count();
+    let expected = usize::from(model_catalog::managed_catalog_capable(&RelayProfile::from(
+        focused_profile,
+    )));
     ensure!(
-        supplied == 1
-            || (supplied == 0 && is_new && implicit_mixed_catalog_eligible(request, focused_id)),
-        "focused provider profile requires one complete catalog draft"
+        supplied == expected,
+        "focused provider profile must carry exactly the catalog drafts its capability supports"
     );
     Ok(())
 }
@@ -274,6 +488,12 @@ fn validate_common_request(
         request.previous_active_relay_id == persisted_settings.active_relay_id,
         "previous active provider does not match the compare-and-swap snapshot"
     );
+    if request.action == ProviderCommitAction::Save {
+        ensure!(
+            request.topology.active_relay_id == persisted_settings.active_relay_id,
+            "save cannot change the active provider profile"
+        );
+    }
 
     let mut profile_ids = BTreeSet::new();
     for profile in &request.topology.relay_profiles {
@@ -290,13 +510,57 @@ fn validate_common_request(
             "incoming authContents is prohibited"
         );
     }
+    let aggregate_profile_ids = request
+        .topology
+        .relay_profiles
+        .iter()
+        .filter(|profile| profile.relay_mode == RelayMode::Aggregate)
+        .map(|profile| profile.id.clone())
+        .collect::<BTreeSet<_>>();
     let mut aggregate_ids = BTreeSet::new();
     for aggregate in &request.topology.aggregate_relay_profiles {
+        ensure!(
+            !aggregate.id.trim().is_empty(),
+            "aggregate profile id is empty"
+        );
         ensure!(
             aggregate_ids.insert(aggregate.id.clone()),
             "duplicate aggregate profile id"
         );
+        ensure!(
+            aggregate_profile_ids.contains(&aggregate.id),
+            "aggregate profile metadata has no matching relay profile"
+        );
+        ensure!(
+            !aggregate.members.is_empty(),
+            "aggregate profile members are empty"
+        );
+        let mut member_ids = BTreeSet::new();
+        for member in &aggregate.members {
+            ensure!(
+                member.weight > 0,
+                "aggregate member weight must be positive"
+            );
+            ensure!(
+                member_ids.insert(member.relay_id.clone()),
+                "duplicate aggregate member"
+            );
+            let member_profile = request
+                .topology
+                .relay_profiles
+                .iter()
+                .find(|profile| profile.id == member.relay_id)
+                .context("aggregate member references a missing provider profile")?;
+            ensure!(
+                member_profile.relay_mode != RelayMode::Aggregate,
+                "aggregate member must reference an ordinary provider profile"
+            );
+        }
     }
+    ensure!(
+        aggregate_ids == aggregate_profile_ids,
+        "aggregate relay profiles and aggregate metadata must be one-to-one"
+    );
     ensure!(
         request.topology.active_aggregate_relay_id.trim().is_empty()
             || aggregate_ids.contains(&request.topology.active_aggregate_relay_id),
@@ -306,6 +570,13 @@ fn validate_common_request(
         request.topology.active_relay_id.trim().is_empty()
             || profile_ids.contains(&request.topology.active_relay_id),
         "active provider profile is missing from the topology draft"
+    );
+    let active_is_aggregate = aggregate_profile_ids.contains(&request.topology.active_relay_id);
+    ensure!(
+        (active_is_aggregate
+            && request.topology.active_aggregate_relay_id == request.topology.active_relay_id)
+            || (!active_is_aggregate && request.topology.active_aggregate_relay_id.is_empty()),
+        "active provider and active aggregate ids are inconsistent"
     );
 
     let profiles = request
@@ -333,7 +604,35 @@ fn validate_common_request(
                 draft.mode == CatalogMode::External,
                 "external catalog ownership requires the reviewed adoption command"
             );
+            let prior = &persisted_state.profiles[&draft.profile_id];
+            ensure!(
+                draft.mode_explicit == prior.mode_explicit
+                    && draft.upstream_topology == prior.upstream_topology
+                    && draft.external_pointer == prior.external_pointer
+                    && draft.overlay == prior.overlay,
+                "ordinary save must preserve external catalog ownership identity"
+            );
         }
+    }
+    for profile in &request.topology.relay_profiles {
+        if persisted_settings
+            .relay_profiles
+            .iter()
+            .any(|persisted| persisted.id == profile.id)
+            || profile.relay_mode == RelayMode::Aggregate
+            || !model_catalog::managed_catalog_capable(&RelayProfile::from(profile))
+        {
+            continue;
+        }
+        ensure!(
+            request
+                .catalog_drafts
+                .iter()
+                .filter(|draft| draft.profile_id == profile.id)
+                .count()
+                == 1,
+            "new provider profile requires one complete catalog draft"
+        );
     }
     Ok(())
 }
@@ -342,16 +641,24 @@ fn validate_catalog_draft(
     profile: &RelayProfile,
     draft: &ProfileCatalogDraft,
 ) -> anyhow::Result<()> {
+    ensure!(
+        model_catalog::managed_catalog_capable(profile),
+        "catalog-incapable provider profiles cannot carry catalog drafts"
+    );
     model_catalog::validate_overlay(&draft.overlay)?;
     model_catalog::validate_upstream_topology(profile, draft.upstream_topology)?;
     match draft.mode {
-        CatalogMode::External => ensure!(
-            draft
+        CatalogMode::External => {
+            let pointer = draft
                 .external_pointer
                 .as_deref()
-                .is_some_and(|pointer| !pointer.trim().is_empty()),
-            "external catalog draft requires a pointer"
-        ),
+                .filter(|pointer| !pointer.trim().is_empty())
+                .context("external catalog draft requires a pointer")?;
+            ensure!(
+                parsed_catalog_pointer(&profile.config_contents)?.as_deref() == Some(pointer),
+                "external catalog pointer must exactly match profile configContents"
+            );
+        }
         _ => ensure!(
             draft.external_pointer.is_none(),
             "managed or native catalog draft cannot carry an external pointer"
@@ -366,12 +673,12 @@ pub fn plan_provider_detail_commit(
     request: &ProviderCommitRequest,
 ) -> anyhow::Result<ProviderCommitPlan> {
     validate_provider_detail_request(persisted_settings, persisted_state, request)?;
-    let focused_id = request.focused_profile_id.as_deref().unwrap();
-    let mut drafts = request.catalog_drafts.clone();
-    if !drafts.iter().any(|draft| draft.profile_id == focused_id) {
-        drafts.push(implicit_mixed_catalog_draft(focused_id));
-    }
-    plan_validated_request(persisted_settings, persisted_state, request, drafts)
+    plan_validated_request(
+        persisted_settings,
+        persisted_state,
+        request,
+        request.catalog_drafts.clone(),
+    )
 }
 
 pub fn plan_provider_topology_commit(
@@ -404,7 +711,6 @@ fn plan_validated_request(
 ) -> anyhow::Result<ProviderCommitPlan> {
     let settings = request.topology.apply_to(persisted_settings);
     let mut catalog_state = persisted_state.clone();
-    let catalog_profile_count_before = catalog_state.profiles.len();
     let profile_ids = settings
         .relay_profiles
         .iter()
@@ -413,7 +719,6 @@ fn plan_validated_request(
     catalog_state
         .profiles
         .retain(|profile_id, _| profile_ids.contains(profile_id));
-    let catalog_topology_changed = catalog_state.profiles.len() != catalog_profile_count_before;
 
     for draft in &drafts {
         let state = catalog_state
@@ -427,17 +732,6 @@ fn plan_validated_request(
         state.external_pointer = draft.external_pointer.clone();
         state.action_required = None;
     }
-    if catalog_topology_changed || !drafts.is_empty() {
-        catalog_state.operation_generation = catalog_state.operation_generation.saturating_add(1);
-    }
-
-    let active_focus = request
-        .focused_profile_id
-        .as_deref()
-        .is_some_and(|focused| {
-            request.action == ProviderCommitAction::SetCurrent
-                || request.previous_active_relay_id == focused
-        });
     let mut generated_catalogs = BTreeMap::new();
     let mut active_catalog = None;
     for draft in &drafts {
@@ -462,29 +756,36 @@ fn plan_validated_request(
                 let bytes = serde_json::to_vec_pretty(&catalog)?;
                 let hash = format!("{:x}", Sha256::digest(&bytes));
                 let profile_state = catalog_state.profiles.get_mut(&draft.profile_id).unwrap();
-                if profile_state.generated_hash.as_deref() != Some(hash.as_str()) {
+                let artifact_changed =
+                    profile_state.generated_hash.as_deref() != Some(hash.as_str());
+                if artifact_changed {
                     profile_state.generation = profile_state.generation.saturating_add(1);
                 }
                 profile_state.generated_hash = Some(hash);
                 profile_state.generated_path =
                     Some(model_catalog::generated_relative_path(&draft.profile_id));
                 profile_state.action_required = None;
-                if active_focus
-                    && request.focused_profile_id.as_deref() == Some(draft.profile_id.as_str())
-                {
+                if settings.active_relay_id == draft.profile_id {
                     active_catalog = Some(catalog.clone());
                 }
-                generated_catalogs.insert(draft.profile_id.clone(), catalog);
+                if artifact_changed {
+                    generated_catalogs.insert(draft.profile_id.clone(), catalog);
+                }
             }
-            Err(error) if !active_focus => {
-                catalog_state
-                    .profiles
-                    .get_mut(&draft.profile_id)
-                    .unwrap()
-                    .action_required = Some(error.to_string());
+            Err(_error) if settings.active_relay_id != draft.profile_id => {
+                let profile_state = catalog_state.profiles.get_mut(&draft.profile_id).unwrap();
+                let code = "catalog-readiness-unavailable".to_string();
+                profile_state.action_required = Some(code);
             }
             Err(error) => return Err(error),
         }
+    }
+    let mut generation_neutral_state = catalog_state.clone();
+    generation_neutral_state.operation_generation = persisted_state.operation_generation;
+    let catalog_semantics_changed =
+        serde_json::to_vec(&generation_neutral_state)? != serde_json::to_vec(persisted_state)?;
+    if catalog_semantics_changed {
+        catalog_state.operation_generation = catalog_state.operation_generation.saturating_add(1);
     }
 
     Ok(ProviderCommitPlan {
@@ -496,20 +797,7 @@ fn plan_validated_request(
     })
 }
 
-fn implicit_mixed_catalog_eligible(request: &ProviderCommitRequest, profile_id: &str) -> bool {
-    request
-        .topology
-        .relay_profiles
-        .iter()
-        .find(|profile| profile.id == profile_id)
-        .is_some_and(|profile| {
-            profile.relay_mode == RelayMode::Official
-                && profile.official_mix_api_key
-                && profile.protocol == RelayProtocol::Responses
-                && !has_catalog_pointer(&profile.config_contents)
-        })
-}
-
+#[cfg(test)]
 fn implicit_mixed_catalog_draft(profile_id: &str) -> ProfileCatalogDraft {
     ProfileCatalogDraft {
         profile_id: profile_id.to_string(),
@@ -521,18 +809,19 @@ fn implicit_mixed_catalog_draft(profile_id: &str) -> ProfileCatalogDraft {
     }
 }
 
-fn has_catalog_pointer(config_contents: &str) -> bool {
-    config_contents
+fn parsed_catalog_pointer(config_contents: &str) -> anyhow::Result<Option<String>> {
+    let document = config_contents
         .parse::<toml_edit::DocumentMut>()
-        .ok()
-        .and_then(|document| {
-            document
-                .as_table()
-                .get("model_catalog_json")
-                .and_then(toml_edit::Item::as_str)
-                .map(str::to_string)
-        })
-        .is_some_and(|pointer| !pointer.trim().is_empty())
+        .context("profile configContents is not valid TOML")?;
+    match document.as_table().get("model_catalog_json") {
+        Some(item) => Ok(Some(
+            item.as_str()
+                .context("model_catalog_json must be a string")?
+                .trim()
+                .to_string(),
+        )),
+        None => Ok(None),
+    }
 }
 
 #[cfg(test)]
@@ -875,7 +1164,7 @@ mod tests {
     }
 
     #[test]
-    fn planner_creates_implicit_first_save_catalog_state() {
+    fn planner_accepts_builder_supplied_implicit_first_save_catalog_state() {
         let old = mixed_profile("old", "official-a");
         let persisted = settings_with(vec![old.clone()], "old");
         let new = mixed_profile("new", "official-a");
@@ -884,7 +1173,7 @@ mod tests {
             &persisted,
             &next,
             Some("new"),
-            vec![],
+            vec![implicit_mixed_catalog_draft("new")],
             ProviderCommitAction::Save,
         );
 
@@ -1105,5 +1394,470 @@ mod tests {
             plan_provider_topology_commit(&persisted, &state_with_official(), &missing_aggregate)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn canonical_json_rejects_partial_drafts_and_response_only_or_unknown_fields() {
+        let settings = settings_with(vec![mixed_profile("relay-a", "official-a")], "relay-a");
+        let mut value = serde_json::to_value(request_for(
+            &settings,
+            &settings,
+            Some("relay-a"),
+            vec![catalog_draft(
+                "relay-a",
+                CatalogMode::OfficialPlusCustom,
+                CatalogOverlay::default(),
+            )],
+            ProviderCommitAction::Save,
+        ))
+        .unwrap();
+
+        value["catalogDrafts"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("overlay");
+        assert!(serde_json::from_value::<ProviderCommitRequest>(value).is_err());
+
+        for required in ["catalogDrafts", "focusedProfileId", "confirmContextCleanup"] {
+            let mut value = serde_json::to_value(request_for(
+                &settings,
+                &settings,
+                Some("relay-a"),
+                vec![catalog_draft(
+                    "relay-a",
+                    CatalogMode::OfficialPlusCustom,
+                    CatalogOverlay::default(),
+                )],
+                ProviderCommitAction::Save,
+            ))
+            .unwrap();
+            value.as_object_mut().unwrap().remove(required);
+            assert!(
+                serde_json::from_value::<ProviderCommitRequest>(value).is_err(),
+                "missing required request field {required} must be rejected"
+            );
+        }
+
+        let mut value = serde_json::to_value(request_for(
+            &settings,
+            &settings,
+            Some("relay-a"),
+            vec![catalog_draft(
+                "relay-a",
+                CatalogMode::OfficialPlusCustom,
+                CatalogOverlay::default(),
+            )],
+            ProviderCommitAction::Save,
+        ))
+        .unwrap();
+        value["catalogDrafts"][0]["generatedPath"] = json!("response-only.json");
+        assert!(serde_json::from_value::<ProviderCommitRequest>(value).is_err());
+
+        let mut value = serde_json::to_value(request_for(
+            &settings,
+            &settings,
+            Some("relay-a"),
+            vec![catalog_draft(
+                "relay-a",
+                CatalogMode::OfficialPlusCustom,
+                CatalogOverlay::default(),
+            )],
+            ProviderCommitAction::Save,
+        ))
+        .unwrap();
+        value["topology"]["relayProfiles"][0]["nativeCapabilityInspection"] =
+            json!({ "state": "ready" });
+        assert!(serde_json::from_value::<ProviderCommitRequest>(value).is_err());
+
+        let base = serde_json::to_value(request_for(
+            &settings,
+            &settings,
+            Some("relay-a"),
+            vec![catalog_draft(
+                "relay-a",
+                CatalogMode::OfficialPlusCustom,
+                CatalogOverlay::default(),
+            )],
+            ProviderCommitAction::Save,
+        ))
+        .unwrap();
+
+        let mut value = base.clone();
+        value["catalogDrafts"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("externalPointer");
+        assert!(serde_json::from_value::<ProviderCommitRequest>(value).is_err());
+
+        let mut value = base.clone();
+        value["catalogDrafts"][0]["overlay"]
+            .as_object_mut()
+            .unwrap()
+            .remove("official");
+        assert!(serde_json::from_value::<ProviderCommitRequest>(value).is_err());
+
+        let mut value = base.clone();
+        value["topology"]["relayProfiles"][0]["contextSelection"]["inspection"] =
+            json!("response-only");
+        assert!(serde_json::from_value::<ProviderCommitRequest>(value).is_err());
+
+        let aggregate_member = mixed_profile("relay-a", "official-a");
+        let mut aggregate_stub = mixed_profile("aggregate-a", "");
+        aggregate_stub.relay_mode = RelayMode::Aggregate;
+        let mut aggregate_settings =
+            settings_with(vec![aggregate_member, aggregate_stub], "aggregate-a");
+        aggregate_settings.active_aggregate_relay_id = "aggregate-a".to_string();
+        aggregate_settings.aggregate_relay_profiles = vec![AggregateRelayProfile {
+            id: "aggregate-a".to_string(),
+            name: "Aggregate A".to_string(),
+            strategy: Default::default(),
+            members: vec![codex_plus_core::settings::AggregateRelayMember {
+                relay_id: "relay-a".to_string(),
+                weight: 1,
+            }],
+        }];
+        let mut value = serde_json::to_value(request_for(
+            &aggregate_settings,
+            &aggregate_settings,
+            None,
+            vec![],
+            ProviderCommitAction::Save,
+        ))
+        .unwrap();
+        value["topology"]["aggregateRelayProfiles"][0]["inspection"] = json!("response-only");
+        assert!(serde_json::from_value::<ProviderCommitRequest>(value).is_err());
+    }
+
+    #[test]
+    fn ordinary_save_cannot_switch_or_delete_active_but_set_current_can_switch() {
+        let a = mixed_profile("relay-a", "official-a");
+        let b = mixed_profile("relay-b", "official-a");
+        let persisted = settings_with(vec![a.clone(), b.clone()], "relay-a");
+        let next_b = settings_with(vec![a.clone(), b.clone()], "relay-b");
+        let b_draft = catalog_draft(
+            "relay-b",
+            CatalogMode::OfficialPlusCustom,
+            CatalogOverlay::default(),
+        );
+
+        let save_switch = request_for(
+            &persisted,
+            &next_b,
+            Some("relay-b"),
+            vec![b_draft.clone()],
+            ProviderCommitAction::Save,
+        );
+        assert!(
+            plan_provider_detail_commit(&persisted, &state_with_official(), &save_switch).is_err()
+        );
+
+        let set_current = request_for(
+            &persisted,
+            &next_b,
+            Some("relay-b"),
+            vec![b_draft],
+            ProviderCommitAction::SetCurrent,
+        );
+        assert!(
+            plan_provider_detail_commit(&persisted, &state_with_official(), &set_current).is_ok()
+        );
+
+        let deleted = settings_with(vec![b], "relay-b");
+        let topology_delete = request_for(
+            &persisted,
+            &deleted,
+            None,
+            vec![],
+            ProviderCommitAction::Save,
+        );
+        assert!(
+            plan_provider_topology_commit(&persisted, &state_with_official(), &topology_delete)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn next_active_managed_draft_is_always_fail_closed_even_in_topology_requests() {
+        let a = mixed_profile("relay-a", "official-a");
+        let b = mixed_profile("relay-b", "official-a");
+        let persisted = settings_with(vec![a.clone(), b.clone()], "relay-a");
+        let next = settings_with(vec![a, b], "relay-b");
+        let request = request_for(
+            &persisted,
+            &next,
+            None,
+            vec![catalog_draft(
+                "relay-b",
+                CatalogMode::OfficialPlusCustom,
+                CatalogOverlay::default(),
+            )],
+            ProviderCommitAction::Save,
+        );
+        assert!(
+            plan_provider_topology_commit(&persisted, &CatalogState::default(), &request).is_err()
+        );
+    }
+
+    #[test]
+    fn topology_requires_complete_catalog_drafts_for_every_new_ordinary_profile() {
+        let a = mixed_profile("relay-a", "official-a");
+        let persisted = settings_with(vec![a.clone()], "relay-a");
+        let next = settings_with(
+            vec![a, mixed_profile("relay-copy", "official-a")],
+            "relay-a",
+        );
+        let missing = request_for(&persisted, &next, None, vec![], ProviderCommitAction::Save);
+        assert!(
+            plan_provider_topology_commit(&persisted, &state_with_official(), &missing).is_err()
+        );
+
+        let complete = request_for(
+            &persisted,
+            &next,
+            None,
+            vec![catalog_draft(
+                "relay-copy",
+                CatalogMode::OfficialPlusCustom,
+                CatalogOverlay::default(),
+            )],
+            ProviderCommitAction::Save,
+        );
+        assert!(
+            plan_provider_topology_commit(&persisted, &state_with_official(), &complete).is_ok()
+        );
+    }
+
+    #[test]
+    fn catalog_incapable_profiles_require_zero_catalog_drafts() {
+        let active = mixed_profile("relay-a", "official-a");
+        let persisted = settings_with(vec![active.clone()], "relay-a");
+        let mut chat = mixed_profile("relay-chat", "chat-model");
+        chat.protocol = RelayProtocol::ChatCompletions;
+        let next = settings_with(vec![active, chat.clone()], "relay-a");
+        let topology = request_for(&persisted, &next, None, vec![], ProviderCommitAction::Save);
+        assert!(
+            plan_provider_topology_commit(&persisted, &state_with_official(), &topology).is_ok()
+        );
+
+        let persisted_chat = settings_with(vec![chat], "relay-chat");
+        let detail = request_for(
+            &persisted_chat,
+            &persisted_chat,
+            Some("relay-chat"),
+            vec![],
+            ProviderCommitAction::Save,
+        );
+        assert!(
+            plan_provider_detail_commit(&persisted_chat, &CatalogState::default(), &detail).is_ok()
+        );
+    }
+
+    #[test]
+    fn aggregate_projection_requires_one_to_one_nonempty_unique_eligible_members_and_active_linkage()
+     {
+        let member = mixed_profile("relay-a", "official-a");
+        let mut aggregate_stub = mixed_profile("aggregate-a", "");
+        aggregate_stub.relay_mode = RelayMode::Aggregate;
+        let persisted = settings_with(vec![member.clone()], "relay-a");
+        let mut next = settings_with(vec![member, aggregate_stub], "aggregate-a");
+        next.aggregate_relay_profiles = vec![AggregateRelayProfile {
+            id: "aggregate-a".to_string(),
+            name: "Aggregate A".to_string(),
+            strategy: Default::default(),
+            members: vec![codex_plus_core::settings::AggregateRelayMember {
+                relay_id: "relay-a".to_string(),
+                weight: 1,
+            }],
+        }];
+        next.active_aggregate_relay_id = "aggregate-a".to_string();
+        let valid = request_for(&persisted, &next, None, vec![], ProviderCommitAction::Save);
+        assert!(
+            validate_common_request(&persisted, &state_with_official(), &valid).is_err(),
+            "topology Save must not switch active"
+        );
+
+        let persisted_aggregate = next.clone();
+        let valid = request_for(
+            &persisted_aggregate,
+            &persisted_aggregate,
+            None,
+            vec![],
+            ProviderCommitAction::Save,
+        );
+        assert!(
+            validate_common_request(&persisted_aggregate, &state_with_official(), &valid).is_ok()
+        );
+
+        let mut invalid = valid.clone();
+        invalid.topology.aggregate_relay_profiles[0].members.clear();
+        assert!(
+            validate_common_request(&persisted_aggregate, &state_with_official(), &invalid)
+                .is_err()
+        );
+
+        let mut invalid = valid.clone();
+        let duplicate_member = invalid.topology.aggregate_relay_profiles[0].members[0].clone();
+        invalid.topology.aggregate_relay_profiles[0]
+            .members
+            .push(duplicate_member);
+        assert!(
+            validate_common_request(&persisted_aggregate, &state_with_official(), &invalid)
+                .is_err()
+        );
+
+        let mut invalid = valid.clone();
+        invalid.topology.aggregate_relay_profiles[0].members[0].weight = 0;
+        assert!(
+            validate_common_request(&persisted_aggregate, &state_with_official(), &invalid)
+                .is_err()
+        );
+
+        let mut invalid = valid.clone();
+        invalid.topology.active_aggregate_relay_id.clear();
+        assert!(
+            validate_common_request(&persisted_aggregate, &state_with_official(), &invalid)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn external_identity_is_preserved_and_new_external_pointer_must_come_from_profile_toml() {
+        let mut profile = mixed_profile("relay-a", "official-a");
+        profile.config_contents = "model_catalog_json = \"models/user-owned.json\"\n".to_string();
+        let persisted = settings_with(vec![profile.clone()], "relay-a");
+        let mut state = state_with_official();
+        let external_overlay = CatalogOverlay {
+            custom: vec![CustomModel {
+                slug: "owned".to_string(),
+                display_name: "Owned".to_string(),
+                ..CustomModel::default()
+            }],
+            ..CatalogOverlay::default()
+        };
+        state.profiles.insert(
+            "relay-a".to_string(),
+            ProfileCatalogState {
+                mode: CatalogMode::External,
+                mode_explicit: true,
+                upstream_topology: UpstreamTopology::Direct,
+                overlay: external_overlay.clone(),
+                external_pointer: Some("models/user-owned.json".to_string()),
+                ..ProfileCatalogState::default()
+            },
+        );
+
+        let mut changed =
+            catalog_draft("relay-a", CatalogMode::External, CatalogOverlay::default());
+        changed.external_pointer = Some("models/injected.json".to_string());
+        let request = request_for(
+            &persisted,
+            &persisted,
+            Some("relay-a"),
+            vec![changed],
+            ProviderCommitAction::Save,
+        );
+        assert!(validate_provider_detail_request(&persisted, &state, &request).is_err());
+
+        let mut preserved = catalog_draft("relay-a", CatalogMode::External, external_overlay);
+        preserved.external_pointer = Some("models/user-owned.json".to_string());
+        let request = request_for(
+            &persisted,
+            &persisted,
+            Some("relay-a"),
+            vec![preserved],
+            ProviderCommitAction::Save,
+        );
+        assert!(validate_provider_detail_request(&persisted, &state, &request).is_ok());
+
+        let managed_state = state_with_official();
+        let mut injected =
+            catalog_draft("relay-a", CatalogMode::External, CatalogOverlay::default());
+        injected.external_pointer = Some("models/injected.json".to_string());
+        let request = request_for(
+            &persisted,
+            &persisted,
+            Some("relay-a"),
+            vec![injected],
+            ProviderCommitAction::Save,
+        );
+        assert!(validate_provider_detail_request(&persisted, &managed_state, &request).is_err());
+    }
+
+    #[test]
+    fn semantic_noop_does_not_increment_operation_generation_or_schedule_unchanged_artifact() {
+        let settings = settings_with(vec![mixed_profile("relay-a", "official-a")], "relay-a");
+        let draft = catalog_draft(
+            "relay-a",
+            CatalogMode::OfficialPlusCustom,
+            CatalogOverlay::default(),
+        );
+        let first = request_for(
+            &settings,
+            &settings,
+            Some("relay-a"),
+            vec![draft.clone()],
+            ProviderCommitAction::Save,
+        );
+        let first_plan =
+            plan_provider_detail_commit(&settings, &state_with_official(), &first).unwrap();
+        let second = request_for(
+            &settings,
+            &settings,
+            Some("relay-a"),
+            vec![draft],
+            ProviderCommitAction::Save,
+        );
+        let second_plan =
+            plan_provider_detail_commit(&settings, &first_plan.catalog_state, &second).unwrap();
+
+        assert_eq!(
+            second_plan.catalog_state.operation_generation,
+            first_plan.catalog_state.operation_generation
+        );
+        assert!(second_plan.generated_catalogs.is_empty());
+        assert!(second_plan.active_catalog.is_some());
+    }
+
+    #[test]
+    fn unchanged_action_required_plan_does_not_increment_operation_generation() {
+        let active = mixed_profile("relay-a", "official-a");
+        let inactive = mixed_profile("relay-b", "official-a");
+        let settings = settings_with(vec![active, inactive], "relay-a");
+        let draft = catalog_draft(
+            "relay-b",
+            CatalogMode::OfficialPlusCustom,
+            CatalogOverlay::default(),
+        );
+        let mut state = CatalogState::default();
+        state.operation_generation = 7;
+        state.profiles.insert(
+            "relay-b".to_string(),
+            ProfileCatalogState {
+                mode: CatalogMode::OfficialPlusCustom,
+                mode_explicit: true,
+                upstream_topology: UpstreamTopology::Direct,
+                overlay: CatalogOverlay::default(),
+                action_required: Some("catalog-readiness-unavailable".to_string()),
+                ..ProfileCatalogState::default()
+            },
+        );
+        let request = request_for(
+            &settings,
+            &settings,
+            Some("relay-b"),
+            vec![draft],
+            ProviderCommitAction::Save,
+        );
+
+        let plan = plan_provider_detail_commit(&settings, &state, &request).unwrap();
+
+        assert_eq!(plan.catalog_state.operation_generation, 7);
+        assert_eq!(
+            plan.catalog_state.profiles["relay-b"]
+                .action_required
+                .as_deref(),
+            Some("catalog-readiness-unavailable")
+        );
+        assert!(plan.generated_catalogs.is_empty());
     }
 }

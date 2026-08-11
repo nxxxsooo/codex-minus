@@ -171,14 +171,14 @@ impl Default for ProfileCatalogState {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct CatalogOverlay {
     pub official: BTreeMap<String, OfficialOverride>,
     pub custom: Vec<CustomModel>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct OfficialOverride {
     pub display_name: Option<String>,
@@ -208,7 +208,7 @@ impl Default for ReasoningLevel {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct CustomModel {
     pub slug: String,
@@ -2477,7 +2477,7 @@ fn catalog_file_matches(path: &Path, expected_hash: &str) -> anyhow::Result<bool
     Ok(true)
 }
 
-fn managed_catalog_capable(profile: &RelayProfile) -> bool {
+pub(crate) fn managed_catalog_capable(profile: &RelayProfile) -> bool {
     profile.relay_mode != RelayMode::Aggregate
         && profile.protocol != codex_plus_core::settings::RelayProtocol::ChatCompletions
 }

@@ -73,6 +73,8 @@ import {
   validateCatalogDraft,
 } from "./model-catalog-ui";
 import { CatalogModeControls } from "./catalog-mode-controls";
+import { catalogProfileDraft, updateCatalogProfileDraft } from "./catalog-profile-draft";
+import type { ProfileCatalogDraft } from "./provider-commit";
 import { providerConfigDraft, RelayConfigPanels } from "./relay-config-panels";
 import {
   networkPolicyDirty,
@@ -979,26 +981,6 @@ export function App() {
     }
   };
 
-  const saveProfileCatalog = async (
-    profileId: string,
-    mode: CatalogMode,
-    overlay: CatalogOverlay,
-    upstreamTopology: UpstreamTopology,
-    modeExplicit: boolean,
-    confirmContextCleanup = false,
-  ) => {
-    const result = await run(() =>
-      call<ModelCatalogStatusResult>("save_profile_catalog", {
-        request: { profileId, mode, modeExplicit, overlay, upstreamTopology, confirmContextCleanup },
-      }),
-    );
-    if (result) {
-      setModelCatalog(result);
-      if (!isSuccessStatus(result.status)) showNotice(t("模型目录"), result.message, result.status);
-    }
-    return !!result && isSuccessStatus(result.status);
-  };
-
   const adoptExternalModelCatalog = async (
     profileId: string,
     commit = false,
@@ -1600,7 +1582,6 @@ export function App() {
       refreshManagerNetworkPolicy,
       saveManagerNetworkPolicy,
       testManagerNetworkPolicy,
-      saveProfileCatalog,
       adoptExternalModelCatalog,
       refreshEnvConflicts,
       removeEnvConflicts,
@@ -1775,7 +1756,6 @@ type Actions = {
   refreshManagerNetworkPolicy: (silent?: boolean) => Promise<NetworkPolicyStatusResult | null>;
   saveManagerNetworkPolicy: (draft: NetworkPolicyDraft) => Promise<NetworkPolicyStatusResult | null>;
   testManagerNetworkPolicy: () => Promise<NetworkPolicyTestResult | null>;
-  saveProfileCatalog: (profileId: string, mode: CatalogMode, overlay: CatalogOverlay, upstreamTopology: UpstreamTopology, modeExplicit: boolean, confirmContextCleanup?: boolean) => Promise<boolean>;
   adoptExternalModelCatalog: (profileId: string, commit?: boolean, preview?: AdoptionPreviewResult, acceptVersionMismatch?: boolean, confirmContextCleanup?: boolean) => Promise<AdoptionPreviewResult | null>;
   refreshEnvConflicts: (silent?: boolean) => Promise<EnvConflictsResult | null>;
   removeEnvConflicts: (names: string[]) => Promise<void>;
@@ -2174,27 +2154,20 @@ function networkTestCategoryText(category: string): string {
 
 function CatalogProfileEditor({
   catalog,
+  draft,
+  onDraftChange,
   profile,
   summary,
   actions,
 }: {
   catalog: ModelCatalogStatusResult | null;
+  draft: ProfileCatalogDraft;
+  onDraftChange: (draft: ProfileCatalogDraft) => void;
   profile: RelayProfile;
   summary: ProfileCatalogSummary | null;
   actions: Actions;
 }) {
-  const fallbackMode = defaultCatalogMode(profile.relayMode, profile.officialMixApiKey) as CatalogMode;
-  const [mode, setMode] = useState<CatalogMode>(summary?.mode ?? fallbackMode);
-  const [modeExplicit, setModeExplicit] = useState(summary?.modeExplicit ?? false);
-  const [upstreamTopology, setUpstreamTopology] = useState<UpstreamTopology>(summary?.upstreamTopology ?? "direct");
-  const [overlay, setOverlay] = useState<CatalogOverlay>(summary?.overlay ?? { official: {}, custom: [] });
-  const [saving, setSaving] = useState(false);
-  useEffect(() => {
-    setMode(summary?.mode ?? fallbackMode);
-    setModeExplicit(summary?.modeExplicit ?? false);
-    setUpstreamTopology(summary?.upstreamTopology ?? "direct");
-    setOverlay(summary?.overlay ?? { official: {}, custom: [] });
-  }, [summary, fallbackMode]);
+  const { mode, modeExplicit, upstreamTopology, overlay } = draft;
 
   if (!summary?.managedAvailable) {
     return (
@@ -2242,20 +2215,20 @@ function CatalogProfileEditor({
     const official = { ...overlay.official };
     if (Object.values(next).every((item) => item === null)) delete official[slug];
     else official[slug] = next;
-    setOverlay({ ...overlay, official });
+    onDraftChange(updateCatalogProfileDraft(draft, { overlay: { ...overlay, official } }));
   };
   const updateCustom = (index: number, patch: Partial<CustomCatalogModel>) => {
-    setOverlay({
+    onDraftChange(updateCatalogProfileDraft(draft, { overlay: {
       ...overlay,
       custom: overlay.custom.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item)),
-    });
+    } }));
   };
   const addCustom = (slug = "") => {
     if (slug) {
-      setOverlay(addCatalogCandidate(overlay, slug));
+      onDraftChange(updateCatalogProfileDraft(draft, { overlay: addCatalogCandidate(overlay, slug) }));
       return;
     }
-    setOverlay({ ...overlay, custom: [...overlay.custom, {
+    onDraftChange(updateCatalogProfileDraft(draft, { overlay: { ...overlay, custom: [...overlay.custom, {
       slug: "",
       displayName: "",
       contextWindow: 272000,
@@ -2267,19 +2240,7 @@ function CatalogProfileEditor({
       supportedTools: [],
       toolCapabilities: null,
       templateProvenance: "user-created",
-    }] });
-  };
-  const save = async () => {
-    const confirmContextCleanup = summary?.contextConflicts.length
-      ? window.confirm(tf("托管模型目录将移除这些全局上下文设置，让每个模型使用自己的窗口：\n\n{0}", [summary.contextConflicts.join("\n")]))
-      : false;
-    if (summary?.contextConflicts.length && !confirmContextCleanup) return;
-    setSaving(true);
-    try {
-      await actions.saveProfileCatalog(profile.id, mode, overlay, upstreamTopology, modeExplicit, confirmContextCleanup);
-    } finally {
-      setSaving(false);
-    }
+    }] } }));
   };
   const adopt = async () => {
     const preview = await actions.adoptExternalModelCatalog(profile.id, false);
@@ -2328,10 +2289,7 @@ function CatalogProfileEditor({
         </div>
         <div className="catalog-editor-actions">
           {presentation.restart ? <UiBadge variant="secondary">{t("需重启 Codex")}</UiBadge> : null}
-          <Button disabled={saving || !!draftError} onClick={() => void save()} size="sm" title={draftError || undefined}>
-            <Save className="h-4 w-4" />
-            {saving ? t("保存中") : t("保存目录")}
-          </Button>
+          <UiBadge variant="outline">{t("随供应商草稿保存")}</UiBadge>
         </div>
       </div>
       <CatalogModeControls
@@ -2355,8 +2313,7 @@ function CatalogProfileEditor({
         pendingMessage={tf("保存后，{0} 个自定义模型将暂不生效。", [presentation.pendingDormantCustomCount])}
         restoreLabel={t("恢复官方＋自定义")}
         updateDraftMode={(nextMode) => {
-          setMode(nextMode);
-          setModeExplicit(true);
+          onDraftChange(updateCatalogProfileDraft(draft, { mode: nextMode, modeExplicit: true }));
         }}
       />
       {profile.relayMode === "pureApi" && profile.protocol === "responses" ? (
@@ -2364,12 +2321,16 @@ function CatalogProfileEditor({
           <span>{t("上游拓扑")}</span>
           <div className="segmented">
             <button className={upstreamTopology === "direct" ? "active" : ""} onClick={() => {
-              setUpstreamTopology("direct");
-              if (!modeExplicit) setMode("custom-only");
+              onDraftChange(updateCatalogProfileDraft(draft, {
+                upstreamTopology: "direct",
+                ...(!modeExplicit ? { mode: "custom-only" as CatalogMode } : {}),
+              }));
             }} type="button">{t("直连 API")}</button>
             <button className={upstreamTopology === "server-side-composite" ? "active" : ""} onClick={() => {
-              setUpstreamTopology("server-side-composite");
-              if (!modeExplicit) setMode("official-plus-custom");
+              onDraftChange(updateCatalogProfileDraft(draft, {
+                upstreamTopology: "server-side-composite",
+                ...(!modeExplicit ? { mode: "official-plus-custom" as CatalogMode } : {}),
+              }));
             }} type="button">{t("服务端复合")}</button>
           </div>
           <small>{upstreamTopology === "server-side-composite" ? t("一个 Responses Base URL 和 Key；模型聚合由上游完成。") : t("一个直接 API 上游。")}</small>
@@ -2448,7 +2409,7 @@ function CatalogProfileEditor({
                   onClick={() => {
                     const official = { ...overlay.official };
                     delete official[model.slug];
-                    setOverlay({ ...overlay, official });
+                    onDraftChange(updateCatalogProfileDraft(draft, { overlay: { ...overlay, official } }));
                   }}
                   size="icon"
                   title={t("清除覆盖")}
@@ -2485,7 +2446,7 @@ function CatalogProfileEditor({
               <Input value={model.supportedTools.join(",")} onChange={(event) => updateCustom(index, { supportedTools: parseCommaListOrNull(event.currentTarget.value) ?? [] })} placeholder="web_search" title={t("工具")} />
               <label className="catalog-visible-toggle"><input checked={model.visible} onChange={(event) => updateCustom(index, { visible: event.currentTarget.checked })} type="checkbox" /><span>{t("可见")}</span></label>
               <Input inputMode="numeric" value={model.order} onChange={(event) => updateCustom(index, { order: integerOrDefault(event.currentTarget.value, index) })} />
-              <Button onClick={() => setOverlay({ ...overlay, custom: overlay.custom.filter((_, itemIndex) => itemIndex !== index) })} size="icon" title={t("删除模型")} variant="ghost"><Trash2 className="h-4 w-4" /></Button>
+              <Button onClick={() => onDraftChange(updateCatalogProfileDraft(draft, { overlay: { ...overlay, custom: overlay.custom.filter((_, itemIndex) => itemIndex !== index) } }))} size="icon" title={t("删除模型")} variant="ghost"><Trash2 className="h-4 w-4" /></Button>
             </div>
           ))}
         </div>
@@ -3043,6 +3004,15 @@ function RelayProfileDetail({
   const [modelWindowRows, setModelWindowRows] = useState<ModelWindowRow[]>(
     modelWindowRowsFromProfile(profile.modelList, profile.modelWindows || ""),
   );
+  const fallbackCatalogMode = defaultCatalogMode(
+    profile.relayMode,
+    profile.officialMixApiKey,
+  ) as CatalogMode;
+  const [catalogDraft, setCatalogDraft] = useState<ProfileCatalogDraft>(() => catalogProfileDraft({
+    profileId: profile.id,
+    fallbackMode: fallbackCatalogMode,
+    summary: catalogProfile,
+  }));
   const isActive = !isNew && profile.id === form.activeRelayId;
   useEffect(() => {
     const nextDraft = isAggregateRelayProfile(profile)
@@ -3055,6 +3025,13 @@ function RelayProfileDetail({
     setDraft(nextDraft);
     setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || ""));
   }, [profile.id, profile.configContents, profile.modelList, profile.modelWindows]);
+  useEffect(() => {
+    setCatalogDraft(catalogProfileDraft({
+      profileId: profile.id,
+      fallbackMode: defaultCatalogMode(profile.relayMode, profile.officialMixApiKey) as CatalogMode,
+      summary: catalogProfile,
+    }));
+  }, [profile.id, catalogProfile?.effectiveHash]);
   const newProviderFieldErrors = isNew && !isAggregateRelayProfile(draft)
     ? validateNewProviderDraft(draft)
     : {};
@@ -3123,6 +3100,8 @@ function RelayProfileDetail({
       {isNew || isAggregateRelayProfile(draft) ? null : (
         <CatalogProfileEditor
           catalog={modelCatalog}
+          draft={catalogDraft}
+          onDraftChange={setCatalogDraft}
           profile={draft}
           summary={catalogProfile}
           actions={actions}
