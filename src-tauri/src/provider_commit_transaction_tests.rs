@@ -2082,6 +2082,57 @@ fn active_native_commit_requires_current_official_auth_and_catalog_scope() {
 }
 
 #[test]
+fn active_catalog_readiness_failures_preserve_the_complete_prior_generation() {
+    for (label, catalog_state, model, expected_code) in [
+        (
+            "missing",
+            CatalogState::default(),
+            "official-a",
+            ProviderCommitErrorCode::CatalogScopeStale,
+        ),
+        (
+            "scope-stale",
+            stale_scope_state(),
+            "official-a",
+            ProviderCommitErrorCode::CatalogScopeStale,
+        ),
+        (
+            "invalid",
+            invalid_official_catalog_state(),
+            "official-a",
+            ProviderCommitErrorCode::CatalogUnavailable,
+        ),
+        (
+            "default-model-absent",
+            state_with_official(),
+            "missing-model",
+            ProviderCommitErrorCode::CatalogUnavailable,
+        ),
+    ] {
+        let active =
+            canonical_profile("sub2api", model, "https://relay.example/v1", "provider-key");
+        let fixture = Fixture::new(&settings_with(vec![active], "sub2api"), &catalog_state);
+        let before = fixture.file_generation();
+        let persisted = fixture.read_settings();
+
+        let error = commit_provider_detail_from_paths(
+            &fixture.paths,
+            request(
+                &persisted,
+                &persisted,
+                "sub2api",
+                ProviderCommitAction::Save,
+                69,
+            ),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), expected_code, "{label}");
+        assert_eq!(fixture.file_generation(), before, "{label}");
+    }
+}
+
+#[test]
 fn active_commit_re_grafts_live_globals_and_rejects_profile_global_injection() {
     let active = canonical_profile(
         "sub2api",
@@ -2263,6 +2314,79 @@ fn inactive_save_without_catalog_readiness_persists_one_action_required_state() 
         fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
         auth_before
     );
+}
+
+fn stale_scope_state() -> CatalogState {
+    let mut stale_state = state_with_official();
+    let scope_salt = stale_state.scope_salt.clone();
+    stale_state.official.as_mut().unwrap().scope_hash =
+        official_scope_hash(&scope_salt, "different-account", "workspace-a");
+    stale_state
+}
+
+fn invalid_official_catalog_state() -> CatalogState {
+    let mut invalid_state = state_with_official();
+    invalid_state.official.as_mut().unwrap().raw_catalog["models"][0]["visibility"] = json!("hide");
+    invalid_state
+}
+
+#[test]
+fn inactive_catalog_readiness_failures_persist_action_required_without_live_claims() {
+    for (label, catalog_state, model) in [
+        ("missing", CatalogState::default(), "official-a"),
+        ("invalid", invalid_official_catalog_state(), "official-a"),
+        (
+            "default-model-absent",
+            state_with_official(),
+            "missing-model",
+        ),
+        ("scope-stale", stale_scope_state(), "official-a"),
+    ] {
+        let persisted = settings_with(vec![pure_oauth_profile("official")], "official");
+        let fixture = Fixture::new(&persisted, &catalog_state);
+        let persisted = fixture.read_settings();
+        let live_before = fs::read(fixture.paths.codex_home.join("config.toml")).unwrap();
+        let auth_before = fs::read(fixture.paths.codex_home.join("auth.json")).unwrap();
+        let mut next = persisted.clone();
+        next.relay_profiles.push(canonical_profile(
+            "sub2api",
+            model,
+            "https://relay.example/v1",
+            "provider-key",
+        ));
+
+        commit_provider_detail_from_paths(
+            &fixture.paths,
+            request(&persisted, &next, "sub2api", ProviderCommitAction::Save, 68),
+        )
+        .unwrap_or_else(|error| panic!("{label}: {:?}", error.code()));
+
+        let saved_state = fixture.read_state();
+        let saved_profile = &saved_state.profiles["sub2api"];
+        assert_eq!(
+            saved_profile.action_required.as_deref(),
+            Some("catalog-readiness-unavailable"),
+            "{label}"
+        );
+        assert!(saved_profile.generated_hash.is_none(), "{label}");
+        assert!(saved_profile.generated_path.is_none(), "{label}");
+        assert!(!saved_profile.restart_required, "{label}");
+        assert_eq!(
+            fixture.read_settings().active_relay_id,
+            "official",
+            "{label}"
+        );
+        assert_eq!(
+            fs::read(fixture.paths.codex_home.join("config.toml")).unwrap(),
+            live_before,
+            "{label}"
+        );
+        assert_eq!(
+            fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
+            auth_before,
+            "{label}"
+        );
+    }
 }
 
 #[test]

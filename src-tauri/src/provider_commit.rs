@@ -688,10 +688,30 @@ fn validate_catalog_draft(
     Ok(())
 }
 
-pub fn plan_provider_detail_commit(
+#[cfg(test)]
+fn plan_provider_detail_commit(
     persisted_settings: &BackendSettings,
     persisted_state: &CatalogState,
     request: &ProviderCommitRequest,
+) -> anyhow::Result<ProviderCommitPlan> {
+    plan_provider_detail_commit_with_readiness(
+        persisted_settings,
+        persisted_state,
+        request,
+        &CatalogReadinessInput::default(),
+    )
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CatalogReadinessInput {
+    pub(crate) scope_current_by_profile: BTreeMap<String, bool>,
+}
+
+pub(crate) fn plan_provider_detail_commit_with_readiness(
+    persisted_settings: &BackendSettings,
+    persisted_state: &CatalogState,
+    request: &ProviderCommitRequest,
+    readiness: &CatalogReadinessInput,
 ) -> anyhow::Result<ProviderCommitPlan> {
     validate_provider_detail_request(persisted_settings, persisted_state, request)?;
     plan_validated_request(
@@ -699,6 +719,7 @@ pub fn plan_provider_detail_commit(
         persisted_state,
         request,
         request.catalog_drafts.clone(),
+        readiness,
     )
 }
 
@@ -721,6 +742,7 @@ pub fn plan_provider_topology_commit(
         persisted_state,
         request,
         request.catalog_drafts.clone(),
+        &CatalogReadinessInput::default(),
     )
 }
 
@@ -729,6 +751,7 @@ fn plan_validated_request(
     persisted_state: &CatalogState,
     request: &ProviderCommitRequest,
     drafts: Vec<ProfileCatalogDraft>,
+    readiness: &CatalogReadinessInput,
 ) -> anyhow::Result<ProviderCommitPlan> {
     let settings = request.topology.apply_to(persisted_settings);
     let mut catalog_state = persisted_state.clone();
@@ -772,6 +795,25 @@ fn plan_validated_request(
             .get(&draft.profile_id)
             .cloned()
             .context("catalog planning state is missing")?;
+        let scope_current = readiness
+            .scope_current_by_profile
+            .get(&draft.profile_id)
+            .copied()
+            .unwrap_or(true);
+        let catalog_readiness = model_catalog::classify_managed_catalog_readiness(
+            &catalog_state,
+            profile,
+            &profile_state,
+            scope_current,
+        );
+        if catalog_readiness != model_catalog::ManagedCatalogReadiness::Ready {
+            if settings.active_relay_id == draft.profile_id {
+                anyhow::bail!("active provider catalog is not ready");
+            }
+            let profile_state = catalog_state.profiles.get_mut(&draft.profile_id).unwrap();
+            profile_state.action_required = Some("catalog-readiness-unavailable".to_string());
+            continue;
+        }
         match model_catalog::compose_profile_catalog(&catalog_state, profile, &profile_state) {
             Ok(catalog) => {
                 let bytes = serde_json::to_vec_pretty(&catalog)?;

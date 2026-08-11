@@ -363,6 +363,62 @@ pub(crate) enum ActivationScopeError {
     CatalogScopeStale,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManagedCatalogReadiness {
+    Ready,
+    Missing,
+    ScopeStale,
+    Invalid,
+    DefaultModelAbsent,
+}
+
+pub(crate) fn classify_managed_catalog_readiness(
+    state: &CatalogState,
+    profile: &RelayProfile,
+    profile_state: &ProfileCatalogState,
+    scope_current: bool,
+) -> ManagedCatalogReadiness {
+    if profile_state.mode == CatalogMode::OfficialPlusCustom && state.official.is_none() {
+        return ManagedCatalogReadiness::Missing;
+    }
+    if !scope_current {
+        return ManagedCatalogReadiness::ScopeStale;
+    }
+    match compose_profile_catalog(state, profile, profile_state) {
+        Ok(_) => ManagedCatalogReadiness::Ready,
+        Err(_) => match default_model_is_representable(state, profile, profile_state) {
+            Ok(false) => ManagedCatalogReadiness::DefaultModelAbsent,
+            Ok(true) | Err(_) => ManagedCatalogReadiness::Invalid,
+        },
+    }
+}
+
+fn default_model_is_representable(
+    state: &CatalogState,
+    profile: &RelayProfile,
+    profile_state: &ProfileCatalogState,
+) -> anyhow::Result<bool> {
+    let Some(default_model) = profile_default_model(profile) else {
+        return Ok(true);
+    };
+    let official_contains_default = if profile_state.mode == CatalogMode::OfficialPlusCustom {
+        state
+            .official
+            .as_ref()
+            .map(|snapshot| catalog_slugs(&snapshot.raw_catalog))
+            .transpose()?
+            .is_some_and(|slugs| slugs.contains(&default_model))
+    } else {
+        false
+    };
+    Ok(official_contains_default
+        || profile_state
+            .overlay
+            .custom
+            .iter()
+            .any(|model| model.slug == default_model))
+}
+
 pub(crate) fn verify_current_target_cli() -> anyhow::Result<VerifiedTargetIdentity> {
     verify_target_cli()
 }
@@ -3362,6 +3418,60 @@ mod tests {
             ..ProfileCatalogState::default()
         };
         assert!(compose_profile_catalog(&state, &profile, &profile_state).is_err());
+    }
+
+    #[test]
+    fn managed_catalog_readiness_distinguishes_missing_scope_invalid_and_default_model() {
+        let profile_state = ProfileCatalogState {
+            mode: CatalogMode::OfficialPlusCustom,
+            ..ProfileCatalogState::default()
+        };
+        let profile = RelayProfile {
+            config_contents: "model = \"official-a\"\n".to_string(),
+            ..RelayProfile::default()
+        };
+        assert_eq!(
+            classify_managed_catalog_readiness(
+                &CatalogState::default(),
+                &profile,
+                &profile_state,
+                true,
+            ),
+            ManagedCatalogReadiness::Missing
+        );
+
+        let state = CatalogState {
+            official: Some(OfficialSnapshot {
+                raw_catalog: official_catalog(),
+                ..OfficialSnapshot::default()
+            }),
+            ..CatalogState::default()
+        };
+        assert_eq!(
+            classify_managed_catalog_readiness(&state, &profile, &profile_state, false),
+            ManagedCatalogReadiness::ScopeStale
+        );
+
+        let mut invalid = state.clone();
+        for model in invalid.official.as_mut().unwrap().raw_catalog["models"]
+            .as_array_mut()
+            .unwrap()
+        {
+            model["visibility"] = json!("hide");
+        }
+        assert_eq!(
+            classify_managed_catalog_readiness(&invalid, &profile, &profile_state, true),
+            ManagedCatalogReadiness::Invalid
+        );
+
+        let missing_default = RelayProfile {
+            config_contents: "model = \"not-in-catalog\"\n".to_string(),
+            ..RelayProfile::default()
+        };
+        assert_eq!(
+            classify_managed_catalog_readiness(&state, &missing_default, &profile_state, true),
+            ManagedCatalogReadiness::DefaultModelAbsent
+        );
     }
 
     #[test]
