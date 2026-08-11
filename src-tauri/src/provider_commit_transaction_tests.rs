@@ -458,12 +458,26 @@ fn managed_context_cleanup_requires_confirmation_and_commits_settings_and_live_a
     );
     structured_only.context_window = "272000".to_string();
     structured_only.auto_compact_limit = "240000".to_string();
+    let mut raw_only = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    raw_only.config_contents = format!(
+        "model_context_window = 272000\nmodel_auto_compact_token_limit = 240000\n{}",
+        raw_only.config_contents
+    );
     let mut raw_and_structured = structured_only.clone();
     raw_and_structured.config_contents = format!(
         "model_context_window = 272000\nmodel_auto_compact_token_limit = 240000\n{}",
         raw_and_structured.config_contents
     );
-    for active in [structured_only.clone(), raw_and_structured] {
+    for active in [
+        structured_only.clone(),
+        raw_only.clone(),
+        raw_and_structured,
+    ] {
         let rejected = Fixture::new(
             &settings_with(vec![active], "sub2api"),
             &state_with_official(),
@@ -528,6 +542,35 @@ fn managed_context_cleanup_requires_confirmation_and_commits_settings_and_live_a
         fs::read(confirmed.paths.codex_home.join("auth.json")).unwrap(),
         auth_before
     );
+
+    let confirmed_raw = Fixture::new(
+        &settings_with(vec![raw_only], "sub2api"),
+        &state_with_official(),
+    );
+    let persisted = confirmed_raw.read_settings();
+    let mut confirmed_request = request(
+        &persisted,
+        &persisted,
+        "sub2api",
+        ProviderCommitAction::Save,
+        61,
+    );
+    confirmed_request.confirm_context_cleanup = true;
+    commit_provider_detail_from_paths(&confirmed_raw.paths, confirmed_request).unwrap();
+    let saved = confirmed_raw.read_settings();
+    assert!(
+        !saved.relay_profiles[0]
+            .config_contents
+            .contains("model_context_window")
+    );
+    assert!(
+        !saved.relay_profiles[0]
+            .config_contents
+            .contains("model_auto_compact_token_limit")
+    );
+    let live = fs::read_to_string(confirmed_raw.paths.codex_home.join("config.toml")).unwrap();
+    assert!(!live.contains("model_context_window"));
+    assert!(!live.contains("model_auto_compact_token_limit"));
 }
 
 #[test]
