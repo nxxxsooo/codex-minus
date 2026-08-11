@@ -2854,6 +2854,19 @@ fn validate_provider_topology_mutation_scope(
         profile.name.clear();
         serde_json::to_vec(&profile).map_err(|_| invalid())
     };
+    let catalog_draft_matches_source = |draft: &crate::provider_commit::ProfileCatalogDraft,
+                                        source_id: &str| {
+        let prior = persisted_state
+            .profiles
+            .get(source_id)
+            .cloned()
+            .unwrap_or_default();
+        draft.mode == prior.mode
+            && draft.mode_explicit == prior.mode_explicit
+            && draft.upstream_topology == prior.upstream_topology
+            && draft.external_pointer == prior.external_pointer
+            && draft.overlay == prior.overlay
+    };
     if request.topology.active_relay_id != persisted.active_relay_id
         || request.topology.active_aggregate_relay_id != persisted.active_aggregate_relay_id
         || request.topology.relay_base_url != persisted.relay_base_url
@@ -2880,6 +2893,10 @@ fn validate_provider_topology_mutation_scope(
             }
             None => {
                 let signature = profile_copy_signature(profile)?;
+                let copy_draft = request
+                    .catalog_drafts
+                    .iter()
+                    .find(|draft| draft.profile_id == profile.id);
                 let source = persisted
                     .relay_profiles
                     .iter()
@@ -2887,6 +2904,8 @@ fn validate_provider_topology_mutation_scope(
                         profile_copy_signature(prior)
                             .map(|prior| prior == signature)
                             .unwrap_or(false)
+                            && copy_draft
+                                .is_none_or(|draft| catalog_draft_matches_source(draft, &prior.id))
                     })
                     .ok_or_else(invalid)?;
                 copied_from.insert(profile.id.clone(), source.id.clone());
@@ -2944,17 +2963,7 @@ fn validate_provider_topology_mutation_scope(
             .any(|profile| profile.id == draft.profile_id)
         {
             let source_id = copied_from.get(&draft.profile_id).ok_or_else(invalid)?;
-            let prior = persisted_state
-                .profiles
-                .get(source_id)
-                .cloned()
-                .unwrap_or_default();
-            if draft.mode != prior.mode
-                || draft.mode_explicit != prior.mode_explicit
-                || draft.upstream_topology != prior.upstream_topology
-                || draft.external_pointer != prior.external_pointer
-                || draft.overlay != prior.overlay
-            {
+            if !catalog_draft_matches_source(draft, source_id) {
                 return Err(invalid());
             }
             continue;

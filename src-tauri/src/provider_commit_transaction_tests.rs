@@ -1209,6 +1209,9 @@ fn topology_adapter_commits_list_mutations_through_the_shared_provider_transacti
         "https://b.example/v1",
         "provider-key-b",
     );
+    let mut shadow = b.clone();
+    shadow.id = "relay-shadow".to_string();
+    shadow.name = "Relay B shadow".to_string();
     let c = canonical_profile(
         "relay-c",
         "official-a",
@@ -1221,7 +1224,10 @@ fn topology_adapter_commits_list_mutations_through_the_shared_provider_transacti
         relay_mode: RelayMode::Aggregate,
         ..RelayProfile::default()
     };
-    let mut initial = settings_with(vec![a.clone(), b.clone(), c, aggregate.clone()], "relay-a");
+    let mut initial = settings_with(
+        vec![a.clone(), shadow, b.clone(), c, aggregate.clone()],
+        "relay-a",
+    );
     initial.aggregate_relay_profiles = vec![AggregateRelayProfile {
         id: "aggregate".to_string(),
         name: "Aggregate".to_string(),
@@ -1245,6 +1251,11 @@ fn topology_adapter_commits_list_mutations_through_the_shared_provider_transacti
             .or_default()
             .mode = CatalogMode::OfficialPlusCustom;
     }
+    catalog_state
+        .profiles
+        .entry("relay-shadow".to_string())
+        .or_default()
+        .mode = CatalogMode::NativeOfficial;
     let fixture = Fixture::new(&initial, &catalog_state);
     let persisted = fixture.read_settings();
     let persisted_a = persisted
@@ -1316,6 +1327,7 @@ fn topology_adapter_commits_list_mutations_through_the_shared_provider_transacti
     let saved_catalog: CatalogState =
         serde_json::from_slice(&fs::read(&fixture.paths.catalog_state_path).unwrap()).unwrap();
     assert!(!saved_catalog.profiles.contains_key("relay-c"));
+    assert!(!saved_catalog.profiles.contains_key("relay-shadow"));
     let copied_catalog = saved_catalog.profiles.get("relay-copy").unwrap();
     assert_eq!(copied_catalog.mode, CatalogMode::OfficialPlusCustom);
     let copied_path = copied_catalog.generated_path.as_deref().unwrap();
