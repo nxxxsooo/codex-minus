@@ -1595,7 +1595,7 @@ fn provider_commit_failures_are_typed_and_failure_payloads_are_secret_free() {
     let active = canonical_profile(
         "sub2api",
         "official-a",
-        "https://relay.example/v1",
+        "https://provider-commit-secret.example/v1",
         "provider-key-sentinel",
     );
     let persisted = settings_with(vec![active], "sub2api");
@@ -1616,8 +1616,7 @@ fn provider_commit_failures_are_typed_and_failure_payloads_are_secret_free() {
     let invalid_fixture = Fixture::new(&persisted, &state_with_official());
     let invalid_persisted = invalid_fixture.read_settings();
     let mut invalid_next = invalid_persisted.clone();
-    invalid_next.relay_profiles[0].auth_contents =
-        r#"{"OPENAI_API_KEY":"provider-key-sentinel"}"#.to_string();
+    invalid_next.relay_profiles[0].auth_contents = r#"{"OPENAI_API_KEY":"provider-key-sentinel","tokens":{"access_token":"oauth-output-sentinel","account_email":"provider-output@example.test"}}"#.to_string();
     let invalid_error = commit_provider_detail_from_paths(
         &invalid_fixture.paths,
         request(
@@ -1701,6 +1700,9 @@ fn provider_commit_failures_are_typed_and_failure_payloads_are_secret_free() {
         let serialized =
             serde_json::to_string(&ProviderCommitPayload::failure(revision, error.code())).unwrap();
         assert!(!serialized.contains("provider-key-sentinel"));
+        assert!(!serialized.contains("oauth-output-sentinel"));
+        assert!(!serialized.contains("provider-output@example.test"));
+        assert!(!serialized.contains("https://provider-commit-secret.example/v1"));
         assert!(!serialized.contains("apiKey"));
         assert!(!serialized.contains("configContents"));
         assert!(!serialized.contains("settings"));

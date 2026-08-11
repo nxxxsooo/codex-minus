@@ -3030,8 +3030,11 @@ fn read_optional_bytes(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
 
 #[tauri::command]
 pub fn write_diagnostic_event(event: String, detail: Value) -> CommandResult<Value> {
-    let event = sanitize_manager_event(&event);
-    match codex_plus_core::diagnostic_log::append_diagnostic_log(&event, detail) {
+    let event = sanitize_ui_manager_event(&event);
+    match codex_plus_core::diagnostic_log::append_diagnostic_log(
+        &event,
+        sanitize_diagnostic_detail(detail),
+    ) {
         Ok(()) => ok("诊断日志已写入。", json!({})),
         Err(error) => failed(&format!("写入诊断日志失败：{error}"), json!({})),
     }
@@ -3222,12 +3225,94 @@ fn compatibility_fallback_note(used: bool) -> &'static str {
     }
 }
 
+fn collect_sensitive_json_strings(value: &Value, values: &mut Vec<String>) {
+    match value {
+        Value::String(value) if !value.trim().is_empty() => values.push(value.clone()),
+        Value::Array(items) => {
+            for item in items {
+                collect_sensitive_json_strings(item, values);
+            }
+        }
+        Value::Object(object) => {
+            for value in object.values() {
+                collect_sensitive_json_strings(value, values);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn provider_sensitive_values(profile: &RelayProfile) -> Vec<String> {
+    let mut values = [
+        codex_plus_core::relay_config::relay_profile_api_key(profile),
+        codex_plus_core::relay_config::relay_profile_base_url(profile),
+        profile.upstream_base_url.clone(),
+        provider_bearer_token_from_config(&profile.config_contents).unwrap_or_default(),
+        profile.auth_contents.clone(),
+    ]
+    .into_iter()
+    .filter(|value| !value.trim().is_empty())
+    .collect::<Vec<_>>();
+    if let Ok(auth) = serde_json::from_str::<Value>(&profile.auth_contents) {
+        collect_sensitive_json_strings(&auth, &mut values);
+    }
+    values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+    values.dedup();
+    values
+}
+
+fn redact_provider_surface_text(profile: &RelayProfile, text: &str) -> String {
+    provider_sensitive_values(profile)
+        .into_iter()
+        .fold(text.to_string(), |redacted, secret| {
+            redacted.replace(&secret, "[REDACTED]")
+        })
+}
+
+fn sanitize_provider_test_result(
+    profile: &RelayProfile,
+    mut result: CommandResult<RelayProfileTestPayload>,
+) -> CommandResult<RelayProfileTestPayload> {
+    result.message = redact_provider_surface_text(profile, &result.message);
+    result.payload.endpoint = redact_provider_surface_text(profile, &result.payload.endpoint);
+    result.payload.response_preview =
+        redact_provider_surface_text(profile, &result.payload.response_preview);
+    result
+}
+
+fn sanitize_provider_models_result(
+    profile: &RelayProfile,
+    mut result: CommandResult<RelayProfileModelsPayload>,
+) -> CommandResult<RelayProfileModelsPayload> {
+    result.message = redact_provider_surface_text(profile, &result.message);
+    result.payload.endpoint = redact_provider_surface_text(profile, &result.payload.endpoint);
+    result
+}
+
+fn sanitize_provider_doctor_result(
+    profile: &RelayProfile,
+    mut result: CommandResult<ProviderDoctorPayload>,
+) -> CommandResult<ProviderDoctorPayload> {
+    result.message = redact_provider_surface_text(profile, &result.message);
+    result.payload.profile_name =
+        redact_provider_surface_text(profile, &result.payload.profile_name);
+    result.payload.model = redact_provider_surface_text(profile, &result.payload.model);
+    result.payload.summary = redact_provider_surface_text(profile, &result.payload.summary);
+    result.payload.recommendation =
+        redact_provider_surface_text(profile, &result.payload.recommendation);
+    for check in &mut result.payload.checks {
+        check.title = redact_provider_surface_text(profile, &check.title);
+        check.detail = redact_provider_surface_text(profile, &check.detail);
+    }
+    result
+}
+
 #[tauri::command]
 pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayProfileTestPayload> {
     let profile_name = if profile.name.trim().is_empty() {
-        "未命名供应商"
+        "未命名供应商".to_string()
     } else {
-        profile.name.trim()
+        profile.name.trim().to_string()
     };
     let settings = SettingsStore::default().load().unwrap_or_default();
     let test_model: String = if !profile.test_model.trim().is_empty() {
@@ -3243,7 +3328,7 @@ pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayPro
             from_profile
         }
     };
-    match test_relay_profile_with_compatibility(&profile, &test_model).await {
+    let result = match test_relay_profile_with_compatibility(&profile, &test_model).await {
         Ok(result) => {
             let status = if result.http_status < 400 {
                 "ok"
@@ -3282,7 +3367,8 @@ pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayPro
                 initial_http_status: None,
             },
         ),
-    }
+    };
+    sanitize_provider_test_result(&profile, result)
 }
 
 #[tauri::command]
@@ -3290,11 +3376,12 @@ pub async fn fetch_relay_profile_models(
     profile: RelayProfile,
 ) -> CommandResult<RelayProfileModelsPayload> {
     let profile_name = if profile.name.trim().is_empty() {
-        "未命名供应商"
+        "未命名供应商".to_string()
     } else {
-        profile.name.trim()
+        profile.name.trim().to_string()
     };
-    match codex_plus_core::model_catalog::fetch_relay_profile_model_ids(&profile).await {
+    let result = match codex_plus_core::model_catalog::fetch_relay_profile_model_ids(&profile).await
+    {
         Ok((models, endpoint)) => {
             if let Err(error) =
                 crate::model_catalog::record_provider_evidence(&profile.id, &endpoint, &models)
@@ -3316,7 +3403,8 @@ pub async fn fetch_relay_profile_models(
                 endpoint: String::new(),
             },
         ),
-    }
+    };
+    sanitize_provider_models_result(&profile, result)
 }
 
 #[tauri::command]
@@ -3357,7 +3445,10 @@ pub async fn diagnose_relay_profile(profile: RelayProfile) -> CommandResult<Prov
             compatibility_fallback_used: false,
             initial_http_status: None,
         };
-        return ok("Provider Doctor：官方登录供应商无需 API 诊断。", payload);
+        return sanitize_provider_doctor_result(
+            &profile,
+            ok("Provider Doctor：官方登录供应商无需 API 诊断。", payload),
+        );
     }
 
     if codex_plus_core::relay_config::relay_profile_base_url(&profile)
@@ -3383,7 +3474,10 @@ pub async fn diagnose_relay_profile(profile: RelayProfile) -> CommandResult<Prov
             compatibility_fallback_used: false,
             initial_http_status: None,
         };
-        return failed("Provider Doctor：配置不完整。", payload);
+        return sanitize_provider_doctor_result(
+            &profile,
+            failed("Provider Doctor：配置不完整。", payload),
+        );
     }
 
     checks.push(ProviderDoctorCheck {
@@ -3503,19 +3597,22 @@ pub async fn diagnose_relay_profile(profile: RelayProfile) -> CommandResult<Prov
     };
     let recommendation = provider_doctor_recommendation(&checks);
     let message = format!("Provider Doctor：{summary}");
-    CommandResult {
-        status: status.to_string(),
-        message,
-        payload: ProviderDoctorPayload {
-            profile_name,
-            model: test_model,
-            summary,
-            recommendation,
-            checks,
-            compatibility_fallback_used,
-            initial_http_status,
+    sanitize_provider_doctor_result(
+        &profile,
+        CommandResult {
+            status: status.to_string(),
+            message,
+            payload: ProviderDoctorPayload {
+                profile_name,
+                model: test_model,
+                summary,
+                recommendation,
+                checks,
+                compatibility_fallback_used,
+                initial_http_status,
+            },
         },
-    }
+    )
 }
 
 fn provider_doctor_recommendation(checks: &[ProviderDoctorCheck]) -> String {
@@ -3654,7 +3751,39 @@ fn clear_relay_injection_blocking() -> CommandResult<RelayPayload> {
 }
 
 fn log_manager_event(event: &str, detail: Value) {
-    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(event, detail);
+    let event = sanitize_manager_event(event);
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        &event,
+        sanitize_diagnostic_detail(detail),
+    );
+}
+
+fn sanitize_diagnostic_detail(detail: Value) -> Value {
+    match detail {
+        Value::String(_) => Value::String("[REDACTED]".to_string()),
+        Value::Array(values) => {
+            Value::Array(values.into_iter().map(sanitize_diagnostic_detail).collect())
+        }
+        Value::Object(object) => Value::Object(
+            object
+                .into_iter()
+                .map(|(key, value)| (key, sanitize_diagnostic_detail(value)))
+                .collect(),
+        ),
+        value => value,
+    }
+}
+
+fn sanitize_ui_manager_event(event: &str) -> String {
+    match event.trim() {
+        "switchRelayProfile.start"
+        | "switchRelayProfile.validation_failed"
+        | "switchRelayProfile.apply_start"
+        | "switchRelayProfile.apply_no_result"
+        | "switchRelayProfile.apply_failed"
+        | "switchRelayProfile.ok" => sanitize_manager_event(event),
+        _ => "manager.ui.event".to_string(),
+    }
 }
 
 fn sanitize_manager_event(event: &str) -> String {
@@ -3683,16 +3812,75 @@ fn relay_payload(
     status: codex_plus_core::relay_config::RelayStatus,
     backup_path: Option<String>,
 ) -> RelayPayload {
+    let account_label = redacted_account_label(status.authenticated, status.account_label);
     RelayPayload {
         authenticated: status.authenticated,
         auth_source: status.auth_source,
-        account_label: status.account_label,
+        account_label,
         config_path: status.config_path,
         configured: status.configured,
         requires_openai_auth: status.requires_openai_auth,
         has_bearer_token: status.has_bearer_token,
         backup_path,
     }
+}
+
+fn collect_sensitive_config_values(
+    value: &Value,
+    sensitive_parent: bool,
+    values: &mut Vec<String>,
+) {
+    match value {
+        Value::String(value) if sensitive_parent && !value.trim().is_empty() => {
+            values.push(value.clone())
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_sensitive_config_values(item, sensitive_parent, values);
+            }
+        }
+        Value::Object(object) => {
+            for (key, value) in object {
+                let normalized = key
+                    .chars()
+                    .filter(|ch| ch.is_ascii_alphanumeric())
+                    .flat_map(char::to_lowercase)
+                    .collect::<String>();
+                let sensitive = sensitive_parent
+                    || matches!(
+                        normalized.as_str(),
+                        "baseurl"
+                            | "upstreambaseurl"
+                            | "openaiapikey"
+                            | "apikey"
+                            | "experimentalbearertoken"
+                            | "authorization"
+                            | "xapikey"
+                            | "accesstoken"
+                            | "refreshtoken"
+                            | "idtoken"
+                            | "authcontents"
+                    );
+                collect_sensitive_config_values(value, sensitive, values);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn redact_live_config_for_output(config: &str) -> String {
+    let Ok(value) = toml_edit::de::from_str::<Value>(config) else {
+        return "# 配置包含无法安全解析的内容；已停止在诊断界面显示。\n".to_string();
+    };
+    let mut sensitive = Vec::new();
+    collect_sensitive_config_values(&value, false, &mut sensitive);
+    sensitive.sort_by_key(|value| std::cmp::Reverse(value.len()));
+    sensitive.dedup();
+    sensitive
+        .into_iter()
+        .fold(config.to_string(), |output, value| {
+            output.replace(&value, "[REDACTED]")
+        })
 }
 
 fn relay_switch_payload(
@@ -3974,7 +4162,7 @@ fn relay_files_payload_from_home(home: &std::path::Path) -> anyhow::Result<Relay
     Ok(RelayFilesPayload {
         config_path: config_path.to_string_lossy().to_string(),
         auth_path: auth_path.to_string_lossy().to_string(),
-        config_contents: read_optional_text_file(&config_path)?,
+        config_contents: redact_live_config_for_output(&read_optional_text_file(&config_path)?),
         auth_status: live_auth_status_payload(home),
     })
 }
@@ -3984,10 +4172,14 @@ fn live_auth_status_payload(home: &Path) -> LiveAuthStatusPayload {
     LiveAuthStatusPayload {
         authenticated: status.authenticated,
         source: status.source,
-        account_label: status.account_label,
+        account_label: redacted_account_label(status.authenticated, status.account_label),
         action_required: (!status.authenticated)
             .then(|| "请在官方 Codex/ChatGPT 客户端中登录。".to_string()),
     }
+}
+
+fn redacted_account_label(authenticated: bool, account_label: Option<String>) -> Option<String> {
+    (authenticated && account_label.is_some()).then(|| "ChatGPT account".to_string())
 }
 
 fn read_optional_text_file(path: &std::path::Path) -> anyhow::Result<String> {
@@ -4952,5 +5144,84 @@ mod provider_test_compatibility_tests {
         assert!(bodies[2].get("max_output_tokens").is_none());
         assert_eq!(request_check.status, "ok");
         assert!(request_check.detail.contains("兼容重试"));
+    }
+
+    #[test]
+    fn provider_doctor_output_redacts_provider_oauth_identity_and_endpoint_sentinels() {
+        let api_key = "sk-provider-doctor-secret";
+        let oauth_token = "oauth-provider-doctor-token";
+        let account_email = "provider-doctor@example.test";
+        let (base_url, server) = spawn_provider_test_server(vec![
+            (200, r#"{"data":[{"id":"gpt-test"}]}"#.to_string()),
+            (
+                200,
+                format!(
+                    r#"{{"apiKey":"{api_key}","accessToken":"{oauth_token}","account":"{account_email}"}}"#
+                ),
+            ),
+        ]);
+        let mut profile = provider_test_profile(base_url.clone(), api_key);
+        profile.name = "Doctor Secret Audit".to_string();
+        profile.test_model = "gpt-test".to_string();
+        profile.auth_contents = format!(
+            r#"{{"auth_mode":"chatgpt","tokens":{{"access_token":"{oauth_token}","account_email":"{account_email}"}}}}"#
+        );
+
+        let result = tauri::async_runtime::block_on(super::diagnose_relay_profile(profile));
+        let serialized = serde_json::to_string(&result).unwrap();
+        server.join().unwrap();
+
+        assert!(!serialized.contains(api_key));
+        assert!(!serialized.contains(oauth_token));
+        assert!(!serialized.contains(account_email));
+        assert!(!serialized.contains(&base_url));
+    }
+
+    #[test]
+    fn diagnostic_and_auth_status_surfaces_discard_dynamic_secret_and_identity_strings() {
+        let detail = json!({
+            "apiKey": "sk-diagnostic-secret",
+            "nested": {
+                "accessToken": "oauth-diagnostic-token",
+                "account": "diagnostic@example.test",
+                "baseUrl": "https://private.example.test/v1"
+            },
+            "attempt": 2,
+            "retry": true
+        });
+        let sanitized = sanitize_diagnostic_detail(detail);
+        let serialized = serde_json::to_string(&sanitized).unwrap();
+
+        assert!(!serialized.contains("sk-diagnostic-secret"));
+        assert!(!serialized.contains("oauth-diagnostic-token"));
+        assert!(!serialized.contains("diagnostic@example.test"));
+        assert!(!serialized.contains("https://private.example.test/v1"));
+        assert_eq!(sanitized["attempt"], 2);
+        assert_eq!(sanitized["retry"], true);
+        assert_eq!(
+            sanitize_ui_manager_event("sk-secret-event"),
+            "manager.ui.event"
+        );
+        assert_eq!(
+            redacted_account_label(true, Some("diagnostic-account@example.test".to_string())),
+            Some("ChatGPT account".to_string())
+        );
+
+        let visible_config = redact_live_config_for_output(
+            r#"model = "gpt-test"
+model_provider = "Relay"
+
+[model_providers.Relay]
+name = "OpenAI"
+base_url = "https://private.example.test/v1"
+experimental_bearer_token = "sk-config-output-secret"
+http_headers = { Authorization = "Bearer oauth-config-output-token", "x-keep" = "yes" }
+"#,
+        );
+        assert!(visible_config.contains("model = \"gpt-test\""));
+        assert!(visible_config.contains("x-keep"));
+        assert!(!visible_config.contains("https://private.example.test/v1"));
+        assert!(!visible_config.contains("sk-config-output-secret"));
+        assert!(!visible_config.contains("oauth-config-output-token"));
     }
 }
