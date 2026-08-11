@@ -69,7 +69,7 @@
 
 ## 7. Integrate catalog and restart semantics
 
-- [ ] 7.1 Add tests that non-external native-priority mixed profiles request `official-plus-custom`, ordinary pure OAuth requests `native-official`, explicit server-side-composite classification accepts Responses `PureApi` and `Official + officialMixApiKey` single-upstream profiles, external ownership wins before all defaults, and native-priority code defines no competing catalog baseline or update channel.
+- [x] 7.1 Add tests that non-external native-priority mixed profiles request `official-plus-custom`, ordinary pure OAuth requests `native-official`, explicit server-side-composite classification accepts Responses `PureApi` and `Official + officialMixApiKey` single-upstream profiles, external ownership wins before all defaults, and native-priority code defines no competing catalog baseline or update channel.
 - [ ] 7.2 Block a new active native-priority generation when its managed catalog prerequisite is missing, scope-stale, invalid, or cannot contain the selected default model; preserve the last valid active provider/catalog generation.
 - [ ] 7.3 Allow an inactive native-priority draft to remain saved as action-required when catalog readiness is unavailable, without changing live configuration or claiming runtime readiness.
 - [ ] 7.4 Add recovery tests that a later valid official refresh or provider-detail commit materializes an action-required inactive profile, clears only its catalog-readiness action, and permits activation retry under the remaining gates.
