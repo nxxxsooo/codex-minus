@@ -2589,6 +2589,87 @@ fn active_readiness_failure_preserves_a_preexisting_valid_catalog_generation() {
 }
 
 #[test]
+fn later_valid_detail_commit_clears_catalog_readiness_action_and_allows_activation_retry() {
+    let persisted = settings_with(vec![pure_oauth_profile("official")], "official");
+    let fixture = Fixture::new(&persisted, &stale_scope_state());
+    let persisted = fixture.read_settings();
+    let mut first = persisted.clone();
+    first.relay_profiles.push(canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    ));
+    commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(
+            &persisted,
+            &first,
+            "sub2api",
+            ProviderCommitAction::Save,
+            77,
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        fixture.read_state().profiles["sub2api"]
+            .action_required
+            .as_deref(),
+        Some("catalog-readiness-unavailable")
+    );
+
+    let mut recovered_state = fixture.read_state();
+    let current = state_with_official();
+    recovered_state.official = current.official;
+    recovered_state.target = current.target;
+    fs::write(
+        &fixture.paths.catalog_state_path,
+        serde_json::to_vec_pretty(&recovered_state).unwrap(),
+    )
+    .unwrap();
+    let live_before = fs::read(fixture.paths.codex_home.join("config.toml")).unwrap();
+    let persisted = fixture.read_settings();
+    commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(
+            &persisted,
+            &persisted,
+            "sub2api",
+            ProviderCommitAction::Save,
+            78,
+        ),
+    )
+    .unwrap();
+    let recovered = fixture.read_state();
+    let recovered_profile = &recovered.profiles["sub2api"];
+    assert!(recovered_profile.action_required.is_none());
+    assert!(recovered_profile.generated_path.is_some());
+    assert!(!recovered_profile.restart_required);
+    assert_eq!(fixture.read_settings().active_relay_id, "official");
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join("config.toml")).unwrap(),
+        live_before
+    );
+
+    let persisted = fixture.read_settings();
+    let mut active = persisted.clone();
+    active.active_relay_id = "sub2api".to_string();
+    let activated = commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(
+            &persisted,
+            &active,
+            "sub2api",
+            ProviderCommitAction::SetCurrent,
+            79,
+        ),
+    )
+    .unwrap();
+    assert_eq!(activated.draft_revision, 79);
+    assert_eq!(fixture.read_settings().active_relay_id, "sub2api");
+}
+
+#[test]
 fn set_current_commits_settings_catalog_pointer_activation_and_restart_together() {
     let old = pure_oauth_profile("official");
     let next_profile = canonical_profile(

@@ -811,7 +811,7 @@ fn plan_validated_request(
         state.upstream_topology = draft.upstream_topology;
         state.overlay = draft.overlay.clone();
         state.external_pointer = draft.external_pointer.clone();
-        state.action_required = None;
+        model_catalog::clear_catalog_readiness_action(state);
     }
     let mut generated_catalogs = BTreeMap::new();
     let mut active_catalog = None;
@@ -848,7 +848,8 @@ fn plan_validated_request(
                 anyhow::bail!("active provider catalog is not ready");
             }
             let profile_state = catalog_state.profiles.get_mut(&draft.profile_id).unwrap();
-            profile_state.action_required = Some("catalog-readiness-unavailable".to_string());
+            profile_state.action_required =
+                Some(model_catalog::CATALOG_READINESS_ACTION.to_string());
             continue;
         }
         match model_catalog::compose_profile_catalog(&catalog_state, profile, &profile_state) {
@@ -864,7 +865,7 @@ fn plan_validated_request(
                 profile_state.generated_hash = Some(hash);
                 profile_state.generated_path =
                     Some(model_catalog::generated_relative_path(&draft.profile_id));
-                profile_state.action_required = None;
+                model_catalog::clear_catalog_readiness_action(profile_state);
                 if settings.active_relay_id == draft.profile_id {
                     active_catalog = Some(catalog.clone());
                 }
@@ -874,7 +875,7 @@ fn plan_validated_request(
             }
             Err(_error) if settings.active_relay_id != draft.profile_id => {
                 let profile_state = catalog_state.profiles.get_mut(&draft.profile_id).unwrap();
-                let code = "catalog-readiness-unavailable".to_string();
+                let code = model_catalog::CATALOG_READINESS_ACTION.to_string();
                 profile_state.action_required = Some(code);
             }
             Err(error) => return Err(error),

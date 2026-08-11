@@ -27,6 +27,7 @@ const REFRESH_TIMEOUT: Duration = Duration::from_secs(45);
 const CAPABILITY_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_COMMAND_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
 const MIN_SUPPORTED_CLI: &str = "0.147.0-alpha.1";
+pub(crate) const CATALOG_READINESS_ACTION: &str = "catalog-readiness-unavailable";
 #[cfg(any(target_os = "macos", test))]
 const OPENAI_MAC_TEAM_IDS: &[&str] = &["2DC432GLL2"];
 
@@ -392,6 +393,12 @@ pub(crate) fn classify_managed_catalog_readiness(
             Ok(false) => ManagedCatalogReadiness::DefaultModelAbsent,
             Ok(true) | Err(_) => ManagedCatalogReadiness::Invalid,
         },
+    }
+}
+
+pub(crate) fn clear_catalog_readiness_action(profile_state: &mut ProfileCatalogState) {
+    if profile_state.action_required.as_deref() == Some(CATALOG_READINESS_ACTION) {
+        profile_state.action_required = None;
     }
 }
 
@@ -802,7 +809,7 @@ fn plan_active_profile_with_state(
             }
             profile_state.generated_path = Some(relative);
             profile_state.generated_hash = Some(hash);
-            profile_state.action_required = None;
+            clear_catalog_readiness_action(profile_state);
         }
     }
     Ok(ActiveCatalogPlan {
@@ -2507,12 +2514,26 @@ fn materialize_inactive_profiles(
     settings: &BackendSettings,
     home: &Path,
 ) -> anyhow::Result<Vec<FileMutation>> {
+    materialize_inactive_profiles_with_validator(
+        state,
+        settings,
+        home,
+        validate_effective_catalog_offline,
+    )
+}
+
+fn materialize_inactive_profiles_with_validator(
+    state: &mut CatalogState,
+    settings: &BackendSettings,
+    home: &Path,
+    validate_effective: impl Fn(&Value) -> anyhow::Result<()> + Copy,
+) -> anyhow::Result<Vec<FileMutation>> {
     let mut mutations = Vec::new();
     for profile in &settings.relay_profiles {
         if profile.id == settings.active_relay_id {
             continue;
         }
-        match materialize_profile(state, profile, home) {
+        match materialize_profile_with_validator(state, profile, home, validate_effective) {
             Ok(Some(mutation)) => mutations.push(mutation),
             Ok(None) => {}
             Err(error) => {
@@ -2530,6 +2551,15 @@ fn materialize_profile(
     profile: &RelayProfile,
     home: &Path,
 ) -> anyhow::Result<Option<FileMutation>> {
+    materialize_profile_with_validator(state, profile, home, validate_effective_catalog_offline)
+}
+
+fn materialize_profile_with_validator(
+    state: &mut CatalogState,
+    profile: &RelayProfile,
+    home: &Path,
+    validate_effective: impl Fn(&Value) -> anyhow::Result<()>,
+) -> anyhow::Result<Option<FileMutation>> {
     let profile_state = state.profiles.get(&profile.id).cloned().unwrap_or_default();
     if !matches!(
         profile_state.mode,
@@ -2538,7 +2568,7 @@ fn materialize_profile(
         return Ok(None);
     }
     let catalog = compose_profile_catalog(state, profile, &profile_state)?;
-    validate_effective_catalog_offline(&catalog)?;
+    validate_effective(&catalog)?;
     let bytes = serde_json::to_vec_pretty(&catalog)?;
     let hash = content_hash(&bytes);
     let relative = generated_relative_path(&profile.id);
@@ -2546,12 +2576,13 @@ fn materialize_profile(
     let profile_state = state.profiles.get_mut(&profile.id).unwrap();
     if profile_state.generated_hash.as_deref() == Some(&hash) && catalog_file_matches(&path, &hash)?
     {
+        clear_catalog_readiness_action(profile_state);
         return Ok(None);
     }
     profile_state.generated_hash = Some(hash);
     profile_state.generated_path = Some(relative);
     profile_state.generation = profile_state.generation.saturating_add(1);
-    profile_state.action_required = None;
+    clear_catalog_readiness_action(profile_state);
     Ok(Some(FileMutation::bytes(path, bytes)))
 }
 
@@ -3519,6 +3550,93 @@ mod tests {
         assert_eq!(retained.generated_hash.as_deref(), Some("last-valid-hash"));
         assert_eq!(retained.generation, 7);
         assert!(retained.action_required.is_some());
+    }
+
+    #[test]
+    fn valid_inactive_materialization_clears_only_catalog_readiness_action_on_matching_artifact() {
+        let profile = RelayProfile {
+            id: "inactive".to_string(),
+            config_contents: "model = \"task-seven-recovery\"\n".to_string(),
+            ..RelayProfile::default()
+        };
+        let profile_state = ProfileCatalogState {
+            mode: CatalogMode::OfficialPlusCustom,
+            generation: 7,
+            restart_required: true,
+            action_required: Some("catalog-readiness-unavailable".to_string()),
+            ..ProfileCatalogState::default()
+        };
+        let mut refreshed_catalog = official_catalog();
+        refreshed_catalog["models"][0]["slug"] = json!("task-seven-recovery");
+        refreshed_catalog["models"][0]["display_name"] = json!("Task Seven Recovery");
+        let mut state = CatalogState {
+            official: Some(OfficialSnapshot {
+                raw_catalog: refreshed_catalog,
+                ..OfficialSnapshot::default()
+            }),
+            ..CatalogState::default()
+        };
+        state
+            .profiles
+            .insert(profile.id.clone(), profile_state.clone());
+        let catalog = compose_profile_catalog(&state, &profile, &profile_state).unwrap();
+        let bytes = serde_json::to_vec_pretty(&catalog).unwrap();
+        let hash = content_hash(&bytes);
+        let relative = generated_relative_path(&profile.id);
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join(&relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let stored = state.profiles.get_mut(&profile.id).unwrap();
+        stored.generated_hash = Some(hash);
+        stored.generated_path = Some(relative);
+        let settings = BackendSettings {
+            active_relay_id: "other".to_string(),
+            relay_profiles: vec![profile],
+            ..BackendSettings::default()
+        };
+
+        let mutations = materialize_inactive_profiles_with_validator(
+            &mut state,
+            &settings,
+            home.path(),
+            |_| Ok(()),
+        )
+        .unwrap();
+
+        assert!(mutations.is_empty());
+        let recovered = &state.profiles["inactive"];
+        assert!(
+            recovered.action_required.is_none(),
+            "{:?}",
+            recovered.action_required
+        );
+        assert_eq!(recovered.generation, 7);
+        assert!(recovered.restart_required);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+
+        state.profiles.get_mut("inactive").unwrap().action_required =
+            Some("provider-needs-review".to_string());
+        let mutations = materialize_inactive_profiles_with_validator(
+            &mut state,
+            &settings,
+            home.path(),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(mutations.is_empty());
+        assert_eq!(
+            state.profiles["inactive"].action_required.as_deref(),
+            Some("provider-needs-review")
+        );
+        assert_eq!(state.profiles["inactive"].generation, 7);
+        assert!(state.profiles["inactive"].restart_required);
+        assert_eq!(fs::read(path).unwrap(), bytes);
     }
 
     #[test]
