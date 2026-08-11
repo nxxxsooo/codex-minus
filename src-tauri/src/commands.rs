@@ -1965,6 +1965,7 @@ pub struct ProviderCommitFailure {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderCommitCheckpoint {
     Normalization,
+    CatalogMaterialization,
 }
 
 impl ProviderCommitFailure {
@@ -2138,6 +2139,12 @@ pub fn commit_provider_detail_from_paths_observed(
                 "provider catalog materialization failed",
             )
         })?;
+    observe(ProviderCommitCheckpoint::CatalogMaterialization).map_err(|_| {
+        provider_commit_failure(
+            ProviderCommitErrorCode::CatalogUnavailable,
+            "provider catalog materialization failed",
+        )
+    })?;
     let mut context_snapshot = None;
 
     if active_commit {
