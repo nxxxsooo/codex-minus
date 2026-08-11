@@ -300,7 +300,9 @@ pub(crate) fn commit_locked_verified_at_observed(
 
     ensure_owner_only_dir(&app_state)?;
     let transaction_id = transaction_id();
-    let transaction_dir = app_state.join(TRANSACTION_ROOT).join(&transaction_id);
+    let transaction_root = app_state.join(TRANSACTION_ROOT);
+    ensure_owner_only_dir(&transaction_root)?;
+    let transaction_dir = transaction_root.join(&transaction_id);
     ensure_owner_only_dir(&transaction_dir)?;
 
     let entries = (|| -> anyhow::Result<Vec<JournalEntry>> {

@@ -15,6 +15,8 @@ use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayP
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 fn canonical_profile(id: &str, model: &str, base_url: &str, key: &str) -> RelayProfile {
@@ -274,6 +276,36 @@ fn collect_files(root: &Path, prefix: &str, files: &mut BTreeMap<String, Vec<u8>
         } else {
             files.insert(key, fs::read(path).unwrap());
         }
+    }
+}
+
+#[cfg(unix)]
+fn assert_owner_only_dir(path: &Path) {
+    assert_eq!(
+        fs::metadata(path).unwrap().permissions().mode() & 0o777,
+        0o700,
+        "directory is not owner-only: {}",
+        path.display()
+    );
+}
+
+#[cfg(unix)]
+fn assert_owner_only_file(path: &Path) {
+    assert_eq!(
+        fs::metadata(path).unwrap().permissions().mode() & 0o777,
+        0o600,
+        "file is not owner-only: {}",
+        path.display()
+    );
+}
+
+fn assert_directory_has_no_entries(path: &Path) {
+    if path.exists() {
+        assert!(
+            fs::read_dir(path).unwrap().next().is_none(),
+            "private staging residue remains: {}",
+            path.display()
+        );
     }
 }
 
@@ -765,6 +797,128 @@ fn auth_update_after_scope_gate_cannot_become_the_commit_baseline() {
     let mut manager_after = fixture.file_generation();
     manager_after.remove("codex-home/auth.json").unwrap();
     assert_eq!(manager_after, manager_before);
+}
+
+#[cfg(unix)]
+#[test]
+fn real_transaction_keeps_secret_stages_private_and_cleans_faulted_recovery_material() {
+    const PRIOR_KEY: &str = "provider-key-before-sentinel";
+    const NEXT_KEY: &str = "provider-key-after-sentinel";
+    const OAUTH_SENTINEL: &str = "oauth-refresh-sentinel";
+
+    let active = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        PRIOR_KEY,
+    );
+    let initial = settings_with(vec![active], "sub2api");
+    let fixture = Fixture::new(&initial, &state_with_official());
+    fs::write(
+        fixture.paths.codex_home.join("config.toml"),
+        rich_live_config(),
+    )
+    .unwrap();
+    let auth_path = fixture.paths.codex_home.join("auth.json");
+    let mut auth: Value = serde_json::from_slice(&fs::read(&auth_path).unwrap()).unwrap();
+    auth["tokens"]["refresh_token"] = Value::String(OAUTH_SENTINEL.to_string());
+    fs::write(&auth_path, serde_json::to_vec_pretty(&auth).unwrap()).unwrap();
+
+    let persisted = fixture.read_settings();
+    let before = fixture.file_generation();
+    let mut next = persisted.clone();
+    next.relay_profiles[0] = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://changed.example/v1",
+        NEXT_KEY,
+    );
+    let app_state = fixture.paths.app_state.clone();
+    let codex_home = fixture.paths.codex_home.clone();
+    let mut inspected_real_journal = false;
+
+    let error = commit_provider_detail_from_paths_observed(
+        &fixture.paths,
+        request(&persisted, &next, "sub2api", ProviderCommitAction::Save, 69),
+        |checkpoint| {
+            if checkpoint != ProviderCommitCheckpoint::SettingsPersistence {
+                return Ok(());
+            }
+            inspected_real_journal = true;
+            let journal_path = app_state.join("live-state-transaction.json");
+            let transaction_root = app_state.join("live-state-transactions");
+            let journal = fs::read_to_string(&journal_path)?;
+            assert!(!journal.contains(PRIOR_KEY));
+            assert!(!journal.contains(NEXT_KEY));
+            assert!(!journal.contains(OAUTH_SENTINEL));
+            assert_owner_only_file(&journal_path);
+            assert_owner_only_dir(&app_state);
+            assert_owner_only_dir(&transaction_root);
+
+            let transaction_dirs = fs::read_dir(&transaction_root)?
+                .map(|entry| entry.map(|entry| entry.path()))
+                .collect::<Result<Vec<_>, _>>()?;
+            assert_eq!(transaction_dirs.len(), 1);
+            let transaction_dir = &transaction_dirs[0];
+            assert_owner_only_dir(transaction_dir);
+
+            let mut key_bearing_stages = 0;
+            for entry in fs::read_dir(transaction_dir)? {
+                let stage_path = entry?.path();
+                assert_owner_only_file(&stage_path);
+                let bytes = fs::read(&stage_path)?;
+                assert!(
+                    !bytes
+                        .windows(OAUTH_SENTINEL.len())
+                        .any(|window| window == OAUTH_SENTINEL.as_bytes())
+                );
+                if bytes
+                    .windows(PRIOR_KEY.len())
+                    .any(|window| window == PRIOR_KEY.as_bytes())
+                    || bytes
+                        .windows(NEXT_KEY.len())
+                        .any(|window| window == NEXT_KEY.as_bytes())
+                {
+                    key_bearing_stages += 1;
+                }
+            }
+            assert!(key_bearing_stages >= 2);
+
+            for root in [&app_state, &codex_home] {
+                let mut artifacts = BTreeMap::new();
+                collect_files(root, "artifact", &mut artifacts);
+                for (name, bytes) in artifacts {
+                    if name.ends_with("auth.json") {
+                        continue;
+                    }
+                    assert!(
+                        !bytes
+                            .windows(OAUTH_SENTINEL.len())
+                            .any(|window| window == OAUTH_SENTINEL.as_bytes()),
+                        "OAuth payload escaped into {name}"
+                    );
+                }
+            }
+            anyhow::bail!("artifact-audit-fault")
+        },
+    )
+    .unwrap_err();
+
+    assert!(inspected_real_journal);
+    assert_eq!(error.code(), ProviderCommitErrorCode::TransactionFailed);
+    assert!(!error.to_string().contains(PRIOR_KEY));
+    assert!(!error.to_string().contains(NEXT_KEY));
+    assert!(!error.to_string().contains(OAUTH_SENTINEL));
+    assert_eq!(fixture.file_generation(), before);
+    assert!(
+        !fixture
+            .paths
+            .app_state
+            .join("live-state-transaction.json")
+            .exists()
+    );
+    assert_directory_has_no_entries(&fixture.paths.app_state.join("live-state-transactions"));
+    assert_directory_has_no_entries(&fixture.paths.app_state.join("private-staging"));
 }
 
 #[test]
