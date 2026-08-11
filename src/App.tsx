@@ -81,9 +81,12 @@ import {
 import {
   buildProviderMutationInvocation,
   catalogDraftAvailability,
-  providerCommitResponseIsCurrent,
+  managedCatalogCapable,
   providerDeleteAvailable,
+  registerProviderCommit,
+  settleProviderCommit,
   type ProfileCatalogDraft,
+  type ProviderCommitUiState,
   type ProviderMutationKind,
 } from "./provider-commit";
 import { providerConfigDraft, RelayConfigPanels } from "./relay-config-panels";
@@ -870,7 +873,10 @@ export function App() {
   const [providerCompatibilityLoading, setProviderCompatibilityLoading] = useState(false);
   const [settingsForm, setSettingsForm] = useState<BackendSettings>({ ...defaultSettings });
   const [relaySwitching, setRelaySwitching] = useState(false);
-  const providerDraftRevision = useRef(0);
+  const providerCommitState = useRef<ProviderCommitUiState<SettingsResult>>({
+    latestRevision: 0,
+    baseline: null,
+  });
 
   const call = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
 
@@ -890,8 +896,10 @@ export function App() {
   const refreshSettings = async (silent = false) => {
     const result = await run(() => call<SettingsResult>("load_settings"));
     if (result) {
-      setSettings(result);
       const normalized = normalizeSettings(result.settings);
+      const baseline = { ...result, settings: normalized };
+      providerCommitState.current = { ...providerCommitState.current, baseline };
+      setSettings(baseline);
       setSettingsForm(normalized);
       if (!silent) showResultNotice(t("设置已加载"), result, { silentSuccess: true });
       return normalized;
@@ -1283,8 +1291,11 @@ export function App() {
     const next = normalizeSettings(settingsForm);
     const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
     if (result) {
-      setSettings(result);
-      setSettingsForm(normalizeSettings(result.settings));
+      const normalized = normalizeSettings(result.settings);
+      const baseline = { ...result, settings: normalized };
+      providerCommitState.current = { ...providerCommitState.current, baseline };
+      setSettings(baseline);
+      setSettingsForm(normalized);
       showNotice(t("设置保存"), result.message, result.status);
     }
   };
@@ -1294,8 +1305,11 @@ export function App() {
     setSettingsForm(normalized);
     const result = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
     if (result) {
-      setSettings(result);
-      setSettingsForm(normalizeSettings(result.settings));
+      const normalized = normalizeSettings(result.settings);
+      const baseline = { ...result, settings: normalized };
+      providerCommitState.current = { ...providerCommitState.current, baseline };
+      setSettings(baseline);
+      setSettingsForm(normalized);
       if (!silent || !isSuccessStatus(result.status)) showNotice(t("设置保存"), result.message, result.status);
     }
     return !!result && isSuccessStatus(result.status);
@@ -1348,23 +1362,50 @@ export function App() {
     }));
 
   const submitProviderCommit = async (invocation: ReturnType<typeof buildProviderMutationInvocation>) => {
-    const result = await run(() => call<ProviderCommitResult>(invocation.command, { request: invocation.request }));
-    if (result && !providerCommitResponseIsCurrent(result.draftRevision, providerDraftRevision.current)) {
+    const revision = invocation.request.draftRevision;
+    providerCommitState.current = registerProviderCommit(providerCommitState.current, revision);
+    let result: ProviderCommitResult;
+    try {
+      result = await call<ProviderCommitResult>(invocation.command, { request: invocation.request });
+    } catch (error) {
+      const settled = settleProviderCommit(providerCommitState.current, revision, false, null);
+      providerCommitState.current = settled.state;
+      if (settled.disposition === "report") {
+        showNotice(t("调用失败"), stringifyError(error), "failed");
+      }
       return false;
     }
-    if (!result || !isSuccessStatus(result.status) || !result.settings) {
-      if (result) showNotice(t("保存供应商"), result.message, result.status);
+    const succeeded = isSuccessStatus(result.status) && !!result.settings;
+    const selectedSettings = result.settings ? normalizeSettings(result.settings) : null;
+    const priorBaseline = providerCommitState.current.baseline ?? settings;
+    const nextBaseline = succeeded && selectedSettings
+      ? {
+          status: result.status,
+          message: result.message,
+          settings: selectedSettings,
+          settings_path: priorBaseline?.settings_path ?? "",
+          user_scripts: priorBaseline?.user_scripts ?? {},
+          provider_fingerprint: result.providerFingerprint,
+        }
+      : null;
+    const settled = settleProviderCommit(
+      providerCommitState.current,
+      result.draftRevision,
+      succeeded,
+      nextBaseline,
+    );
+    providerCommitState.current = settled.state;
+    if (settled.disposition === "ignore") return false;
+    if (settled.disposition === "report") {
+      showNotice(t("保存供应商"), result.message, result.status);
       return false;
     }
-    const selectedSettings = normalizeSettings(result.settings);
-    setSettings({
-      status: result.status,
-      message: result.message,
-      settings: selectedSettings,
-      settings_path: settings?.settings_path ?? "",
-      user_scripts: settings?.user_scripts ?? {},
-      provider_fingerprint: result.providerFingerprint,
-    });
+    if (!nextBaseline || !selectedSettings) return false;
+    setSettings(nextBaseline);
+    if (settled.disposition === "adopt-baseline") {
+      await refreshModelCatalog(true);
+      return false;
+    }
     setSettingsForm(selectedSettings);
     await Promise.all([
       refreshRelay(true),
@@ -1375,16 +1416,16 @@ export function App() {
   };
 
   const providerCommitCommon = (next: BackendSettings, confirmContextCleanup = false) => {
-    if (!settings?.provider_fingerprint) throw new Error("provider settings fingerprint is unavailable");
-    providerDraftRevision.current += 1;
+    const baseline = providerCommitState.current.baseline ?? settings;
+    if (!baseline?.provider_fingerprint) throw new Error("provider settings fingerprint is unavailable");
     return {
       settings: normalizeSettings(next),
-      persistedSettings: normalizeSettings(settings.settings),
+      persistedSettings: normalizeSettings(baseline.settings),
       catalogDrafts: persistedCatalogDrafts(),
-      previousActiveRelayId: settings.settings.activeRelayId,
+      previousActiveRelayId: baseline.settings.activeRelayId,
       confirmContextCleanup,
-      draftRevision: providerDraftRevision.current,
-      expectedProviderFingerprint: settings.provider_fingerprint,
+      draftRevision: providerCommitState.current.latestRevision + 1,
+      expectedProviderFingerprint: baseline.provider_fingerprint,
     };
   };
 
@@ -3149,7 +3190,7 @@ function RelayProfileDetail({
         </Toolbar>
       </div>
         <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={setDraft} onSwitch={switchDraft} actions={actions} modelWindowRows={modelWindowRows} setModelWindowRows={setModelWindowRows} catalogProfile={catalogProfile} />
-      {isAggregateRelayProfile(draft) ? null : catalogDraft ? (
+      {!managedCatalogCapable(draft) ? null : catalogDraft ? (
         <CatalogProfileEditor
           catalog={modelCatalog}
           draft={catalogDraft}

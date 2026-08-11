@@ -100,9 +100,43 @@ export type ProviderCommitInvocation = {
 };
 
 export type CatalogDraftAvailability = "not-required" | "implicit" | "persisted" | "unavailable";
+export type ProviderCommitResponseDisposition = "apply" | "adopt-baseline" | "report" | "ignore";
+export type ProviderCommitUiState<T> = {
+  latestRevision: number;
+  baseline: T | null;
+};
 
 export function providerCommitResponseIsCurrent(responseRevision: number, latestRevision: number): boolean {
   return responseRevision === latestRevision;
+}
+
+export function providerCommitResponseDisposition(
+  responseRevision: number,
+  latestRevision: number,
+  succeeded: boolean,
+): ProviderCommitResponseDisposition {
+  if (providerCommitResponseIsCurrent(responseRevision, latestRevision)) {
+    return succeeded ? "apply" : "report";
+  }
+  return succeeded ? "adopt-baseline" : "ignore";
+}
+
+export function registerProviderCommit<T>(state: ProviderCommitUiState<T>, revision: number): ProviderCommitUiState<T> {
+  if (revision !== state.latestRevision + 1) throw new Error("provider commit revision is not the next submitted revision");
+  return { ...state, latestRevision: revision };
+}
+
+export function settleProviderCommit<T>(
+  state: ProviderCommitUiState<T>,
+  revision: number,
+  succeeded: boolean,
+  baseline: T | null,
+): { state: ProviderCommitUiState<T>; disposition: ProviderCommitResponseDisposition } {
+  const disposition = providerCommitResponseDisposition(revision, state.latestRevision, succeeded);
+  return {
+    state: succeeded && baseline ? { ...state, baseline } : state,
+    disposition,
+  };
 }
 
 export function catalogDraftAvailability(
@@ -209,7 +243,7 @@ export function buildProviderMutationInvocation(input: ProviderMutationInvocatio
   };
 }
 
-function managedCatalogCapable(profile: ProviderRelayProfileSource): boolean {
+export function managedCatalogCapable(profile: ProviderRelayProfileSource): boolean {
   return profile.relayMode !== "aggregate" && profile.protocol !== "chatCompletions";
 }
 

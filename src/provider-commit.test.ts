@@ -66,6 +66,10 @@ describe("provider-owned commit request", () => {
     assert.ok(commitModule, "provider UI safety helpers must exist");
     assert.equal(commitModule.providerCommitResponseIsCurrent(8, 9), false);
     assert.equal(commitModule.providerCommitResponseIsCurrent(9, 9), true);
+    assert.equal(commitModule.providerCommitResponseDisposition(8, 9, true), "adopt-baseline");
+    assert.equal(commitModule.providerCommitResponseDisposition(8, 9, false), "ignore");
+    assert.equal(commitModule.providerCommitResponseDisposition(9, 9, true), "apply");
+    assert.equal(commitModule.providerCommitResponseDisposition(9, 9, false), "report");
     assert.equal(commitModule.catalogDraftAvailability(true, true, false), "unavailable");
     assert.equal(commitModule.catalogDraftAvailability(true, true, true), "persisted");
     assert.equal(commitModule.catalogDraftAvailability(false, true, false), "implicit");
@@ -73,6 +77,28 @@ describe("provider-owned commit request", () => {
     assert.equal(commitModule.providerDeleteAvailable("relay-a", "relay-a", 2), false);
     assert.equal(commitModule.providerDeleteAvailable("relay-b", "relay-a", 2), true);
     assert.equal(commitModule.providerDeleteAvailable("relay-b", "relay-a", 1), false);
+    assert.equal(commitModule.managedCatalogCapable(firstProfile), true);
+    assert.equal(commitModule.managedCatalogCapable({ ...firstProfile, protocol: "chatCompletions" }), false);
+
+    let state: { latestRevision: number; baseline: string | null } = {
+      latestRevision: 0,
+      baseline: "persisted-0",
+    };
+    state = commitModule.registerProviderCommit(state, 1);
+    // A local builder failure for the next draft never registers revision 2.
+    let settled = commitModule.settleProviderCommit(state, 1, true, "persisted-1");
+    assert.equal(settled.disposition, "apply");
+    assert.equal(settled.state.baseline, "persisted-1");
+
+    state = commitModule.registerProviderCommit(settled.state, 2);
+    state = commitModule.registerProviderCommit(state, 3);
+    settled = commitModule.settleProviderCommit(state, 2, true, "persisted-2");
+    assert.equal(settled.disposition, "adopt-baseline");
+    assert.equal(settled.state.baseline, "persisted-2");
+    settled = commitModule.settleProviderCommit(settled.state, 3, false, null);
+    assert.equal(settled.disposition, "report");
+    assert.equal(settled.state.baseline, "persisted-2");
+    assert.equal(commitModule.settleProviderCommit(settled.state, 2, false, null).disposition, "ignore");
   });
 
   it("builds the literal first-save envelope and supplies an implicit mixed catalog draft", () => {
