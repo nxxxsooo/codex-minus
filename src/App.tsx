@@ -4732,6 +4732,12 @@ function applyRelayProfilePatchToFiles(
   if (isAggregateRelayProfile(next)) {
     return normalizeAggregateRelayProfile(next, null);
   }
+  if (
+    options.target.source === "existing"
+    && ("relayMode" in patch || "officialMixApiKey" in patch)
+  ) {
+    return { ...profile, authContents: "" };
+  }
   const shouldHaveFiles =
     next.relayMode !== "official" || next.officialMixApiKey || next.configContents.trim();
   if (options.allowGenerateFiles && shouldHaveFiles && !next.configContents.trim()) {

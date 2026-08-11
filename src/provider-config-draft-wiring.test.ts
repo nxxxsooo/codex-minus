@@ -22,6 +22,10 @@ describe("provider config draft wiring", () => {
     assert.match(generate, /withGeneratedRelayConfig\(profile, contract\)/);
     assert.match(patch, /withGeneratedRelayFiles\(next, options\.target\)/);
     assert.match(patch, /applyProviderConfigPatch\(next, patch, options\.target\)/);
+    assert.match(
+      patch,
+      /options\.target\.source === "existing"[\s\S]*?"relayMode" in patch[\s\S]*?return \{ \.\.\.profile, authContents: "" \}/,
+    );
     assert.doesNotMatch(source, /ensureCodexProviderDefaults/);
   });
 

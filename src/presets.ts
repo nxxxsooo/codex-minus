@@ -23,6 +23,33 @@ export interface ProviderPreset {
   modelList?: string[];
 }
 
+export type ProviderPresetPatch = {
+  name: string;
+  baseUrl: string;
+  upstreamBaseUrl: string;
+  protocol: RelayProtocol;
+  model: string;
+  testModel: string;
+  modelList: string;
+  relayMode: "official" | "pureApi";
+  officialMixApiKey: boolean;
+};
+
+export function createPresetPatch(preset: ProviderPreset): ProviderPresetPatch {
+  const nativePriority = preset.category === "official" && preset.protocol === "responses";
+  return {
+    name: preset.name,
+    baseUrl: preset.baseUrl,
+    upstreamBaseUrl: preset.baseUrl,
+    protocol: preset.protocol,
+    model: preset.model,
+    testModel: preset.model,
+    modelList: preset.modelList?.join("\n") ?? "",
+    relayMode: nativePriority ? "official" : "pureApi",
+    officialMixApiKey: nativePriority,
+  };
+}
+
 /**
  * 预设列表。选择任一预设会自动填充：
  * - name     → 供应商名称

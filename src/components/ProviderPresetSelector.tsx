@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import type { ProviderPreset, RelayProtocol } from "../presets";
-import { PRESETS } from "../presets";
+import { createPresetPatch, PRESETS } from "../presets";
 import { t, tf } from "@/i18n";
 
 export type RelayProfile = {
@@ -36,20 +36,6 @@ const categoryLabels: Record<string, string> = {
 const initialFor = (name: string): string => {
   return name.charAt(0).toUpperCase();
 };
-
-export function createPresetPatch(preset: ProviderPreset): PresetPatch {
-  return {
-    name: preset.name,
-    baseUrl: preset.baseUrl,
-    upstreamBaseUrl: preset.baseUrl,
-    protocol: preset.protocol,
-    model: preset.model,
-    testModel: preset.model,
-    modelList: preset.modelList?.join("\n") ?? "",
-    relayMode: preset.category === "official" ? "official" : "pureApi",
-    officialMixApiKey: false,
-  };
-}
 
 export function ProviderPresetSelector({
   onSelect,
