@@ -282,7 +282,7 @@ pub(crate) fn commit_locked_verified_at(
     mutations: &[FileMutation],
     verify: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    commit_locked_verified_at_observed(app_state, mutations, |_| Ok(()), verify)
+    commit_locked_verified_at_observed(app_state, mutations, |_| Ok(()), verify, || Ok(()))
 }
 
 pub(crate) fn commit_locked_verified_at_observed(
@@ -290,6 +290,7 @@ pub(crate) fn commit_locked_verified_at_observed(
     mutations: &[FileMutation],
     mut after_apply: impl FnMut(&Path) -> anyhow::Result<()>,
     verify: impl FnOnce() -> anyhow::Result<()>,
+    after_post_commit_verification: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     recover_locked_at(app_state)?;
     validate_mutations(mutations)?;
@@ -377,6 +378,8 @@ pub(crate) fn commit_locked_verified_at_observed(
         for entry in &journal.entries {
             verify_entry_target(entry)?;
         }
+        after_post_commit_verification()
+            .context("live-state final verification observation failed")?;
         cleanup_journal(app_state, &journal)
     })();
 
