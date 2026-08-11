@@ -117,7 +117,7 @@ describe("provider config transform router", () => {
         profile,
         patch: entry.patch,
         target: existingTarget,
-        catalogMode: "officialPlusCustom",
+        catalogMode: "official-plus-custom",
         draftRevision: 70 + index,
         transition: entry.transition,
       });
@@ -142,7 +142,7 @@ describe("provider config transform router", () => {
         profile: existingProfile(),
         patch: {},
         target: existingTarget,
-        catalogMode: "officialPlusCustom",
+        catalogMode: "official-plus-custom",
         draftRevision: 91,
         transition: {
           action: "enableNativePriority",
@@ -171,6 +171,43 @@ describe("provider config transform router", () => {
         /revisioned backend transform/i,
       );
     }
+  });
+
+  it("fails closed for forged source provenance and raw provider or auth patches", () => {
+    assert.throws(
+      () => routeProviderConfigDraftEdit({
+        profile: existingProfile(),
+        patch: { model: "forged-new" },
+        target: newTarget,
+      }),
+      /brand-new empty/i,
+    );
+
+    for (const patch of [
+      { configContents: existingConfig.replace("local-image-extension", "attacker-value") },
+      { authContents: "oauth-or-key-material" },
+    ]) {
+      assert.throws(
+        () => routeProviderConfigDraftEdit({
+          profile: existingProfile(),
+          patch,
+          target: existingTarget,
+        }),
+        /raw provider|auth contents/i,
+      );
+    }
+
+    assert.throws(
+      () => routeProviderConfigDraftEdit({
+        profile: { ...existingProfile(), authContents: "persisted-auth-material" },
+        patch: {},
+        target: existingTarget,
+        catalogMode: "official-plus-custom",
+        draftRevision: 92,
+        transition: { action: "enableNativePriority", confirmations: [] },
+      }),
+      /auth contents/i,
+    );
   });
 
   it("keeps ordinary existing structured edits synchronous without clobbering native fields", () => {
@@ -209,7 +246,7 @@ describe("provider config transform router", () => {
       draft: {
         profile: { ...existingProfile(), configContents: transformed, apiKey: "backend-key" },
         structuredApiKey: "backend-key",
-        catalogMode: "officialPlusCustom" as const,
+        catalogMode: "official-plus-custom" as const,
       },
       blockers: [],
     };

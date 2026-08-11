@@ -3,12 +3,9 @@ import {
   type ProviderConfigProfile,
   type ProviderConfigTargetContract,
 } from "./provider-config-draft.ts";
+import type { CatalogModeValue } from "./model-catalog-ui.ts";
 
-export type ProviderCatalogMode =
-  | "nativeOfficial"
-  | "officialPlusCustom"
-  | "customOnly"
-  | "external";
+export type ProviderCatalogMode = CatalogModeValue;
 
 export type ProviderDraftTransformAction =
   | "enableNativePriority"
@@ -74,7 +71,16 @@ const BACKEND_TRANSFORM_FIELDS = ["relayMode", "officialMixApiKey", "protocol"] 
 export function routeProviderConfigDraftEdit<P extends ProviderConfigRoutableProfile>(
   input: RouteProviderConfigDraftEditInput<P>,
 ): RoutedProviderConfigEdit<P> {
+  if (input.profile.authContents?.trim() || "authContents" in input.patch) {
+    throw new Error("Provider auth contents are forbidden in draft transforms.");
+  }
+  if ("configContents" in input.patch) {
+    throw new Error("Raw provider TOML changes require a dedicated backend transform.");
+  }
   if (input.target.source === "brand-new-empty") {
+    if (input.profile.configContents.trim()) {
+      throw new Error("The brand-new empty target cannot be used for existing provider TOML.");
+    }
     if (input.transition) {
       throw new Error("A brand-new empty draft must use the synchronous target builder.");
     }

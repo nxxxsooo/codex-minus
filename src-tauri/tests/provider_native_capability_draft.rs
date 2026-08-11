@@ -38,6 +38,42 @@ fn request(
     }
 }
 
+#[test]
+fn typescript_transform_request_shape_deserializes_through_the_real_serde_boundary() {
+    let profile = mixed_profile("serde", "same-secret", &canonical_source("inline"));
+    let wire = serde_json::json!({
+        "draftRevision": 73,
+        "profile": profile,
+        "catalogMode": "official-plus-custom",
+        "action": "enableNativePriority",
+        "confirmations": ["replaceActorHeader", "useStructuredKey"]
+    });
+
+    let request: ProviderNativeCapabilityDraftRequest = serde_json::from_value(wire).unwrap();
+    assert_eq!(request.draft_revision, 73);
+    assert_eq!(request.catalog_mode, CatalogMode::OfficialPlusCustom);
+    assert_eq!(
+        request.action,
+        NativeCapabilityDraftAction::EnableNativePriority
+    );
+    assert_eq!(
+        request.confirmations,
+        vec![
+            NativeCapabilityDraftConfirmation::ReplaceActorHeader,
+            NativeCapabilityDraftConfirmation::UseStructuredKey,
+        ]
+    );
+
+    let wrong_case = serde_json::json!({
+        "draftRevision": 74,
+        "profile": mixed_profile("serde-wrong", "same-secret", &canonical_source("inline")),
+        "catalogMode": "officialPlusCustom",
+        "action": "enableNativePriority",
+        "confirmations": []
+    });
+    assert!(serde_json::from_value::<ProviderNativeCapabilityDraftRequest>(wrong_case).is_err());
+}
+
 fn parsed(
     payload: &codex_minus_lib::provider_native_capability::ProviderNativeCapabilityDraftPayload,
 ) -> DocumentMut {
