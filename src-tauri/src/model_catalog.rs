@@ -378,11 +378,13 @@ pub(crate) fn classify_managed_catalog_readiness(
     profile_state: &ProfileCatalogState,
     scope_current: bool,
 ) -> ManagedCatalogReadiness {
-    if profile_state.mode == CatalogMode::OfficialPlusCustom && state.official.is_none() {
-        return ManagedCatalogReadiness::Missing;
-    }
-    if !scope_current {
-        return ManagedCatalogReadiness::ScopeStale;
+    if profile_state.mode == CatalogMode::OfficialPlusCustom {
+        if state.official.is_none() {
+            return ManagedCatalogReadiness::Missing;
+        }
+        if !scope_current {
+            return ManagedCatalogReadiness::ScopeStale;
+        }
     }
     match compose_profile_catalog(state, profile, profile_state) {
         Ok(_) => ManagedCatalogReadiness::Ready,

@@ -1720,6 +1720,77 @@ fn topology_adapter_commits_list_mutations_through_the_shared_provider_transacti
 }
 
 #[test]
+fn topology_copy_uses_trusted_catalog_scope_and_saves_stale_copy_action_required() {
+    let official = pure_oauth_profile("official");
+    let source = canonical_profile(
+        "relay-source",
+        "official-a",
+        "https://source.example/v1",
+        "provider-key-source",
+    );
+    let initial = settings_with(vec![official, source], "official");
+    let mut catalog_state = stale_scope_state();
+    catalog_state
+        .profiles
+        .entry("relay-source".to_string())
+        .or_default()
+        .mode = CatalogMode::OfficialPlusCustom;
+    let fixture = Fixture::new(&initial, &catalog_state);
+    let persisted = fixture.read_settings();
+    let source_state_before = fixture.read_state().profiles["relay-source"].clone();
+    let mut copy = persisted
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == "relay-source")
+        .unwrap()
+        .clone();
+    copy.id = "relay-copy".to_string();
+    copy.name = "Relay copy".to_string();
+    let mut next = persisted.clone();
+    next.relay_profiles.push(copy);
+    let request = ProviderCommitRequest {
+        topology: ProviderOwnedTopologyDraft::from_settings(&next),
+        catalog_drafts: vec![catalog_draft("relay-copy")],
+        focused_profile_id: None,
+        action: ProviderCommitAction::Save,
+        previous_active_relay_id: persisted.active_relay_id.clone(),
+        confirm_context_cleanup: false,
+        draft_revision: 72,
+        expected_provider_fingerprint: provider_owned_fingerprint(
+            &ProviderOwnedTopologyDraft::from_settings(&persisted),
+        )
+        .unwrap(),
+    };
+    let live_before = fs::read(fixture.paths.codex_home.join("config.toml")).unwrap();
+    let auth_before = fs::read(fixture.paths.codex_home.join("auth.json")).unwrap();
+
+    let payload = commit_provider_detail_from_paths(&fixture.paths, request).unwrap();
+
+    let saved_state = fixture.read_state();
+    let copied_state = &saved_state.profiles["relay-copy"];
+    assert_eq!(payload.draft_revision, 72);
+    assert_eq!(
+        copied_state.action_required.as_deref(),
+        Some("catalog-readiness-unavailable")
+    );
+    assert!(copied_state.generated_hash.is_none());
+    assert!(copied_state.generated_path.is_none());
+    assert!(!copied_state.restart_required);
+    assert_eq!(
+        serde_json::to_value(&saved_state.profiles["relay-source"]).unwrap(),
+        serde_json::to_value(source_state_before).unwrap()
+    );
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join("config.toml")).unwrap(),
+        live_before
+    );
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
+        auth_before
+    );
+}
+
+#[test]
 fn topology_adapter_rejects_active_detail_and_catalog_bypasses_without_mutation() {
     let active = canonical_profile(
         "relay-a",
@@ -2387,6 +2458,134 @@ fn inactive_catalog_readiness_failures_persist_action_required_without_live_clai
             "{label}"
         );
     }
+}
+
+#[test]
+fn inactive_readiness_failure_preserves_the_last_valid_catalog_artifact() {
+    let persisted = settings_with(vec![pure_oauth_profile("official")], "official");
+    let fixture = Fixture::new(&persisted, &state_with_official());
+    let persisted = fixture.read_settings();
+    let mut first = persisted.clone();
+    first.relay_profiles.push(canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    ));
+    commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(
+            &persisted,
+            &first,
+            "sub2api",
+            ProviderCommitAction::Save,
+            73,
+        ),
+    )
+    .unwrap();
+
+    let mut stale_state = fixture.read_state();
+    let prior_profile_state = stale_state.profiles["sub2api"].clone();
+    let generated_path = prior_profile_state.generated_path.as_ref().unwrap().clone();
+    let generated_before = fs::read(fixture.paths.codex_home.join(&generated_path)).unwrap();
+    let scope_salt = stale_state.scope_salt.clone();
+    stale_state.official.as_mut().unwrap().scope_hash =
+        official_scope_hash(&scope_salt, "different-account", "workspace-a");
+    fs::write(
+        &fixture.paths.catalog_state_path,
+        serde_json::to_vec_pretty(&stale_state).unwrap(),
+    )
+    .unwrap();
+    let live_before = fs::read(fixture.paths.codex_home.join("config.toml")).unwrap();
+    let auth_before = fs::read(fixture.paths.codex_home.join("auth.json")).unwrap();
+    let persisted = fixture.read_settings();
+
+    commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(
+            &persisted,
+            &persisted,
+            "sub2api",
+            ProviderCommitAction::Save,
+            74,
+        ),
+    )
+    .unwrap();
+
+    let saved_state = fixture.read_state();
+    let mut expected_profile_state = prior_profile_state;
+    expected_profile_state.action_required = Some("catalog-readiness-unavailable".to_string());
+    assert_eq!(
+        serde_json::to_value(&saved_state.profiles["sub2api"]).unwrap(),
+        serde_json::to_value(expected_profile_state).unwrap()
+    );
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join(generated_path)).unwrap(),
+        generated_before
+    );
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join("config.toml")).unwrap(),
+        live_before
+    );
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
+        auth_before
+    );
+}
+
+#[test]
+fn active_readiness_failure_preserves_a_preexisting_valid_catalog_generation() {
+    let official = pure_oauth_profile("official");
+    let provider = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    let persisted = settings_with(vec![official, provider], "official");
+    let fixture = Fixture::new(&persisted, &state_with_official());
+    let persisted = fixture.read_settings();
+    let mut active = persisted.clone();
+    active.active_relay_id = "sub2api".to_string();
+    commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(
+            &persisted,
+            &active,
+            "sub2api",
+            ProviderCommitAction::SetCurrent,
+            75,
+        ),
+    )
+    .unwrap();
+
+    let mut stale_state = fixture.read_state();
+    assert!(stale_state.profiles["sub2api"].generated_path.is_some());
+    let scope_salt = stale_state.scope_salt.clone();
+    stale_state.official.as_mut().unwrap().scope_hash =
+        official_scope_hash(&scope_salt, "different-account", "workspace-a");
+    fs::write(
+        &fixture.paths.catalog_state_path,
+        serde_json::to_vec_pretty(&stale_state).unwrap(),
+    )
+    .unwrap();
+    let before = fixture.file_generation();
+    let persisted = fixture.read_settings();
+
+    let error = commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(
+            &persisted,
+            &persisted,
+            "sub2api",
+            ProviderCommitAction::Save,
+            76,
+        ),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code(), ProviderCommitErrorCode::CatalogScopeStale);
+    assert_eq!(fixture.file_generation(), before);
 }
 
 #[test]

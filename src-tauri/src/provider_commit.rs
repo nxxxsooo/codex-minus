@@ -694,11 +694,18 @@ fn plan_provider_detail_commit(
     persisted_state: &CatalogState,
     request: &ProviderCommitRequest,
 ) -> anyhow::Result<ProviderCommitPlan> {
+    let readiness = CatalogReadinessInput {
+        scope_current_by_profile: request
+            .catalog_drafts
+            .iter()
+            .map(|draft| (draft.profile_id.clone(), true))
+            .collect(),
+    };
     plan_provider_detail_commit_with_readiness(
         persisted_settings,
         persisted_state,
         request,
-        &CatalogReadinessInput::default(),
+        &readiness,
     )
 }
 
@@ -723,11 +730,11 @@ pub(crate) fn plan_provider_detail_commit_with_readiness(
     )
 }
 
-pub fn plan_provider_topology_commit(
+pub(crate) fn validate_provider_topology_request(
     persisted_settings: &BackendSettings,
     persisted_state: &CatalogState,
     request: &ProviderCommitRequest,
-) -> anyhow::Result<ProviderCommitPlan> {
+) -> anyhow::Result<()> {
     ensure!(
         request.focused_profile_id.is_none(),
         "topology request cannot select a focused provider profile"
@@ -736,13 +743,43 @@ pub fn plan_provider_topology_commit(
         request.action == ProviderCommitAction::Save,
         "topology request supports save only"
     );
-    validate_common_request(persisted_settings, persisted_state, request)?;
+    validate_common_request(persisted_settings, persisted_state, request)
+}
+
+#[cfg(test)]
+fn plan_provider_topology_commit(
+    persisted_settings: &BackendSettings,
+    persisted_state: &CatalogState,
+    request: &ProviderCommitRequest,
+) -> anyhow::Result<ProviderCommitPlan> {
+    let readiness = CatalogReadinessInput {
+        scope_current_by_profile: request
+            .catalog_drafts
+            .iter()
+            .map(|draft| (draft.profile_id.clone(), true))
+            .collect(),
+    };
+    plan_provider_topology_commit_with_readiness(
+        persisted_settings,
+        persisted_state,
+        request,
+        &readiness,
+    )
+}
+
+pub(crate) fn plan_provider_topology_commit_with_readiness(
+    persisted_settings: &BackendSettings,
+    persisted_state: &CatalogState,
+    request: &ProviderCommitRequest,
+    readiness: &CatalogReadinessInput,
+) -> anyhow::Result<ProviderCommitPlan> {
+    validate_provider_topology_request(persisted_settings, persisted_state, request)?;
     plan_validated_request(
         persisted_settings,
         persisted_state,
         request,
         request.catalog_drafts.clone(),
-        &CatalogReadinessInput::default(),
+        readiness,
     )
 }
 
@@ -799,7 +836,7 @@ fn plan_validated_request(
             .scope_current_by_profile
             .get(&draft.profile_id)
             .copied()
-            .unwrap_or(true);
+            .unwrap_or(false);
         let catalog_readiness = model_catalog::classify_managed_catalog_readiness(
             &catalog_state,
             profile,
