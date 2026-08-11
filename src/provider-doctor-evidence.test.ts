@@ -231,6 +231,7 @@ describe("Provider Doctor capability evidence", () => {
       sessionToken,
       revision: 3,
       catalogEvidenceFingerprint: "catalog-a",
+      sourceFingerprint: "profile-a@rows-1",
       evidence,
     };
     assert.equal(mergeCurrentProviderProbeObservation({
@@ -239,6 +240,7 @@ describe("Provider Doctor capability evidence", () => {
       currentSessionToken: sessionToken,
       currentRevision: 3,
       currentCatalogEvidenceFingerprint: "catalog-a",
+      currentSourceFingerprint: "profile-a@rows-1",
     }), null);
 
     const ledger = buildProviderCapabilityLedger({
@@ -258,6 +260,7 @@ describe("Provider Doctor capability evidence", () => {
       currentSessionToken: sessionToken,
       currentRevision: 3,
       currentCatalogEvidenceFingerprint: "catalog-a",
+      currentSourceFingerprint: "profile-a@rows-1",
     })?.upstream.textResponses, "reachable");
     assert.equal(mergeCurrentProviderProbeObservation({
       ledger,
@@ -265,6 +268,15 @@ describe("Provider Doctor capability evidence", () => {
       currentSessionToken: sessionToken,
       currentRevision: 4,
       currentCatalogEvidenceFingerprint: "catalog-a",
+      currentSourceFingerprint: "profile-a@rows-1",
+    })?.upstream.textResponses, "unknown");
+    assert.equal(mergeCurrentProviderProbeObservation({
+      ledger,
+      observation,
+      currentSessionToken: sessionToken,
+      currentRevision: 3,
+      currentCatalogEvidenceFingerprint: "catalog-a",
+      currentSourceFingerprint: "profile-a@rows-2",
     })?.upstream.textResponses, "unknown");
   });
 });

@@ -29,6 +29,7 @@ describe("Provider Doctor evidence wiring", () => {
     )?.[0] ?? "";
     assert.match(apply, /JSON\.stringify\(probedProfile\).*JSON\.stringify\(currentDetail\.profile\)/s);
     assert.match(apply, /capabilityEvidenceRefreshAllowedForState/);
+    assert.match(apply, /sourceFingerprint.*doctorEvidenceSourceFingerprintRef\.current/s);
     assert.match(apply, /setDoctorEvidenceObservation/);
     assert.doesNotMatch(apply, /transformProvider|commitProvider|saveSettings|configContents|authContents/);
     const display = appSource.match(
@@ -38,6 +39,7 @@ describe("Provider Doctor evidence wiring", () => {
     assert.match(display, /observation:\s*doctorEvidenceObservation/);
     assert.match(display, /currentRevision:\s*detailState\.latestTransformRevision/);
     assert.match(display, /currentCatalogEvidenceFingerprint/);
+    assert.match(display, /currentSourceFingerprint:\s*doctorEvidenceSourceFingerprint/);
   });
 
   it("keeps the existing Doctor request as the only operation and rejects stale source responses", () => {

@@ -3307,27 +3307,37 @@ function RelayProfileDetail({
     && capabilityEvidenceLoad.sourceFingerprint === capabilityEvidenceCatalogSourceFingerprint
     ? capabilityEvidenceLoad.ledger
     : null;
+  const doctorEvidenceSourceFingerprint = JSON.stringify({
+    profile: detailState.profile,
+    modelWindowRows,
+  });
+  const doctorEvidenceSourceFingerprintRef = useRef(doctorEvidenceSourceFingerprint);
+  doctorEvidenceSourceFingerprintRef.current = doctorEvidenceSourceFingerprint;
   const displayedCapabilityLedger = mergeCurrentProviderProbeObservation({
     ledger: displayedBaseCapabilityLedger,
     observation: doctorEvidenceObservation,
     currentSessionToken: detailState.sessionToken,
     currentRevision: detailState.latestTransformRevision,
     currentCatalogEvidenceFingerprint: capabilityEvidenceCatalogSourceFingerprint,
+    currentSourceFingerprint: doctorEvidenceSourceFingerprint,
   });
   const capabilityOwnershipCopy = providerCapabilityOwnershipCopy(getLanguage());
   const applyDoctorEvidence = (
     probedProfile: RelayProfile,
     evidence: ProviderProbeCapabilityEvidence,
+    sourceFingerprint: string,
   ) => {
     const currentDetail = detailStateRef.current;
     if (
       JSON.stringify(probedProfile) !== JSON.stringify(currentDetail.profile)
       || !capabilityEvidenceRefreshAllowedForState(currentDetail)
+      || sourceFingerprint !== doctorEvidenceSourceFingerprintRef.current
     ) return;
     setDoctorEvidenceObservation({
       sessionToken: currentDetail.sessionToken,
       revision: currentDetail.latestTransformRevision,
       catalogEvidenceFingerprint: capabilityEvidenceCatalogSourceFingerprint,
+      sourceFingerprint,
       evidence,
     });
   };
@@ -3449,7 +3459,11 @@ function RelayProfileDetail({
   ]);
   useEffect(() => {
     setDoctorEvidenceObservation(null);
-  }, [authoritativeCapabilityProfileRevision, capabilityEvidenceCatalogSourceFingerprint]);
+  }, [
+    authoritativeCapabilityProfileRevision,
+    capabilityEvidenceCatalogSourceFingerprint,
+    doctorEvidenceSourceFingerprint,
+  ]);
   const replaceDraft = (next: RelayProfile) => {
     updateDetailState(replaceProviderDetailProfile(detailStateRef.current, next));
   };
@@ -3886,7 +3900,11 @@ function RelayProfileEditor({
   onProfileChange: (value: RelayProfile) => void;
   onProfileEdit?: (patch: Partial<RelayProfile>) => void;
   onSwitch: () => void;
-  onDoctorEvidence?: (profile: RelayProfile, evidence: ProviderProbeCapabilityEvidence) => void;
+  onDoctorEvidence?: (
+    profile: RelayProfile,
+    evidence: ProviderProbeCapabilityEvidence,
+    sourceFingerprint: string,
+  ) => void;
   actions: Actions;
   modelWindowRows: ModelWindowRow[];
   setModelWindowRows: (value: ModelWindowRow[]) => void;
@@ -3955,13 +3973,17 @@ function RelayProfileEditor({
       currentSourceFingerprint: doctorSourceRevisionRef.current,
     })) return;
     setDoctorResult(result);
-    onDoctorEvidence?.(probedProfile, providerDoctorEvidence({
-      status: result?.status ?? "failed",
-      protocol: probedProfile.protocol,
-      requestHttpStatus: result?.requestHttpStatus ?? null,
-      compatibilityFallbackUsed: result?.compatibilityFallbackUsed ?? false,
-      checks: result?.checks ?? [],
-    }));
+    onDoctorEvidence?.(
+      probedProfile,
+      providerDoctorEvidence({
+        status: result?.status ?? "failed",
+        protocol: probedProfile.protocol,
+        requestHttpStatus: result?.requestHttpStatus ?? null,
+        compatibilityFallbackUsed: result?.compatibilityFallbackUsed ?? false,
+        checks: result?.checks ?? [],
+      }),
+      requestSourceFingerprint,
+    );
     setDoctorRunning(false);
   };
   return (

@@ -18,6 +18,7 @@ export type ProviderProbeEvidenceObservation = {
   sessionToken: symbol;
   revision: number;
   catalogEvidenceFingerprint: string;
+  sourceFingerprint: string;
   evidence: ProviderProbeCapabilityEvidence;
 };
 
@@ -106,6 +107,7 @@ export function mergeCurrentProviderProbeObservation(input: {
   currentSessionToken: symbol;
   currentRevision: number;
   currentCatalogEvidenceFingerprint: string;
+  currentSourceFingerprint: string;
 }): ProviderCapabilityLedger | null {
   if (!input.ledger) return null;
   if (
@@ -114,6 +116,7 @@ export function mergeCurrentProviderProbeObservation(input: {
     || input.observation.revision !== input.currentRevision
     || input.observation.catalogEvidenceFingerprint
       !== input.currentCatalogEvidenceFingerprint
+    || input.observation.sourceFingerprint !== input.currentSourceFingerprint
   ) return input.ledger;
   return mergeProviderProbeEvidence(input.ledger, input.observation.evidence);
 }
