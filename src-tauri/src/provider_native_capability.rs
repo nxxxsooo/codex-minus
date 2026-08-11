@@ -3,7 +3,7 @@ use std::path::Path;
 
 use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol};
 use serde::{Deserialize, Serialize};
-use toml_edit::{DocumentMut, Item, TableLike};
+use toml_edit::{DocumentMut, InlineTable, Item, TableLike, Value, value};
 
 use crate::commands::CommandResult;
 
@@ -93,6 +93,77 @@ pub enum NativeCapabilityReason {
     ActorHeaderValueConflict,
     DuplicateActorHeader,
     MalformedHeaderStructure,
+    InvalidDraftRevision,
+    ReplacementProviderIdRequired,
+    ReplacementProviderIdInvalid,
+    ReplacementProviderIdUnavailable,
+    ConflictingKeySynchronization,
+    DestructiveExitConfirmationRequired,
+    CapabilityLossConfirmationRequired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NativeCapabilityDraftAction {
+    Inspect,
+    EnableNativePriority,
+    ExitPureApi,
+    ExitLegacyCompatibility,
+    ExitPureOAuth,
+    ExitChatCompletions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NativeCapabilityDraftConfirmation {
+    ReplaceActorHeader,
+    UseStructuredKey,
+    UseProviderBearer,
+    ConfirmDestructivePureOAuth,
+    ConfirmCapabilityLoss,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NativeCapabilityDraftStatus {
+    Ready,
+    Blocked,
+    ConfirmationRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderNativeCapabilityDraftRequest {
+    pub draft_revision: u64,
+    pub profile: RelayProfile,
+    pub catalog_mode: CatalogMode,
+    pub action: NativeCapabilityDraftAction,
+    #[serde(default)]
+    pub confirmations: Vec<NativeCapabilityDraftConfirmation>,
+    #[serde(default)]
+    pub replacement_provider_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderNativeCapabilityDraftPreview {
+    pub capability_loss: bool,
+    pub removes_provider_table: bool,
+    pub removed_provider_id: Option<String>,
+    pub removed_provider_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderNativeCapabilityDraftPayload {
+    pub draft_revision: u64,
+    pub status: NativeCapabilityDraftStatus,
+    pub profile: RelayProfile,
+    pub structured_api_key: String,
+    pub catalog_mode: CatalogMode,
+    pub inspection: ProviderNativeCapabilityInspection,
+    pub blockers: Vec<NativeCapabilityReason>,
+    pub preview: ProviderNativeCapabilityDraftPreview,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -573,6 +644,743 @@ pub fn inspect_profiles(
             inspect_profile(profile, mode)
         })
         .collect())
+}
+
+pub fn draft_provider_native_capability(
+    request: &ProviderNativeCapabilityDraftRequest,
+) -> ProviderNativeCapabilityDraftPayload {
+    if request.draft_revision == 0 {
+        return unchanged_draft_payload(
+            request,
+            NativeCapabilityDraftStatus::Blocked,
+            vec![NativeCapabilityReason::InvalidDraftRevision],
+            ProviderNativeCapabilityDraftPreview::default(),
+        );
+    }
+
+    match request.action {
+        NativeCapabilityDraftAction::Inspect => ready_draft_payload(
+            request,
+            request.profile.clone(),
+            request.catalog_mode,
+            ProviderNativeCapabilityDraftPreview::default(),
+        ),
+        NativeCapabilityDraftAction::EnableNativePriority => enable_native_priority_draft(request),
+        NativeCapabilityDraftAction::ExitPureApi
+        | NativeCapabilityDraftAction::ExitLegacyCompatibility
+        | NativeCapabilityDraftAction::ExitChatCompletions => compatibility_exit_draft(request),
+        NativeCapabilityDraftAction::ExitPureOAuth => pure_oauth_exit_draft(request),
+    }
+}
+
+#[tauri::command]
+pub fn transform_provider_native_capability_draft(
+    request: ProviderNativeCapabilityDraftRequest,
+) -> ProviderNativeCapabilityDraftPayload {
+    draft_provider_native_capability(&request)
+}
+
+fn enable_native_priority_draft(
+    request: &ProviderNativeCapabilityDraftRequest,
+) -> ProviderNativeCapabilityDraftPayload {
+    if request.catalog_mode == CatalogMode::External {
+        return unchanged_draft_payload(
+            request,
+            NativeCapabilityDraftStatus::Blocked,
+            vec![NativeCapabilityReason::ExternalCatalog],
+            ProviderNativeCapabilityDraftPreview::default(),
+        );
+    }
+
+    let mut profile = request.profile.clone();
+    let mut document = match profile.config_contents.parse::<DocumentMut>() {
+        Ok(document) => document,
+        Err(_) => {
+            return unchanged_draft_payload(
+                request,
+                NativeCapabilityDraftStatus::Blocked,
+                vec![NativeCapabilityReason::MalformedToml],
+                ProviderNativeCapabilityDraftPreview::default(),
+            );
+        }
+    };
+    let provider_id = match selected_provider_id(&document) {
+        Ok(provider_id) => provider_id,
+        Err(reason) => {
+            return unchanged_draft_payload(
+                request,
+                NativeCapabilityDraftStatus::Blocked,
+                vec![reason],
+                ProviderNativeCapabilityDraftPreview::default(),
+            );
+        }
+    };
+    let provider_id = if LEGACY_PROVIDER_IDS.contains(&provider_id.as_str()) {
+        match migrate_legacy_provider_id(
+            &mut document,
+            &provider_id,
+            request.replacement_provider_id.as_deref(),
+        ) {
+            Ok(provider_id) => provider_id,
+            Err(reason) => {
+                return unchanged_draft_payload(
+                    request,
+                    NativeCapabilityDraftStatus::Blocked,
+                    vec![reason],
+                    ProviderNativeCapabilityDraftPreview::default(),
+                );
+            }
+        }
+    } else {
+        if provider_id == RESERVED_PROVIDER_ID {
+            return unchanged_draft_payload(
+                request,
+                NativeCapabilityDraftStatus::Blocked,
+                vec![NativeCapabilityReason::ReservedProviderId],
+                ProviderNativeCapabilityDraftPreview::default(),
+            );
+        }
+        provider_id
+    };
+
+    let (raw_bearer, actor_header) = match provider_contract_inputs(&document, &provider_id) {
+        Ok(inputs) => inputs,
+        Err(reason) => {
+            return unchanged_draft_payload(
+                request,
+                NativeCapabilityDraftStatus::Blocked,
+                vec![reason],
+                ProviderNativeCapabilityDraftPreview::default(),
+            );
+        }
+    };
+    let use_structured =
+        has_confirmation(request, NativeCapabilityDraftConfirmation::UseStructuredKey);
+    let use_bearer = has_confirmation(
+        request,
+        NativeCapabilityDraftConfirmation::UseProviderBearer,
+    );
+    if use_structured && use_bearer {
+        return unchanged_draft_payload(
+            request,
+            NativeCapabilityDraftStatus::Blocked,
+            vec![NativeCapabilityReason::ConflictingKeySynchronization],
+            ProviderNativeCapabilityDraftPreview::default(),
+        );
+    }
+    let structured_key = profile.api_key.trim().to_string();
+    let raw_bearer = raw_bearer.map(|value| value.trim().to_string());
+    let selected_bearer = match (structured_key.is_empty(), raw_bearer.as_deref()) {
+        (true, None | Some("")) => {
+            return unchanged_draft_payload(
+                request,
+                NativeCapabilityDraftStatus::Blocked,
+                vec![NativeCapabilityReason::MissingProviderBearer],
+                ProviderNativeCapabilityDraftPreview::default(),
+            );
+        }
+        (true, Some(raw)) => {
+            profile.api_key = raw.to_string();
+            raw.to_string()
+        }
+        (false, None | Some("")) => structured_key,
+        (false, Some(raw)) if raw == structured_key => structured_key,
+        (false, Some(_)) if use_structured => structured_key,
+        (false, Some(raw)) if use_bearer => {
+            profile.api_key = raw.to_string();
+            raw.to_string()
+        }
+        (false, Some(_)) => {
+            return unchanged_draft_payload(
+                request,
+                NativeCapabilityDraftStatus::ConfirmationRequired,
+                vec![NativeCapabilityReason::StructuredKeyBearerConflict],
+                ProviderNativeCapabilityDraftPreview::default(),
+            );
+        }
+    };
+
+    match actor_header {
+        ActorHeaderDraftState::Conflict(_)
+            if !has_confirmation(
+                request,
+                NativeCapabilityDraftConfirmation::ReplaceActorHeader,
+            ) =>
+        {
+            return unchanged_draft_payload(
+                request,
+                NativeCapabilityDraftStatus::ConfirmationRequired,
+                vec![NativeCapabilityReason::ActorHeaderValueConflict],
+                ProviderNativeCapabilityDraftPreview::default(),
+            );
+        }
+        ActorHeaderDraftState::Duplicate => {
+            return unchanged_draft_payload(
+                request,
+                NativeCapabilityDraftStatus::Blocked,
+                vec![NativeCapabilityReason::DuplicateActorHeader],
+                ProviderNativeCapabilityDraftPreview::default(),
+            );
+        }
+        ActorHeaderDraftState::Malformed => {
+            return unchanged_draft_payload(
+                request,
+                NativeCapabilityDraftStatus::Blocked,
+                vec![NativeCapabilityReason::MalformedHeaderStructure],
+                ProviderNativeCapabilityDraftPreview::default(),
+            );
+        }
+        _ => {}
+    }
+
+    let provider = document
+        .get_mut("model_providers")
+        .and_then(Item::as_table_like_mut)
+        .and_then(|providers| providers.get_mut(&provider_id))
+        .and_then(Item::as_table_like_mut)
+        .expect("provider shape was validated before mutation");
+    set_string_preserving_decor(provider, "name", MANAGED_PROVIDER_NAME);
+    set_string_preserving_decor(provider, "wire_api", MANAGED_WIRE_API);
+    set_bool_preserving_decor(provider, "requires_openai_auth", false);
+    set_string_preserving_decor(provider, "experimental_bearer_token", &selected_bearer);
+    set_canonical_actor_header(provider, actor_header);
+
+    profile.relay_mode = RelayMode::Official;
+    profile.official_mix_api_key = true;
+    profile.protocol = RelayProtocol::Responses;
+    profile.config_contents = document.to_string();
+    let inspection = inspect_profile(&profile, CatalogMode::OfficialPlusCustom);
+    if inspection.state != NativeCapabilityState::NativePriority {
+        let blockers = inspection
+            .fields
+            .iter()
+            .filter(|entry| entry.outcome != NativeCapabilityOutcome::Satisfied)
+            .map(|entry| entry.reason)
+            .collect();
+        return unchanged_draft_payload(
+            request,
+            NativeCapabilityDraftStatus::Blocked,
+            blockers,
+            ProviderNativeCapabilityDraftPreview::default(),
+        );
+    }
+    ready_draft_payload(
+        request,
+        profile,
+        CatalogMode::OfficialPlusCustom,
+        ProviderNativeCapabilityDraftPreview::default(),
+    )
+}
+
+fn compatibility_exit_draft(
+    request: &ProviderNativeCapabilityDraftRequest,
+) -> ProviderNativeCapabilityDraftPayload {
+    let preview = ProviderNativeCapabilityDraftPreview {
+        capability_loss: true,
+        ..ProviderNativeCapabilityDraftPreview::default()
+    };
+    if !has_confirmation(
+        request,
+        NativeCapabilityDraftConfirmation::ConfirmCapabilityLoss,
+    ) {
+        return unchanged_draft_payload(
+            request,
+            NativeCapabilityDraftStatus::ConfirmationRequired,
+            vec![NativeCapabilityReason::CapabilityLossConfirmationRequired],
+            preview,
+        );
+    }
+
+    let mut profile = request.profile.clone();
+    let mut document = match profile.config_contents.parse::<DocumentMut>() {
+        Ok(document) => document,
+        Err(_) => {
+            return unchanged_draft_payload(
+                request,
+                NativeCapabilityDraftStatus::Blocked,
+                vec![NativeCapabilityReason::MalformedToml],
+                preview,
+            );
+        }
+    };
+    let provider_id = match selected_provider_id(&document) {
+        Ok(provider_id) => provider_id,
+        Err(reason) => {
+            return unchanged_draft_payload(
+                request,
+                NativeCapabilityDraftStatus::Blocked,
+                vec![reason],
+                preview,
+            );
+        }
+    };
+    let provider = match document
+        .get_mut("model_providers")
+        .and_then(Item::as_table_like_mut)
+        .and_then(|providers| providers.get_mut(&provider_id))
+        .and_then(Item::as_table_like_mut)
+    {
+        Some(provider) => provider,
+        None => {
+            return unchanged_draft_payload(
+                request,
+                NativeCapabilityDraftStatus::Blocked,
+                vec![NativeCapabilityReason::MalformedProviderTable],
+                preview,
+            );
+        }
+    };
+    match provider_key_resolution(request, &profile, provider) {
+        Ok(ProviderKeyResolution::Unchanged) => {}
+        Ok(ProviderKeyResolution::UseStructured) => set_string_preserving_decor(
+            provider,
+            "experimental_bearer_token",
+            profile.api_key.trim(),
+        ),
+        Ok(ProviderKeyResolution::UseProvider(raw_bearer)) => {
+            profile.api_key = raw_bearer;
+        }
+        Err((status, reason)) => {
+            return unchanged_draft_payload(request, status, vec![reason], preview);
+        }
+    }
+    if let Err(reason) = remove_manager_actor_header(provider) {
+        return unchanged_draft_payload(
+            request,
+            NativeCapabilityDraftStatus::Blocked,
+            vec![reason],
+            preview,
+        );
+    }
+
+    let catalog_mode = if request.catalog_mode == CatalogMode::External {
+        CatalogMode::External
+    } else {
+        match request.action {
+            NativeCapabilityDraftAction::ExitPureApi => CatalogMode::CustomOnly,
+            _ => CatalogMode::OfficialPlusCustom,
+        }
+    };
+    match request.action {
+        NativeCapabilityDraftAction::ExitPureApi => {
+            profile.relay_mode = RelayMode::PureApi;
+            profile.official_mix_api_key = false;
+            set_bool_preserving_decor(provider, "requires_openai_auth", false);
+        }
+        NativeCapabilityDraftAction::ExitLegacyCompatibility => {
+            profile.relay_mode = RelayMode::Official;
+            profile.official_mix_api_key = true;
+            profile.protocol = RelayProtocol::Responses;
+            set_string_preserving_decor(provider, "name", "custom");
+            set_string_preserving_decor(provider, "wire_api", MANAGED_WIRE_API);
+            set_bool_preserving_decor(provider, "requires_openai_auth", true);
+        }
+        NativeCapabilityDraftAction::ExitChatCompletions => {
+            profile.protocol = RelayProtocol::ChatCompletions;
+        }
+        _ => unreachable!("only compatibility exit actions reach this helper"),
+    }
+    profile.config_contents = document.to_string();
+    ready_draft_payload(request, profile, catalog_mode, preview)
+}
+
+fn pure_oauth_exit_draft(
+    request: &ProviderNativeCapabilityDraftRequest,
+) -> ProviderNativeCapabilityDraftPayload {
+    let document = match request.profile.config_contents.parse::<DocumentMut>() {
+        Ok(document) => document,
+        Err(_) => {
+            return unchanged_draft_payload(
+                request,
+                NativeCapabilityDraftStatus::Blocked,
+                vec![NativeCapabilityReason::MalformedToml],
+                ProviderNativeCapabilityDraftPreview::default(),
+            );
+        }
+    };
+    let provider_id = match selected_provider_id(&document) {
+        Ok(provider_id) => provider_id,
+        Err(reason) => {
+            return unchanged_draft_payload(
+                request,
+                NativeCapabilityDraftStatus::Blocked,
+                vec![reason],
+                ProviderNativeCapabilityDraftPreview::default(),
+            );
+        }
+    };
+    let provider = match document
+        .get("model_providers")
+        .and_then(Item::as_table_like)
+        .and_then(|providers| providers.get(&provider_id))
+        .and_then(Item::as_table_like)
+    {
+        Some(provider) => provider,
+        None => {
+            return unchanged_draft_payload(
+                request,
+                NativeCapabilityDraftStatus::Blocked,
+                vec![NativeCapabilityReason::MalformedProviderTable],
+                ProviderNativeCapabilityDraftPreview::default(),
+            );
+        }
+    };
+    let preview = ProviderNativeCapabilityDraftPreview {
+        capability_loss: true,
+        removes_provider_table: true,
+        removed_provider_id: Some(provider_id.clone()),
+        removed_provider_fields: provider.iter().map(|(key, _)| key.to_string()).collect(),
+    };
+    if let Err((status, reason)) = provider_key_resolution(request, &request.profile, provider) {
+        return unchanged_draft_payload(request, status, vec![reason], preview);
+    }
+    if !has_confirmation(
+        request,
+        NativeCapabilityDraftConfirmation::ConfirmDestructivePureOAuth,
+    ) {
+        return unchanged_draft_payload(
+            request,
+            NativeCapabilityDraftStatus::ConfirmationRequired,
+            vec![NativeCapabilityReason::DestructiveExitConfirmationRequired],
+            preview,
+        );
+    }
+
+    let mut profile = request.profile.clone();
+    let mut document = document;
+    let remove_container = {
+        let providers = document
+            .get_mut("model_providers")
+            .and_then(Item::as_table_like_mut)
+            .expect("provider container was validated");
+        providers.remove(&provider_id);
+        providers.is_empty()
+    };
+    if remove_container {
+        document.remove("model_providers");
+    }
+    document.remove("model_provider");
+    profile.api_key.clear();
+    profile.relay_mode = RelayMode::Official;
+    profile.official_mix_api_key = false;
+    profile.protocol = RelayProtocol::Responses;
+    profile.config_contents = document.to_string();
+    let catalog_mode = if request.catalog_mode == CatalogMode::External {
+        CatalogMode::External
+    } else {
+        CatalogMode::NativeOfficial
+    };
+    ready_draft_payload(request, profile, catalog_mode, preview)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProviderKeyResolution {
+    Unchanged,
+    UseStructured,
+    UseProvider(String),
+}
+
+fn provider_key_resolution(
+    request: &ProviderNativeCapabilityDraftRequest,
+    profile: &RelayProfile,
+    provider: &dyn TableLike,
+) -> Result<ProviderKeyResolution, (NativeCapabilityDraftStatus, NativeCapabilityReason)> {
+    let raw_bearer = match provider.get("experimental_bearer_token") {
+        None => return Ok(ProviderKeyResolution::Unchanged),
+        Some(item) => item.as_str().ok_or((
+            NativeCapabilityDraftStatus::Blocked,
+            NativeCapabilityReason::MalformedProviderBearer,
+        ))?,
+    };
+    let raw_bearer = raw_bearer.trim();
+    let structured_key = profile.api_key.trim();
+    if raw_bearer.is_empty() || structured_key.is_empty() || raw_bearer == structured_key {
+        return Ok(ProviderKeyResolution::Unchanged);
+    }
+
+    let use_structured =
+        has_confirmation(request, NativeCapabilityDraftConfirmation::UseStructuredKey);
+    let use_provider = has_confirmation(
+        request,
+        NativeCapabilityDraftConfirmation::UseProviderBearer,
+    );
+    match (use_structured, use_provider) {
+        (true, true) => Err((
+            NativeCapabilityDraftStatus::Blocked,
+            NativeCapabilityReason::ConflictingKeySynchronization,
+        )),
+        (true, false) => Ok(ProviderKeyResolution::UseStructured),
+        (false, true) => Ok(ProviderKeyResolution::UseProvider(raw_bearer.to_string())),
+        (false, false) => Err((
+            NativeCapabilityDraftStatus::ConfirmationRequired,
+            NativeCapabilityReason::StructuredKeyBearerConflict,
+        )),
+    }
+}
+
+fn selected_provider_id(document: &DocumentMut) -> Result<String, NativeCapabilityReason> {
+    let Some(provider_id) = document.get("model_provider").and_then(Item::as_str) else {
+        return Err(NativeCapabilityReason::MissingProviderSelection);
+    };
+    let provider_id = provider_id.trim();
+    if provider_id.is_empty() {
+        return Err(NativeCapabilityReason::MissingProviderSelection);
+    }
+    let Some(providers) = document
+        .get("model_providers")
+        .and_then(Item::as_table_like)
+    else {
+        return Err(NativeCapabilityReason::SelectedProviderTableMissing);
+    };
+    let Some(provider) = providers.get(provider_id) else {
+        return Err(NativeCapabilityReason::SelectedProviderTableMissing);
+    };
+    if provider.as_table_like().is_none() {
+        return Err(NativeCapabilityReason::MalformedProviderTable);
+    }
+    Ok(provider_id.to_string())
+}
+
+fn migrate_legacy_provider_id(
+    document: &mut DocumentMut,
+    provider_id: &str,
+    replacement_provider_id: Option<&str>,
+) -> Result<String, NativeCapabilityReason> {
+    let legacy_item = document
+        .get("model_providers")
+        .and_then(Item::as_table_like)
+        .and_then(|providers| providers.get(provider_id))
+        .cloned()
+        .ok_or(NativeCapabilityReason::SelectedProviderTableMissing)?;
+    let custom_item = document
+        .get("model_providers")
+        .and_then(Item::as_table_like)
+        .and_then(|providers| providers.get("custom"))
+        .cloned();
+    let target = match custom_item.as_ref() {
+        None => "custom".to_string(),
+        Some(custom) if items_semantically_equal(&legacy_item, custom) => "custom".to_string(),
+        Some(_) => {
+            let replacement = replacement_provider_id
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or(NativeCapabilityReason::ReplacementProviderIdRequired)?;
+            if replacement == RESERVED_PROVIDER_ID || LEGACY_PROVIDER_IDS.contains(&replacement) {
+                return Err(NativeCapabilityReason::ReplacementProviderIdInvalid);
+            }
+            if document
+                .get("model_providers")
+                .and_then(Item::as_table_like)
+                .is_some_and(|providers| providers.get(replacement).is_some())
+            {
+                return Err(NativeCapabilityReason::ReplacementProviderIdUnavailable);
+            }
+            replacement.to_string()
+        }
+    };
+
+    {
+        let providers = document
+            .get_mut("model_providers")
+            .and_then(Item::as_table_like_mut)
+            .expect("provider container was validated");
+        let moved = providers
+            .remove(provider_id)
+            .expect("selected legacy provider was validated");
+        if providers.get(&target).is_none() {
+            providers.insert(&target, moved);
+        }
+    }
+    set_string_preserving_decor(document.as_table_mut(), "model_provider", &target);
+    Ok(target)
+}
+
+fn items_semantically_equal(left: &Item, right: &Item) -> bool {
+    fn normalized(item: &Item) -> Option<serde_json::Value> {
+        let mut document = DocumentMut::new();
+        document.as_table_mut().insert("candidate", item.clone());
+        toml_edit::de::from_str(&document.to_string()).ok()
+    }
+    normalized(left) == normalized(right)
+}
+
+#[derive(Debug, Clone)]
+enum ActorHeaderDraftState {
+    Missing,
+    Canonical(String),
+    Conflict(String),
+    Duplicate,
+    Malformed,
+}
+
+fn provider_contract_inputs(
+    document: &DocumentMut,
+    provider_id: &str,
+) -> Result<(Option<String>, ActorHeaderDraftState), NativeCapabilityReason> {
+    let provider = document
+        .get("model_providers")
+        .and_then(Item::as_table_like)
+        .and_then(|providers| providers.get(provider_id))
+        .and_then(Item::as_table_like)
+        .ok_or(NativeCapabilityReason::MalformedProviderTable)?;
+    let raw_bearer = match provider.get("experimental_bearer_token") {
+        None => None,
+        Some(item) => Some(
+            item.as_str()
+                .ok_or(NativeCapabilityReason::MalformedProviderBearer)?
+                .to_string(),
+        ),
+    };
+    let actor_header = match provider.get("http_headers") {
+        None => ActorHeaderDraftState::Missing,
+        Some(item) => {
+            let Some(headers) = item.as_table_like() else {
+                return Ok((raw_bearer, ActorHeaderDraftState::Malformed));
+            };
+            let matches = headers
+                .iter()
+                .filter(|(name, _)| name.eq_ignore_ascii_case(MANAGED_ACTOR_HEADER_NAME))
+                .collect::<Vec<_>>();
+            match matches.as_slice() {
+                [] => ActorHeaderDraftState::Missing,
+                [(_, _), _, ..] => ActorHeaderDraftState::Duplicate,
+                [(name, item)] => match item.as_str() {
+                    Some(MANAGED_ACTOR_HEADER_VALUE) => {
+                        ActorHeaderDraftState::Canonical((*name).to_string())
+                    }
+                    Some(_) => ActorHeaderDraftState::Conflict((*name).to_string()),
+                    None => ActorHeaderDraftState::Malformed,
+                },
+            }
+        }
+    };
+    Ok((raw_bearer, actor_header))
+}
+
+fn set_canonical_actor_header(provider: &mut dyn TableLike, state: ActorHeaderDraftState) {
+    if provider.get("http_headers").is_none() {
+        let mut headers = InlineTable::new();
+        headers.insert(
+            MANAGED_ACTOR_HEADER_NAME,
+            Value::from(MANAGED_ACTOR_HEADER_VALUE),
+        );
+        provider.insert("http_headers", Item::Value(Value::InlineTable(headers)));
+        return;
+    }
+    let headers = provider
+        .get_mut("http_headers")
+        .and_then(Item::as_table_like_mut)
+        .expect("header shape was validated before mutation");
+    match state {
+        ActorHeaderDraftState::Canonical(name) | ActorHeaderDraftState::Conflict(name) => {
+            if name == MANAGED_ACTOR_HEADER_NAME {
+                set_string_preserving_decor(
+                    headers,
+                    MANAGED_ACTOR_HEADER_NAME,
+                    MANAGED_ACTOR_HEADER_VALUE,
+                );
+            } else {
+                headers.remove(&name);
+                headers.insert(MANAGED_ACTOR_HEADER_NAME, value(MANAGED_ACTOR_HEADER_VALUE));
+            }
+        }
+        ActorHeaderDraftState::Missing => {
+            headers.insert(MANAGED_ACTOR_HEADER_NAME, value(MANAGED_ACTOR_HEADER_VALUE));
+        }
+        ActorHeaderDraftState::Duplicate | ActorHeaderDraftState::Malformed => {
+            unreachable!("ambiguous headers are rejected before mutation")
+        }
+    }
+}
+
+fn remove_manager_actor_header(provider: &mut dyn TableLike) -> Result<(), NativeCapabilityReason> {
+    let Some(headers_item) = provider.get_mut("http_headers") else {
+        return Ok(());
+    };
+    let Some(headers) = headers_item.as_table_like_mut() else {
+        return Err(NativeCapabilityReason::MalformedHeaderStructure);
+    };
+    let matches = headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case(MANAGED_ACTOR_HEADER_NAME))
+        .map(|(name, value)| (name.to_string(), value.as_str().map(str::to_string)))
+        .collect::<Vec<_>>();
+    if matches.len() > 1 {
+        return Err(NativeCapabilityReason::DuplicateActorHeader);
+    }
+    if let Some((name, Some(header_value))) = matches.first()
+        && name == MANAGED_ACTOR_HEADER_NAME
+        && header_value == MANAGED_ACTOR_HEADER_VALUE
+    {
+        headers.remove(name);
+    }
+    let remove_container = headers.is_empty();
+    if remove_container {
+        provider.remove("http_headers");
+    }
+    Ok(())
+}
+
+fn set_string_preserving_decor(table: &mut dyn TableLike, key: &str, new_value: &str) {
+    set_value_preserving_decor(table, key, Value::from(new_value));
+}
+
+fn set_bool_preserving_decor(table: &mut dyn TableLike, key: &str, new_value: bool) {
+    set_value_preserving_decor(table, key, Value::from(new_value));
+}
+
+fn set_value_preserving_decor(table: &mut dyn TableLike, key: &str, mut new_value: Value) {
+    if let Some(decor) = table
+        .get(key)
+        .and_then(Item::as_value)
+        .map(|value| value.decor().clone())
+    {
+        *new_value.decor_mut() = decor;
+    }
+    table.insert(key, Item::Value(new_value));
+}
+
+fn has_confirmation(
+    request: &ProviderNativeCapabilityDraftRequest,
+    confirmation: NativeCapabilityDraftConfirmation,
+) -> bool {
+    request.confirmations.contains(&confirmation)
+}
+
+fn unchanged_draft_payload(
+    request: &ProviderNativeCapabilityDraftRequest,
+    status: NativeCapabilityDraftStatus,
+    blockers: Vec<NativeCapabilityReason>,
+    preview: ProviderNativeCapabilityDraftPreview,
+) -> ProviderNativeCapabilityDraftPayload {
+    ProviderNativeCapabilityDraftPayload {
+        draft_revision: request.draft_revision,
+        status,
+        profile: request.profile.clone(),
+        structured_api_key: request.profile.api_key.clone(),
+        catalog_mode: request.catalog_mode,
+        inspection: inspect_profile(&request.profile, request.catalog_mode),
+        blockers,
+        preview,
+    }
+}
+
+fn ready_draft_payload(
+    request: &ProviderNativeCapabilityDraftRequest,
+    profile: RelayProfile,
+    catalog_mode: CatalogMode,
+    preview: ProviderNativeCapabilityDraftPreview,
+) -> ProviderNativeCapabilityDraftPayload {
+    ProviderNativeCapabilityDraftPayload {
+        draft_revision: request.draft_revision,
+        status: NativeCapabilityDraftStatus::Ready,
+        structured_api_key: profile.api_key.clone(),
+        inspection: inspect_profile(&profile, catalog_mode),
+        profile,
+        catalog_mode,
+        blockers: Vec::new(),
+        preview,
+    }
 }
 
 pub fn inspect_provider_native_capabilities_from_paths(
