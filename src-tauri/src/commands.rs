@@ -1966,6 +1966,7 @@ pub struct ProviderCommitFailure {
 pub enum ProviderCommitCheckpoint {
     Normalization,
     CatalogMaterialization,
+    SettingsPersistence,
 }
 
 impl ProviderCommitFailure {
@@ -2249,16 +2250,26 @@ pub fn commit_provider_detail_from_paths_observed(
             .map_err(transaction_failure)?,
     );
 
-    live_state::commit_locked_verified_at(&paths.app_state, &mutations, || {
-        if let Some(snapshot) = context_snapshot.as_ref() {
-            verify_context_tables(&paths.codex_home, snapshot)?;
-        }
-        anyhow::ensure!(
-            read_optional_bytes(&auth_path)? == auth_before,
-            "live auth changed concurrently"
-        );
-        Ok(())
-    })
+    live_state::commit_locked_verified_at_observed(
+        &paths.app_state,
+        &mutations,
+        |path| {
+            if path == paths.settings_path {
+                observe(ProviderCommitCheckpoint::SettingsPersistence)?;
+            }
+            Ok(())
+        },
+        || {
+            if let Some(snapshot) = context_snapshot.as_ref() {
+                verify_context_tables(&paths.codex_home, snapshot)?;
+            }
+            anyhow::ensure!(
+                read_optional_bytes(&auth_path)? == auth_before,
+                "live auth changed concurrently"
+            );
+            Ok(())
+        },
+    )
     .map_err(transaction_failure)?;
 
     let restart_required = plan
