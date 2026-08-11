@@ -61,15 +61,15 @@
 - [ ] 6.2 Implement the “upgrade to native-capability priority” draft action with a preview of owned field changes, preserved fields, capability caveats, and the normal unsaved-change state.
 - [ ] 6.3 Add tests that cancel, navigation, or editor close after preview performs no settings, catalog, live-config, restart-state, or auth write.
 - [ ] 6.4 Implement explicit confirmation for replacing a custom actor-header value or legacy provider ID and explicit exit choices; pure OAuth must preview destructive custom-provider removal, while pure API/legacy preserve unowned fields.
-- [ ] 6.5 Add a redacted evidence ledger for provider contract, OAuth context, catalog/model, upstream, and runtime gates; missing OAuth permits inactive action-required Save but blocks activation and key-only routing is labeled pure API/compatibility.
-- [ ] 6.6 Ensure a known Free plan plus a verified affected target Codex version reports image generation blocked; unknown plan or version remains unknown, and a paid plan never implies success.
+- [ ] 6.5 Add a redacted evidence ledger with independent provider contract, OAuth session, local account plan, catalog/model, upstream, and runtime gates; missing OAuth permits inactive action-required Save but blocks activation and key-only routing is labeled pure API/compatibility.
+- [ ] 6.6 Add target-path truth-table tests proving a signed-in Free account may activate and is not itself an image block on an actor-marker path without a Free-plan rejection; report a plan-based block only for an exact verified target/path rule, keep unknown behavior unknown, and never treat a paid plan as success.
 - [ ] 6.7 Update Provider Doctor so a successful text Responses probe reports only text connectivity; preserve `compatibilityFallbackUsed` evidence without treating fallback success as native-extension, selected-model, provider-group, or catalog proof.
 - [ ] 6.8 Add Chinese and English copy that explains OAuth remains official-client-owned, the provider key authenticates inference, actor authorization only enables eligibility, and upstream/model/account gates still apply.
 - [ ] 6.9 Keep ordinary pure OAuth visibly `native-official`, preserve external pure OAuth as `external`, exclude unadopted external mixed profiles from one-click upgrade, and keep pure API, Chat Completions, aggregate, and legacy paths advanced and non-default.
 
 ## 7. Integrate catalog and restart semantics
 
-- [ ] 7.1 Add tests that non-external native-priority mixed profiles request `official-plus-custom`, ordinary pure OAuth requests `native-official`, external ownership wins before both defaults, and native-priority code defines no competing catalog baseline or update channel.
+- [ ] 7.1 Add tests that non-external native-priority mixed profiles request `official-plus-custom`, ordinary pure OAuth requests `native-official`, explicit server-side-composite classification accepts Responses `PureApi` and `Official + officialMixApiKey` single-upstream profiles, external ownership wins before all defaults, and native-priority code defines no competing catalog baseline or update channel.
 - [ ] 7.2 Block a new active native-priority generation when its managed catalog prerequisite is missing, scope-stale, invalid, or cannot contain the selected default model; preserve the last valid active provider/catalog generation.
 - [ ] 7.3 Allow an inactive native-priority draft to remain saved as action-required when catalog readiness is unavailable, without changing live configuration or claiming runtime readiness.
 - [ ] 7.4 Add recovery tests that a later valid official refresh or provider-detail commit materializes an action-required inactive profile, clears only its catalog-readiness action, and permits activation retry under the remaining gates.
@@ -89,6 +89,8 @@
 - [ ] 8.6 Audit transaction artifacts, application logs, telemetry, inspection/status/evidence/Doctor payloads, errors, and generated catalogs for provider-key or OAuth leakage using sentinel credentials; allow the local masked provider-detail draft/settings IPC to carry the bearer and prove it is never logged or copied into status surfaces.
 - [ ] 8.7 Perform a controlled no-image-cost manual flow without concurrent auth refresh: create a provider, preview/save it inactive, activate it, inspect the live provider/catalog generation and restart guidance, and verify live `auth.json` hash equality.
 - [ ] 8.8 Record image-generation permission, `gpt-image-2` allowance, and runtime tool registration as unverified in the manual result unless independently observed; do not convert a text probe into a success claim.
+- [ ] 8.9 Add the redacted provider-routable capability matrix for text Responses, model discovery, image generation, image editing, remote compaction, and web search; prove success, denial, fallback, and unknown are row-scoped and that no UI copy claims a local subscription upgrade or “all Pro capabilities.”
+- [ ] 8.10 With separate explicit approval for quota-bearing operations, run selected image-generation/edit or other costly probes and record target version, provider/profile ID, model, observation time, and redacted result per row; without that approval, leave those rows unknown.
 
 ## 9. Validate, document, and hand off
 

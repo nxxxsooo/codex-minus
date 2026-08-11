@@ -1,9 +1,10 @@
 ## 1. Catalog State And Topology
 
 - [x] 1.1 Add a backward-compatible `upstreamTopology` enum to per-profile catalog state and status payloads, default existing profiles to `direct`, and bump the state schema without persisting credentials or raw model capability payloads in diagnostics.
-- [x] 1.2 Validate `server-side-composite` only for `PureApi` + Responses profiles with a usable Base URL and provider bearer token, while leaving the live provider projection identical to the existing single-upstream pure API path.
+- [x] 1.2 Establish the initial `server-side-composite` validation for `PureApi` + Responses profiles with a usable Base URL and provider bearer token, while leaving the live provider projection identical to the existing single-upstream pure API path.
 - [x] 1.3 Update implicit catalog-mode resolution so newly classified composite profiles default to `official-plus-custom`, explicit modes survive reclassification, and direct pure API profiles retain their `custom-only` default.
 - [x] 1.4 Add backend tests proving classification is never inferred, reclassification preserves routing and explicit modes, and both `RelayMode::Aggregate` and Chat Completions remain blocked from managed catalogs and live application.
+- [ ] 1.5 Extend server-side-composite validation and UI eligibility to Responses `Official + officialMixApiKey` profiles with one usable Base URL and provider bearer; prove OAuth ownership remains unchanged, live staging still contains one custom provider, and Aggregate/Chat paths remain rejected.
 
 ## 2. Rich Model Metadata
 

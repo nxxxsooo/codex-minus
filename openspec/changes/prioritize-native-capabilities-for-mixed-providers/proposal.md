@@ -12,7 +12,7 @@ The product needs one explicit, reproducible “native-capability priority” pa
 - Materialize one coherent provider contract: OpenAI-compatible provider identity, Responses wire API, no OpenAI-auth requirement for the custom provider, owner-only provider bearer projection, and a non-empty `x-openai-actor-authorization` header for local extensions.
 - Derive effective state from the provider TOML instead of persisting a second boolean that can drift from the configuration.
 - When the target mode retains a custom provider table, preserve unrelated provider headers and fields; prevent later model/Base URL/key edits from undoing the native-capability contract; and keep global live configuration outside the provider profile. True pure OAuth remains the explicit, previewed destructive exception because it removes the custom provider table.
-- Show capability evidence and degraded reasons without promising that configuration alone unlocks every native feature. In particular, identify the current Free-plan image-generation restriction, model/catalog capability requirements, upstream image permission, and restart/new-task requirement.
+- Show capability evidence and degraded reasons without promising that configuration alone unlocks every native feature. Keep official-client sign-in, the observed local account plan, actor-marker eligibility, model/catalog metadata, Sub2API group/upstream permission, per-capability runtime results, and restart/new-task adoption as independent evidence axes. A local Free plan does not by itself block provider-routed image generation on a target whose actor-marker path has no such plan gate.
 - Complete and use one provider-owned transaction engine for provider-detail Save/Set-as-current and provider-list/topology mutations. Thin detail and topology commands may expose different request shapes, but both must use the same validation, catalog planning, Context/OAuth protection, compare-and-swap, and commit boundary; add no direct `config.toml` or `auth.json` write path.
 - Keep pure OAuth as true `native-official`, backed by Codex’s dynamic catalog. Keep pure API and legacy compatibility paths available as advanced, non-default options.
 - Reuse the existing `official-plus-custom` catalog contract and its currently authoritative validated official baseline for mixed profiles. Any future standard-Pro baseline, signed-update policy, or optional Sol 372k overlay remains a separate catalog change and is not defined or required here.
@@ -25,7 +25,7 @@ The product needs one explicit, reproducible “native-capability priority” pa
 
 ### Modified Capabilities
 
-None. The existing `model-catalog-management` specification already assigns mixed profiles to `official-plus-custom` and requires atomic active-profile provider/catalog commits; this change consumes those contracts without redefining their catalog source or composition rules.
+- `model-catalog-management`: Extend explicit `server-side-composite` classification to eligible Responses profiles represented as either pure API or official OAuth plus a provider key, without reviving local aggregation or changing the single-provider live projection.
 
 ## Impact
 
@@ -33,6 +33,7 @@ None. The existing `model-catalog-management` specification already assigns mixe
 - Backend provider-TOML parsing and transformation, normalized profile persistence, staged live application, and sanitized auth/capability status.
 - Existing provider generation and structured edit helpers that currently force `requires_openai_auth = true` or reconstruct provider tables.
 - Provider Doctor presentation and validation boundaries; it may report observable prerequisites but must not claim end-to-end image generation without a real verified result.
+- A provider-routable capability acceptance matrix for text Responses, model discovery, image generation, image editing, remote compaction, and web-search behavior; evidence for one row never proves another.
 - Regression coverage for new-profile target defaults, explicit migration, external-catalog precedence, TOML/header preservation, subsequent structured edits, unified first/inactive/active transactions, Context preservation, and OAuth concurrency safety.
 - Sequencing dependency on the provider-onboarding branch and live-config/provider-config separation; the missing unified provider-detail transaction is implemented as part of this change rather than assumed to exist.
 - No change to the official client’s OAuth ownership, no OAuth token persistence, no `auth.json` mutation, no local Chat Completions proxy, and no Sub2API server-side implementation.

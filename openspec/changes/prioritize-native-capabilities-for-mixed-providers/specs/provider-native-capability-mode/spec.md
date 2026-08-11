@@ -225,7 +225,7 @@ The system SHALL make legacy-profile native-capability migration an explicit dra
 #### Scenario: Authenticated Free account is used
 
 - **WHEN** a current authenticated ChatGPT context is Free and all provider and catalog activation prerequisites otherwise pass
-- **THEN** the profile may activate as the OAuth-plus-provider path while image generation is reported blocked by the known Free-plan gate
+- **THEN** the profile may activate as the OAuth-plus-provider path and the local plan alone does not mark provider-routed image generation blocked; capability status follows the verified target path and its own model, upstream, and runtime evidence
 
 #### Scenario: Catalog identity or target scope is stale
 
@@ -283,7 +283,7 @@ The system SHALL use the existing `model-catalog-management` capability as the s
 
 ### Requirement: Evidence-based native capability status
 
-The system SHALL distinguish configuration readiness from effective capability availability. It SHALL report observable evidence and unresolved gates for native local extensions, including account-plan restrictions, model metadata, provider-group permissions, upstream feature support, and runtime registration. It MUST NOT claim that image generation, web search, or all native capabilities are guaranteed merely because the actor-authorized provider contract is present.
+The system SHALL distinguish configuration readiness from effective capability availability. It SHALL report official-client session state, local account plan, actor-marker eligibility, model metadata, provider-group permissions, upstream feature support, and runtime registration as independent evidence. It MUST NOT claim that image generation, web search, or all native capabilities are guaranteed merely because the actor-marker provider contract is present.
 
 #### Scenario: Configuration contract is complete
 
@@ -292,8 +292,13 @@ The system SHALL distinguish configuration readiness from effective capability a
 
 #### Scenario: Free ChatGPT plan is observed
 
-- **WHEN** the official client's sanitized account status identifies the current plan as Free and current Codex behavior excludes image generation for that plan
-- **THEN** status reports image generation as unavailable for that observed reason even if actor authorization is configured
+- **WHEN** the official client's sanitized account status identifies the current plan as Free and the verified target's actor-marker path does not enforce a Free-plan rejection for provider-routed image generation
+- **THEN** status records the local plan as Free without marking image generation either successful or blocked; the image row remains governed by its model, Sub2API group/upstream, request, and runtime evidence
+
+#### Scenario: Verified target path enforces a plan restriction
+
+- **WHEN** the exact target version and selected capability path are verified to reject the observed local plan
+- **THEN** status reports that row blocked with target-version-scoped evidence and does not generalize the restriction to other capability rows
 
 #### Scenario: Account plan is unknown
 
@@ -319,6 +324,40 @@ The system SHALL distinguish configuration readiness from effective capability a
 
 - **WHEN** Provider Doctor reaches text Responses only after its existing compatibility fallback
 - **THEN** it preserves and displays the fallback-used evidence while treating the result only as text connectivity and not as native-extension, model-availability, or catalog-readiness proof
+
+### Requirement: Row-scoped provider-routable capability acceptance
+
+The system MUST track text Responses, model discovery, image generation, image editing, remote compaction, and web search as separate capability rows. Each row MUST identify its configuration prerequisites and MUST require row-specific runtime or upstream evidence before reporting success. The system MUST NOT describe this contract as upgrading the local subscription or enabling all Pro entitlements.
+
+#### Scenario: Text Responses succeeds
+
+- **WHEN** a request succeeds through the selected provider and model over the Responses protocol
+- **THEN** only the text Responses row reports success, with compatibility fallback recorded separately when used
+
+#### Scenario: Provider model discovery succeeds
+
+- **WHEN** the provider's model-discovery route reports a model
+- **THEN** the model-discovery row records provider-reported evidence without treating it as proof that the selected account, group, quota, or tool request can use the model
+
+#### Scenario: Image generation succeeds
+
+- **WHEN** an explicit image-generation request succeeds for the selected target version, provider, group, and image model
+- **THEN** the image-generation row records time-scoped success without upgrading image editing, web search, compaction, or subscription status
+
+#### Scenario: Image editing is not tested
+
+- **WHEN** image generation is verified but no edit request has succeeded
+- **THEN** image editing remains unknown rather than inheriting image-generation success
+
+#### Scenario: Remote compaction succeeds
+
+- **WHEN** the target successfully performs remote compaction through the selected provider
+- **THEN** only the remote-compaction row reports success; ordinary text reachability alone is insufficient
+
+#### Scenario: Web search succeeds
+
+- **WHEN** an observable web-search result succeeds through the selected provider/model path
+- **THEN** only the web-search row reports success and the observation does not imply first-party subscription entitlements or unrelated tools
 
 ### Requirement: Restart and new-task activation guidance
 

@@ -4,7 +4,7 @@ Codex-- currently treats every multi-vendor relay as if it required the removed 
 
 ## What Changes
 
-- Distinguish a server-side composite relay from the unsupported local member-aggregation mode. A server-side composite is applied as one ordinary Responses API upstream and can use managed catalogs; local member rotation and Chat Completions proxying remain unavailable.
+- Distinguish a server-side composite relay from the unsupported local member-aggregation mode. A server-side composite is applied as one ordinary Responses API upstream and can use managed catalogs whether Manager represents it as pure API or official OAuth plus a provider key; local member rotation and Chat Completions proxying remain unavailable.
 - Default newly classified server-side composite profiles to `official-plus-custom`, while preserving explicit catalog-mode choices and offering an explicit conversion path for compatible existing API profiles.
 - Expand official and custom overlays to carry display names, effective context percentages, reasoning levels and defaults, and explicitly configured tool capabilities without losing unrelated official metadata.
 - **BREAKING**: When a managed multi-model catalog is active, stop writing profile-wide `model_context_window` and `model_auto_compact_token_limit` values. Detect existing values, explain that they override per-model metadata, and remove them through the protected apply transaction after user confirmation.

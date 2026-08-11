@@ -27,9 +27,9 @@ The current overlay schema is lossy: official overrides support only visibility,
 
 ### Store topology classification in Manager-owned catalog state
 
-Add a backward-compatible `upstream_topology` enum to each profile's catalog state with `direct` as the serde default and `server-side-composite` as the explicit alternative. A server-side composite is valid only when the corresponding relay profile is `PureApi`, uses `Responses`, and has a non-empty Base URL and provider bearer token.
+Add a backward-compatible `upstream_topology` enum to each profile's catalog state with `direct` as the serde default and `server-side-composite` as the explicit alternative. A server-side composite is valid only when the corresponding relay profile uses `Responses`, has a non-empty Base URL and provider bearer token, and is either `PureApi` or `Official` with `officialMixApiKey = true`. The latter retains official-client OAuth as ambient identity context while the one custom provider request is authenticated only by its provider bearer.
 
-The frontend exposes this as a profile classification, but saving it uses the catalog-state command and the same coordinator as catalog changes. Classification does not rewrite the relay profile into `Aggregate`: the pinned upstream profile remains `PureApi`, so existing provider staging writes one `model_provider` and one Base URL exactly as it does for a direct API relay. `managed_catalog_capable` and `stage_active_relay_config` continue rejecting `RelayMode::Aggregate` and Chat Completions.
+The frontend exposes this as a profile classification, but saving it uses the catalog-state command and the same coordinator as catalog changes. Classification does not rewrite the relay profile into `Aggregate`: the pinned upstream profile retains its existing `PureApi` or `Official + mix` representation, and both provider staging paths write one `model_provider` and one Base URL. `managed_catalog_capable` and `stage_active_relay_config` continue rejecting `RelayMode::Aggregate` and Chat Completions.
 
 For a newly classified composite profile whose catalog mode is not explicit, mode resolution selects `official-plus-custom`; an explicit mode is never changed. Reclassifying back to direct similarly preserves an explicit mode and uses the normal pure-API default only when the mode remains implicit. Existing profiles are never inferred or auto-converted. The existing Aggregate UI is relabeled as local aggregation and continues to show its unavailable-proxy warning.
 
@@ -79,7 +79,7 @@ Bump the Manager catalog-state schema and deserialize all new fields with safe d
 
 ## Risks / Trade-offs
 
-- [A profile is mislabeled as server-side composite] -> Validate the required `PureApi` + Responses shape, never infer classification, and keep routing identical to the already configured endpoint.
+- [A profile is mislabeled as server-side composite] -> Validate the required Responses single-upstream shape plus either `PureApi` or `Official + mix`, never infer classification, and keep routing identical to the already configured endpoint.
 - [Explicit capability metadata overstates provider support] -> Default to no extra claims, label `/v1/models` as evidence only, validate through the target CLI, and keep runtime availability outside the catalog guarantee.
 - [Tool metadata schema changes across Codex releases] -> Preserve target-shaped structured values, reject invalid offline projections, and retain the previous effective generation on failure.
 - [Removing global context values surprises an existing user] -> Require explicit confirmation, scope cleanup to managed modes, preview both keys, and use the existing full-generation rollback journal.
@@ -95,4 +95,4 @@ Bump the Manager catalog-state schema and deserialize all new fields with safe d
 5. Extend external adoption preview and commit binding with version evidence and source hashes.
 6. Update the provider UI, English strings, tests, README, `BOARD.md`, and the project hard constraint to say “client-side proxy aggregation” once verification passes.
 
-Rollback uses the existing journal to restore settings, live configuration, generated catalog, pointer, and catalog state as one prior generation. Downgrading the application treats unknown state fields as inert; server-side composite profiles continue to be valid pure API profiles, but an older build will not present the classification or rich overlay controls.
+Rollback uses the existing journal to restore settings, live configuration, generated catalog, pointer, and catalog state as one prior generation. Downgrading the application treats unknown state fields as inert; server-side composite profiles retain their original pure-API or official-mixed single-provider routing, but an older build will not present the classification or rich overlay controls.

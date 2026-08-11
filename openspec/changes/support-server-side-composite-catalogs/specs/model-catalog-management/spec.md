@@ -16,12 +16,12 @@ The system SHALL assign every catalog-capable relay profile one catalog mode: `n
 - **THEN** it defaults to `custom-only` and can be changed explicitly to `official-plus-custom`
 
 #### Scenario: Server-side composite profile
-- **WHEN** a profile is explicitly classified as a server-side composite relay with one Base URL, one provider key, and the Responses protocol
-- **THEN** it is applied as one pure API upstream, defaults to `official-plus-custom` unless its mode was explicitly chosen, and has managed catalog controls available
+- **WHEN** a `PureApi` profile or an `Official` profile with `officialMixApiKey = true` is explicitly classified as a server-side composite relay with one Base URL, one provider key, and the Responses protocol
+- **THEN** it is applied as one custom-provider upstream without local aggregation, defaults to `official-plus-custom` unless its mode was explicitly chosen, and has managed catalog controls available
 
-#### Scenario: Compatible API profile is reclassified
-- **WHEN** the user explicitly reclassifies an existing Responses-compatible pure API profile as server-side composite
-- **THEN** the system preserves its Base URL, provider key, default model, live-auth independence, and explicit catalog mode while changing only Manager-owned classification and any implicit catalog-mode default
+#### Scenario: Compatible API or official-mixed profile is reclassified
+- **WHEN** the user explicitly reclassifies an existing Responses-compatible pure API or official-mixed profile as server-side composite
+- **THEN** the system preserves its relay representation, Base URL, provider key, default model, OAuth ownership, and explicit catalog mode while changing only Manager-owned classification and any implicit catalog-mode default
 
 #### Scenario: External catalog is detected
 - **WHEN** a profile points to a catalog path not owned by Codex--

@@ -18,7 +18,7 @@ The implementation must integrate provider-onboarding defaults and provider/live
 
 The older provider-onboarding design intentionally generated `requires_openai_auth = true`. Once this change lands, its native-priority new-provider path is superseded by the canonical actor-authorized contract defined here; the compatibility path remains available only as an explicit advanced exit.
 
-The phrase “OAuth plus API key” describes ownership and capability context, not dual credentials on one inference request. ChatGPT OAuth remains live and owned by the official client; the custom provider request uses only its provider-scoped bearer token and static actor marker. Configuration can make Codex eligible to register native extensions, but actual availability can still be denied by the ChatGPT plan, selected model metadata, upstream group policy, image-model allowance, target Codex version, or an old task registry.
+The phrase “OAuth plus API key” describes ownership and capability context, not dual credentials on one inference request. ChatGPT OAuth remains live and owned by the official client; the custom provider request uses only its provider-scoped bearer token and static actor marker. Configuration can make Codex eligible to register native extensions, but actual availability can still be denied by a verified target-version-specific plan rule, selected model metadata, upstream group policy, image-model allowance, endpoint compatibility, or an old task registry. On the currently inspected target, the actor-marker image path has no local `PlanType::Free` rejection, so a local Free plan is evidence about identity context rather than an automatic provider-routed image denial.
 
 ## Goals / Non-Goals
 
@@ -40,7 +40,7 @@ The phrase “OAuth plus API key” describes ownership and capability context, 
 - Persisting, refreshing, restoring, or otherwise taking ownership of ChatGPT OAuth.
 - Sending ChatGPT OAuth to a relay or combining it with the provider bearer on the inference request.
 - Guaranteeing image generation, web search, or every current or future native Codex capability.
-- Circumventing Codex's Free-plan or model capability gates.
+- Changing the local ChatGPT subscription, bypassing any verified target-version-specific plan rule, or bypassing model/upstream capability gates.
 - Implementing Sub2API server behavior, provider group policy, or `gpt-image-2` allowance.
 - Adding a local Chat Completions/aggregate proxy or reviving the removed launcher.
 - Defining the standard-Pro catalog contents, signature/update mechanism, or optional Sol 372k overlay.
@@ -176,7 +176,7 @@ This decision is important for the supplied example: only the model/provider blo
 
 ### 7. Consume the managed catalog contract without redefining it
 
-Native-priority mixed profiles use `official-plus-custom`, exactly as required by `model-catalog-management`. Pure OAuth remains `native-official` and writes no manager-owned `model_catalog_json` pointer.
+Native-priority mixed profiles use `official-plus-custom`, exactly as required by `model-catalog-management`. Pure OAuth remains `native-official` and writes no manager-owned `model_catalog_json` pointer. When the user explicitly classifies the upstream as `server-side-composite`, catalog eligibility accepts either `PureApi` or `Official` with `officialMixApiKey = true`, provided the profile uses Responses and has one usable Base URL and provider bearer. Both representations still stage one custom provider and never use `RelayMode::Aggregate` or the removed local proxy.
 
 This change consumes the catalog capability's currently authoritative target-verified official baseline and does not carry a competing bundled catalog or decide a signed-update channel. If that baseline is unavailable, scope-stale, invalid, or cannot materialize a profile whose default model is valid, inactive drafts may remain saved and action-required, but a new active generation is blocked. The previous active provider/catalog generation remains live.
 
@@ -190,8 +190,9 @@ The detail page and Provider Doctor consume a redacted ledger with independent g
 
 | Gate | Possible evidence | Meaning |
 |---|---|---|
-| Provider contract | ready, upgrade available, conflicting, invalid | Whether the saved/draft TOML is actor-authorized and complete |
-| OAuth context | signed in, sign-in required, plan Free, plan paid, unknown | Sanitized official-client identity context only; never a token or account identifier |
+| Provider contract | ready, upgrade available, conflicting, invalid | Whether the saved/draft TOML has the complete actor-marker contract |
+| OAuth session | signed in, sign-in required, expired, unknown | Sanitized official-client session context only; never a token or account identifier |
+| Local account plan | Free, paid, other, unknown | Descriptive local subscription evidence only; never a capability-success shortcut |
 | Catalog/model | supported, missing metadata, stale, unknown | Whether the effective model metadata advertises the relevant capability |
 | Upstream | text reachable, image permission verified, denied, unknown | Provider-observed evidence, scoped to provider/group/model and observation time |
 | Runtime | restart required, new task required, adopted, unknown | Whether Codex could have rebuilt the tool registry/static catalog |
@@ -200,11 +201,24 @@ The backend emits only evidence it can support. A successful text `/responses` p
 
 If the existing Provider Doctor reaches text Responses only through its compatibility fallback, the ledger retains the fallback-used evidence and still sets only `text reachable`. It does not satisfy any native-extension, selected-model, provider-group, or catalog gate.
 
-Free-plan reporting is conservative. The backend reports image generation blocked only when a sanitized observed plan is Free and the verified target Codex version is governed by the known Free-plan gate. If either fact is unknown, the gate is unknown. Paid plan status is not presented as proof of availability.
+Plan reporting is target-path specific. A sanitized observed Free plan does not block provider-routed image generation when the verified target's actor-marker path has no Free-plan rejection; it remains descriptive evidence while the image result stays unknown until its own gates are verified. The backend reports a plan-based block only when the exact target version and selected capability path are verified to enforce that rule. Unknown target behavior remains unknown, and paid plan status is never presented as proof of availability.
 
 The UI's top-level summary may say “native-capability configuration ready,” “upgrade available,” or “action required”; it must not say “all native capabilities enabled.”
 
-Native-priority activation requires a current sanitized ChatGPT-authenticated state because the product contract is OAuth plus provider routing. Missing or expired OAuth permits inactive Save as action-required but blocks Set-as-current. A Free account is still an authenticated native-priority context; only the target-version-scoped image gate is marked blocked. Users who want key-only text routing choose pure API or compatibility explicitly.
+Native-priority activation requires a current sanitized ChatGPT-authenticated state because the product contract is OAuth plus provider routing. Missing or expired OAuth permits inactive Save as action-required but blocks Set-as-current. A Free account is still an authenticated native-priority context and does not itself mark provider-routed image generation blocked. Users who want key-only text routing choose pure API or compatibility explicitly.
+
+Capability evidence is maintained as a row-scoped acceptance matrix rather than collapsed into one badge:
+
+| Capability row | Configuration prerequisite | Evidence required for success |
+|---|---|---|
+| Text Responses | Responses wire contract and provider bearer | Successful request on the selected provider/model; compatibility fallback remains separately visible |
+| Model discovery | Provider `/models` route or explicit managed catalog source | Successful discovery is provider-report evidence only, not account/group availability proof |
+| Image generation | Actor-marker registration, effective image-capable model metadata, and Sub2API image route/group/upstream allowance | Explicit successful image-generation request for the selected provider/group/model and target version |
+| Image editing | Registered image extension plus edit-compatible upstream route/model | Explicit successful image-edit request; image generation success does not imply edit success |
+| Remote compaction | OpenAI-compatible identity and the target's compaction route | Successful compaction on the selected provider; ordinary text success does not imply it |
+| Web search | Registered web-search path and selected-model/upstream tool support | Successful observable web-search result on the selected provider/model |
+
+Every observation records target version, provider/profile identity without secrets, model, observation time, and whether a fallback was used. A row is `unknown` until its own evidence exists; denial or success in one row never upgrades another. Product copy says “provider-routable native capability” rather than “all Pro capabilities” because local subscription entitlements, workspace rights, cloud tasks, quotas, and future first-party-only features are outside this provider contract.
 
 ### 9. Persist restart-required state without coupling it to catalog generation
 
@@ -232,6 +246,7 @@ The active branches overlap in `App.tsx`, translations, styles, catalog UI, back
 - **OpenAI-specific behavior expands beyond image generation.** `name = "OpenAI"` and actor authorization intentionally opt the custom provider into OpenAI-specific Codex paths, which may include remote compaction or OpenAI-backed web search. This is the point of native-capability priority, but a relay that supports basic `/responses` and not the additional routes may degrade. The evidence ledger and compatibility exit make this visible; the manager cannot promise upstream support.
 - **Exact-contract derivation can recognize manually authored configuration as managed.** With no persisted ownership flag, a manually authored profile that exactly matches the contract is classified as native priority. This is acceptable because the classification describes effective behavior. Destructive removal still requires an explicit mode transition and only removes the exact managed header value.
 - **The label “official mixed” can imply OAuth is sent upstream.** Product copy must state that OAuth remains an ambient official-client identity/capability context while inference authentication uses the provider key. No OAuth token is merged into relay requests.
+- **The label “all Pro capabilities” would overstate the contract.** The Manager can configure and verify only capabilities routable through the selected custom Responses provider; it does not change the local subscription, quotas, workspace rights, or first-party-only services. UI and documentation use row-scoped capability names and evidence.
 - **A pinned-core update could reintroduce defaults after transformation.** Re-validating the fully staged config before commit turns this into a fail-closed error instead of silent drift. Upgrading `codex-plus-core` still requires regression tests for the exact actor-authorized table.
 - **Plan and capability gates change across Codex releases.** Hard-coded optimistic claims would age badly. Status is target-version scoped and falls back to unknown when the installed target or policy cannot be verified.
 - **Header representation can be structurally complex.** Inline tables, explicit subtables, comments, and custom values make line editing unsafe. The backend `toml_edit` transformer owns header changes and rejects ambiguous forms, accepting a slightly heavier preview round trip in exchange for preservation.
