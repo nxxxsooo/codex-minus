@@ -57,10 +57,10 @@
 
 ## 6. Add explicit upgrade, exit, and capability-status UX
 
-- [ ] 6.1 Add frontend tests that an eligible non-external mixed profile shows upgrade availability while startup, load, inspection, Doctor, and evidence refresh do not add, remove, or change actor/native-capability fields; allow unrelated independently specified legacy maintenance.
-- [ ] 6.2 Implement the “upgrade to native-capability priority” draft action with a preview of owned field changes, preserved fields, capability caveats, and the normal unsaved-change state.
-- [ ] 6.3 Add tests that cancel, navigation, or editor close after preview performs no settings, catalog, live-config, restart-state, or auth write.
-- [ ] 6.4 Implement explicit confirmation for replacing a custom actor-header value or legacy provider ID and explicit exit choices; pure OAuth must preview destructive custom-provider removal, while pure API/legacy preserve unowned fields.
+- [x] 6.1 Add frontend tests that an eligible non-external mixed profile shows upgrade availability while startup, load, inspection, Doctor, and evidence refresh do not add, remove, or change actor/native-capability fields; allow unrelated independently specified legacy maintenance.
+- [x] 6.2 Implement the “upgrade to native-capability priority” draft action with a preview of owned field changes, preserved fields, capability caveats, and the normal unsaved-change state.
+- [x] 6.3 Add tests that cancel, navigation, or editor close after preview performs no settings, catalog, live-config, restart-state, or auth write.
+- [x] 6.4 Implement explicit confirmation for replacing a custom actor-header value or legacy provider ID and explicit exit choices; pure OAuth must preview destructive custom-provider removal, while pure API/legacy preserve unowned fields.
 - [ ] 6.5 Add a redacted evidence ledger with independent provider contract, OAuth session, local account plan, catalog/model, upstream, and runtime gates; missing OAuth permits inactive action-required Save but blocks activation and key-only routing is labeled pure API/compatibility.
 - [ ] 6.6 Add target-path truth-table tests proving a signed-in Free account may activate and is not itself an image block on an actor-marker path without a Free-plan rejection; report a plan-based block only for an exact verified target/path rule, keep unknown behavior unknown, and never treat a paid plan as success.
 - [ ] 6.7 Update Provider Doctor so a successful text Responses probe reports only text connectivity; preserve `compatibilityFallbackUsed` evidence without treating fallback success as native-extension, selected-model, provider-group, or catalog proof.
