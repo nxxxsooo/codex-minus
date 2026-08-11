@@ -7,6 +7,8 @@ import {
   catalogDiffSummary,
   catalogRefreshGate,
   defaultCatalogMode,
+  externalVersionRequiresAcceptance,
+  managedContextConflictKeys,
   profileCatalogFlags,
   providerEvidenceState,
   validateCatalogDraft,
@@ -20,6 +22,7 @@ describe("model catalog UI state", () => {
     assert.equal(defaultCatalogMode("official", false), "native-official");
     assert.equal(defaultCatalogMode("official", true), "official-plus-custom");
     assert.equal(defaultCatalogMode("pureApi", false), "custom-only");
+    assert.equal(defaultCatalogMode("pureApi", false, null, "server-side-composite"), "official-plus-custom");
     assert.equal(defaultCatalogMode("pureApi", false, "models/custom.json"), "external");
   });
 
@@ -35,6 +38,7 @@ describe("model catalog UI state", () => {
     assert.equal(providerEvidenceState("official-b", ["official-a"]), "not-reported");
     const imported = addCatalogCandidate(emptyOverlay(), "provider-only");
     assert.equal(imported.custom[0].slug, "provider-only");
+    assert.equal(imported.custom[0].effectiveContextWindowPercent, 100);
     assert.strictEqual(addCatalogCandidate(imported, "provider-only"), imported);
   });
 
@@ -44,6 +48,8 @@ describe("model catalog UI state", () => {
     assert.equal(validateCatalogDraft(overlay, "custom-only", "missing", []), "invalid-default-model");
     const duplicate = { ...overlay, custom: [...overlay.custom, { ...overlay.custom[0] }] };
     assert.equal(validateCatalogDraft(duplicate, "custom-only", "", []), "duplicate-custom-slug");
+    const invalidReasoning = { ...overlay, custom: [{ ...overlay.custom[0], supportedReasoningLevels: [{ effort: "low", description: "Low" }], defaultReasoningLevel: "high" }] };
+    assert.equal(validateCatalogDraft(invalidReasoning, "custom-only", "custom-a", []), "invalid-reasoning-default");
   });
 
   it("presents update diffs, adoption conflicts, partial failures, and restart state", () => {
@@ -51,5 +57,16 @@ describe("model catalog UI state", () => {
     assert.deepEqual(adoptionPreviewSummary({ officialOverrideCount: 2, customModels: [1], collisions: [] }), { adoptable: true, summary: "2/1/0" });
     assert.equal(adoptionPreviewSummary({ officialOverrideCount: 0, customModels: [], collisions: ["x"] }).adoptable, false);
     assert.deepEqual(profileCatalogFlags({ restartRequired: true, actionRequired: "invalid default" }), { restart: true, partialFailure: true });
+  });
+
+  it("detects managed-context conflicts and requires explicit external mismatch acceptance", () => {
+    assert.deepEqual(
+      managedContextConflictKeys('model = "m"\nmodel_context_window = 372000\nmodel_auto_compact_token_limit = 330000\n'),
+      ["model_context_window", "model_auto_compact_token_limit"],
+    );
+    assert.deepEqual(managedContextConflictKeys('model = "m"\n'), []);
+    assert.equal(externalVersionRequiresAcceptance("mismatch"), true);
+    assert.equal(externalVersionRequiresAcceptance("match"), false);
+    assert.equal(externalVersionRequiresAcceptance("unknown"), false);
   });
 });

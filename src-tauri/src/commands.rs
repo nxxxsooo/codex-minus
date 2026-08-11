@@ -1,6 +1,6 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -791,7 +791,7 @@ pub(crate) fn discover_target_codex_cli() -> anyhow::Result<PathBuf> {
 }
 
 fn command_succeeds(cli: &Path, home: &Path, args: &[&str]) -> bool {
-    let Ok(mut child) = Command::new(cli)
+    let Ok(mut child) = crate::platform_command::background_command(cli)
         .args(args)
         .env("CODEX_HOME", home)
         .stdin(Stdio::null())
@@ -851,7 +851,7 @@ fn run_native_session_operation(
     if !matches!(operation, "archive" | "unarchive") || !is_uuid(session_id) {
         anyhow::bail!("原生会话操作仅接受 UUID 和 archive/unarchive");
     }
-    let mut child = Command::new(cli)
+    let mut child = crate::platform_command::background_command(cli)
         .arg(operation)
         .arg(session_id)
         .env("CODEX_HOME", home)
@@ -1139,7 +1139,7 @@ fn target_client_running() -> Option<bool> {
     #[cfg(target_os = "macos")]
     {
         for name in ["ChatGPT", "Codex", "codex"] {
-            match Command::new("/usr/bin/pgrep")
+            match std::process::Command::new("/usr/bin/pgrep")
                 .args(["-x", name])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
@@ -1846,6 +1846,7 @@ fn save_relay_file_blocking(request: SaveRelayFileRequest) -> CommandResult<Rela
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let result = (|| -> anyhow::Result<RelayFilesPayload> {
         validate_relay_file_save_kind(&request.kind)?;
+        crate::model_catalog::ensure_active_config_context_compatible(&request.contents)?;
         let _guard = live_state::lock()?;
         live_state::prepare_secret_paths(&home)?;
         let (protected, context_snapshot) = context_protected_config(&home, &request.contents)?;
@@ -1883,6 +1884,8 @@ pub struct RelayProfileSwitchRequest {
     pub settings: BackendSettings,
     #[serde(default)]
     pub previous_active_relay_id: String,
+    #[serde(default)]
+    pub confirm_context_cleanup: bool,
 }
 
 #[tauri::command]
@@ -1909,6 +1912,7 @@ fn switch_relay_profile_blocking(
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let previous_provider = current_effective_provider_from_home(&home);
     let previous_active_relay_id = request.previous_active_relay_id;
+    let confirm_context_cleanup = request.confirm_context_cleanup;
     let target_relay_id = request.settings.active_relay_id.clone();
     log_manager_event(
         "manager.switch_relay_profile.start",
@@ -1917,7 +1921,11 @@ fn switch_relay_profile_blocking(
             "targetRelayId": target_relay_id
         }),
     );
-    match commit_relay_profile_transaction(request.settings, &previous_active_relay_id) {
+    match commit_relay_profile_transaction(
+        request.settings,
+        &previous_active_relay_id,
+        confirm_context_cleanup,
+    ) {
         Ok(settings) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
             let current_provider = current_effective_provider_from_home(&home);
@@ -1964,6 +1972,7 @@ fn switch_relay_profile_blocking(
 fn commit_relay_profile_transaction(
     mut settings: BackendSettings,
     previous_active_relay_id: &str,
+    confirm_context_cleanup: bool,
 ) -> anyhow::Result<BackendSettings> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let _guard = live_state::lock()?;
@@ -1979,13 +1988,22 @@ fn commit_relay_profile_transaction(
         backfill_profile_config_only(&home, &mut settings, previous_active_relay_id)?;
     }
     settings = normalize_settings_before_save(settings);
+    crate::model_catalog::prepare_active_profile_context_settings(
+        &mut settings,
+        confirm_context_cleanup,
+    )?;
     anyhow::ensure!(
         settings.relay_profiles_enabled,
         "供应商配置总开关已关闭，未写入 live 配置"
     );
 
     let candidate = stage_active_relay_config(&home, &settings)?;
-    let catalog_plan = crate::model_catalog::plan_active_profile(&home, &settings, &candidate)?;
+    let catalog_plan = crate::model_catalog::plan_active_profile(
+        &home,
+        &settings,
+        &candidate,
+        confirm_context_cleanup,
+    )?;
     let (protected_config, context_snapshot) =
         context_protected_config(&home, &catalog_plan.config_contents)?;
     let settings_bytes = serialize_settings_without_profile_auth(&settings)?;
@@ -2652,7 +2670,7 @@ fn apply_active_relay_profile_blocking(label: &str) -> CommandResult<RelayPayloa
         .map(sanitize_settings_for_output)
         .unwrap_or_default();
     let active_id = settings.active_relay_id.clone();
-    match commit_relay_profile_transaction(settings, &active_id) {
+    match commit_relay_profile_transaction(settings, &active_id, false) {
         Ok(_) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
             ok(

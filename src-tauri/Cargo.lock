@@ -426,6 +426,7 @@ dependencies = [
  "codex-plus-core",
  "codex-plus-data",
  "directories",
+ "reqwest 0.12.28",
  "rusqlite",
  "semver",
  "serde",

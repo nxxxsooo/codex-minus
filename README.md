@@ -64,8 +64,10 @@ shasum -a 256 -c SHA256SUMS
 - Codex 在未配置静态 `model_catalog_json` 时，OAuth 或 API provider 都可能通过各自的 `/models` 路径更新共享 `models_cache.json`；混合模式会走当前 custom provider，因此该 live cache 具有 provider 歧义，不能作为官方基线。
 - 官方清单只通过配置目标应用内、经过平台签名验证的 Codex CLI 刷新，不使用 `PATH` 中的任意 `codex`，也不把供应商 `/v1/models` 当作官方来源。
 - 刷新在 owner-only 临时 `CODEX_HOME` 中运行，只投影当前 access/ID token；refresh token 为空，临时认证不会回写 live 状态。
-- 每个非聚合供应商可选择「官方原生」「官方 + 自定义」「仅自定义」或「外部目录」。外部文件只读，必须显式预览并采用后才转为 manager ownership。
-- 官方条目保留目标 CLI 返回的全部字段与隐藏模型；overlay 只管理可见性、顺序、上下文窗口和自定义模型。
+- 每个可用供应商可选择「官方原生」「官方 + 自定义」「仅自定义」或「外部目录」。服务端复合供应商仍以一个纯 API Responses Base URL 和 Key 接入，模型聚合由上游完成，默认使用「官方 + 自定义」。
+- 官方条目保留目标 CLI 返回的全部字段与隐藏模型；overlay 可管理显示名、可见性、顺序、上下文与有效百分比、推理级别以及显式工具能力。自定义模型默认不声明官方后端专属能力。
+- 托管多模型目录以每个模型的上下文元数据为准；已有 `model_context_window` 和 `model_auto_compact_token_limit` 会先显示冲突，只有确认后才在可恢复事务中移除。
+- 外部文件保持只读，采用前执行结构与目标 CLI 离线验证。目录声明版本与目标版本不同会显示警告并要求单独确认，但不会仅因版本字符串不同而拒绝兼容目录。
 - 供应商 `/v1/models` 仅作为有时间戳的「已报告／未报告」证据和自定义候选；遗漏不会隐藏官方模型。
 - 托管目录写入 `~/.codex/model-catalogs/codex-minus-<profile>-<hash>.json`。活动静态目录变化后会提示重启 Codex，不会自动结束或重启官方客户端。
 
@@ -96,7 +98,7 @@ shasum -a 256 -c SHA256SUMS
 - Windows 构建通过 CI 自动生成，未在本地进行 Windows 实机测试。
 - Credential-bearing 官方目录刷新当前验证下限为内嵌 `codex-cli 0.147.0-alpha.1`；已验证 macOS OpenAI Team ID `2DC432GLL2`。不支持 keyring-only 或无法安全读取的认证存储。
 - Windows 已实现 Authenticode/OpenAI publisher gate，但尚未完成 Windows 实机 OAuth 刷新验证。
-- 「Chat Completions 协议」和「聚合供应商」依赖上游 launcher 提供的 `127.0.0.1:57321` 代理，本项目不包含该代理，请勿使用。
+- 「Chat Completions 协议」和「本地成员聚合」依赖上游 launcher 提供的 `127.0.0.1:57321` 代理，本项目不包含该代理，请勿使用。由远端服务完成路由、对 Codex 仅暴露一个 Responses Base URL 和 Key 的服务端复合供应商不受此限制。
 - 固定的上游 revision 尚未提供 active-only provider-sync 写入范围，因此「适配到当前 provider」保持禁用，不会回退到全历史改写。
 - 会话归档用于整理，不会压缩数据或释放磁盘空间。
 

@@ -1,13 +1,28 @@
 export type CatalogModeValue = "native-official" | "official-plus-custom" | "custom-only" | "external";
 
 export type CatalogOverlayDraft = {
-  official: Record<string, { visible: boolean | null; contextWindow: number | null; order: number | null }>;
+  official: Record<string, {
+    displayName: string | null;
+    visible: boolean | null;
+    contextWindow: number | null;
+    effectiveContextWindowPercent: number | null;
+    order: number | null;
+    supportedReasoningLevels: Array<{ effort: string; description: string }> | null;
+    defaultReasoningLevel: string | null;
+    supportedTools: string[] | null;
+    toolCapabilities: Record<string, unknown> | null;
+  }>;
   custom: Array<{
     slug: string;
     displayName: string;
     contextWindow: number;
+    effectiveContextWindowPercent: number;
     visible: boolean;
     order: number;
+    supportedReasoningLevels: Array<{ effort: string; description: string }>;
+    defaultReasoningLevel: string | null;
+    supportedTools: string[];
+    toolCapabilities: Record<string, unknown> | null;
     templateProvenance: string;
   }>;
 };
@@ -16,9 +31,10 @@ export function defaultCatalogMode(
   relayMode: string,
   officialMixApiKey: boolean,
   externalPointer?: string | null,
+  upstreamTopology: "direct" | "server-side-composite" = "direct",
 ): CatalogModeValue {
   if (externalPointer) return "external";
-  if (relayMode === "pureApi") return "custom-only";
+  if (relayMode === "pureApi") return upstreamTopology === "server-side-composite" ? "official-plus-custom" : "custom-only";
   if (relayMode === "official" && !officialMixApiKey) return "native-official";
   return "official-plus-custom";
 }
@@ -52,8 +68,13 @@ export function addCatalogCandidate(
         slug: normalized,
         displayName: normalized,
         contextWindow: 272000,
+        effectiveContextWindowPercent: 100,
         visible: true,
         order: overlay.custom.length,
+        supportedReasoningLevels: [],
+        defaultReasoningLevel: null,
+        supportedTools: [],
+        toolCapabilities: null,
         templateProvenance: "provider-candidate",
       },
     ],
@@ -71,8 +92,13 @@ export function validateCatalogDraft(
   for (const custom of overlay.custom) {
     const slug = custom.slug.trim();
     if (!slug) return "empty-custom-slug";
+    if (!custom.displayName.trim()) return "empty-display-name";
     if (seen.has(slug)) return "duplicate-custom-slug";
     if (!Number.isFinite(custom.contextWindow) || custom.contextWindow <= 0) return "invalid-context-window";
+    if (!Number.isInteger(custom.effectiveContextWindowPercent) || custom.effectiveContextWindowPercent < 1 || custom.effectiveContextWindowPercent > 100) return "invalid-effective-percent";
+    const efforts = custom.supportedReasoningLevels.map((level) => level.effort.trim());
+    if (new Set(efforts).size !== efforts.length || efforts.some((effort) => !effort)) return "invalid-reasoning-levels";
+    if (custom.defaultReasoningLevel && !efforts.includes(custom.defaultReasoningLevel)) return "invalid-reasoning-default";
     seen.add(slug);
   }
   const effective = new Set(mode === "official-plus-custom" ? officialSlugs : []);
@@ -109,4 +135,14 @@ export function profileCatalogFlags(profile: {
     restart: profile.restartRequired,
     partialFailure: !!profile.actionRequired,
   };
+}
+
+export function managedContextConflictKeys(config: string): string[] {
+  return ["model_context_window", "model_auto_compact_token_limit"].filter((key) =>
+    new RegExp(`^\\s*${key}\\s*=`, "m").test(config),
+  );
+}
+
+export function externalVersionRequiresAcceptance(status: string): boolean {
+  return status === "mismatch";
 }
