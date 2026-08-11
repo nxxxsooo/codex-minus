@@ -433,14 +433,22 @@ export function refreshProviderDetailCatalogDraftState<
 >(
   state: ProviderDetailDraftState<P>,
   catalogDraft: ProfileCatalogDraft | null,
+  authoritativeProfile: P,
 ): {
   state: ProviderDetailDraftState<P>;
-  inspectionCorrelation: ProviderDetailInspectionCorrelation;
+  inspectionCorrelation: ProviderDetailInspectionCorrelation | null;
 } {
+  if (authoritativeProfile.id !== state.profile.id) {
+    throw new Error("Authoritative provider profile belongs to another detail session.");
+  }
+  const profileMatchesAuthoritative = JSON.stringify(state.profile)
+    === JSON.stringify(authoritativeProfile);
   const refreshed = replaceProviderDetailCatalogDraft(state, catalogDraft);
   return {
     state: refreshed,
-    inspectionCorrelation: beginProviderDetailInspection(refreshed),
+    inspectionCorrelation: profileMatchesAuthoritative
+      ? beginProviderDetailInspection(refreshed)
+      : null,
   };
 }
 

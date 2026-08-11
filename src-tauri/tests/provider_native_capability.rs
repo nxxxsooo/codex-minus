@@ -321,6 +321,18 @@ http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
             )
         );
     }
+
+    let mut chat_legacy = mixed_profile("chat-legacy", LEGACY_CODEX_PLUS_PLUS);
+    chat_legacy.protocol = RelayProtocol::ChatCompletions;
+    let inspection = inspect_profile(&chat_legacy, CatalogMode::OfficialPlusCustom);
+    assert_eq!(inspection.state, NativeCapabilityState::Degraded);
+    assert_eq!(
+        reason(&inspection, NativeCapabilityField::ProviderSelection),
+        (
+            NativeCapabilityOutcome::Mismatch,
+            NativeCapabilityReason::LegacyProviderIdRequiresRename,
+        )
+    );
 }
 
 #[test]

@@ -319,24 +319,17 @@ pub fn inspect_profile(
         }
     }
 
-    if profile.protocol != RelayProtocol::Responses {
-        return inspection(
-            profile,
-            NativeCapabilityState::Compatibility,
-            vec![
-                canonical(NativeCapabilityField::RelayMode),
-                field(
-                    NativeCapabilityField::Protocol,
-                    NativeCapabilityOutcome::Mismatch,
-                    NativeCapabilityReason::ChatCompletions,
-                ),
-            ],
-        );
-    }
-
     let mut fields = vec![
         canonical(NativeCapabilityField::RelayMode),
-        canonical(NativeCapabilityField::Protocol),
+        if profile.protocol == RelayProtocol::Responses {
+            canonical(NativeCapabilityField::Protocol)
+        } else {
+            field(
+                NativeCapabilityField::Protocol,
+                NativeCapabilityOutcome::Mismatch,
+                NativeCapabilityReason::ChatCompletions,
+            )
+        },
     ];
     if catalog_mode != CatalogMode::OfficialPlusCustom {
         fields.push(field(
@@ -516,8 +509,14 @@ fn evaluate_document(
     let all_canonical = fields
         .iter()
         .all(|entry| entry.outcome == NativeCapabilityOutcome::Satisfied);
+    let chat_compatible = fields.iter().all(|entry| {
+        entry.outcome == NativeCapabilityOutcome::Satisfied
+            || entry.reason == NativeCapabilityReason::ChatCompletions
+    });
     let state = if all_canonical {
         NativeCapabilityState::NativePriority
+    } else if chat_compatible {
+        NativeCapabilityState::Compatibility
     } else if alias_requires_rename && only_alias_mismatch(&fields) || legacy_compatible {
         NativeCapabilityState::UpgradeAvailable
     } else {

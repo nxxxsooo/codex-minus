@@ -3219,14 +3219,29 @@ function RelayProfileDetail({
       const refreshed = refreshProviderDetailCatalogDraftState(
         detailStateRef.current,
         nextCatalogDraft,
+        isAggregateRelayProfile(profile)
+          ? normalizeAggregateRelayProfile(profile, form)
+          : deriveRelayProfileFromFiles({
+              ...profile,
+              configContents: providerConfigDraft(
+                profile.configContents,
+                relayFiles?.configContents ?? "",
+              ),
+              authContents: "",
+            }),
       );
       updateDetailState(refreshed.state);
-      if (!isNew && !isAggregateRelayProfile(refreshed.state.profile)) {
+      const inspectionCorrelation = refreshed.inspectionCorrelation;
+      if (
+        inspectionCorrelation
+        && !isNew
+        && !isAggregateRelayProfile(refreshed.state.profile)
+      ) {
         void actions.inspectProviderNativeCapabilities(profile.id).then((inspection) => {
           if (cancelled || !inspection) return;
           const applied = applyProviderDetailInspection(
             detailStateRef.current,
-            refreshed.inspectionCorrelation,
+            inspectionCorrelation,
             inspection,
           );
           if (applied.disposition === "applied") updateDetailState(applied.state);
@@ -3296,8 +3311,10 @@ function RelayProfileDetail({
         ? providerTransitionDecisionForStructuredPatch(current.profile, patch)
         : null;
       if (decision?.kind === "requiresExplicitUpgrade") {
-        dispatchProviderDetailStep(
-          beginProviderDetailNativePriorityUpgrade(current),
+        void actions.showMessage(
+          t("原生能力优先"),
+          t("此变更必须通过明确的升级预览操作完成。"),
+          "failed",
         );
         return;
       }

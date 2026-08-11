@@ -35,6 +35,8 @@ describe("provider detail draft wiring", () => {
     assert.match(source, /nativeCapabilityView\.upgradeAvailability === "available"/);
     assert.match(source, /refreshProviderDetailCatalogDraftState/);
     assert.match(source, /refreshed\.inspectionCorrelation/);
+    assert.match(source, /此变更必须通过明确的升级预览操作完成/);
+    assert.match(source, /inspectionCorrelation\s*&&\s*!isNew/);
     assert.doesNotMatch(
       source,
       /function transitionForPatch[\s\S]*return \{ action: "enableNativePriority"/,

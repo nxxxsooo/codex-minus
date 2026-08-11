@@ -189,11 +189,12 @@ describe("provider detail draft state", () => {
     const refreshed = refreshProviderDetailCatalogDraftState(initial, {
       ...catalogDraft,
       mode: "custom-only",
-    });
+    }, initial.profile);
 
     assert.equal(refreshed.state.profile, initial.profile);
     assert.equal(refreshed.state.inspection, null);
     assert.equal(refreshed.state.latestTransformRevision, 1);
+    assert.ok(refreshed.inspectionCorrelation);
     assert.equal(refreshed.inspectionCorrelation.profileId, "relay-one");
     assert.equal(refreshed.inspectionCorrelation.revision, 1);
     assert.equal(
@@ -213,6 +214,18 @@ describe("provider detail draft state", () => {
     );
     assert.equal(newResponse.disposition, "applied");
     assert.deepEqual(newResponse.effects, []);
+
+    const dirty = replaceProviderDetailProfile(initial, {
+      ...initial.profile,
+      model: "locally-unsaved-model",
+    });
+    const dirtyRefresh = refreshProviderDetailCatalogDraftState(
+      dirty,
+      { ...catalogDraft, mode: "custom-only" },
+      initial.profile,
+    );
+    assert.equal(dirtyRefresh.state.inspection, null);
+    assert.equal(dirtyRefresh.inspectionCorrelation, null);
   });
 
   it("registers a backend transform only after building one exact revisioned request", () => {
