@@ -1,0 +1,101 @@
+## 1. Establish the integration and unified-save base
+
+- [x] 1.1 Create an isolated implementation worktree from the intended integration branch and record the prerequisite commit IDs before changing shared provider or catalog files.
+- [x] 1.2 Semantically integrate the raw-JSON model-catalog and provider/live-config ownership work, preserving the provider-owned root allowlist, global live re-graft, Context guard, and OAuth ownership tests.
+- [x] 1.3 Transplant the provider-onboarding helper and its tests so a new ordinary provider defaults to `relayMode = "official"`, `officialMixApiKey = true`, and `protocol = "responses"` without merging competing `App.tsx` changes wholesale.
+- [ ] 1.4 Add failing frontend/backend contract tests for one combined provider-detail request carrying provider draft, catalog draft, action, previous active ID, Context confirmation, and draft revision for both new and existing profiles.
+- [ ] 1.5 Implement the combined request schema, make ordinary nested catalog controls draft-only, and prevent `model_catalog_status` from creating a new profile's missing catalog state as a post-save side effect while preserving versioned catalog migrations.
+- [ ] 1.6 Add a draft-aware catalog planner that can create first-save state, persist an inactive action-required state when environmental readiness is unavailable, and plan active provider/catalog output from the request draft rather than previously persisted catalog state.
+- [x] 1.7 Verify that the existing target-verified official baseline and `official-plus-custom` composition remain authoritative; add no standard-Pro, signed-update, or 372k readiness dependency in this change.
+- [x] 1.8 Run the existing frontend and Rust test suites on the integrated prerequisite baseline and fix or record every pre-existing failure before starting native-capability changes.
+
+## 2. Build the backend contract evaluator test-first
+
+- [ ] 2.1 Add failing Rust fixtures for canonical native-priority, eligible legacy mixed, partial, conflicting actor-header, external mixed, external pure OAuth, ordinary pure OAuth, pure API, Chat Completions, aggregate, missing-input, structured-key/bearer conflict, malformed TOML, reserved lowercase `openai`, and legacy alias IDs.
+- [ ] 2.2 Add failing tests proving classification is derived from relay/catalog fields and parsed TOML, with no serialized native-capability boolean added to settings.
+- [ ] 2.3 Add failing tests for both inline `http_headers` and explicit header-table forms, including preservation of unrelated headers and rejection of ambiguous or duplicate structures.
+- [ ] 2.4 Implement `provider_native_capability.rs` with the managed header constants, sanitized state/reason types, selected-provider lookup, eligibility rules, and complete-contract validation.
+- [ ] 2.5 Add tests that manually authored complete contracts are recognized, a header alone is insufficient, provider IDs remain case-sensitive, reserved built-in `openai` is rejected, and `CodexPlusPlus`/`CodexPP` require an explicit stable-ID rename.
+- [ ] 2.6 Expose a read-only bulk/per-profile inspection command that returns derived state and field-level reasons without returning provider keys, OAuth tokens, account identifiers, or raw auth JSON.
+
+## 3. Build the pure draft transformer test-first
+
+- [ ] 3.1 Add failing tests that enabling native priority preserves a non-legacy provider ID, Base URL, matching bearer, comments where supported, arbitrary provider keys, and unrelated headers while setting only the canonical owned fields.
+- [ ] 3.2 Add failing tests that enablement produces `name = "OpenAI"`, `wire_api = "responses"`, `requires_openai_auth = false`, a nonblank provider bearer, and `x-openai-actor-authorization = "local-image-extension"`.
+- [ ] 3.3 Add failing tests that legacy alias IDs move to `custom` only when absent or semantically identical; a different existing `custom` table blocks migration until the user chooses an unused non-reserved ID, with all references/table content preserved.
+- [ ] 3.4 Add failing conflict tests proving custom actor-header values and structured-key/raw-bearer mismatches remain redacted blockers until an explicit synchronization or replacement decision.
+- [ ] 3.5 Add failing exit tests proving pure API/legacy preserve unowned custom-provider fields, while true pure OAuth previews and removes the complete custom provider table with no dormant copy; preserve unadopted external catalog ownership in every case.
+- [ ] 3.6 Implement minimal `toml_edit` transformations for inspect, enable, legacy-ID migration, conflict-confirmed replacement, and exit without touching global live configuration.
+- [ ] 3.7 Expose the transformer as a revisioned pure draft command; discard stale responses and add filesystem spies proving it writes no settings, catalog files, live `config.toml`, or `auth.json`.
+
+## 4. Enforce the contract at the unified backend commit boundary
+
+- [ ] 4.1 Add failing tests that first and later inactive Save atomically persist one coherent provider/catalog state, including action-required catalog state when appropriate, without changing live configuration, active provider, restart state, or live auth.
+- [ ] 4.2 Add failing tests that Set-as-current and active Save atomically commit settings, provider config, catalog state, generated catalog, pointer, activation state, and restart state as one generation.
+- [ ] 4.3 Implement a fallible provider-detail normalizer that rejects missing inputs, structured/raw conflicts, reserved/ambiguous provider selection, invalid TOML, and structural catalog errors before any mutation; prevent provider-detail callers from using the old log-and-continue settings path.
+- [ ] 4.4 Re-parse and assert the canonical actor-authorized contract after the pinned core generates staged configuration so upstream defaults cannot silently restore `requires_openai_auth = true` or drop headers.
+- [ ] 4.5 Add transaction-failure injection tests at normalization, catalog materialization, settings persistence, live-config commit, Context verification, and post-commit verification; prove every persisted artifact returns to the prior generation.
+- [ ] 4.6 Extend success and failure tests to prove protected Context tables remain semantically identical and live `auth.json` remains byte-identical when no official-client update races the transaction.
+- [ ] 4.7 Add regression tests proving unrelated live roots and tables—including review model, reasoning effort, sandbox/network policy, acknowledgements, and feature flags—are preserved from live state and never introduced from profile content.
+- [ ] 4.8 Add a concurrent official-auth update test proving the provider transaction aborts and rolls back only Manager-owned mutations while preserving the newer official `auth.json` bytes.
+- [ ] 4.9 Reject every new Save/Set-as-current request with non-empty `authContents`, whether OAuth or API-key-only; permit only controlled migration of an already persisted API-key-only legacy copy into the provider bearer, then delete that copy.
+- [ ] 4.10 Block Set-as-current and active Save without current official ChatGPT authentication or with scope-stale catalog identity/target state, while permitting a valid inactive action-required Save.
+- [ ] 4.11 Verify rollback journals, staging directories, logs, errors, diagnostics, settings, and catalog artifacts contain no ChatGPT OAuth payload, and verify owner-only permissions for every provider-key-bearing path.
+- [ ] 4.12 Harden backend `save_settings` by comparing the incoming provider-owned settings snapshot with persisted state, allowing unrelated settings changes only when relay profiles, active IDs, relay common/context state, enablement, aggregate/legacy projections, and related provider fields are unchanged.
+- [ ] 4.13 Add direct-invoke bypass tests proving generic `save_settings` rejects invalid provider TOML, actor/auth changes, non-empty `authContents`, active-ID changes, and other provider-bearing mutations with persisted and live bytes unchanged.
+
+## 5. Make frontend provider generation and editing mode-aware
+
+- [ ] 5.1 Add failing TypeScript tests that a new empty provider selects a transient native-priority target but remains incomplete, then emits the exact canonical TOML only after Base URL, key, and model are complete.
+- [ ] 5.2 Refactor `buildRelayConfigToml`, `withGeneratedRelayFiles`, `applyRelayProfilePatchToFiles`, and provider-default helpers to accept an explicit transient target contract instead of assuming `requires_openai_auth = true`.
+- [ ] 5.3 Allow the synchronous TypeScript builder to create the canonical header only for a brand-new empty profile; route every add/replace/remove on existing TOML through the revisioned backend transformer.
+- [ ] 5.4 Add regression tests that model, Base URL, provider key, context-window, and auto-compact edits never clobber the native-priority provider table; keep managed-catalog context-conflict reporting and cleanup under the catalog capability.
+- [ ] 5.5 Add a specific regression proving a Base-URL-only edit can no longer turn `requires_openai_auth = false` back into `true`.
+- [ ] 5.6 Remove the provider-scoped goals control or relocate it to its true live/global owner, and add a regression proving provider edits cannot introduce or change `[features].goals`.
+- [ ] 5.7 Load backend-derived inspection state into the provider-detail draft as response-only UI metadata and prove it is never serialized into `settings.json`.
+- [ ] 5.8 Treat a protocol change from Responses to Chat Completions as an explicit compatibility exit with a capability-loss preview rather than an ordinary contract-preserving edit.
+
+## 6. Add explicit upgrade, exit, and capability-status UX
+
+- [ ] 6.1 Add frontend tests that an eligible non-external mixed profile shows upgrade availability while startup, load, inspection, Doctor, and evidence refresh do not add, remove, or change actor/native-capability fields; allow unrelated independently specified legacy maintenance.
+- [ ] 6.2 Implement the “upgrade to native-capability priority” draft action with a preview of owned field changes, preserved fields, capability caveats, and the normal unsaved-change state.
+- [ ] 6.3 Add tests that cancel, navigation, or editor close after preview performs no settings, catalog, live-config, restart-state, or auth write.
+- [ ] 6.4 Implement explicit confirmation for replacing a custom actor-header value or legacy provider ID and explicit exit choices; pure OAuth must preview destructive custom-provider removal, while pure API/legacy preserve unowned fields.
+- [ ] 6.5 Add a redacted evidence ledger for provider contract, OAuth context, catalog/model, upstream, and runtime gates; missing OAuth permits inactive action-required Save but blocks activation and key-only routing is labeled pure API/compatibility.
+- [ ] 6.6 Ensure a known Free plan plus a verified affected target Codex version reports image generation blocked; unknown plan or version remains unknown, and a paid plan never implies success.
+- [ ] 6.7 Update Provider Doctor so a successful text Responses probe reports only text connectivity; preserve `compatibilityFallbackUsed` evidence without treating fallback success as native-extension, selected-model, provider-group, or catalog proof.
+- [ ] 6.8 Add Chinese and English copy that explains OAuth remains official-client-owned, the provider key authenticates inference, actor authorization only enables eligibility, and upstream/model/account gates still apply.
+- [ ] 6.9 Keep ordinary pure OAuth visibly `native-official`, preserve external pure OAuth as `external`, exclude unadopted external mixed profiles from one-click upgrade, and keep pure API, Chat Completions, aggregate, and legacy paths advanced and non-default.
+
+## 7. Integrate catalog and restart semantics
+
+- [ ] 7.1 Add tests that non-external native-priority mixed profiles request `official-plus-custom`, ordinary pure OAuth requests `native-official`, external ownership wins before both defaults, and native-priority code defines no competing catalog baseline or update channel.
+- [ ] 7.2 Block a new active native-priority generation when its managed catalog prerequisite is missing, scope-stale, invalid, or cannot contain the selected default model; preserve the last valid active provider/catalog generation.
+- [ ] 7.3 Allow an inactive native-priority draft to remain saved as action-required when catalog readiness is unavailable, without changing live configuration or claiming runtime readiness.
+- [ ] 7.4 Add recovery tests that a later valid official refresh or provider-detail commit materializes an action-required inactive profile, clears only its catalog-readiness action, and permits activation retry under the remaining gates.
+- [ ] 7.5 Preserve `adopt_external_model_catalog` as the source/version-hash-bound specialized catalog transaction and make the combined provider-detail command reject any unreviewed external-to-managed ownership transition.
+- [ ] 7.6 Add an independent `appliedRuntimeFingerprint` to `ProfileCatalogState`, using provider ID/name, protocol, auth requirement, actor header, and stable catalog runtime identity (`generated_hash`, external source identity, or native sentinel); add migration/default tests.
+- [ ] 7.7 Add diff and transaction tests that update the runtime fingerprint and existing `restart_required` signal without incrementing catalog generation, including two identical consecutive active saves that make no second generation or restart transition.
+- [ ] 7.8 Present complete host quit/relaunch plus new-task guidance without terminating Codex, adding a second restart flag, or auto-clearing the marker without a trustworthy runtime observer.
+- [ ] 7.9 Prove inactive Save sets no restart marker and an unobserved post-restart runtime remains `unknown` rather than being reported as adopted.
+
+## 8. Run end-to-end preservation and security regressions
+
+- [ ] 8.1 Add a golden regression for the supplied custom `OpenAI` provider configuration, excluding invalid/unrelated global keys, and prove normalization plus live staging retain the exact effective actor-authorized contract.
+- [ ] 8.2 Add golden regressions for an existing legacy mixed profile, a legacy provider-ID alias, and a custom-header profile, proving startup and inspection do not change actor/native-capability fields automatically.
+- [ ] 8.3 Test the explicit native-priority-to-pure-OAuth transition, proving the preview discloses custom-provider deletion, no dormant copy is retained, the catalog returns to `native-official` only when non-external, and official auth is never written.
+- [ ] 8.4 Test switching among native priority, pure API, and legacy compatibility, proving target-specific fields change only after commit and unowned provider headers survive every round trip.
+- [ ] 8.5 Run a pinned-core compatibility test against the fully staged TOML to detect changes in provider-name, actor-header, Responses, bearer, or reserved-provider semantics before future dependency upgrades are accepted.
+- [ ] 8.6 Audit transaction artifacts, application logs, telemetry, inspection/status/evidence/Doctor payloads, errors, and generated catalogs for provider-key or OAuth leakage using sentinel credentials; allow the local masked provider-detail draft/settings IPC to carry the bearer and prove it is never logged or copied into status surfaces.
+- [ ] 8.7 Perform a controlled no-image-cost manual flow without concurrent auth refresh: create a provider, preview/save it inactive, activate it, inspect the live provider/catalog generation and restart guidance, and verify live `auth.json` hash equality.
+- [ ] 8.8 Record image-generation permission, `gpt-image-2` allowance, and runtime tool registration as unverified in the manual result unless independently observed; do not convert a text probe into a success claim.
+
+## 9. Validate, document, and hand off
+
+- [ ] 9.1 Run focused TypeScript tests for onboarding, provider draft editing, upgrade/exit UX, catalog integration, and restart presentation.
+- [ ] 9.2 Run focused Rust tests for evaluator/transformer behavior, fallible combined commands, live-state transactions, Context protection, model catalogs, permissions, recovery, OAuth byte equality without a race, and preservation of concurrent official auth updates.
+- [ ] 9.3 Run `npm run check`, `npm run vite:build`, and `cargo test` from their documented project directories; resolve every change-caused failure.
+- [ ] 9.4 Run `npm run build` to verify the complete Tauri application bundle when the local signing/build environment permits it, and record any environment-only gap explicitly.
+- [ ] 9.5 Update user-facing help and architecture documentation with the contract, truthfulness limits, external-catalog precedence, explicit migration/destructive-exit policy, restart/new-task requirement, and ownership distinction between profile and global live configuration; mark the older onboarding `requires_openai_auth = true` native-default text as superseded.
+- [ ] 9.6 Append one completed-work entry to `BOARD.md` only after implementation and verification are complete; include the exact tests and the absence of bulk migration or OAuth writes.
+- [ ] 9.7 Run strict OpenSpec validation, reconcile implementation behavior against every scenario in `provider-native-capability-mode`, and leave no unchecked scenario without an explicit verification record.
