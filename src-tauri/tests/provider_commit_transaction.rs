@@ -401,6 +401,48 @@ fn injected_live_config_commit_failure_rolls_back_the_complete_prior_generation(
 }
 
 #[test]
+fn injected_context_verification_failure_rolls_back_the_complete_prior_generation() {
+    let active = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    let initial = settings_with(vec![active], "sub2api");
+    let fixture = Fixture::new(&initial, &state_with_official());
+    fs::write(
+        fixture.paths.codex_home.join("config.toml"),
+        rich_live_config(),
+    )
+    .unwrap();
+    let persisted = fixture.read_settings();
+    let before = fixture.file_generation();
+    let mut next = persisted.clone();
+    next.relay_profiles[0] = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://changed.example/v1",
+        "changed-provider-key",
+    );
+
+    let error = commit_provider_detail_from_paths_observed(
+        &fixture.paths,
+        request(&persisted, &next, "sub2api", ProviderCommitAction::Save, 54),
+        |checkpoint| {
+            if checkpoint == ProviderCommitCheckpoint::ContextVerification {
+                anyhow::bail!("context-fault-sentinel");
+            }
+            Ok(())
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code(), ProviderCommitErrorCode::TransactionFailed);
+    assert!(!error.to_string().contains("context-fault-sentinel"));
+    assert_eq!(fixture.file_generation(), before);
+}
+
+#[test]
 fn first_and_later_inactive_save_commit_provider_and_catalog_without_live_side_effects() {
     let old = pure_oauth_profile("official");
     let persisted = settings_with(vec![old.clone()], "official");

@@ -1968,6 +1968,7 @@ pub enum ProviderCommitCheckpoint {
     CatalogMaterialization,
     SettingsPersistence,
     LiveConfigCommit,
+    ContextVerification,
 }
 
 impl ProviderCommitFailure {
@@ -2252,20 +2253,22 @@ pub fn commit_provider_detail_from_paths_observed(
     );
 
     let live_config_path = paths.codex_home.join("config.toml");
+    let observe = std::cell::RefCell::new(&mut observe);
     live_state::commit_locked_verified_at_observed(
         &paths.app_state,
         &mutations,
         |path| {
             if path == paths.settings_path {
-                observe(ProviderCommitCheckpoint::SettingsPersistence)?;
+                observe.borrow_mut()(ProviderCommitCheckpoint::SettingsPersistence)?;
             } else if path == live_config_path {
-                observe(ProviderCommitCheckpoint::LiveConfigCommit)?;
+                observe.borrow_mut()(ProviderCommitCheckpoint::LiveConfigCommit)?;
             }
             Ok(())
         },
         || {
             if let Some(snapshot) = context_snapshot.as_ref() {
                 verify_context_tables(&paths.codex_home, snapshot)?;
+                observe.borrow_mut()(ProviderCommitCheckpoint::ContextVerification)?;
             }
             anyhow::ensure!(
                 read_optional_bytes(&auth_path)? == auth_before,
