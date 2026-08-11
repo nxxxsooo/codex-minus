@@ -1531,6 +1531,12 @@ fn profile_api_key_from_auth(auth_contents: &str) -> Option<String> {
 }
 
 fn provider_bearer_token_from_config(config_contents: &str) -> Option<String> {
+    provider_bearer_token_from_config_exact(config_contents)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn provider_bearer_token_from_config_exact(config_contents: &str) -> Option<String> {
     let doc: toml_edit::DocumentMut = config_contents.parse().ok()?;
     let provider_id = doc.get("model_provider")?.as_str()?.trim();
     doc.get("model_providers")?
@@ -1539,8 +1545,6 @@ fn provider_bearer_token_from_config(config_contents: &str) -> Option<String> {
         .as_table()?
         .get("experimental_bearer_token")?
         .as_str()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
         .map(ToString::to_string)
 }
 
@@ -2353,13 +2357,15 @@ fn migrate_persisted_legacy_api_key_auth(profile: &mut RelayProfile) -> anyhow::
             "persisted provider key conflict"
         );
     }
-    if let Some(bearer) = provider_bearer_token_from_config(&profile.config_contents) {
+    if let Some(bearer) = provider_bearer_token_from_config_exact(&profile.config_contents) {
         anyhow::ensure!(
             bearer.as_bytes() == legacy_key.as_bytes(),
             "persisted provider bearer conflict"
         );
     }
     profile.api_key = legacy_key.to_string();
+    profile.config_contents =
+        set_provider_config_bearer(&profile.config_contents, legacy_key, false)?;
     profile.auth_contents.clear();
     Ok(())
 }
@@ -3984,39 +3990,46 @@ fn serialize_settings_without_profile_auth(settings: &BackendSettings) -> anyhow
 
 fn migrate_legacy_profile_auth_locked() -> anyhow::Result<()> {
     let settings_path = codex_plus_core::paths::default_settings_path();
+    let migrated = migrate_legacy_profile_auth_locked_at(&settings_path)?;
+    if migrated > 0 {
+        log_manager_event(
+            "manager.profile_auth_migration.completed",
+            json!({ "profileCount": migrated }),
+        );
+    }
+    Ok(())
+}
+
+fn migrate_legacy_profile_auth_locked_at(settings_path: &Path) -> anyhow::Result<usize> {
     if !settings_path.exists() {
-        return Ok(());
+        return Ok(0);
     }
     live_state::ensure_owner_only_file(&settings_path)?;
-    let raw = std::fs::read_to_string(&settings_path)?;
-    let contains_profile_auth = serde_json::from_str::<Value>(&raw)
-        .ok()
-        .and_then(|value| value.get("relayProfiles").cloned())
-        .and_then(|value| value.as_array().cloned())
-        .is_some_and(|profiles| {
-            profiles.iter().any(|profile| {
-                profile
-                    .get("authContents")
-                    .and_then(Value::as_str)
-                    .is_some_and(|value| !value.trim().is_empty())
-            })
-        });
-    if !contains_profile_auth {
-        return Ok(());
+    let raw = std::fs::read(&settings_path)?;
+    let mut settings: BackendSettings =
+        serde_json::from_slice(&raw).context("persisted provider settings are invalid")?;
+    let mut migrated = 0;
+    for profile in &mut settings.relay_profiles {
+        if profile.auth_contents.is_empty() {
+            continue;
+        }
+        migrate_persisted_legacy_api_key_auth(profile)?;
+        codex_plus_core::relay_config::normalize_relay_profile_for_storage(profile)
+            .context("persisted provider profile is invalid")?;
+        sanitize_profile_after_core_normalize_fallible(profile)?;
+        profile.config_contents = retain_provider_owned_profile_config(&profile.config_contents)
+            .context("persisted provider config ownership is invalid")?;
+        migrated += 1;
     }
-
-    let settings = SettingsStore::default().load()?;
-    let settings = normalize_settings_before_save(settings);
+    if migrated == 0 {
+        return Ok(0);
+    }
     let bytes = serialize_settings_without_profile_auth(&settings)?;
     // Credential migration intentionally has no prior-file backup. The old file is
     // secured first and then atomically replaced so OAuth copies cannot survive in
     // a recovery artifact.
     live_state::atomic_write_owner_only(&settings_path, &bytes)?;
-    log_manager_event(
-        "manager.profile_auth_migration.completed",
-        json!({ "profileCount": settings.relay_profiles.len() }),
-    );
-    Ok(())
+    Ok(migrated)
 }
 
 fn user_script_inventory() -> Value {
@@ -4508,19 +4521,14 @@ max_threads = 1000
     }
 
     #[test]
-    fn normalization_removes_oauth_copies_and_projects_pure_api_key_to_config() {
+    fn normalization_projects_api_key_only_legacy_copy_to_provider_config() {
         let mut settings = BackendSettings::default();
         settings.relay_profiles = vec![RelayProfile {
             id: "pure".to_string(),
             relay_mode: codex_plus_core::settings::RelayMode::PureApi,
             base_url: "https://example.test/v1".to_string(),
             upstream_base_url: "https://example.test/v1".to_string(),
-            auth_contents: r#"{
-                "OPENAI_API_KEY": "sk-test",
-                "auth_mode": "chatgpt",
-                "tokens": {"access_token": "oauth", "refresh_token": "refresh"}
-            }"#
-            .to_string(),
+            auth_contents: r#"{"OPENAI_API_KEY":"sk-test"}"#.to_string(),
             ..RelayProfile::default()
         }];
         let settings = normalize_settings_before_save(settings);
@@ -4538,9 +4546,36 @@ max_threads = 1000
         );
         let persisted =
             String::from_utf8(serialize_settings_without_profile_auth(&settings).unwrap()).unwrap();
-        assert!(!persisted.contains("oauth"));
-        assert!(!persisted.contains("refresh"));
         assert!(!persisted.contains("authContents"));
+    }
+
+    #[test]
+    fn load_time_legacy_migration_rejects_mixed_oauth_payload_without_writing() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let mut settings = BackendSettings::default();
+        settings.relay_profiles = vec![RelayProfile {
+            id: "pure".to_string(),
+            relay_mode: codex_plus_core::settings::RelayMode::PureApi,
+            base_url: "https://example.test/v1".to_string(),
+            upstream_base_url: "https://example.test/v1".to_string(),
+            auth_contents: r#"{
+                "OPENAI_API_KEY": "provider-key-sentinel",
+                "auth_mode": "chatgpt",
+                "tokens": {"access_token": "oauth-access-sentinel"}
+            }"#
+            .to_string(),
+            ..RelayProfile::default()
+        }];
+        let before = serde_json::to_vec_pretty(&settings).unwrap();
+        std::fs::write(&settings_path, &before).unwrap();
+        let _guard = live_state::lock().unwrap();
+
+        let error = migrate_legacy_profile_auth_locked_at(&settings_path).unwrap_err();
+
+        assert!(!error.to_string().contains("provider-key-sentinel"));
+        assert!(!error.to_string().contains("oauth-access-sentinel"));
+        assert_eq!(std::fs::read(&settings_path).unwrap(), before);
     }
 
     #[test]
