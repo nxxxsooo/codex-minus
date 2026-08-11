@@ -3569,7 +3569,7 @@ function RelayFileEditors({
   onProfileChange: (value: RelayProfile) => void;
 }) {
   const nativeOfficial = profile.relayMode === "official" && !profile.officialMixApiKey;
-  const providerConfig = applyContextLimitPreview(profile.configContents, profile);
+  const providerConfig = profile.configContents;
   return (
     <div className="relay-file-grid">
       <RelayConfigPanels

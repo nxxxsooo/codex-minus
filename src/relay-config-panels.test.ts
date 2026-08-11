@@ -1,4 +1,5 @@
 import assert from "node:assert";
+import fs from "node:fs";
 import { describe, it } from "node:test";
 import { Children, isValidElement, type ReactElement, type ReactNode } from "react";
 
@@ -21,6 +22,17 @@ function findElement(node: ReactNode, attribute: string): TestElement {
 }
 
 describe("relay config panels", () => {
+  it("binds the provider textarea to the exact draft instead of a trailing-newline preview", () => {
+    const appSource = fs.readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    const editorStart = appSource.indexOf("function RelayFileEditors(");
+    const editorEnd = appSource.indexOf("function ProviderDoctorModal(", editorStart);
+    assert.ok(editorStart >= 0 && editorEnd > editorStart, "RelayFileEditors must remain present");
+    const editorSource = appSource.slice(editorStart, editorEnd);
+
+    assert.match(editorSource, /const providerConfig = profile\.configContents;/);
+    assert.doesNotMatch(editorSource, /applyContextLimitPreview\(profile\.configContents, profile\)/);
+  });
+
   it("keeps the provider draft separate from the current live config", () => {
     assert.ok(panelsModule, "the production relay config module must exist");
     assert.equal(typeof panelsModule.providerConfigDraft, "function");
