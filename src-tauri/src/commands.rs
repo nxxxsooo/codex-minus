@@ -2415,6 +2415,7 @@ pub fn commit_provider_detail_from_paths_observed(
             request.topology.apply_to(&persisted_settings),
             focused_id,
             focused_mode,
+            request.confirm_context_cleanup,
         )
     } else {
         normalize_provider_topology_settings_fallible(
@@ -3043,6 +3044,7 @@ fn normalize_provider_detail_settings_fallible(
     mut settings: BackendSettings,
     focused_id: &str,
     focused_mode: crate::model_catalog::CatalogMode,
+    confirm_context_cleanup: bool,
 ) -> anyhow::Result<BackendSettings> {
     let focused = settings
         .relay_profiles
@@ -3051,6 +3053,19 @@ fn normalize_provider_detail_settings_fallible(
         .ok_or_else(|| anyhow::anyhow!("focused provider profile is missing"))?;
     reconcile_provider_detail_raw_fields(focused)?;
     validate_provider_detail_contract(focused, focused_mode)?;
+    if crate::model_catalog::managed_mode(focused_mode) {
+        let conflicts = crate::model_catalog::global_context_conflicts(&focused.config_contents);
+        if !conflicts.is_empty() {
+            anyhow::ensure!(
+                confirm_context_cleanup,
+                "managed catalog context cleanup confirmation is required"
+            );
+            focused.config_contents =
+                crate::model_catalog::remove_global_context_keys(&focused.config_contents)?;
+            focused.context_window.clear();
+            focused.auto_compact_limit.clear();
+        }
+    }
 
     // Provider-detail commits do not own a stored copy of live common/context configuration.
     settings.relay_common_config_contents.clear();

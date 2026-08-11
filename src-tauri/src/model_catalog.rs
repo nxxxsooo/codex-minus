@@ -977,7 +977,7 @@ pub(crate) fn read_only_catalog_modes_from_path(
     Ok(modes)
 }
 
-fn managed_mode(mode: CatalogMode) -> bool {
+pub(crate) fn managed_mode(mode: CatalogMode) -> bool {
     matches!(
         mode,
         CatalogMode::OfficialPlusCustom | CatalogMode::CustomOnly
@@ -1016,7 +1016,7 @@ pub(crate) fn validate_upstream_topology(
 
 const GLOBAL_CONTEXT_KEYS: [&str; 2] = ["model_context_window", "model_auto_compact_token_limit"];
 
-fn global_context_conflicts(config: &str) -> Vec<String> {
+pub(crate) fn global_context_conflicts(config: &str) -> Vec<String> {
     let Ok(doc) = config.parse::<toml_edit::DocumentMut>() else {
         return Vec::new();
     };
@@ -1027,7 +1027,7 @@ fn global_context_conflicts(config: &str) -> Vec<String> {
         .collect()
 }
 
-fn remove_global_context_keys(config: &str) -> anyhow::Result<String> {
+pub(crate) fn remove_global_context_keys(config: &str) -> anyhow::Result<String> {
     let mut doc: toml_edit::DocumentMut = config.parse()?;
     for key in GLOBAL_CONTEXT_KEYS {
         doc.as_table_mut().remove(key);

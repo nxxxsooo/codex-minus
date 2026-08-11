@@ -449,6 +449,83 @@ fn successful_active_commit_preserves_context_semantics_and_auth_bytes() {
 }
 
 #[test]
+fn managed_context_cleanup_requires_confirmation_and_commits_settings_and_live_atomically() {
+    let mut active = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    active.context_window = "272000".to_string();
+    active.auto_compact_limit = "240000".to_string();
+    active.config_contents = format!(
+        "model_context_window = 272000\nmodel_auto_compact_token_limit = 240000\n{}",
+        active.config_contents
+    );
+    let initial = settings_with(vec![active], "sub2api");
+
+    let rejected = Fixture::new(&initial, &state_with_official());
+    let persisted = rejected.read_settings();
+    let before = rejected.file_generation();
+    let error = commit_provider_detail_from_paths(
+        &rejected.paths,
+        request(
+            &persisted,
+            &persisted,
+            "sub2api",
+            ProviderCommitAction::Save,
+            57,
+        ),
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), ProviderCommitErrorCode::InvalidDraft);
+    assert_eq!(rejected.file_generation(), before);
+
+    let confirmed = Fixture::new(&initial, &state_with_official());
+    fs::write(
+        confirmed.paths.codex_home.join("config.toml"),
+        rich_live_config(),
+    )
+    .unwrap();
+    let context_before = semantic_context_tables(rich_live_config());
+    let auth_before = fs::read(confirmed.paths.codex_home.join("auth.json")).unwrap();
+    let persisted = confirmed.read_settings();
+    let mut confirmed_request = request(
+        &persisted,
+        &persisted,
+        "sub2api",
+        ProviderCommitAction::Save,
+        58,
+    );
+    confirmed_request.confirm_context_cleanup = true;
+
+    commit_provider_detail_from_paths(&confirmed.paths, confirmed_request).unwrap();
+
+    let saved = confirmed.read_settings();
+    let saved_profile = &saved.relay_profiles[0];
+    assert!(saved_profile.context_window.is_empty());
+    assert!(saved_profile.auto_compact_limit.is_empty());
+    assert!(
+        !saved_profile
+            .config_contents
+            .contains("model_context_window")
+    );
+    assert!(
+        !saved_profile
+            .config_contents
+            .contains("model_auto_compact_token_limit")
+    );
+    let live = fs::read_to_string(confirmed.paths.codex_home.join("config.toml")).unwrap();
+    assert!(!live.contains("model_context_window"));
+    assert!(!live.contains("model_auto_compact_token_limit"));
+    assert_eq!(semantic_context_tables(&live), context_before);
+    assert_eq!(
+        fs::read(confirmed.paths.codex_home.join("auth.json")).unwrap(),
+        auth_before
+    );
+}
+
+#[test]
 fn injected_normalization_failure_preserves_the_complete_prior_generation() {
     let active = canonical_profile(
         "sub2api",

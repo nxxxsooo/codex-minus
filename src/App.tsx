@@ -3127,7 +3127,7 @@ function RelayProfileDetail({
         && normalizedDraft.protocol !== "chatCompletions"
         && !!catalogDraft
         && managedCatalogMode(catalogDraft.mode);
-      const contextConflicts = isActive && managedCatalog
+      const contextConflicts = managedCatalog
         ? managedContextConflictKeys(normalizedDraft.configContents)
         : [];
       const confirmContextCleanup = contextConflicts.length
