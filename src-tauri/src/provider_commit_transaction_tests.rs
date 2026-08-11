@@ -4,7 +4,7 @@ use crate::commands::{
     GenericSettingsSaveError, ProviderCommitCheckpoint, ProviderCommitErrorCode,
     ProviderCommitPaths, ProviderCommitPayload, assert_staged_native_provider_contract,
     commit_provider_detail_from_paths, commit_provider_detail_from_paths_observed,
-    save_settings_with_provider_guard_at,
+    save_settings_with_provider_guard_at, save_settings_with_provider_guard_at_observed,
 };
 use crate::provider_commit::{
     CatalogMode, CatalogOverlay, CatalogState, CustomModel, OfficialSnapshot, ProfileCatalogDraft,
@@ -13,7 +13,8 @@ use crate::provider_commit::{
 };
 use base64::Engine;
 use codex_plus_core::settings::{
-    BackendSettings, RelayMode, RelayProfile, RelayProtocol, SettingsStore,
+    AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
+    RelayMode, RelayProfile, RelayProtocol, SettingsStore,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -1075,6 +1076,120 @@ fn generic_settings_save_uses_default_provider_baseline_when_settings_file_is_ab
         ))
         .unwrap()
     );
+}
+
+#[test]
+fn generic_settings_save_accepts_first_run_ui_shape_and_active_aggregate_ui_projection() {
+    let first_run = Fixture::new(&BackendSettings::default(), &state_with_official());
+    fs::remove_file(&first_run.paths.settings_path).unwrap();
+    let mut first_run_ui = BackendSettings::default();
+    first_run_ui.relay_profiles[0].context_selection_initialized = true;
+    first_run_ui.codex_goals_enabled = true;
+    save_settings_with_provider_guard_at(&first_run.paths, first_run_ui).unwrap();
+
+    let api = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    let aggregate = RelayProfile {
+        id: "aggregate".to_string(),
+        name: "Aggregate".to_string(),
+        relay_mode: RelayMode::Aggregate,
+        protocol: RelayProtocol::ChatCompletions,
+        official_mix_api_key: true,
+        context_window: "123456".to_string(),
+        auto_compact_limit: "100000".to_string(),
+        model_list: "stale-model".to_string(),
+        ..RelayProfile::default()
+    };
+    let mut initial = settings_with(vec![api, aggregate], "aggregate");
+    initial.aggregate_relay_profiles = vec![AggregateRelayProfile {
+        id: "aggregate".to_string(),
+        name: "Aggregate".to_string(),
+        strategy: AggregateRelayStrategy::Failover,
+        members: vec![AggregateRelayMember {
+            relay_id: "sub2api".to_string(),
+            weight: 1,
+        }],
+    }];
+    let fixture = Fixture::new(&initial, &state_with_official());
+    let mut persisted_value: Value =
+        serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+    persisted_value["relayProfiles"][1]["model"] = json!("aggregate-model");
+    fs::write(
+        &fixture.paths.settings_path,
+        serde_json::to_vec_pretty(&persisted_value).unwrap(),
+    )
+    .unwrap();
+    let raw_before = fs::read(&fixture.paths.settings_path).unwrap();
+    let mut ui_round_trip = SettingsStore::new(fixture.paths.settings_path.clone())
+        .load()
+        .unwrap();
+    for profile in &mut ui_round_trip.relay_profiles {
+        if profile.relay_mode == RelayMode::Aggregate {
+            profile.base_url.clear();
+            profile.upstream_base_url.clear();
+            profile.api_key.clear();
+            profile.protocol = RelayProtocol::Responses;
+            profile.official_mix_api_key = false;
+            profile.config_contents.clear();
+            profile.auth_contents.clear();
+            profile.context_window.clear();
+            profile.auto_compact_limit.clear();
+            profile.model_list.clear();
+            profile.model_windows.clear();
+        }
+        profile.context_selection_initialized = true;
+    }
+    ui_round_trip.relay_base_url = "http://127.0.0.1:57321/v1".to_string();
+    ui_round_trip.relay_api_key.clear();
+    ui_round_trip.active_aggregate_relay_id = "aggregate".to_string();
+    ui_round_trip.codex_goals_enabled = true;
+
+    save_settings_with_provider_guard_at(&fixture.paths, ui_round_trip).unwrap();
+
+    let saved = fs::read(&fixture.paths.settings_path).unwrap();
+    let raw_topology: BackendSettings = serde_json::from_slice(&raw_before).unwrap();
+    let saved_settings: BackendSettings = serde_json::from_slice(&saved).unwrap();
+    assert_eq!(
+        serde_json::to_value(ProviderOwnedTopologyDraft::from_settings(&saved_settings)).unwrap(),
+        serde_json::to_value(ProviderOwnedTopologyDraft::from_settings(&raw_topology)).unwrap()
+    );
+    assert!(saved_settings.codex_goals_enabled);
+}
+
+#[test]
+fn generic_settings_save_rejects_a_concurrent_persisted_provider_generation_change() {
+    let initial = settings_with(
+        vec![canonical_profile(
+            "sub2api",
+            "official-a",
+            "https://relay.example/v1",
+            "provider-key",
+        )],
+        "sub2api",
+    );
+    let fixture = Fixture::new(&initial, &state_with_official());
+    let mut incoming: BackendSettings =
+        serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+    incoming.codex_goals_enabled = true;
+    let mut concurrent = initial;
+    concurrent.relay_profiles[0].config_contents = concurrent.relay_profiles[0]
+        .config_contents
+        .replace("https://relay.example/v1", "https://concurrent.example/v1");
+    let concurrent_bytes = serde_json::to_vec_pretty(&concurrent).unwrap();
+    let settings_path = fixture.paths.settings_path.clone();
+
+    let error = save_settings_with_provider_guard_at_observed(&fixture.paths, incoming, || {
+        fs::write(&settings_path, &concurrent_bytes)?;
+        Ok(())
+    })
+    .unwrap_err();
+
+    assert_eq!(error, GenericSettingsSaveError::PersistedSettingsChanged);
+    assert_eq!(fs::read(settings_path).unwrap(), concurrent_bytes);
 }
 
 #[test]

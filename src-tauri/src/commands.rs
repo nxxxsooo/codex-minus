@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -519,6 +520,7 @@ pub(crate) enum GenericSettingsSaveError {
     ProviderOwnedDifference,
     ProviderAuthProhibited,
     PersistedSettingsInvalid,
+    PersistedSettingsChanged,
     SecureStorageFailed,
 }
 
@@ -528,6 +530,7 @@ impl GenericSettingsSaveError {
             Self::ProviderOwnedDifference => "保存设置失败；供应商相关改动必须使用统一供应商保存。",
             Self::ProviderAuthProhibited => "保存设置失败；供应商认证内容不能通过通用设置保存。",
             Self::PersistedSettingsInvalid => "保存设置失败；本地设置文件无效，请先修复设置文件。",
+            Self::PersistedSettingsChanged => "保存设置失败；本地设置已更新，请重新加载后再试。",
             Self::SecureStorageFailed => "保存设置失败；安全存储事务未能完成。",
         }
     }
@@ -539,12 +542,71 @@ impl std::fmt::Display for GenericSettingsSaveError {
             Self::ProviderOwnedDifference => "provider-owned settings differ from persisted state",
             Self::ProviderAuthProhibited => "provider-owned authContents is prohibited",
             Self::PersistedSettingsInvalid => "persisted settings are invalid",
+            Self::PersistedSettingsChanged => "persisted settings generation changed",
             Self::SecureStorageFailed => "secure settings transaction failed",
         })
     }
 }
 
 impl std::error::Error for GenericSettingsSaveError {}
+
+fn settings_snapshot_for_ui_projection(
+    mut settings: BackendSettings,
+) -> Result<BackendSettings, GenericSettingsSaveError> {
+    let (common_without_context, extracted_context) =
+        split_relay_context_config_sections(&settings.relay_common_config_contents);
+    settings.relay_common_config_contents =
+        codex_plus_core::relay_config::sanitize_common_config_contents(&common_without_context);
+    settings.relay_context_config_contents =
+        relay_join_config_sections(&[&settings.relay_context_config_contents, &extracted_context]);
+    settings.relay_context_config_contents =
+        codex_plus_core::relay_config::sanitize_common_config_contents(
+            &settings.relay_context_config_contents,
+        );
+    for profile in &mut settings.relay_profiles {
+        codex_plus_core::relay_config::normalize_relay_profile_for_storage(profile)
+            .map_err(|_| GenericSettingsSaveError::PersistedSettingsInvalid)?;
+    }
+    Ok(settings)
+}
+
+fn serialize_settings_with_raw_provider_snapshot(
+    settings: &BackendSettings,
+    persisted_value: Option<&Value>,
+) -> Result<Vec<u8>, GenericSettingsSaveError> {
+    let bytes = serialize_settings_without_profile_auth(settings)
+        .map_err(|_| GenericSettingsSaveError::SecureStorageFailed)?;
+    let Some(persisted) = persisted_value.and_then(Value::as_object) else {
+        return Ok(bytes);
+    };
+    let mut next: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| GenericSettingsSaveError::SecureStorageFailed)?;
+    let next = next
+        .as_object_mut()
+        .ok_or(GenericSettingsSaveError::SecureStorageFailed)?;
+    for key in [
+        "relayProfilesEnabled",
+        "relayProfiles",
+        "aggregateRelayProfiles",
+        "activeRelayId",
+        "activeAggregateRelayId",
+        "relayBaseUrl",
+        "relayApiKey",
+        "relayCommonConfigContents",
+        "relayContextConfigContents",
+        "relayTestModel",
+    ] {
+        match persisted.get(key) {
+            Some(value) => {
+                next.insert(key.to_string(), value.clone());
+            }
+            None => {
+                next.remove(key);
+            }
+        }
+    }
+    serde_json::to_vec_pretty(&next).map_err(|_| GenericSettingsSaveError::SecureStorageFailed)
+}
 
 fn ui_provider_topology_projection(
     mut settings: BackendSettings,
@@ -586,10 +648,11 @@ fn ui_provider_topology_projection(
             profile.config_contents.clear();
         }
         if profile.relay_mode == codex_plus_core::settings::RelayMode::Aggregate {
-            profile.model.clear();
             profile.base_url.clear();
             profile.upstream_base_url.clear();
             profile.api_key.clear();
+            profile.protocol = codex_plus_core::settings::RelayProtocol::Responses;
+            profile.official_mix_api_key = false;
             profile.config_contents.clear();
             profile.context_window.clear();
             profile.auto_compact_limit.clear();
@@ -612,13 +675,66 @@ fn ui_provider_topology_projection(
             .map(|profile| profile.id.clone())
             .unwrap_or_else(|| "default".to_string());
     }
+    let api_profile_ids = settings
+        .relay_profiles
+        .iter()
+        .filter(|profile| {
+            profile.relay_mode != codex_plus_core::settings::RelayMode::Aggregate
+                && !profile.base_url.trim().is_empty()
+                && !profile.api_key.trim().is_empty()
+        })
+        .map(|profile| profile.id.clone())
+        .collect::<HashSet<_>>();
+    settings.aggregate_relay_profiles = settings
+        .relay_profiles
+        .iter()
+        .filter(|profile| profile.relay_mode == codex_plus_core::settings::RelayMode::Aggregate)
+        .map(|profile| {
+            let mut aggregate = settings
+                .aggregate_relay_profiles
+                .iter()
+                .find(|aggregate| aggregate.id == profile.id)
+                .cloned()
+                .unwrap_or_else(|| codex_plus_core::settings::AggregateRelayProfile {
+                    id: profile.id.clone(),
+                    name: profile.name.clone(),
+                    strategy: Default::default(),
+                    members: Vec::new(),
+                });
+            aggregate.name = if profile.name.is_empty() {
+                aggregate.name
+            } else {
+                profile.name.clone()
+            };
+            let mut member_ids = HashSet::new();
+            aggregate.members.retain(|member| {
+                !member.relay_id.is_empty()
+                    && member_ids.insert(member.relay_id.clone())
+                    && (api_profile_ids.is_empty() || api_profile_ids.contains(&member.relay_id))
+            });
+            for member in &mut aggregate.members {
+                member.weight = member.weight.clamp(1, 999);
+            }
+            aggregate
+        })
+        .collect();
     if let Some(active) = settings
         .relay_profiles
         .iter()
         .find(|profile| profile.id == settings.active_relay_id)
     {
-        settings.relay_base_url = active.base_url.clone();
+        let is_aggregate = active.relay_mode == codex_plus_core::settings::RelayMode::Aggregate;
+        settings.relay_base_url = if is_aggregate {
+            "http://127.0.0.1:57321/v1".to_string()
+        } else {
+            active.base_url.clone()
+        };
         settings.relay_api_key = active.api_key.clone();
+        settings.active_aggregate_relay_id = if is_aggregate {
+            active.id.clone()
+        } else {
+            String::new()
+        };
     }
     Ok(crate::provider_commit::ProviderOwnedTopologyDraft::from_settings(&settings))
 }
@@ -627,6 +743,14 @@ pub(crate) fn save_settings_with_provider_guard_at(
     paths: &ProviderCommitPaths,
     incoming: BackendSettings,
 ) -> Result<(), GenericSettingsSaveError> {
+    save_settings_with_provider_guard_at_observed(paths, incoming, || Ok(()))
+}
+
+pub(crate) fn save_settings_with_provider_guard_at_observed(
+    paths: &ProviderCommitPaths,
+    incoming: BackendSettings,
+    after_snapshot: impl FnOnce() -> anyhow::Result<()>,
+) -> Result<(), GenericSettingsSaveError> {
     use crate::provider_commit::ProviderOwnedTopologyDraft;
 
     let _guard = live_state::lock().map_err(|_| GenericSettingsSaveError::SecureStorageFailed)?;
@@ -634,20 +758,21 @@ pub(crate) fn save_settings_with_provider_guard_at(
         .map_err(|_| GenericSettingsSaveError::SecureStorageFailed)?;
     live_state::recover_locked_at(&paths.app_state)
         .map_err(|_| GenericSettingsSaveError::SecureStorageFailed)?;
-    let (persisted, persisted_for_ui) = match std::fs::read(&paths.settings_path) {
-        Ok(persisted_bytes) => {
-            let persisted: BackendSettings = serde_json::from_slice(&persisted_bytes)
-                .map_err(|_| GenericSettingsSaveError::PersistedSettingsInvalid)?;
-            let persisted_for_ui = SettingsStore::new(paths.settings_path.clone())
-                .load()
-                .map_err(|_| GenericSettingsSaveError::PersistedSettingsInvalid)?;
-            (persisted, persisted_for_ui)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let defaults = BackendSettings::default();
-            (defaults.clone(), defaults)
-        }
+    let persisted_bytes = match std::fs::read(&paths.settings_path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(_) => return Err(GenericSettingsSaveError::SecureStorageFailed),
+    };
+    after_snapshot().map_err(|_| GenericSettingsSaveError::SecureStorageFailed)?;
+    let (persisted, persisted_value) = match persisted_bytes.as_ref() {
+        Some(persisted_bytes) => {
+            let value: Value = serde_json::from_slice(persisted_bytes)
+                .map_err(|_| GenericSettingsSaveError::PersistedSettingsInvalid)?;
+            let settings = serde_json::from_value(value.clone())
+                .map_err(|_| GenericSettingsSaveError::PersistedSettingsInvalid)?;
+            (settings, Some(value))
+        }
+        None => (BackendSettings::default(), None),
     };
     if persisted
         .relay_profiles
@@ -662,7 +787,8 @@ pub(crate) fn save_settings_with_provider_guard_at(
     }
     let persisted_topology = ProviderOwnedTopologyDraft::from_settings(&persisted);
     let incoming_topology = ProviderOwnedTopologyDraft::from_settings(&incoming);
-    let persisted_ui_topology = ui_provider_topology_projection(persisted_for_ui)?;
+    let persisted_ui_topology =
+        ui_provider_topology_projection(settings_snapshot_for_ui_projection(persisted.clone())?)?;
     let incoming_bytes = serde_json::to_vec(&incoming_topology)
         .map_err(|_| GenericSettingsSaveError::SecureStorageFailed)?;
     let matches_raw = serde_json::to_vec(&persisted_topology)
@@ -677,8 +803,16 @@ pub(crate) fn save_settings_with_provider_guard_at(
 
     let normalized_unrelated = normalize_settings_before_save(incoming);
     let merged = persisted_topology.apply_to(&normalized_unrelated);
-    let bytes = serialize_settings_without_profile_auth(&merged)
-        .map_err(|_| GenericSettingsSaveError::SecureStorageFailed)?;
+    let bytes = serialize_settings_with_raw_provider_snapshot(&merged, persisted_value.as_ref())?;
+    let generation_matches = match persisted_bytes.as_ref() {
+        Some(expected) => std::fs::read(&paths.settings_path)
+            .map(|current| current == *expected)
+            .unwrap_or(false),
+        None => !paths.settings_path.exists(),
+    };
+    if !generation_matches {
+        return Err(GenericSettingsSaveError::PersistedSettingsChanged);
+    }
     live_state::commit_locked_verified_at(
         &paths.app_state,
         &[FileMutation::bytes(paths.settings_path.clone(), bytes)],
