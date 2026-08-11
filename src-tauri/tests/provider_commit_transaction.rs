@@ -480,6 +480,8 @@ fn injected_context_verification_failure_rolls_back_the_complete_prior_generatio
     )
     .unwrap();
     let persisted = fixture.read_settings();
+    let context_before = semantic_context_tables(rich_live_config());
+    let auth_before = fs::read(fixture.paths.codex_home.join("auth.json")).unwrap();
     let before = fixture.file_generation();
     let mut next = persisted.clone();
     next.relay_profiles[0] = canonical_profile(
@@ -504,6 +506,12 @@ fn injected_context_verification_failure_rolls_back_the_complete_prior_generatio
     assert_eq!(error.code(), ProviderCommitErrorCode::TransactionFailed);
     assert!(!error.to_string().contains("context-fault-sentinel"));
     assert_eq!(fixture.file_generation(), before);
+    let live = fs::read_to_string(fixture.paths.codex_home.join("config.toml")).unwrap();
+    assert_eq!(semantic_context_tables(&live), context_before);
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
+        auth_before
+    );
 }
 
 #[test]
