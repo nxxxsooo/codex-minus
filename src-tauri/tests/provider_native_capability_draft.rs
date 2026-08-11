@@ -666,71 +666,62 @@ fn pure_api_and_legacy_exits_preserve_unowned_provider_content() {
 
 #[test]
 fn pure_oauth_requires_destructive_confirmation_then_removes_the_complete_selected_table() {
-    for starting_mode in [CatalogMode::OfficialPlusCustom, CatalogMode::External] {
-        let original = mixed_profile("oauth-exit", "same-secret", enabled_exit_source());
-        let unconfirmed = draft_provider_native_capability(&request(
-            original.clone(),
-            starting_mode,
-            NativeCapabilityDraftAction::ExitPureOAuth,
-        ));
-        assert_eq!(
-            unconfirmed.status,
-            NativeCapabilityDraftStatus::ConfirmationRequired
-        );
-        assert_eq!(
-            unconfirmed.draft.profile.config_contents,
-            original.config_contents
-        );
-        assert!(unconfirmed.preview.removes_provider_table);
-        assert_eq!(
-            unconfirmed.preview.removed_provider_id.as_deref(),
-            Some("RelayOne")
-        );
-        for field in ["experimental_bearer_token", "arbitrary", "http_headers"] {
-            assert!(
-                unconfirmed
-                    .preview
-                    .removed_provider_fields
-                    .iter()
-                    .any(|item| item == field),
-                "missing destructive preview field {field}"
-            );
-        }
-
-        let mut confirmed_request = request(
-            original,
-            starting_mode,
-            NativeCapabilityDraftAction::ExitPureOAuth,
-        );
-        confirmed_request
-            .confirmations
-            .push(NativeCapabilityDraftConfirmation::ConfirmDestructivePureOAuth);
-        let confirmed = draft_provider_native_capability(&confirmed_request);
-        assert_eq!(confirmed.status, NativeCapabilityDraftStatus::Ready);
-        assert_eq!(confirmed.draft.profile.relay_mode, RelayMode::Official);
-        assert!(!confirmed.draft.profile.official_mix_api_key);
-        assert!(confirmed.draft.structured_api_key.is_empty());
-        assert_eq!(
-            confirmed.draft.catalog_mode,
-            if starting_mode == CatalogMode::External {
-                CatalogMode::External
-            } else {
-                CatalogMode::NativeOfficial
-            }
-        );
-        let document = parsed(&confirmed);
-        assert!(document.get("model_provider").is_none());
+    let original = mixed_profile("oauth-exit", "same-secret", enabled_exit_source());
+    let unconfirmed = draft_provider_native_capability(&request(
+        original.clone(),
+        CatalogMode::OfficialPlusCustom,
+        NativeCapabilityDraftAction::ExitPureOAuth,
+    ));
+    assert_eq!(
+        unconfirmed.status,
+        NativeCapabilityDraftStatus::ConfirmationRequired
+    );
+    assert_eq!(
+        unconfirmed.draft.profile.config_contents,
+        original.config_contents
+    );
+    assert!(unconfirmed.preview.removes_provider_table);
+    assert_eq!(
+        unconfirmed.preview.removed_provider_id.as_deref(),
+        Some("RelayOne")
+    );
+    for field in ["experimental_bearer_token", "arbitrary", "http_headers"] {
         assert!(
-            document
-                .get("model_providers")
-                .and_then(Item::as_table_like)
-                .is_none_or(|providers| providers.get("RelayOne").is_none())
+            unconfirmed
+                .preview
+                .removed_provider_fields
+                .iter()
+                .any(|item| item == field),
+            "missing destructive preview field {field}"
         );
-        let rendered = document.to_string();
-        assert!(!rendered.contains("same-secret"));
-        assert!(!rendered.contains("keep-provider"));
-        assert!(rendered.contains("unrelated_root = \"keep-root\""));
     }
+
+    let mut confirmed_request = request(
+        original,
+        CatalogMode::OfficialPlusCustom,
+        NativeCapabilityDraftAction::ExitPureOAuth,
+    );
+    confirmed_request
+        .confirmations
+        .push(NativeCapabilityDraftConfirmation::ConfirmDestructivePureOAuth);
+    let confirmed = draft_provider_native_capability(&confirmed_request);
+    assert_eq!(confirmed.status, NativeCapabilityDraftStatus::Ready);
+    assert_eq!(confirmed.draft.profile.relay_mode, RelayMode::Official);
+    assert!(!confirmed.draft.profile.official_mix_api_key);
+    assert!(confirmed.draft.structured_api_key.is_empty());
+    assert_eq!(confirmed.draft.catalog_mode, CatalogMode::NativeOfficial);
+    let document = parsed(&confirmed);
+    assert!(document.get("model_provider").is_none());
+    assert!(
+        document
+            .get("model_providers")
+            .and_then(Item::as_table_like)
+            .is_none_or(|providers| providers.get("RelayOne").is_none())
+    );
+    let rendered = document.to_string();
+    assert!(!rendered.contains("same-secret"));
+    assert!(!rendered.contains("keep-provider"));
+    assert!(rendered.contains("unrelated_root = \"keep-root\""));
 }
 
 #[test]
@@ -829,6 +820,44 @@ fn external_ownership_blocks_enablement_and_is_never_silently_adopted() {
         blocked.draft.profile.config_contents,
         original.config_contents
     );
+}
+
+#[test]
+fn external_ownership_blocks_every_native_exit_even_when_confirmed() {
+    let original = mixed_profile("external-exit", "same-secret", enabled_exit_source());
+    for action in [
+        NativeCapabilityDraftAction::ExitPureApi,
+        NativeCapabilityDraftAction::ExitLegacyCompatibility,
+        NativeCapabilityDraftAction::ExitChatCompletions,
+        NativeCapabilityDraftAction::ExitPureOAuth,
+    ] {
+        let mut exit = request(original.clone(), CatalogMode::External, action);
+        exit.confirmations = vec![
+            NativeCapabilityDraftConfirmation::ConfirmCapabilityLoss,
+            NativeCapabilityDraftConfirmation::ConfirmDestructivePureOAuth,
+        ];
+        let blocked = draft_provider_native_capability(&exit);
+        assert_eq!(
+            blocked.status,
+            NativeCapabilityDraftStatus::Blocked,
+            "{action:?}"
+        );
+        assert_eq!(
+            blocked.blockers,
+            vec![NativeCapabilityReason::ExternalCatalog],
+            "{action:?}"
+        );
+        assert_eq!(
+            blocked.draft.catalog_mode,
+            CatalogMode::External,
+            "{action:?}"
+        );
+        assert_eq!(
+            blocked.draft.profile.config_contents, original.config_contents,
+            "{action:?}"
+        );
+        assert_eq!(blocked.draft.profile, original, "{action:?}");
+    }
 }
 
 #[test]

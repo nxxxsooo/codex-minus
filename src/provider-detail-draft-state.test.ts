@@ -7,6 +7,8 @@ import {
   beginProviderDetailEdit,
   beginProviderDetailRawConfigEdit,
   buildProviderDetailCommitEffect,
+  cancelProviderDetailTransition,
+  confirmProviderDetailTransition,
   createProviderDetailDraftState,
   endProviderDetailSession,
   replaceProviderDetailCatalogDraft,
@@ -517,6 +519,156 @@ describe("provider detail draft state", () => {
       },
     });
     assert.deepEqual(confirmed.effects.map((effect) => effect.kind), ["transform"]);
+  });
+
+  it("requires an explicit preview confirmation before compatibility exits can be committed", () => {
+    for (const [action, patch, expectedConfirmation] of [
+      ["exitChatCompletions", { protocol: "chatCompletions" }, "confirmCapabilityLoss"],
+      ["exitPureApi", { relayMode: "pureApi", officialMixApiKey: false }, "confirmCapabilityLoss"],
+      ["exitLegacyCompatibility", { relayMode: "official", officialMixApiKey: true }, "confirmCapabilityLoss"],
+      ["exitPureOAuth", { relayMode: "official", officialMixApiKey: false }, "confirmDestructivePureOAuth"],
+    ] as const) {
+      const pending = beginProviderDetailEdit(draftState(), {
+        patch,
+        target: existingTarget,
+        transition: { action, confirmations: [] },
+      });
+      const requested = settleProviderDetailTransform(
+        pending.state,
+        transformCorrelation(pending),
+        {
+          draftRevision: 1,
+          status: "confirmationRequired",
+          draft: {
+            profile: profile(),
+            structuredApiKey: "provider-key",
+            catalogMode: "official-plus-custom",
+          },
+          blockers: [action === "exitPureOAuth"
+            ? "destructiveExitConfirmationRequired"
+            : "capabilityLossConfirmationRequired"],
+          inspection,
+          preview: {
+            ...preview,
+            removesProviderTable: action === "exitPureOAuth",
+            removedProviderId: action === "exitPureOAuth" ? "RelayOne" : null,
+            removedProviderFields: action === "exitPureOAuth"
+              ? ["experimental_bearer_token", "custom_provider_field", "http_headers"]
+              : [],
+          },
+        },
+      );
+
+      assert.equal(requested.disposition, "notApplied", action);
+      assert.equal(requested.state.profile.configContents, config, action);
+      assert.equal(requested.state.pendingConfirmation?.transition.action, action);
+      assert.equal(requested.effects.length, 0, action);
+      for (const kind of ["detailSave", "setCurrent"] as const) {
+        assert.throws(
+          () => buildProviderDetailCommitEffect(requested.state, {
+            kind,
+            settings: settings(),
+            persistedSettings: settings(),
+            catalogDrafts: [catalogDraft],
+            focusedProfileWasPersisted: true,
+            previousActiveRelayId: "relay-old",
+            confirmContextCleanup: false,
+            expectedProviderFingerprint: "fingerprint-old",
+            draftRevision: 42,
+          }),
+          /confirm/i,
+          `${action}/${kind}`,
+        );
+      }
+
+      const confirmed = confirmProviderDetailTransition(requested.state);
+      assert.deepEqual(confirmed.effects.map((effect) => effect.kind), ["transform"], action);
+      assert.equal(confirmed.state.pendingConfirmation, null, action);
+      const effect = confirmed.effects[0];
+      assert.equal(effect.kind, "transform", action);
+      if (effect.kind !== "transform") continue;
+      assert.deepEqual(effect.invocation.request.confirmations, [expectedConfirmation], action);
+
+      const cancelled = cancelProviderDetailTransition(requested.state);
+      assert.equal(cancelled.state.pendingConfirmation, null, action);
+      assert.equal(cancelled.state.profile.configContents, config, action);
+      assert.deepEqual(cancelled.effects, [], action);
+    }
+  });
+
+  it("commits a confirmed Chat Completions exit without a managed catalog draft", () => {
+    const pending = beginProviderDetailEdit(draftState(), {
+      patch: { protocol: "chatCompletions" },
+      target: existingTarget,
+      transition: { action: "exitChatCompletions", confirmations: [] },
+    });
+    const previewed = settleProviderDetailTransform(
+      pending.state,
+      transformCorrelation(pending),
+      {
+        draftRevision: 1,
+        status: "confirmationRequired",
+        draft: {
+          profile: profile(),
+          structuredApiKey: "provider-key",
+          catalogMode: "official-plus-custom",
+        },
+        blockers: ["capabilityLossConfirmationRequired"],
+        inspection,
+        preview,
+      },
+    );
+    const confirmed = confirmProviderDetailTransition(previewed.state);
+    const transformedConfig = config.replace(
+      'http_headers = { "x-openai-actor-authorization" = "local-image-extension", "x-unowned" = "keep-header" }',
+      'http_headers = { "x-unowned" = "keep-header" }',
+    );
+    const ready = settleProviderDetailTransform(
+      confirmed.state,
+      transformCorrelation(confirmed),
+      {
+        draftRevision: 2,
+        status: "ready",
+        draft: {
+          profile: {
+            ...profile(),
+            protocol: "chatCompletions",
+            configContents: transformedConfig,
+          },
+          structuredApiKey: "provider-key",
+          catalogMode: "official-plus-custom",
+        },
+        blockers: [],
+        inspection,
+        preview,
+      },
+    );
+    assert.equal(ready.disposition, "applied");
+    assert.equal(ready.state.profile.protocol, "chatCompletions");
+    assert.equal(ready.state.catalogDraft, null);
+    assert.equal(ready.state.profile.configContents, transformedConfig);
+
+    for (const kind of ["detailSave", "setCurrent"] as const) {
+      const commit = buildProviderDetailCommitEffect(ready.state, {
+        kind,
+        settings: settings(),
+        persistedSettings: settings(),
+        catalogDrafts: [catalogDraft],
+        focusedProfileWasPersisted: true,
+        previousActiveRelayId: "relay-old",
+        confirmContextCleanup: false,
+        expectedProviderFingerprint: "fingerprint-old",
+        draftRevision: 43,
+      });
+      assert.equal(commit.effects[0].kind, "commit");
+      if (commit.effects[0].kind !== "commit") continue;
+      assert.deepEqual(commit.effects[0].invocation.request.catalogDrafts, [], kind);
+      assert.equal(
+        commit.effects[0].invocation.request.topology.relayProfiles[0].protocol,
+        "chatCompletions",
+        kind,
+      );
+    }
   });
 
   it("closes, cancels, and navigates without producing persistence effects", () => {

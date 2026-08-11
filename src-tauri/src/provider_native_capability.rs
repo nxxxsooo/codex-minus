@@ -1229,6 +1229,15 @@ fn compatibility_exit_draft(
     request: &ProviderNativeCapabilityDraftRequest,
     boundary: &dyn ProviderNativeCapabilityDraftReadOnlyBoundary,
 ) -> ProviderNativeCapabilityDraftPayload {
+    if request.catalog_mode == CatalogMode::External {
+        return unchanged_draft_payload(
+            request,
+            boundary,
+            NativeCapabilityDraftStatus::Blocked,
+            vec![NativeCapabilityReason::ExternalCatalog],
+            ProviderNativeCapabilityDraftPreview::default(),
+        );
+    }
     let preview = ProviderNativeCapabilityDraftPreview {
         capability_loss: true,
         ..ProviderNativeCapabilityDraftPreview::default()
@@ -1345,6 +1354,15 @@ fn pure_oauth_exit_draft(
     request: &ProviderNativeCapabilityDraftRequest,
     boundary: &dyn ProviderNativeCapabilityDraftReadOnlyBoundary,
 ) -> ProviderNativeCapabilityDraftPayload {
+    if request.catalog_mode == CatalogMode::External {
+        return unchanged_draft_payload(
+            request,
+            boundary,
+            NativeCapabilityDraftStatus::Blocked,
+            vec![NativeCapabilityReason::ExternalCatalog],
+            ProviderNativeCapabilityDraftPreview::default(),
+        );
+    }
     let document = match request.profile.config_contents.parse::<DocumentMut>() {
         Ok(document) => document,
         Err(_) => {

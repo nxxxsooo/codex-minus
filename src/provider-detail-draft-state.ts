@@ -11,6 +11,7 @@ import {
   type ProviderConfigRoutableProfile,
   type ProviderDraftTransformRequest,
   type ProviderDraftTransformResponse,
+  type ProviderDraftTransformConfirmation,
   type ProviderDraftTransition,
 } from "./provider-config-transform-router.ts";
 import type { ProviderConfigTargetContract } from "./provider-config-draft.ts";
@@ -37,10 +38,22 @@ export type ProviderDetailDraftState<P extends ProviderDetailProfile> = {
   catalogDraft: ProfileCatalogDraft | null;
   latestTransformRevision: number;
   pendingTransformRevision: number | null;
+  pendingTransition: ProviderDetailTransitionIntent | null;
+  pendingConfirmation: ProviderDetailPendingConfirmation | null;
   inspection: ProviderDetailInspectionMetadata | null;
   preview: ProviderDetailTransformPreview | null;
   blockers: string[];
   rawConfigContents: string | null;
+};
+
+export type ProviderDetailTransitionIntent = {
+  patch: Partial<ProviderConfigRoutableProfile>;
+  target: ProviderConfigTargetContract;
+  transition: ProviderDraftTransition;
+};
+
+export type ProviderDetailPendingConfirmation = ProviderDetailTransitionIntent & {
+  requiredConfirmation: ProviderDraftTransformConfirmation;
 };
 
 export type ProviderDetailTransformInvocation<P extends ProviderDetailProfile> = {
@@ -83,6 +96,8 @@ export function createProviderDetailDraftState<P extends ProviderDetailProfile>(
     catalogDraft: input.catalogDraft,
     latestTransformRevision: 0,
     pendingTransformRevision: null,
+    pendingTransition: null,
+    pendingConfirmation: null,
     inspection: null,
     preview: null,
     blockers: [],
@@ -122,6 +137,8 @@ export function beginProviderDetailEdit<P extends ProviderDetailProfile>(
         profile: routed.profile,
         latestTransformRevision: revision,
         pendingTransformRevision: null,
+        pendingTransition: null,
+        pendingConfirmation: null,
         inspection: null,
         preview: null,
         blockers: [],
@@ -134,6 +151,17 @@ export function beginProviderDetailEdit<P extends ProviderDetailProfile>(
       ...state,
       latestTransformRevision: revision,
       pendingTransformRevision: revision,
+      pendingTransition: input.transition
+        ? {
+            patch: { ...input.patch },
+            target: input.target,
+            transition: {
+              ...input.transition,
+              confirmations: [...input.transition.confirmations],
+            },
+          }
+        : null,
+      pendingConfirmation: null,
       inspection: null,
       preview: null,
       blockers: [],
@@ -180,6 +208,8 @@ export function beginProviderDetailRawConfigEdit<P extends ProviderDetailProfile
       ...state,
       latestTransformRevision: revision,
       pendingTransformRevision: revision,
+      pendingTransition: null,
+      pendingConfirmation: null,
       inspection: null,
       preview: null,
       blockers: [],
@@ -233,10 +263,17 @@ export function settleProviderDetailTransform<P extends ProviderDetailProfile>(
   const applied = applyProviderTransformResponse(state.latestTransformRevision, response);
   if (applied.kind === "stale") return { state, effects: [], disposition: "stale" };
   if (applied.kind === "notApplied") {
+    const requiredConfirmation = applied.status === "confirmationRequired"
+      ? exitConfirmationForAction(state.pendingTransition?.transition.action)
+      : null;
     return {
       state: {
         ...state,
         pendingTransformRevision: null,
+        pendingTransition: null,
+        pendingConfirmation: requiredConfirmation && state.pendingTransition
+          ? { ...state.pendingTransition, requiredConfirmation }
+          : null,
         inspection: response.inspection,
         preview: response.preview,
         blockers: [...response.blockers],
@@ -249,10 +286,14 @@ export function settleProviderDetailTransform<P extends ProviderDetailProfile>(
     state: {
       ...state,
       profile: applied.profile,
-      catalogDraft: state.catalogDraft
-        ? { ...state.catalogDraft, mode: applied.catalogMode }
-        : null,
+      catalogDraft: applied.profile.protocol === "chatCompletions"
+        ? null
+        : state.catalogDraft
+          ? { ...state.catalogDraft, mode: applied.catalogMode }
+          : null,
       pendingTransformRevision: null,
+      pendingTransition: null,
+      pendingConfirmation: null,
       inspection: response.inspection,
       preview: response.preview,
       blockers: [],
@@ -277,7 +318,12 @@ export function settleProviderDetailTransformError<P extends ProviderDetailProfi
     return { state, effects: [], disposition: "stale", report: false };
   }
   return {
-    state: { ...state, pendingTransformRevision: null },
+    state: {
+      ...state,
+      pendingTransformRevision: null,
+      pendingTransition: null,
+      pendingConfirmation: null,
+    },
     effects: [],
     disposition: "error",
     report: true,
@@ -318,6 +364,8 @@ export function replaceProviderDetailProfile<P extends ProviderDetailProfile>(
     profile,
     latestTransformRevision: state.latestTransformRevision + 1,
     pendingTransformRevision: null,
+    pendingTransition: null,
+    pendingConfirmation: null,
     inspection: null,
     preview: null,
     blockers: [],
@@ -338,6 +386,8 @@ export function replaceProviderDetailCatalogDraft<P extends ProviderDetailProfil
     catalogDraft,
     latestTransformRevision: state.latestTransformRevision + 1,
     pendingTransformRevision: null,
+    pendingTransition: null,
+    pendingConfirmation: null,
     inspection: null,
     preview: null,
     blockers: [],
@@ -349,7 +399,55 @@ export function endProviderDetailSession<P extends ProviderDetailProfile>(
   _reason: "cancel" | "close" | "navigate",
 ): ProviderDetailStep<P> {
   return {
-    state: { ...state, lifecycle: "closed", pendingTransformRevision: null },
+    state: {
+      ...state,
+      lifecycle: "closed",
+      pendingTransformRevision: null,
+      pendingTransition: null,
+      pendingConfirmation: null,
+    },
+    effects: [],
+  };
+}
+
+export function confirmProviderDetailTransition<P extends ProviderDetailProfile>(
+  state: ProviderDetailDraftState<P>,
+): ProviderDetailStep<P> {
+  assertActive(state);
+  const pending = state.pendingConfirmation;
+  if (!pending) throw new Error("No provider transition confirmation is pending.");
+  return beginProviderDetailEdit(
+    {
+      ...state,
+      pendingConfirmation: null,
+      preview: null,
+      blockers: [],
+    },
+    {
+      patch: pending.patch,
+      target: pending.target,
+      transition: {
+        ...pending.transition,
+        confirmations: Array.from(new Set([
+          ...pending.transition.confirmations,
+          pending.requiredConfirmation,
+        ])),
+      },
+    },
+  );
+}
+
+export function cancelProviderDetailTransition<P extends ProviderDetailProfile>(
+  state: ProviderDetailDraftState<P>,
+): ProviderDetailStep<P> {
+  assertActive(state);
+  return {
+    state: {
+      ...state,
+      pendingConfirmation: null,
+      preview: null,
+      blockers: [],
+    },
     effects: [],
   };
 }
@@ -376,6 +474,9 @@ export function buildProviderDetailCommitEffect<P extends ProviderDetailProfile>
   }
   if (state.rawConfigContents !== null) {
     throw new Error("Cannot commit an unverified raw provider config draft.");
+  }
+  if (state.pendingConfirmation !== null) {
+    throw new Error("Cannot commit before confirming or cancelling the provider transition preview.");
   }
   const existingIndex = input.settings.relayProfiles.findIndex(
     (candidate) => candidate.id === state.profile.id,
@@ -414,4 +515,16 @@ export function buildProviderDetailCommitEffect<P extends ProviderDetailProfile>
 
 function assertActive<P extends ProviderDetailProfile>(state: ProviderDetailDraftState<P>) {
   if (state.lifecycle !== "active") throw new Error("Provider detail session is closed.");
+}
+
+function exitConfirmationForAction(
+  action: ProviderDraftTransition["action"] | undefined,
+): ProviderDraftTransformConfirmation | null {
+  if (action === "exitPureOAuth") return "confirmDestructivePureOAuth";
+  if (
+    action === "exitPureApi"
+    || action === "exitLegacyCompatibility"
+    || action === "exitChatCompletions"
+  ) return "confirmCapabilityLoss";
+  return null;
 }

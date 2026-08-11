@@ -24,7 +24,7 @@ describe("provider config draft wiring", () => {
     assert.match(patch, /applyProviderConfigPatch\(next, patch, options\.target\)/);
     assert.match(
       patch,
-      /options\.target\.source === "existing"[\s\S]*?"relayMode" in patch[\s\S]*?return \{ \.\.\.profile, authContents: "" \}/,
+      /options\.target\.source === "existing"[\s\S]*?providerConfigPatchRequiresBackendTransform\(patch\)[\s\S]*?return \{ \.\.\.profile, authContents: "" \}/,
     );
     assert.doesNotMatch(source, /ensureCodexProviderDefaults/);
   });

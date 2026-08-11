@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   applyProviderTransformResponse,
+  providerConfigPatchRequiresBackendTransform,
   routeProviderConfigDraftEdit,
 } from "./provider-config-transform-router.ts";
 import { createNewRelayProfileDraft } from "./provider-onboarding.ts";
@@ -40,6 +41,17 @@ function existingProfile() {
 }
 
 describe("provider config transform router", () => {
+  it("classifies protocol and mode patches as backend-owned existing transitions", () => {
+    for (const patch of [
+      { protocol: "chatCompletions" },
+      { relayMode: "pureApi" },
+      { officialMixApiKey: false },
+    ]) {
+      assert.equal(providerConfigPatchRequiresBackendTransform(patch), true);
+    }
+    assert.equal(providerConfigPatchRequiresBackendTransform({ baseUrl: "https://next.example/v1" }), false);
+  });
+
   it("synchronously creates the actor contract only for one brand-new empty draft", () => {
     const blank = createNewRelayProfileDraft({ id: "new", contextSelection: {} });
     const routed = routeProviderConfigDraftEdit({

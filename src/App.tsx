@@ -118,6 +118,8 @@ import {
   beginProviderDetailEdit,
   beginProviderDetailInspection,
   beginProviderDetailRawConfigEdit,
+  cancelProviderDetailTransition,
+  confirmProviderDetailTransition,
   createProviderDetailDraftState,
   endProviderDetailSession,
   replaceProviderDetailCatalogDraft,
@@ -130,7 +132,10 @@ import {
   type ProviderDetailTransformInvocation,
   type ProviderDetailTransformResponse,
 } from "./provider-detail-draft-state";
-import type { ProviderDraftTransition } from "./provider-config-transform-router";
+import {
+  providerConfigPatchRequiresBackendTransform,
+  type ProviderDraftTransition,
+} from "./provider-config-transform-router";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 
 
@@ -3234,6 +3239,18 @@ function RelayProfileDetail({
       if (settled.disposition === "stale") return;
       updateDetailState(settled.state);
       if (settled.disposition === "notApplied") {
+        if (
+          response.status === "confirmationRequired"
+          && settled.state.pendingConfirmation
+        ) {
+          const accepted = window.confirm(providerTransitionConfirmationMessage(settled.state));
+          dispatchProviderDetailStep(
+            accepted
+              ? confirmProviderDetailTransition(settled.state)
+              : cancelProviderDetailTransition(settled.state),
+          );
+          return;
+        }
         void actions.showMessage(
           t("供应商配置转换"),
           response.blockers.join("、") || t("当前供应商配置不能完成该转换。"),
@@ -3313,7 +3330,9 @@ function RelayProfileDetail({
         ? t("供应商配置转换中。")
         : detailState.rawConfigContents !== null
           ? t("供应商配置尚未通过后端验证。")
-          : null;
+          : detailState.pendingConfirmation !== null
+            ? t("请先确认或取消供应商兼容模式转换。")
+            : null;
   const draftWithModelRows = () => {
     const serializedRows = serializeModelWindowRows(modelWindowRows);
     return { ...draft, modelList: serializedRows.modelList, modelWindows: serializedRows.modelWindows };
@@ -3377,6 +3396,7 @@ function RelayProfileDetail({
       || !form.relayProfilesEnabled
       || detailState.pendingTransformRevision !== null
       || detailState.rawConfigContents !== null
+      || detailState.pendingConfirmation !== null
     ) return;
     const draftWithWindows = draftWithModelRows();
     const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
@@ -3418,7 +3438,7 @@ function RelayProfileDetail({
           </Button>
         </Toolbar>
       </div>
-        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={replaceDraft} onProfileEdit={editDraft} onSwitch={switchDraft} actions={actions} modelWindowRows={modelWindowRows} setModelWindowRows={setModelWindowRows} catalogProfile={catalogProfile} draftCommitBlocked={detailState.pendingTransformRevision !== null || detailState.rawConfigContents !== null} />
+        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={replaceDraft} onProfileEdit={editDraft} onSwitch={switchDraft} actions={actions} modelWindowRows={modelWindowRows} setModelWindowRows={setModelWindowRows} catalogProfile={catalogProfile} draftCommitBlocked={detailState.pendingTransformRevision !== null || detailState.rawConfigContents !== null || detailState.pendingConfirmation !== null} />
       {!managedCatalogCapable(draft) ? null : catalogDraft ? (
         <CatalogProfileEditor
           catalog={modelCatalog}
@@ -3738,6 +3758,22 @@ function RelayProfileEditor({
       ) : null}
     </div>
   );
+}
+
+function providerTransitionConfirmationMessage(
+  state: ProviderDetailDraftState<RelayProfile>,
+): string {
+  const pending = state.pendingConfirmation;
+  if (!pending) return t("当前没有等待确认的供应商转换。");
+  if (pending.transition.action === "exitPureOAuth") {
+    const providerId = state.preview?.removedProviderId || t("当前自定义供应商");
+    const fields = state.preview?.removedProviderFields.join("、") || t("全部供应商字段");
+    return tf(
+      "切换到纯 OAuth 将删除自定义供应商 {0} 及其全部配置字段（{1}）。确认后只更新草稿，仍需点击保存或设为当前才会生效。是否继续？",
+      [providerId, fields],
+    );
+  }
+  return t("切换到兼容模式将失去原生能力优先配置。确认后只更新草稿，仍需点击保存或设为当前才会生效。是否继续？");
 }
 
 function AggregateRelayProfileEditor({
@@ -4873,7 +4909,7 @@ function applyRelayProfilePatchToFiles(
   }
   if (
     options.target.source === "existing"
-    && ("relayMode" in patch || "officialMixApiKey" in patch)
+    && providerConfigPatchRequiresBackendTransform(patch)
   ) {
     return { ...profile, authContents: "" };
   }

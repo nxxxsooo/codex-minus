@@ -6,6 +6,12 @@
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
   "上游拓扑": "Upstream topology",
+  "当前没有等待确认的供应商转换。": "No provider transition is awaiting confirmation.",
+  "请先确认或取消供应商兼容模式转换。": "Confirm or cancel the provider compatibility transition first.",
+  "当前自定义供应商": "the current custom provider",
+  "全部供应商字段": "all provider fields",
+  "切换到兼容模式将失去原生能力优先配置。确认后只更新草稿，仍需点击保存或设为当前才会生效。是否继续？":
+    "Switching to compatibility mode removes the native-capability-priority contract. Confirmation updates only the draft; click Save or Set as current to apply it. Continue?",
   "切换到原生目录模式将停止管理外部目录。当前目录会在保存成功前继续生效。是否继续？":
     "Switching to native catalog mode stops managing the external catalog. The current catalog remains active until Save succeeds. Continue?",
   "切换到原生目录模式将不再使用自定义模型。当前目录会在保存成功前继续生效。是否继续？":
@@ -768,6 +774,8 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "切换到纯 OAuth 将删除自定义供应商 {0} 及其全部配置字段（{1}）。确认后只更新草稿，仍需点击保存或设为当前才会生效。是否继续？":
+    "Switching to pure OAuth deletes custom provider {0} and all of its configuration fields ({1}). Confirmation updates only the draft; click Save or Set as current to apply it. Continue?",
   "\n...以及另外 {0} 个会话": "\n...and {0} more session(s)",
   "原生目录模式下有 {0} 个自定义模型暂不生效。": "{0} custom model(s) are dormant in native catalog mode.",
   "保存后，{0} 个自定义模型将暂不生效。": "After Save, {0} custom model(s) will be dormant.",

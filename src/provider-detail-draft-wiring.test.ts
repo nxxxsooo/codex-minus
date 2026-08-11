@@ -22,9 +22,17 @@ describe("provider detail draft wiring", () => {
     assert.match(relayFileEditorCall, /onProviderConfigChange=\{editProviderConfigDraft\}/);
     assert.match(relayFileEditorCall, /providerReadOnly=\{isNew\}/);
     assert.doesNotMatch(relayFileEditorCall, /onProfileChange=\{replaceDraft\}/);
-    assert.match(source, /draftCommitBlocked=\{detailState\.pendingTransformRevision !== null \|\| detailState\.rawConfigContents !== null\}/);
+    assert.match(source, /draftCommitBlocked=\{detailState\.pendingTransformRevision !== null \|\| detailState\.rawConfigContents !== null \|\| detailState\.pendingConfirmation !== null\}/);
     assert.match(source, /switchDraft[\s\S]*detailState\.rawConfigContents !== null[\s\S]*return;/);
     assert.match(source, /endProviderDetailSession\([^;]*"navigate"/s);
     assert.doesNotMatch(source, /nativeCapabilityInspection\s*:/);
+  });
+
+  it("consumes compatibility-exit preview confirmation only through the draft state machine", () => {
+    assert.match(source, /response\.status === "confirmationRequired"/);
+    assert.match(source, /window\.confirm\(providerTransitionConfirmationMessage\(settled\.state\)\)/);
+    assert.match(source, /confirmProviderDetailTransition\(settled\.state\)/);
+    assert.match(source, /cancelProviderDetailTransition\(settled\.state\)/);
+    assert.doesNotMatch(source, /applyRelayProfilePatchToFiles\([^)]*protocol:\s*"chatCompletions"/s);
   });
 });

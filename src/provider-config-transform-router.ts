@@ -64,6 +64,12 @@ type RouteProviderConfigDraftEditInput<P extends ProviderConfigRoutableProfile> 
 
 const BACKEND_TRANSFORM_FIELDS = ["relayMode", "officialMixApiKey", "protocol"] as const;
 
+export function providerConfigPatchRequiresBackendTransform(
+  patch: Partial<ProviderConfigRoutableProfile>,
+): boolean {
+  return BACKEND_TRANSFORM_FIELDS.some((field) => field in patch);
+}
+
 /**
  * Routes provider draft edits without parsing TOML in the browser.
  *
@@ -93,7 +99,7 @@ export function routeProviderConfigDraftEdit<P extends ProviderConfigRoutablePro
     };
   }
 
-  const hasBackendOwnedPatch = BACKEND_TRANSFORM_FIELDS.some((field) => field in input.patch);
+  const hasBackendOwnedPatch = providerConfigPatchRequiresBackendTransform(input.patch);
   if (hasBackendOwnedPatch && !input.transition) {
     throw new Error("Existing provider mode and auth changes require a revisioned backend transform.");
   }
