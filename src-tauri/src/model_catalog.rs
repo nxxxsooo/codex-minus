@@ -382,13 +382,23 @@ pub(crate) fn verify_current_target_cli() -> anyhow::Result<VerifiedTargetIdenti
     verify_target_cli()
 }
 
-pub(crate) fn validate_activation_scope_at(
+pub(crate) fn current_activation_scope_hash_at(
     state: &CatalogState,
     auth_path: &Path,
-    current_target: &VerifiedTargetIdentity,
-) -> Result<(), ActivationScopeError> {
+) -> Result<String, ActivationScopeError> {
     let auth = snapshot_live_auth(auth_path, &state.scope_salt)
         .map_err(|_| ActivationScopeError::OfficialAuthRequired)?;
+    Ok(hash_text(&format!(
+        "{}:{}",
+        state.scope_salt, auth.scope_identity
+    )))
+}
+
+pub(crate) fn validate_activation_catalog_scope(
+    state: &CatalogState,
+    current_scope_hash: &str,
+    current_target: &VerifiedTargetIdentity,
+) -> Result<(), ActivationScopeError> {
     let official = state
         .official
         .as_ref()
@@ -397,7 +407,6 @@ pub(crate) fn validate_activation_scope_at(
         .target
         .as_ref()
         .ok_or(ActivationScopeError::CatalogScopeStale)?;
-    let scope_hash = hash_text(&format!("{}:{}", state.scope_salt, auth.scope_identity));
     if !current_target.trusted
         || !current_target.capability_available
         || !catalog_target.trusted
@@ -405,7 +414,7 @@ pub(crate) fn validate_activation_scope_at(
         || catalog_target.identity_hash != current_target.identity_hash
         || catalog_target.client_version != current_target.client_version
         || official.client_version != current_target.client_version
-        || official.scope_hash != scope_hash
+        || official.scope_hash != current_scope_hash
     {
         return Err(ActivationScopeError::CatalogScopeStale);
     }

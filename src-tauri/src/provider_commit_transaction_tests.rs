@@ -1,16 +1,16 @@
 use std::fs;
 
-use base64::Engine;
-use codex_minus_lib::commands::{
+use crate::commands::{
     ProviderCommitCheckpoint, ProviderCommitErrorCode, ProviderCommitPaths, ProviderCommitPayload,
     assert_staged_native_provider_contract, commit_provider_detail_from_paths,
     commit_provider_detail_from_paths_observed,
 };
-use codex_minus_lib::provider_commit::{
+use crate::provider_commit::{
     CatalogMode, CatalogOverlay, CatalogState, CustomModel, OfficialSnapshot, ProfileCatalogDraft,
     ProviderCommitAction, ProviderCommitRequest, ProviderOwnedTopologyDraft, UpstreamTopology,
     provider_owned_fingerprint,
 };
+use base64::Engine;
 use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -99,11 +99,8 @@ fn hash_text(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))
 }
 
-fn target_identity(
-    version: &str,
-    identity: &str,
-) -> codex_minus_lib::provider_commit::VerifiedTargetIdentity {
-    codex_minus_lib::provider_commit::VerifiedTargetIdentity {
+fn target_identity(version: &str, identity: &str) -> crate::model_catalog::VerifiedTargetIdentity {
+    crate::model_catalog::VerifiedTargetIdentity {
         app_path: "/Applications/ChatGPT.app".to_string(),
         cli_path: "/Applications/ChatGPT.app/Contents/Resources/codex".to_string(),
         client_version: version.to_string(),
@@ -116,13 +113,14 @@ fn target_identity(
 }
 
 fn official_auth_bytes(account: &str, workspace: &str) -> Vec<u8> {
+    official_auth_bytes_with_exp(account, workspace, 4_102_444_800_u64)
+}
+
+fn official_auth_bytes_with_exp(account: &str, workspace: &str, exp: u64) -> Vec<u8> {
     let encode = |value: Value| {
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&value).unwrap())
     };
-    let access_token = format!(
-        "header.{}.signature",
-        encode(json!({ "exp": 4_102_444_800_u64 }))
-    );
+    let access_token = format!("header.{}.signature", encode(json!({ "exp": exp })));
     let id_token = format!("header.{}.signature", encode(json!({})));
     serde_json::to_vec_pretty(&json!({
         "auth_mode": "chatgpt",
@@ -821,6 +819,47 @@ fn active_native_commit_requires_current_official_auth_and_catalog_scope() {
     assert_eq!(error.code(), ProviderCommitErrorCode::OfficialAuthRequired);
     assert_eq!(missing_auth.file_generation(), before);
 
+    for auth_bytes in [
+        b"not-json".to_vec(),
+        official_auth_bytes_with_exp("account-a", "workspace-a", 1),
+    ] {
+        let invalid_auth = Fixture::new(&initial, &state_with_official());
+        fs::write(invalid_auth.paths.codex_home.join("auth.json"), auth_bytes).unwrap();
+        let before = invalid_auth.file_generation();
+        let persisted = invalid_auth.read_settings();
+        let error = commit_provider_detail_from_paths(
+            &invalid_auth.paths,
+            request(
+                &persisted,
+                &persisted,
+                "sub2api",
+                ProviderCommitAction::Save,
+                66,
+            ),
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), ProviderCommitErrorCode::OfficialAuthRequired);
+        assert_eq!(invalid_auth.file_generation(), before);
+    }
+
+    let missing_everything = Fixture::new(&initial, &CatalogState::default());
+    fs::remove_file(missing_everything.paths.codex_home.join("auth.json")).unwrap();
+    let before = missing_everything.file_generation();
+    let persisted = missing_everything.read_settings();
+    let error = commit_provider_detail_from_paths(
+        &missing_everything.paths,
+        request(
+            &persisted,
+            &persisted,
+            "sub2api",
+            ProviderCommitAction::Save,
+            67,
+        ),
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), ProviderCommitErrorCode::OfficialAuthRequired);
+    assert_eq!(missing_everything.file_generation(), before);
+
     let set_current_initial = settings_with(
         vec![
             pure_oauth_profile("official"),
@@ -853,27 +892,29 @@ fn active_native_commit_requires_current_official_auth_and_catalog_scope() {
     assert_eq!(error.code(), ProviderCommitErrorCode::OfficialAuthRequired);
     assert_eq!(missing_auth_set_current.file_generation(), before);
 
-    let stale_scope = Fixture::new(&initial, &state_with_official());
-    fs::write(
-        stale_scope.paths.codex_home.join("auth.json"),
-        official_auth_bytes("account-b", "workspace-b"),
-    )
-    .unwrap();
-    let before = stale_scope.file_generation();
-    let persisted = stale_scope.read_settings();
-    let error = commit_provider_detail_from_paths(
-        &stale_scope.paths,
-        request(
-            &persisted,
-            &persisted,
-            "sub2api",
-            ProviderCommitAction::Save,
-            62,
-        ),
-    )
-    .unwrap_err();
-    assert_eq!(error.code(), ProviderCommitErrorCode::CatalogScopeStale);
-    assert_eq!(stale_scope.file_generation(), before);
+    for (account, workspace) in [("account-b", "workspace-a"), ("account-a", "workspace-b")] {
+        let stale_scope = Fixture::new(&initial, &state_with_official());
+        fs::write(
+            stale_scope.paths.codex_home.join("auth.json"),
+            official_auth_bytes(account, workspace),
+        )
+        .unwrap();
+        let before = stale_scope.file_generation();
+        let persisted = stale_scope.read_settings();
+        let error = commit_provider_detail_from_paths(
+            &stale_scope.paths,
+            request(
+                &persisted,
+                &persisted,
+                "sub2api",
+                ProviderCommitAction::Save,
+                62,
+            ),
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), ProviderCommitErrorCode::CatalogScopeStale);
+        assert_eq!(stale_scope.file_generation(), before);
+    }
 
     let mut stale_target = Fixture::new(&initial, &state_with_official());
     stale_target.paths.current_target = Some(target_identity("0.148.0", "target-b"));

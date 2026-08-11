@@ -1910,8 +1910,8 @@ pub struct ProviderCommitPaths {
     pub codex_home: PathBuf,
     pub settings_path: PathBuf,
     pub catalog_state_path: PathBuf,
-    #[doc(hidden)]
-    pub current_target: Option<crate::model_catalog::VerifiedTargetIdentity>,
+    #[cfg(test)]
+    pub(crate) current_target: Option<crate::model_catalog::VerifiedTargetIdentity>,
 }
 
 impl ProviderCommitPaths {
@@ -1921,6 +1921,7 @@ impl ProviderCommitPaths {
             codex_home: codex_plus_core::relay_config::default_codex_home_dir(),
             settings_path: codex_plus_core::paths::default_settings_path(),
             catalog_state_path: crate::model_catalog::catalog_state_path(),
+            #[cfg(test)]
             current_target: None,
         }
     }
@@ -2085,13 +2086,6 @@ pub fn commit_provider_detail_from_paths_observed(
             "provider draft validation failed",
         )
     })?;
-    let raw_plan = plan_provider_detail_commit(&persisted_settings, &persisted_state, &request)
-        .map_err(|_| {
-            provider_commit_failure(
-                ProviderCommitErrorCode::CatalogUnavailable,
-                "provider catalog planning failed",
-            )
-        })?;
     let focused_id = request.focused_profile_id.as_deref().ok_or_else(|| {
         provider_commit_failure(
             ProviderCommitErrorCode::InvalidDraft,
@@ -2110,14 +2104,25 @@ pub fn commit_provider_detail_from_paths_observed(
             "provider draft normalization failed",
         )
     })?;
-    let normalized_settings =
-        normalize_provider_detail_settings_fallible(raw_plan.settings, focused_id, focused_mode)
-            .map_err(|error| {
-                provider_commit_failure(
-                    ProviderCommitErrorCode::InvalidDraft,
-                    sanitized_provider_normalization_error(&error),
-                )
-            })?;
+    let normalized_settings = normalize_provider_detail_settings_fallible(
+        request.topology.apply_to(&persisted_settings),
+        focused_id,
+        focused_mode,
+    )
+    .map_err(|error| {
+        provider_commit_failure(
+            ProviderCommitErrorCode::InvalidDraft,
+            sanitized_provider_normalization_error(&error),
+        )
+    })?;
+
+    validate_native_provider_activation_gate(
+        paths,
+        &persisted_state,
+        &normalized_settings,
+        focused_id,
+        focused_mode,
+    )?;
 
     // Re-plan from the normalized projection. The CAS still binds to persisted state; only
     // provider-owned normalized fields are allowed to differ from the submitted draft.
@@ -2188,44 +2193,6 @@ pub fn commit_provider_detail_from_paths_observed(
         if inspection.state
             == crate::provider_native_capability::NativeCapabilityState::NativePriority
         {
-            if matches!(
-                active_state.mode,
-                CatalogMode::OfficialPlusCustom | CatalogMode::CustomOnly
-            ) && (active_state.action_required.is_some() || plan.active_catalog.is_none())
-            {
-                return Err(provider_commit_failure(
-                    ProviderCommitErrorCode::CatalogUnavailable,
-                    "active provider catalog is not ready",
-                ));
-            }
-            let current_target = match paths.current_target.clone() {
-                Some(target) => target,
-                None => crate::model_catalog::verify_current_target_cli().map_err(|_| {
-                    provider_commit_failure(
-                        ProviderCommitErrorCode::CatalogScopeStale,
-                        "provider catalog target scope is stale",
-                    )
-                })?,
-            };
-            match crate::model_catalog::validate_activation_scope_at(
-                &plan.catalog_state,
-                &auth_path,
-                &current_target,
-            ) {
-                Ok(()) => {}
-                Err(crate::model_catalog::ActivationScopeError::OfficialAuthRequired) => {
-                    return Err(provider_commit_failure(
-                        ProviderCommitErrorCode::OfficialAuthRequired,
-                        "official ChatGPT authentication is required",
-                    ));
-                }
-                Err(crate::model_catalog::ActivationScopeError::CatalogScopeStale) => {
-                    return Err(provider_commit_failure(
-                        ProviderCommitErrorCode::CatalogScopeStale,
-                        "provider catalog identity or target scope is stale",
-                    ));
-                }
-            }
             assert_staged_native_provider_contract(&active_profile, &staged, active_state.mode)
                 .map_err(|_| {
                     provider_commit_failure(
@@ -2353,6 +2320,73 @@ pub fn commit_provider_detail_from_paths_observed(
         provider_fingerprint,
         restart_required,
         error_code: None,
+    })
+}
+
+fn validate_native_provider_activation_gate(
+    paths: &ProviderCommitPaths,
+    persisted_state: &crate::model_catalog::CatalogState,
+    normalized_settings: &BackendSettings,
+    focused_id: &str,
+    focused_mode: crate::model_catalog::CatalogMode,
+) -> Result<(), ProviderCommitFailure> {
+    if normalized_settings.active_relay_id != focused_id {
+        return Ok(());
+    }
+    let focused = normalized_settings
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == focused_id)
+        .ok_or_else(|| {
+            provider_commit_failure(
+                ProviderCommitErrorCode::InvalidDraft,
+                "focused provider profile is missing",
+            )
+        })?;
+    let inspection = crate::provider_native_capability::inspect_profile(focused, focused_mode);
+    if inspection.state != crate::provider_native_capability::NativeCapabilityState::NativePriority
+    {
+        return Ok(());
+    }
+
+    let auth_path = paths.codex_home.join("auth.json");
+    let current_scope_hash =
+        crate::model_catalog::current_activation_scope_hash_at(persisted_state, &auth_path)
+            .map_err(|_| {
+                provider_commit_failure(
+                    ProviderCommitErrorCode::OfficialAuthRequired,
+                    "official ChatGPT authentication is required",
+                )
+            })?;
+
+    #[cfg(test)]
+    let current_target = match paths.current_target.clone() {
+        Some(target) => target,
+        None => crate::model_catalog::verify_current_target_cli().map_err(|_| {
+            provider_commit_failure(
+                ProviderCommitErrorCode::CatalogScopeStale,
+                "provider catalog target scope is stale",
+            )
+        })?,
+    };
+    #[cfg(not(test))]
+    let current_target = crate::model_catalog::verify_current_target_cli().map_err(|_| {
+        provider_commit_failure(
+            ProviderCommitErrorCode::CatalogScopeStale,
+            "provider catalog target scope is stale",
+        )
+    })?;
+
+    crate::model_catalog::validate_activation_catalog_scope(
+        persisted_state,
+        &current_scope_hash,
+        &current_target,
+    )
+    .map_err(|_| {
+        provider_commit_failure(
+            ProviderCommitErrorCode::CatalogScopeStale,
+            "provider catalog identity or target scope is stale",
+        )
     })
 }
 

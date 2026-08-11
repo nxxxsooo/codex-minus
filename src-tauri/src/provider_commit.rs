@@ -13,7 +13,7 @@ use crate::model_catalog;
 
 pub use crate::model_catalog::{
     CatalogMode, CatalogOverlay, CatalogState, CustomModel, OfficialSnapshot, ProfileCatalogState,
-    UpstreamTopology, VerifiedTargetIdentity,
+    UpstreamTopology,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -224,7 +224,7 @@ impl ProviderOwnedTopologyDraft {
         }
     }
 
-    fn apply_to(&self, persisted: &BackendSettings) -> BackendSettings {
+    pub(crate) fn apply_to(&self, persisted: &BackendSettings) -> BackendSettings {
         let mut next = persisted.clone();
         next.relay_profiles_enabled = self.relay_profiles_enabled;
         next.relay_profiles = self.relay_profiles.iter().map(RelayProfile::from).collect();

@@ -6,6 +6,9 @@ mod platform_command;
 pub mod provider_commit;
 pub mod provider_native_capability;
 
+#[cfg(test)]
+mod provider_commit_transaction_tests;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::menu::{Menu, MenuItem};
