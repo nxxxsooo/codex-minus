@@ -196,7 +196,17 @@ export function beginProviderDetailNativePriorityUpgrade<
   const externalOwnership = state.inspection?.fields.some(
     (entry) => entry.reason === "externalCatalog",
   ) ?? false;
-  if (state.inspection?.state !== "upgradeAvailable" || externalOwnership) {
+  const chatCompatibility = state.inspection?.state === "compatibility" && (
+    state.inspection.fields.some((entry) => entry.reason === "chatCompletions")
+  );
+  const legacyProviderIdRequiresRename = state.inspection?.fields.some(
+    (entry) => entry.reason === "legacyProviderIdRequiresRename",
+  ) ?? false;
+  if (
+    (state.inspection?.state !== "upgradeAvailable" && !chatCompatibility)
+    || externalOwnership
+    || legacyProviderIdRequiresRename
+  ) {
     throw new Error("This provider is not eligible for the ordinary native-priority upgrade.");
   }
   return beginProviderDetailEdit(state, {
@@ -415,6 +425,22 @@ export function replaceProviderDetailCatalogDraft<P extends ProviderDetailProfil
     inspection: null,
     preview: null,
     blockers: [],
+  };
+}
+
+export function refreshProviderDetailCatalogDraftState<
+  P extends ProviderDetailProfile,
+>(
+  state: ProviderDetailDraftState<P>,
+  catalogDraft: ProfileCatalogDraft | null,
+): {
+  state: ProviderDetailDraftState<P>;
+  inspectionCorrelation: ProviderDetailInspectionCorrelation;
+} {
+  const refreshed = replaceProviderDetailCatalogDraft(state, catalogDraft);
+  return {
+    state: refreshed,
+    inspectionCorrelation: beginProviderDetailInspection(refreshed),
   };
 }
 

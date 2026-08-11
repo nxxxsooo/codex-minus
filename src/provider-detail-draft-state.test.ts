@@ -14,6 +14,7 @@ import {
   endProviderDetailSession,
   replaceProviderDetailCatalogDraft,
   replaceProviderDetailProfile,
+  refreshProviderDetailCatalogDraftState,
   settleProviderDetailTransform,
   settleProviderDetailTransformError,
 } from "./provider-detail-draft-state.ts";
@@ -139,6 +140,79 @@ describe("provider detail draft state", () => {
     const closed = endProviderDetailSession(upgrade.state, "cancel");
     assert.deepEqual(closed.effects, []);
     assert.equal(closed.state.lifecycle, "closed");
+
+    const chatState = draftState();
+    const chatObserved = applyProviderDetailInspection(
+      chatState,
+      beginProviderDetailInspection(chatState),
+      {
+        profileId: "relay-one",
+        state: "compatibility",
+        fields: [{ field: "protocol", outcome: "mismatch", reason: "chatCompletions" }],
+      },
+    );
+    assert.equal(chatObserved.disposition, "applied");
+    const chatUpgrade = beginProviderDetailNativePriorityUpgrade(chatObserved.state);
+    assert.equal(chatUpgrade.effects[0]?.kind, "transform");
+    if (chatUpgrade.effects[0]?.kind === "transform") {
+      assert.equal(chatUpgrade.effects[0].invocation.request.action, "enableNativePriority");
+    }
+
+    const legacyState = draftState();
+    const legacyObserved = applyProviderDetailInspection(
+      legacyState,
+      beginProviderDetailInspection(legacyState),
+      {
+        profileId: "relay-one",
+        state: "upgradeAvailable",
+        fields: [{
+          field: "providerSelection",
+          outcome: "mismatch",
+          reason: "legacyProviderIdRequiresRename",
+        }],
+      },
+    );
+    assert.equal(legacyObserved.disposition, "applied");
+    assert.throws(
+      () => beginProviderDetailNativePriorityUpgrade(legacyObserved.state),
+      /not eligible/,
+    );
+  });
+
+  it("binds catalog refresh re-inspection to the new response-only revision", () => {
+    const loaded = draftState();
+    const initial = applyProviderDetailInspection(
+      loaded,
+      beginProviderDetailInspection(loaded),
+      inspection,
+    ).state;
+    const refreshed = refreshProviderDetailCatalogDraftState(initial, {
+      ...catalogDraft,
+      mode: "custom-only",
+    });
+
+    assert.equal(refreshed.state.profile, initial.profile);
+    assert.equal(refreshed.state.inspection, null);
+    assert.equal(refreshed.state.latestTransformRevision, 1);
+    assert.equal(refreshed.inspectionCorrelation.profileId, "relay-one");
+    assert.equal(refreshed.inspectionCorrelation.revision, 1);
+    assert.equal(
+      refreshed.inspectionCorrelation.sessionToken,
+      refreshed.state.sessionToken,
+    );
+    const oldResponse = applyProviderDetailInspection(
+      refreshed.state,
+      beginProviderDetailInspection(initial),
+      inspection,
+    );
+    assert.equal(oldResponse.disposition, "stale");
+    const newResponse = applyProviderDetailInspection(
+      refreshed.state,
+      refreshed.inspectionCorrelation,
+      inspection,
+    );
+    assert.equal(newResponse.disposition, "applied");
+    assert.deepEqual(newResponse.effects, []);
   });
 
   it("registers a backend transform only after building one exact revisioned request", () => {

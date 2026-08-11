@@ -33,6 +33,8 @@ describe("provider detail draft wiring", () => {
     assert.match(source, /beginProviderDetailNativePriorityUpgrade/);
     assert.match(source, /providerTransitionDecisionForStructuredPatch/);
     assert.match(source, /nativeCapabilityView\.upgradeAvailability === "available"/);
+    assert.match(source, /refreshProviderDetailCatalogDraftState/);
+    assert.match(source, /refreshed\.inspectionCorrelation/);
     assert.doesNotMatch(
       source,
       /function transitionForPatch[\s\S]*return \{ action: "enableNativePriority"/,

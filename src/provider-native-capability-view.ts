@@ -24,7 +24,7 @@ export type ProviderLocalAccountPlan = "free" | "paid" | "other" | "unknown";
 export type ProviderNativeCapabilityView = {
   state: ProviderNativeCapabilityState;
   externalOwnership: boolean;
-  upgradeAvailability: "available" | "unavailable";
+  upgradeAvailability: "available" | "manualResolutionRequired" | "unavailable";
   officialAuthGate: "satisfied" | "signInRequired" | "unknown";
   localPlan: ProviderLocalAccountPlan;
   localPlanBlocksActivation: false;
@@ -56,6 +56,12 @@ export function deriveProviderNativeCapabilityView(input: {
   const externalOwnership = input.inspection?.fields.some(
     (entry) => entry.reason === "externalCatalog",
   ) ?? false;
+  const chatCompatibility = state === "compatibility" && (
+    input.inspection?.fields.some((entry) => entry.reason === "chatCompletions") ?? false
+  );
+  const legacyProviderIdRequiresRename = input.inspection?.fields.some(
+    (entry) => entry.reason === "legacyProviderIdRequiresRename",
+  ) ?? false;
   const actorField = input.inspection?.fields.find(
     (entry) => entry.field === "actorHeader",
   );
@@ -69,9 +75,13 @@ export function deriveProviderNativeCapabilityView(input: {
   return {
     state,
     externalOwnership,
-    upgradeAvailability: state === "upgradeAvailable" && !externalOwnership
-      ? "available"
-      : "unavailable",
+    upgradeAvailability: externalOwnership
+      ? "unavailable"
+      : legacyProviderIdRequiresRename
+        ? "manualResolutionRequired"
+        : state === "upgradeAvailable" || chatCompatibility
+          ? "available"
+          : "unavailable",
     officialAuthGate: input.officialAuth.authenticated === true
       ? "satisfied"
       : input.officialAuth.authenticated === false
@@ -107,23 +117,29 @@ export function providerTransitionDecisionForStructuredPatch(
     || ("protocol" in patch && patch.protocol !== current.protocol)
   );
   if (!changed) return { kind: "noChange" };
-  if (next.protocol === "chatCompletions") {
-    return {
-      kind: "transition",
-      transition: { action: "exitChatCompletions", confirmations: [] },
-    };
+  if ("relayMode" in patch || "officialMixApiKey" in patch) {
+    if (next.relayMode === "pureApi") {
+      return {
+        kind: "transition",
+        transition: { action: "exitPureApi", confirmations: [] },
+      };
+    }
+    if (next.relayMode === "official" && !next.officialMixApiKey) {
+      return {
+        kind: "transition",
+        transition: { action: "exitPureOAuth", confirmations: [] },
+      };
+    }
+    return { kind: "requiresExplicitUpgrade" };
   }
-  if (next.relayMode === "pureApi") {
-    return {
-      kind: "transition",
-      transition: { action: "exitPureApi", confirmations: [] },
-    };
-  }
-  if (next.relayMode === "official" && !next.officialMixApiKey) {
-    return {
-      kind: "transition",
-      transition: { action: "exitPureOAuth", confirmations: [] },
-    };
+  if ("protocol" in patch) {
+    if (next.protocol === "chatCompletions") {
+      return {
+        kind: "transition",
+        transition: { action: "exitChatCompletions", confirmations: [] },
+      };
+    }
+    return { kind: "requiresExplicitUpgrade" };
   }
   return { kind: "requiresExplicitUpgrade" };
 }

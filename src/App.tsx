@@ -123,6 +123,7 @@ import {
   confirmProviderDetailTransition,
   createProviderDetailDraftState,
   endProviderDetailSession,
+  refreshProviderDetailCatalogDraftState,
   replaceProviderDetailCatalogDraft,
   replaceProviderDetailProfile,
   settleProviderDetailTransform,
@@ -3202,6 +3203,7 @@ function RelayProfileDetail({
     };
   }, [profile.id, profile.configContents, profile.modelList, profile.modelWindows]);
   useEffect(() => {
+    let cancelled = false;
     const nextCatalogDraft = isNew || catalogProfile
       ? catalogProfileDraft({
           profileId: profile.id,
@@ -3214,8 +3216,26 @@ function RelayProfileDetail({
       && detailStateRef.current.profile.id === profile.id
       && JSON.stringify(detailStateRef.current.catalogDraft) !== JSON.stringify(nextCatalogDraft)
     ) {
-      updateDetailState(replaceProviderDetailCatalogDraft(detailStateRef.current, nextCatalogDraft));
+      const refreshed = refreshProviderDetailCatalogDraftState(
+        detailStateRef.current,
+        nextCatalogDraft,
+      );
+      updateDetailState(refreshed.state);
+      if (!isNew && !isAggregateRelayProfile(refreshed.state.profile)) {
+        void actions.inspectProviderNativeCapabilities(profile.id).then((inspection) => {
+          if (cancelled || !inspection) return;
+          const applied = applyProviderDetailInspection(
+            detailStateRef.current,
+            refreshed.inspectionCorrelation,
+            inspection,
+          );
+          if (applied.disposition === "applied") updateDetailState(applied.state);
+        });
+      }
     }
+    return () => {
+      cancelled = true;
+    };
   }, [profile.id, isNew, catalogProfile?.effectiveHash]);
   const replaceDraft = (next: RelayProfile) => {
     updateDetailState(replaceProviderDetailProfile(detailStateRef.current, next));
@@ -3276,10 +3296,8 @@ function RelayProfileDetail({
         ? providerTransitionDecisionForStructuredPatch(current.profile, patch)
         : null;
       if (decision?.kind === "requiresExplicitUpgrade") {
-        void actions.showMessage(
-          t("原生能力优先"),
-          t("此变更必须通过明确的升级预览操作完成。"),
-          "failed",
+        dispatchProviderDetailStep(
+          beginProviderDetailNativePriorityUpgrade(current),
         );
         return;
       }
@@ -3483,6 +3501,9 @@ function RelayProfileDetail({
               ) : null}
             </div>
           </div>
+          {nativeCapabilityView.upgradeAvailability === "manualResolutionRequired" ? (
+            <span>{t("旧供应商 ID 需要先明确重命名，当前不会执行一键升级。")}</span>
+          ) : null}
         </section>
       )}
         <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={replaceDraft} onProfileEdit={editDraft} onSwitch={switchDraft} actions={actions} modelWindowRows={modelWindowRows} setModelWindowRows={setModelWindowRows} catalogProfile={catalogProfile} draftCommitBlocked={detailState.pendingTransformRevision !== null || detailState.rawConfigContents !== null || detailState.pendingConfirmation !== null || detailState.blockers.length > 0} />

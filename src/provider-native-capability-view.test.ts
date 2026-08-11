@@ -76,6 +76,43 @@ describe("provider native-capability view", () => {
     assert.equal(view.officialAuthGate, "signInRequired");
     assert.equal(view.localPlanBlocksActivation, false);
   });
+
+  it("offers one explicit upgrade preview for Chat compatibility without classifying it ready", () => {
+    const view = deriveProviderNativeCapabilityView({
+      inspection: {
+        profileId: "chat-one",
+        state: "compatibility",
+        fields: [
+          { field: "protocol", outcome: "mismatch", reason: "chatCompletions" },
+        ],
+      },
+      officialAuth: { authenticated: true, localPlan: "free" },
+    });
+
+    assert.equal(view.state, "compatibility");
+    assert.equal(view.upgradeAvailability, "available");
+    assert.equal(view.providerRoutableCapabilityProof, "unverified");
+  });
+
+  it("does not advertise a one-click upgrade when a legacy provider ID needs an explicit rename", () => {
+    const view = deriveProviderNativeCapabilityView({
+      inspection: {
+        profileId: "legacy-one",
+        state: "upgradeAvailable",
+        fields: [
+          {
+            field: "providerSelection",
+            outcome: "mismatch",
+            reason: "legacyProviderIdRequiresRename",
+          },
+        ],
+      },
+      officialAuth: { authenticated: true, localPlan: "free" },
+    });
+
+    assert.equal(view.upgradeAvailability, "manualResolutionRequired");
+    assert.equal(view.providerRoutableCapabilityProof, "unverified");
+  });
 });
 
 describe("ordinary provider protocol controls", () => {
@@ -125,6 +162,26 @@ describe("ordinary provider protocol controls", () => {
       {
         kind: "transition",
         transition: { action: "exitPureApi", confirmations: [] },
+      },
+    );
+    assert.deepEqual(
+      providerTransitionDecisionForStructuredPatch(
+        { ...nativeProfile, protocol: "chatCompletions" },
+        { relayMode: "pureApi" },
+      ),
+      {
+        kind: "transition",
+        transition: { action: "exitPureApi", confirmations: [] },
+      },
+    );
+    assert.deepEqual(
+      providerTransitionDecisionForStructuredPatch(
+        { ...nativeProfile, protocol: "chatCompletions" },
+        { relayMode: "official", officialMixApiKey: false },
+      ),
+      {
+        kind: "transition",
+        transition: { action: "exitPureOAuth", confirmations: [] },
       },
     );
   });
