@@ -1,5 +1,6 @@
 use std::fs;
 
+use base64::Engine;
 use codex_minus_lib::commands::{
     ProviderCommitCheckpoint, ProviderCommitErrorCode, ProviderCommitPaths, ProviderCommitPayload,
     assert_staged_native_provider_contract, commit_provider_detail_from_paths,
@@ -12,6 +13,7 @@ use codex_minus_lib::provider_commit::{
 };
 use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -93,12 +95,63 @@ fn official_catalog() -> Value {
     })
 }
 
+fn hash_text(value: &str) -> String {
+    format!("{:x}", Sha256::digest(value.as_bytes()))
+}
+
+fn target_identity(
+    version: &str,
+    identity: &str,
+) -> codex_minus_lib::provider_commit::VerifiedTargetIdentity {
+    codex_minus_lib::provider_commit::VerifiedTargetIdentity {
+        app_path: "/Applications/ChatGPT.app".to_string(),
+        cli_path: "/Applications/ChatGPT.app/Contents/Resources/codex".to_string(),
+        client_version: version.to_string(),
+        publisher: "OpenAI Test Publisher".to_string(),
+        identity_hash: identity.to_string(),
+        trusted: true,
+        capability_available: true,
+        capability_message: "available".to_string(),
+    }
+}
+
+fn official_auth_bytes(account: &str, workspace: &str) -> Vec<u8> {
+    let encode = |value: Value| {
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&value).unwrap())
+    };
+    let access_token = format!(
+        "header.{}.signature",
+        encode(json!({ "exp": 4_102_444_800_u64 }))
+    );
+    let id_token = format!("header.{}.signature", encode(json!({})));
+    serde_json::to_vec_pretty(&json!({
+        "auth_mode": "chatgpt",
+        "tokens": {
+            "access_token": access_token,
+            "id_token": id_token,
+            "account_id": account,
+            "workspace_id": workspace
+        }
+    }))
+    .unwrap()
+}
+
+fn official_scope_hash(salt: &str, account: &str, workspace: &str) -> String {
+    let scope_identity = hash_text(&format!("{salt}:{account}:{workspace}"));
+    hash_text(&format!("{salt}:{scope_identity}"))
+}
+
 fn state_with_official() -> CatalogState {
+    let scope_salt = "provider-commit-test-salt".to_string();
     CatalogState {
+        scope_salt: scope_salt.clone(),
         official: Some(OfficialSnapshot {
+            client_version: "0.147.0".to_string(),
+            scope_hash: official_scope_hash(&scope_salt, "account-a", "workspace-a"),
             raw_catalog: official_catalog(),
             ..OfficialSnapshot::default()
         }),
+        target: Some(target_identity("0.147.0", "target-a")),
         ..CatalogState::default()
     }
 }
@@ -157,7 +210,11 @@ impl Fixture {
         )
         .unwrap();
         fs::write(codex_home.join("config.toml"), "model = \"live-before\"\n").unwrap();
-        fs::write(codex_home.join("auth.json"), b"official-auth-before").unwrap();
+        fs::write(
+            codex_home.join("auth.json"),
+            official_auth_bytes("account-a", "workspace-a"),
+        )
+        .unwrap();
         Self {
             _temp: temp,
             paths: ProviderCommitPaths {
@@ -165,6 +222,7 @@ impl Fixture {
                 codex_home,
                 settings_path,
                 catalog_state_path,
+                current_target: Some(target_identity("0.147.0", "target-a")),
             },
         }
     }
@@ -733,6 +791,138 @@ fn persisted_legacy_auth_migrates_only_api_key_only_payloads() {
         assert!(!error.to_string().contains("provider-key-sentinel"));
         assert_eq!(fixture.file_generation(), before);
     }
+}
+
+#[test]
+fn active_native_commit_requires_current_official_auth_and_catalog_scope() {
+    let active = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    let initial = settings_with(vec![active], "sub2api");
+
+    let missing_auth = Fixture::new(&initial, &state_with_official());
+    fs::remove_file(missing_auth.paths.codex_home.join("auth.json")).unwrap();
+    let before = missing_auth.file_generation();
+    let persisted = missing_auth.read_settings();
+    let error = commit_provider_detail_from_paths(
+        &missing_auth.paths,
+        request(
+            &persisted,
+            &persisted,
+            "sub2api",
+            ProviderCommitAction::Save,
+            61,
+        ),
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), ProviderCommitErrorCode::OfficialAuthRequired);
+    assert_eq!(missing_auth.file_generation(), before);
+
+    let set_current_initial = settings_with(
+        vec![
+            pure_oauth_profile("official"),
+            canonical_profile(
+                "sub2api",
+                "official-a",
+                "https://relay.example/v1",
+                "provider-key",
+            ),
+        ],
+        "official",
+    );
+    let missing_auth_set_current = Fixture::new(&set_current_initial, &state_with_official());
+    fs::remove_file(missing_auth_set_current.paths.codex_home.join("auth.json")).unwrap();
+    let before = missing_auth_set_current.file_generation();
+    let persisted = missing_auth_set_current.read_settings();
+    let mut next = persisted.clone();
+    next.active_relay_id = "sub2api".to_string();
+    let error = commit_provider_detail_from_paths(
+        &missing_auth_set_current.paths,
+        request(
+            &persisted,
+            &next,
+            "sub2api",
+            ProviderCommitAction::SetCurrent,
+            65,
+        ),
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), ProviderCommitErrorCode::OfficialAuthRequired);
+    assert_eq!(missing_auth_set_current.file_generation(), before);
+
+    let stale_scope = Fixture::new(&initial, &state_with_official());
+    fs::write(
+        stale_scope.paths.codex_home.join("auth.json"),
+        official_auth_bytes("account-b", "workspace-b"),
+    )
+    .unwrap();
+    let before = stale_scope.file_generation();
+    let persisted = stale_scope.read_settings();
+    let error = commit_provider_detail_from_paths(
+        &stale_scope.paths,
+        request(
+            &persisted,
+            &persisted,
+            "sub2api",
+            ProviderCommitAction::Save,
+            62,
+        ),
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), ProviderCommitErrorCode::CatalogScopeStale);
+    assert_eq!(stale_scope.file_generation(), before);
+
+    let mut stale_target = Fixture::new(&initial, &state_with_official());
+    stale_target.paths.current_target = Some(target_identity("0.148.0", "target-b"));
+    let before = stale_target.file_generation();
+    let persisted = stale_target.read_settings();
+    let error = commit_provider_detail_from_paths(
+        &stale_target.paths,
+        request(
+            &persisted,
+            &persisted,
+            "sub2api",
+            ProviderCommitAction::Save,
+            63,
+        ),
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), ProviderCommitErrorCode::CatalogScopeStale);
+    assert_eq!(stale_target.file_generation(), before);
+
+    let inactive = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    let inactive_initial =
+        settings_with(vec![pure_oauth_profile("official"), inactive], "official");
+    let inactive_fixture = Fixture::new(&inactive_initial, &CatalogState::default());
+    fs::remove_file(inactive_fixture.paths.codex_home.join("auth.json")).unwrap();
+    let persisted = inactive_fixture.read_settings();
+    commit_provider_detail_from_paths(
+        &inactive_fixture.paths,
+        request(
+            &persisted,
+            &persisted,
+            "sub2api",
+            ProviderCommitAction::Save,
+            64,
+        ),
+    )
+    .unwrap();
+    assert!(
+        inactive_fixture
+            .read_state()
+            .profiles
+            .get("sub2api")
+            .and_then(|state| state.action_required.as_ref())
+            .is_some()
+    );
 }
 
 #[test]

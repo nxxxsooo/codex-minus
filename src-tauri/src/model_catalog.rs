@@ -372,6 +372,46 @@ struct AuthSnapshot {
     projection: Value,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ActivationScopeError {
+    OfficialAuthRequired,
+    CatalogScopeStale,
+}
+
+pub(crate) fn verify_current_target_cli() -> anyhow::Result<VerifiedTargetIdentity> {
+    verify_target_cli()
+}
+
+pub(crate) fn validate_activation_scope_at(
+    state: &CatalogState,
+    auth_path: &Path,
+    current_target: &VerifiedTargetIdentity,
+) -> Result<(), ActivationScopeError> {
+    let auth = snapshot_live_auth(auth_path, &state.scope_salt)
+        .map_err(|_| ActivationScopeError::OfficialAuthRequired)?;
+    let official = state
+        .official
+        .as_ref()
+        .ok_or(ActivationScopeError::CatalogScopeStale)?;
+    let catalog_target = state
+        .target
+        .as_ref()
+        .ok_or(ActivationScopeError::CatalogScopeStale)?;
+    let scope_hash = hash_text(&format!("{}:{}", state.scope_salt, auth.scope_identity));
+    if !current_target.trusted
+        || !current_target.capability_available
+        || !catalog_target.trusted
+        || catalog_target.identity_hash.is_empty()
+        || catalog_target.identity_hash != current_target.identity_hash
+        || catalog_target.client_version != current_target.client_version
+        || official.client_version != current_target.client_version
+        || official.scope_hash != scope_hash
+    {
+        return Err(ActivationScopeError::CatalogScopeStale);
+    }
+    Ok(())
+}
+
 fn auth_snapshot_matches(expected: &AuthSnapshot, current: &AuthSnapshot) -> bool {
     expected.generation_hash == current.generation_hash
         && expected.scope_identity == current.scope_identity

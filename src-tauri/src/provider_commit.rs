@@ -13,7 +13,7 @@ use crate::model_catalog;
 
 pub use crate::model_catalog::{
     CatalogMode, CatalogOverlay, CatalogState, CustomModel, OfficialSnapshot, ProfileCatalogState,
-    UpstreamTopology,
+    UpstreamTopology, VerifiedTargetIdentity,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
