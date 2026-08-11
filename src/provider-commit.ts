@@ -135,13 +135,16 @@ export function buildProviderTopologyRequest(input: CommonBuilderInput): Provide
   );
 }
 
-export function buildProviderMutationInvocation(input: Omit<CommonBuilderInput, "action"> & {
-  kind: ProviderMutationKind;
+type ProviderMutationInvocationInput = Omit<CommonBuilderInput, "action"> & {
   persistedSettings: ProviderSettingsSource & Record<string, unknown>;
   focusedProfileId?: string;
   focusedProfileWasPersisted?: boolean;
-  copySourceProfileId?: string;
-}): ProviderCommitInvocation {
+} & (
+  | { kind: "copy"; copySourceProfileId: string }
+  | { kind: Exclude<ProviderMutationKind, "copy">; copySourceProfileId?: never }
+);
+
+export function buildProviderMutationInvocation(input: ProviderMutationInvocationInput): ProviderCommitInvocation {
   const detail = input.kind === "detailSave" || input.kind === "setCurrent";
   if (detail) {
     if (!input.focusedProfileId) throw new Error("focused provider profile is required");
@@ -159,17 +162,22 @@ export function buildProviderMutationInvocation(input: Omit<CommonBuilderInput, 
   const persistedIds = new Set(input.persistedSettings.relayProfiles.map((profile) => profile.id));
   const suppliedById = new Map(input.catalogDrafts.map((draft) => [draft.profileId, draft] as const));
   const catalogDrafts: CatalogDraftSource[] = [];
-  for (const profile of input.settings.relayProfiles) {
-    if (persistedIds.has(profile.id)) continue;
-    const source = input.copySourceProfileId
-      ? input.persistedSettings.relayProfiles.find((candidate) => candidate.id === input.copySourceProfileId)
-      : input.persistedSettings.relayProfiles.find((candidate) => sameCopySignature(candidate, profile));
-    const sourceDraft = source ? suppliedById.get(source.id) : undefined;
-    if (sourceDraft) {
-      catalogDrafts.push({ ...sourceDraft, profileId: profile.id });
-    } else if (implicitMixedCatalogEligible(projectRelayProfile(profile))) {
-      catalogDrafts.push(implicitMixedCatalogDraft(profile.id));
+  const newProfiles = input.settings.relayProfiles.filter((profile) => !persistedIds.has(profile.id));
+  if (input.kind === "copy") {
+    if (newProfiles.length !== 1) throw new Error("copy must add exactly one provider profile");
+    const source = input.persistedSettings.relayProfiles.find(
+      (candidate) => candidate.id === input.copySourceProfileId,
+    );
+    if (!source || !sameCopySignature(source, newProfiles[0])) {
+      throw new Error("copied provider profile does not match its explicit source");
     }
+    if (managedCatalogCapable(newProfiles[0])) {
+      const sourceDraft = suppliedById.get(source.id);
+      if (!sourceDraft) throw new Error("catalog-capable copy requires its source catalog draft");
+      catalogDrafts.push({ ...sourceDraft, profileId: newProfiles[0].id });
+    }
+  } else if (newProfiles.length) {
+    throw new Error("only the copy topology action may add a provider profile");
   }
   return {
     command: "commit_provider_detail",
@@ -179,6 +187,10 @@ export function buildProviderMutationInvocation(input: Omit<CommonBuilderInput, 
       catalogDrafts,
     }),
   };
+}
+
+function managedCatalogCapable(profile: ProviderRelayProfileSource): boolean {
+  return profile.relayMode !== "aggregate" && profile.protocol !== "chatCompletions";
 }
 
 export function projectProviderOwnedTopology(settings: ProviderSettingsSource): ProviderOwnedTopologyDraft {

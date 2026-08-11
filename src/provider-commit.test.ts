@@ -277,7 +277,22 @@ describe("provider-owned commit request", () => {
       expectedProviderFingerprint: "sha256:provider-ui",
     };
     for (const kind of ["enablement", "reorder", "copy", "delete", "aggregateCleanup", "testModel"] as const) {
-      const invocation = commitModule.buildProviderMutationInvocation({ ...common, kind });
+      const invocation = kind === "copy"
+        ? commitModule.buildProviderMutationInvocation({
+            ...common,
+            kind,
+            copySourceProfileId: "relay-b",
+            settings: settingsWith([firstProfile, secondProfile, { ...secondProfile, id: "relay-copy", name: "copy" }]),
+            catalogDrafts: [{
+              profileId: "relay-b",
+              mode: "official-plus-custom",
+              modeExplicit: false,
+              upstreamTopology: "direct",
+              externalPointer: null,
+              overlay: emptyOverlay(),
+            }],
+          })
+        : commitModule.buildProviderMutationInvocation({ ...common, kind });
       assert.equal(invocation.command, "commit_provider_detail");
       assert.equal(invocation.request.focusedProfileId, null);
       assert.equal(invocation.request.action, "save");
@@ -313,6 +328,7 @@ describe("provider-owned commit request", () => {
     };
     const invocation = commitModule.buildProviderMutationInvocation({
       kind: "copy",
+      copySourceProfileId: "relay-b",
       settings: settingsWith([firstProfile, secondProfile, copy]),
       persistedSettings: settingsWith([firstProfile, secondProfile]),
       catalogDrafts: [sourceDraft],
@@ -323,5 +339,80 @@ describe("provider-owned commit request", () => {
     });
 
     assert.deepEqual(invocation.request.catalogDrafts, [{ ...sourceDraft, profileId: "relay-copy" }]);
+  });
+
+  it("requires an explicit copy source and selects its catalog when detail signatures collide", () => {
+    assert.ok(commitModule, "provider commit request builders must exist");
+    const shadow = { ...secondProfile, id: "relay-shadow", name: "Relay B shadow" };
+    const copy = { ...secondProfile, id: "relay-copy", name: "Relay B copy" };
+    const nativeDraft = {
+      profileId: "relay-shadow",
+      mode: "native-official" as const,
+      modeExplicit: true,
+      upstreamTopology: "direct" as const,
+      externalPointer: null,
+      overlay: emptyOverlay(),
+    };
+    const sourceDraft = {
+      ...nativeDraft,
+      profileId: "relay-b",
+      mode: "custom-only" as const,
+    };
+    const invocation = commitModule.buildProviderMutationInvocation({
+      kind: "copy",
+      copySourceProfileId: "relay-b",
+      settings: settingsWith([firstProfile, shadow, secondProfile, copy]),
+      persistedSettings: settingsWith([firstProfile, shadow, secondProfile]),
+      catalogDrafts: [nativeDraft, sourceDraft],
+      previousActiveRelayId: "relay-a",
+      confirmContextCleanup: false,
+      draftRevision: 53,
+      expectedProviderFingerprint: "sha256:ambiguous-copy",
+    });
+
+    assert.deepEqual(invocation.request.catalogDrafts, [{ ...sourceDraft, profileId: "relay-copy" }]);
+  });
+
+  it("emits no catalog draft for incapable copies and rejects a capable copy without source state", () => {
+    assert.ok(commitModule, "provider commit request builders must exist");
+    const aggregate = {
+      ...firstProfile,
+      id: "aggregate-a",
+      name: "Aggregate A",
+      relayMode: "aggregate",
+      protocol: "responses",
+    };
+    const aggregateCopy = { ...aggregate, id: "aggregate-copy", name: "Aggregate A copy" };
+    const incapable = commitModule.buildProviderMutationInvocation({
+      kind: "copy",
+      copySourceProfileId: "aggregate-a",
+      settings: settingsWith([firstProfile, aggregate, aggregateCopy]),
+      persistedSettings: settingsWith([firstProfile, aggregate]),
+      catalogDrafts: [{
+        profileId: "aggregate-a",
+        mode: "native-official",
+        modeExplicit: true,
+        upstreamTopology: "direct",
+        externalPointer: null,
+        overlay: emptyOverlay(),
+      }],
+      previousActiveRelayId: "relay-a",
+      confirmContextCleanup: false,
+      draftRevision: 54,
+      expectedProviderFingerprint: "sha256:aggregate-copy",
+    });
+    assert.deepEqual(incapable.request.catalogDrafts, []);
+
+    assert.throws(() => commitModule.buildProviderMutationInvocation({
+      kind: "copy",
+      copySourceProfileId: "relay-b",
+      settings: settingsWith([firstProfile, secondProfile, { ...secondProfile, id: "relay-copy", name: "copy" }]),
+      persistedSettings: settingsWith([firstProfile, secondProfile]),
+      catalogDrafts: [],
+      previousActiveRelayId: "relay-a",
+      confirmContextCleanup: false,
+      draftRevision: 55,
+      expectedProviderFingerprint: "sha256:missing-source-draft",
+    }), /requires its source catalog draft/);
   });
 });
