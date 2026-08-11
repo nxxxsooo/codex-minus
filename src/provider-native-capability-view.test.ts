@@ -143,6 +143,28 @@ describe("provider native-capability view", () => {
     });
     assert.equal(multipleConflicts.upgradeAvailability, "unavailable");
     assert.equal(multipleConflicts.upgradeAction, null);
+
+    const legacyAndMissingBearer = deriveProviderNativeCapabilityView({
+      inspection: {
+        profileId: "legacy-broken",
+        state: "degraded",
+        fields: [
+          {
+            field: "providerSelection",
+            outcome: "mismatch",
+            reason: "legacyProviderIdRequiresRename",
+          },
+          {
+            field: "providerBearer",
+            outcome: "missing",
+            reason: "missingProviderBearer",
+          },
+        ],
+      },
+      officialAuth: { authenticated: true, localPlan: "free" },
+    });
+    assert.equal(legacyAndMissingBearer.upgradeAvailability, "unavailable");
+    assert.equal(legacyAndMissingBearer.upgradeAction, null);
   });
 });
 

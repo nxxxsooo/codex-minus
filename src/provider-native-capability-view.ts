@@ -76,6 +76,8 @@ export function deriveProviderNativeCapabilityView(input: {
   ) ?? [];
   const actorHeaderIsOnlyConflict = nonSatisfiedFields.length === 1
     && nonSatisfiedFields[0].reason === "actorHeaderValueConflict";
+  const legacyProviderIdIsOnlyConflict = nonSatisfiedFields.length === 1
+    && nonSatisfiedFields[0].reason === "legacyProviderIdRequiresRename";
   const actorField = input.inspection?.fields.find(
     (entry) => entry.field === "actorHeader",
   );
@@ -88,11 +90,11 @@ export function deriveProviderNativeCapabilityView(input: {
         : "unknown";
   const upgradeAvailability = externalOwnership
     ? "unavailable" as const
-    : legacyProviderIdRequiresRename
+    : legacyProviderIdIsOnlyConflict
       ? "manualResolutionRequired" as const
       : actorHeaderIsOnlyConflict
         ? "confirmationRequired" as const
-        : state === "upgradeAvailable" || chatCompatibility
+        : !legacyProviderIdRequiresRename && (state === "upgradeAvailable" || chatCompatibility)
           ? "available" as const
           : "unavailable" as const;
   return {
