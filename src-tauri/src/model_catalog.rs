@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 use crate::commands::{CommandResult, discover_target_codex_cli};
 use crate::live_state::{self, FileMutation};
 
-const STATE_VERSION: u32 = 2;
+const STATE_VERSION: u32 = 3;
 const STATE_FILE: &str = "model-catalog-state.json";
 const GENERATED_DIR: &str = "model-catalogs";
 const GENERATED_PREFIX: &str = "codex-minus-";
@@ -152,6 +152,7 @@ pub struct ProfileCatalogState {
     pub restart_required: bool,
     pub action_required: Option<String>,
     pub provider_evidence: Option<ProviderEvidence>,
+    pub applied_runtime_fingerprint: Option<String>,
 }
 
 impl Default for ProfileCatalogState {
@@ -168,6 +169,7 @@ impl Default for ProfileCatalogState {
             restart_required: false,
             action_required: None,
             provider_evidence: None,
+            applied_runtime_fingerprint: None,
         }
     }
 }
@@ -400,6 +402,126 @@ pub(crate) fn clear_catalog_readiness_action(profile_state: &mut ProfileCatalogS
     if profile_state.action_required.as_deref() == Some(CATALOG_READINESS_ACTION) {
         profile_state.action_required = None;
     }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct AppliedRuntimeFingerprintMaterial {
+    selected_provider_id: String,
+    selected_provider_name: String,
+    protocol: String,
+    requires_openai_auth: bool,
+    manager_actor_authorized: bool,
+    catalog_runtime_identity: String,
+}
+
+#[allow(dead_code)]
+pub(crate) fn applied_runtime_fingerprint(
+    profile: &RelayProfile,
+    profile_state: &ProfileCatalogState,
+) -> anyhow::Result<String> {
+    let document = profile
+        .config_contents
+        .parse::<toml_edit::DocumentMut>()
+        .context("provider runtime config is invalid")?;
+    let selected_provider_id = document
+        .get("model_provider")
+        .and_then(toml_edit::Item::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let (provider_id, provider_name, requires_openai_auth, manager_actor_authorized) =
+        if let Some(provider_id) = selected_provider_id {
+            let provider = document
+                .get("model_providers")
+                .and_then(toml_edit::Item::as_table_like)
+                .and_then(|providers| providers.get(provider_id))
+                .and_then(toml_edit::Item::as_table_like)
+                .context("selected provider runtime table is missing")?;
+            let provider_name = provider
+                .get("name")
+                .and_then(toml_edit::Item::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .context("selected provider runtime name is missing")?;
+            let requires_openai_auth = provider
+                .get("requires_openai_auth")
+                .and_then(toml_edit::Item::as_bool)
+                .context("selected provider auth requirement is missing")?;
+            let manager_actor_authorized = provider
+                .get("http_headers")
+                .and_then(toml_edit::Item::as_table_like)
+                .map(|headers| {
+                    let actor_headers = headers
+                        .iter()
+                        .filter(|(name, _)| {
+                            name.eq_ignore_ascii_case(
+                                crate::provider_native_capability::MANAGED_ACTOR_HEADER_NAME,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    actor_headers.len() == 1
+                        && actor_headers[0].0
+                            == crate::provider_native_capability::MANAGED_ACTOR_HEADER_NAME
+                        && actor_headers[0].1.as_str()
+                            == Some(crate::provider_native_capability::MANAGED_ACTOR_HEADER_VALUE)
+                })
+                .unwrap_or(false);
+            (
+                provider_id.to_string(),
+                provider_name.to_string(),
+                requires_openai_auth,
+                manager_actor_authorized,
+            )
+        } else {
+            ensure!(
+                profile_state.mode == CatalogMode::NativeOfficial,
+                "managed provider runtime identity is missing"
+            );
+            (
+                "openai-native".to_string(),
+                "OpenAI".to_string(),
+                true,
+                false,
+            )
+        };
+    let protocol = match profile.protocol {
+        codex_plus_core::settings::RelayProtocol::Responses => "responses",
+        codex_plus_core::settings::RelayProtocol::ChatCompletions => "chat-completions",
+    }
+    .to_string();
+    let catalog_runtime_identity = match profile_state.mode {
+        CatalogMode::NativeOfficial => "native-official".to_string(),
+        CatalogMode::OfficialPlusCustom | CatalogMode::CustomOnly => {
+            let hash = profile_state
+                .generated_hash
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .context("managed catalog runtime identity is missing")?;
+            format!("managed:{hash}")
+        }
+        CatalogMode::External => {
+            let pointer = profile_state
+                .external_pointer
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .context("external catalog runtime identity is missing")?;
+            format!("external:{pointer}")
+        }
+    };
+    let material = AppliedRuntimeFingerprintMaterial {
+        selected_provider_id: provider_id,
+        selected_provider_name: provider_name,
+        protocol,
+        requires_openai_auth,
+        manager_actor_authorized,
+        catalog_runtime_identity,
+    };
+    Ok(format!(
+        "sha256:{:x}",
+        Sha256::digest(serde_json::to_vec(&material)?)
+    ))
 }
 
 fn default_model_is_representable(
@@ -3750,6 +3872,278 @@ mod tests {
         let unchanged: CatalogState =
             serde_json::from_slice(&std::fs::read(&existing_path).unwrap()).unwrap();
         assert_eq!(unchanged.version, 1);
+    }
+
+    fn runtime_profile(
+        provider_id: &str,
+        provider_name: &str,
+        requires_auth: bool,
+        actor_value: Option<&str>,
+        unrelated_header: &str,
+        provider_key: &str,
+    ) -> RelayProfile {
+        let actor = actor_value
+            .map(|value| format!("\"x-openai-actor-authorization\" = \"{value}\", "))
+            .unwrap_or_default();
+        RelayProfile {
+            id: "manager-profile".to_string(),
+            name: "Manager profile".to_string(),
+            protocol: codex_plus_core::settings::RelayProtocol::Responses,
+            api_key: provider_key.to_string(),
+            auth_contents: "oauth-token-sentinel".to_string(),
+            config_contents: format!(
+                r#"model = "runtime-model"
+model_provider = "{provider_id}"
+
+[model_providers.{provider_id}]
+name = "{provider_name}"
+wire_api = "responses"
+requires_openai_auth = {requires_auth}
+experimental_bearer_token = "{provider_key}"
+http_headers = {{ {actor}"x-unrelated" = "{unrelated_header}" }}
+"#
+            ),
+            ..RelayProfile::default()
+        }
+    }
+
+    #[test]
+    fn applied_runtime_fingerprint_has_one_secret_free_runtime_identity_contract() {
+        let profile = runtime_profile(
+            "relay-one",
+            "OpenAI",
+            false,
+            Some("local-image-extension"),
+            "keep-a",
+            "provider-key-sentinel",
+        );
+        let managed = ProfileCatalogState {
+            mode: CatalogMode::OfficialPlusCustom,
+            generated_hash: Some("catalog-hash-a".to_string()),
+            ..ProfileCatalogState::default()
+        };
+        let baseline = applied_runtime_fingerprint(&profile, &managed).unwrap();
+        assert!(baseline.starts_with("sha256:"));
+        assert!(!baseline.contains("provider-key-sentinel"));
+        assert!(!baseline.contains("oauth-token-sentinel"));
+        let mut serialized_state = managed.clone();
+        serialized_state.applied_runtime_fingerprint = Some(baseline.clone());
+        let serialized_state = serde_json::to_string(&serialized_state).unwrap();
+        assert!(!serialized_state.contains("provider-key-sentinel"));
+        assert!(!serialized_state.contains("oauth-token-sentinel"));
+
+        let changed_provider_id = runtime_profile(
+            "relay-two",
+            "OpenAI",
+            false,
+            Some("local-image-extension"),
+            "keep-a",
+            "provider-key-sentinel",
+        );
+        assert_ne!(
+            applied_runtime_fingerprint(&changed_provider_id, &managed).unwrap(),
+            baseline
+        );
+        let changed_provider_name = runtime_profile(
+            "relay-one",
+            "Different name",
+            false,
+            Some("local-image-extension"),
+            "keep-a",
+            "provider-key-sentinel",
+        );
+        assert_ne!(
+            applied_runtime_fingerprint(&changed_provider_name, &managed).unwrap(),
+            baseline
+        );
+        let mut changed_profile_id = profile.clone();
+        changed_profile_id.id = "different-manager-profile".to_string();
+        assert_eq!(
+            applied_runtime_fingerprint(&changed_profile_id, &managed).unwrap(),
+            baseline
+        );
+        let mut changed_profile_name = profile.clone();
+        changed_profile_name.name = "Different manager name".to_string();
+        assert_eq!(
+            applied_runtime_fingerprint(&changed_profile_name, &managed).unwrap(),
+            baseline
+        );
+        let mut changed_protocol = profile.clone();
+        changed_protocol.protocol = codex_plus_core::settings::RelayProtocol::ChatCompletions;
+        assert_ne!(
+            applied_runtime_fingerprint(&changed_protocol, &managed).unwrap(),
+            baseline
+        );
+        let changed_auth = runtime_profile(
+            "relay-one",
+            "OpenAI",
+            true,
+            Some("local-image-extension"),
+            "keep-a",
+            "provider-key-sentinel",
+        );
+        assert_ne!(
+            applied_runtime_fingerprint(&changed_auth, &managed).unwrap(),
+            baseline
+        );
+
+        let missing_actor = runtime_profile(
+            "relay-one",
+            "OpenAI",
+            false,
+            None,
+            "keep-a",
+            "provider-key-sentinel",
+        );
+        let wrong_actor = runtime_profile(
+            "relay-one",
+            "OpenAI",
+            false,
+            Some("not-manager-owned"),
+            "keep-a",
+            "provider-key-sentinel",
+        );
+        let missing_actor_hash = applied_runtime_fingerprint(&missing_actor, &managed).unwrap();
+        assert_ne!(missing_actor_hash, baseline);
+        assert_eq!(
+            applied_runtime_fingerprint(&wrong_actor, &managed).unwrap(),
+            missing_actor_hash
+        );
+        let mut mis_cased_actor = profile.clone();
+        mis_cased_actor.config_contents = mis_cased_actor.config_contents.replace(
+            "x-openai-actor-authorization",
+            "X-OpenAI-Actor-Authorization",
+        );
+        assert_eq!(
+            applied_runtime_fingerprint(&mis_cased_actor, &managed).unwrap(),
+            missing_actor_hash
+        );
+        let changed_unrelated = runtime_profile(
+            "relay-one",
+            "OpenAI",
+            false,
+            Some("local-image-extension"),
+            "keep-b",
+            "provider-key-sentinel",
+        );
+        assert_eq!(
+            applied_runtime_fingerprint(&changed_unrelated, &managed).unwrap(),
+            baseline
+        );
+        let mut changed_secrets = runtime_profile(
+            "relay-one",
+            "OpenAI",
+            false,
+            Some("local-image-extension"),
+            "keep-a",
+            "different-provider-key",
+        );
+        changed_secrets.auth_contents = "different-oauth-token-sentinel".to_string();
+        assert_eq!(
+            applied_runtime_fingerprint(&changed_secrets, &managed).unwrap(),
+            baseline
+        );
+
+        let mut changed_catalog = managed.clone();
+        changed_catalog.generated_hash = Some("catalog-hash-b".to_string());
+        assert_ne!(
+            applied_runtime_fingerprint(&profile, &changed_catalog).unwrap(),
+            baseline
+        );
+        let mut catalog_noise = managed.clone();
+        catalog_noise.generation = 99;
+        catalog_noise.restart_required = true;
+        catalog_noise.action_required = Some("unrelated-action".to_string());
+        catalog_noise.provider_evidence = Some(ProviderEvidence {
+            fetched_at_ms: 91,
+            endpoint: "redacted-provider-endpoint".to_string(),
+            reported_slugs: vec!["reported-model".to_string()],
+            candidate_slugs: vec!["candidate-model".to_string()],
+        });
+        assert_eq!(
+            applied_runtime_fingerprint(&profile, &catalog_noise).unwrap(),
+            baseline
+        );
+
+        let external_a = ProfileCatalogState {
+            mode: CatalogMode::External,
+            external_pointer: Some("external/source-a.json".to_string()),
+            ..ProfileCatalogState::default()
+        };
+        let mut external_b = external_a.clone();
+        external_b.external_pointer = Some("external/source-b.json".to_string());
+        assert_ne!(
+            applied_runtime_fingerprint(&profile, &external_a).unwrap(),
+            applied_runtime_fingerprint(&profile, &external_b).unwrap()
+        );
+        let mut external_noise = external_a.clone();
+        external_noise.generated_hash =
+            Some("external-file-content-hash-is-not-identity".to_string());
+        external_noise.generation = 91;
+        assert_eq!(
+            applied_runtime_fingerprint(&profile, &external_a).unwrap(),
+            applied_runtime_fingerprint(&profile, &external_noise).unwrap()
+        );
+        let native_a = ProfileCatalogState::default();
+        let mut native_b = native_a.clone();
+        native_b.generated_hash = Some("ignored-native-hash".to_string());
+        native_b.external_pointer = Some("ignored-native-pointer".to_string());
+        assert_eq!(
+            applied_runtime_fingerprint(&profile, &native_a).unwrap(),
+            applied_runtime_fingerprint(&profile, &native_b).unwrap()
+        );
+    }
+
+    #[test]
+    fn applied_runtime_fingerprint_defaults_and_migrates_without_secret_fields() {
+        let default_state = ProfileCatalogState::default();
+        assert!(default_state.applied_runtime_fingerprint.is_none());
+        let serialized = serde_json::to_string(&default_state).unwrap();
+        assert!(serialized.contains("\"appliedRuntimeFingerprint\":null"));
+        assert!(!serialized.contains("provider-key-sentinel"));
+        assert!(!serialized.contains("oauth-token-sentinel"));
+
+        let legacy: ProfileCatalogState = serde_json::from_value(json!({
+            "mode": "native-official",
+            "generation": 4,
+            "restartRequired": true
+        }))
+        .unwrap();
+        assert!(legacy.applied_runtime_fingerprint.is_none());
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("state.json");
+        let settings = BackendSettings {
+            relay_profiles: vec![RelayProfile {
+                id: "legacy".to_string(),
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+        let legacy_state = json!({
+            "version": 2,
+            "scopeSalt": "legacy-salt",
+            "profiles": {
+                "legacy": {
+                    "mode": "native-official",
+                    "generation": 4,
+                    "restartRequired": true
+                }
+            }
+        });
+        fs::write(&path, serde_json::to_vec_pretty(&legacy_state).unwrap()).unwrap();
+        let migrated = load_and_migrate_state_from_path(&settings, temp.path(), &path).unwrap();
+        assert_eq!(migrated.version, STATE_VERSION);
+        assert!(
+            migrated.profiles["legacy"]
+                .applied_runtime_fingerprint
+                .is_none()
+        );
+
+        let mut future = legacy_state;
+        future["version"] = json!(STATE_VERSION + 1);
+        fs::write(&path, serde_json::to_vec_pretty(&future).unwrap()).unwrap();
+        assert!(load_and_migrate_state_from_path(&settings, temp.path(), &path).is_err());
     }
 
     #[test]
