@@ -84,6 +84,21 @@ export type ProviderCommitRequest = {
   expectedProviderFingerprint: string;
 };
 
+export type ProviderMutationKind =
+  | "enablement"
+  | "reorder"
+  | "copy"
+  | "delete"
+  | "aggregateCleanup"
+  | "testModel"
+  | "detailSave"
+  | "setCurrent";
+
+export type ProviderCommitInvocation = {
+  command: "commit_provider_detail";
+  request: ProviderCommitRequest;
+};
+
 type CatalogDraftSource = ProfileCatalogDraft & Record<string, unknown>;
 
 type CommonBuilderInput = {
@@ -118,6 +133,52 @@ export function buildProviderTopologyRequest(input: CommonBuilderInput): Provide
     input.catalogDrafts.map(projectCatalogDraft),
     null,
   );
+}
+
+export function buildProviderMutationInvocation(input: Omit<CommonBuilderInput, "action"> & {
+  kind: ProviderMutationKind;
+  persistedSettings: ProviderSettingsSource & Record<string, unknown>;
+  focusedProfileId?: string;
+  focusedProfileWasPersisted?: boolean;
+  copySourceProfileId?: string;
+}): ProviderCommitInvocation {
+  const detail = input.kind === "detailSave" || input.kind === "setCurrent";
+  if (detail) {
+    if (!input.focusedProfileId) throw new Error("focused provider profile is required");
+    return {
+      command: "commit_provider_detail",
+      request: buildProviderDetailRequest({
+        ...input,
+        action: input.kind === "setCurrent" ? "setCurrent" : "save",
+        focusedProfileId: input.focusedProfileId,
+        focusedProfileWasPersisted: input.focusedProfileWasPersisted === true,
+      }),
+    };
+  }
+
+  const persistedIds = new Set(input.persistedSettings.relayProfiles.map((profile) => profile.id));
+  const suppliedById = new Map(input.catalogDrafts.map((draft) => [draft.profileId, draft] as const));
+  const catalogDrafts: CatalogDraftSource[] = [];
+  for (const profile of input.settings.relayProfiles) {
+    if (persistedIds.has(profile.id)) continue;
+    const source = input.copySourceProfileId
+      ? input.persistedSettings.relayProfiles.find((candidate) => candidate.id === input.copySourceProfileId)
+      : input.persistedSettings.relayProfiles.find((candidate) => sameCopySignature(candidate, profile));
+    const sourceDraft = source ? suppliedById.get(source.id) : undefined;
+    if (sourceDraft) {
+      catalogDrafts.push({ ...sourceDraft, profileId: profile.id });
+    } else if (implicitMixedCatalogEligible(projectRelayProfile(profile))) {
+      catalogDrafts.push(implicitMixedCatalogDraft(profile.id));
+    }
+  }
+  return {
+    command: "commit_provider_detail",
+    request: buildProviderTopologyRequest({
+      ...input,
+      action: "save",
+      catalogDrafts,
+    }),
+  };
 }
 
 export function projectProviderOwnedTopology(settings: ProviderSettingsSource): ProviderOwnedTopologyDraft {
@@ -171,6 +232,16 @@ function projectRelayProfile(profile: ProviderRelayProfileSource): ProviderRelay
     modelWindows: profile.modelWindows,
     userAgent: profile.userAgent,
   };
+}
+
+function sameCopySignature(left: ProviderRelayProfileSource, right: ProviderRelayProfileSource): boolean {
+  const leftDraft = projectRelayProfile(left);
+  const rightDraft = projectRelayProfile(right);
+  leftDraft.id = "";
+  leftDraft.name = "";
+  rightDraft.id = "";
+  rightDraft.name = "";
+  return JSON.stringify(leftDraft) === JSON.stringify(rightDraft);
 }
 
 function projectCatalogDraft(draft: CatalogDraftSource): ProfileCatalogDraft {

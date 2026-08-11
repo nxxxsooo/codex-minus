@@ -264,4 +264,64 @@ describe("provider-owned commit request", () => {
     assert.equal(request.topology.relayProfiles[0].modelInsertMode, "patch");
     assert.equal(Object.hasOwn(request.topology.relayProfiles[0], "modelInsertMode"), true);
   });
+
+  it("routes every provider-bearing UI mutation through one provider commit invocation", () => {
+    assert.ok(commitModule, "provider commit request builders must exist");
+    const common = {
+      settings: settingsWith([firstProfile, secondProfile]),
+      persistedSettings: settingsWith([firstProfile, secondProfile]),
+      catalogDrafts: [],
+      previousActiveRelayId: "relay-a",
+      confirmContextCleanup: false,
+      draftRevision: 51,
+      expectedProviderFingerprint: "sha256:provider-ui",
+    };
+    for (const kind of ["enablement", "reorder", "copy", "delete", "aggregateCleanup", "testModel"] as const) {
+      const invocation = commitModule.buildProviderMutationInvocation({ ...common, kind });
+      assert.equal(invocation.command, "commit_provider_detail");
+      assert.equal(invocation.request.focusedProfileId, null);
+      assert.equal(invocation.request.action, "save");
+    }
+    const save = commitModule.buildProviderMutationInvocation({
+      ...common,
+      kind: "detailSave",
+      focusedProfileId: "relay-b",
+      focusedProfileWasPersisted: true,
+    });
+    assert.equal(save.request.focusedProfileId, "relay-b");
+    assert.equal(save.request.action, "save");
+    const setCurrent = commitModule.buildProviderMutationInvocation({
+      ...common,
+      kind: "setCurrent",
+      focusedProfileId: "relay-b",
+      focusedProfileWasPersisted: true,
+    });
+    assert.equal(setCurrent.request.focusedProfileId, "relay-b");
+    assert.equal(setCurrent.request.action, "setCurrent");
+  });
+
+  it("derives a copied profile catalog draft from the matching persisted source", () => {
+    assert.ok(commitModule, "provider commit request builders must exist");
+    const copy = { ...secondProfile, id: "relay-copy", name: "Relay B copy" };
+    const sourceDraft = {
+      profileId: "relay-b",
+      mode: "custom-only" as const,
+      modeExplicit: true,
+      upstreamTopology: "direct" as const,
+      externalPointer: null,
+      overlay: emptyOverlay(),
+    };
+    const invocation = commitModule.buildProviderMutationInvocation({
+      kind: "copy",
+      settings: settingsWith([firstProfile, secondProfile, copy]),
+      persistedSettings: settingsWith([firstProfile, secondProfile]),
+      catalogDrafts: [sourceDraft],
+      previousActiveRelayId: "relay-a",
+      confirmContextCleanup: false,
+      draftRevision: 52,
+      expectedProviderFingerprint: "sha256:copy-source",
+    });
+
+    assert.deepEqual(invocation.request.catalogDrafts, [{ ...sourceDraft, profileId: "relay-copy" }]);
+  });
 });
