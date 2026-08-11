@@ -1850,6 +1850,52 @@ fn topology_adapter_rejects_active_detail_and_catalog_bypasses_without_mutation(
 }
 
 #[test]
+fn unified_provider_commit_rejects_unreviewed_external_to_managed_transition() {
+    let mut external = canonical_profile(
+        "external",
+        "official-a",
+        "https://external.example/v1",
+        "provider-key",
+    );
+    external.config_contents = format!(
+        "model_catalog_json = \"external/user-owned.json\"\n{}",
+        external.config_contents
+    );
+    let persisted = settings_with(vec![external], "external");
+    let mut state = state_with_official();
+    state.profiles.insert(
+        "external".to_string(),
+        crate::model_catalog::ProfileCatalogState {
+            mode: CatalogMode::External,
+            mode_explicit: true,
+            external_pointer: Some("external/user-owned.json".to_string()),
+            ..crate::model_catalog::ProfileCatalogState::default()
+        },
+    );
+    let fixture = Fixture::new(&persisted, &state);
+    let external_path = fixture.paths.codex_home.join("external/user-owned.json");
+    fs::create_dir_all(external_path.parent().unwrap()).unwrap();
+    fs::write(&external_path, b"{\"models\":[]}").unwrap();
+    let before = fixture.file_generation();
+    let persisted = fixture.read_settings();
+
+    let error = commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(
+            &persisted,
+            &persisted,
+            "external",
+            ProviderCommitAction::Save,
+            80,
+        ),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code(), ProviderCommitErrorCode::InvalidDraft);
+    assert_eq!(fixture.file_generation(), before);
+}
+
+#[test]
 fn topology_adapter_accepts_one_complete_ui_canonical_generation() {
     let initial = settings_with(
         vec![

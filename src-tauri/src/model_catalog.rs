@@ -599,6 +599,30 @@ fn refresh_official_model_catalog_blocking() -> CommandResult<CatalogStatusPaylo
     command_result(result, "官方模型目录已刷新。", "官方模型目录刷新失败")
 }
 
+fn validate_adoption_commit_binding(
+    request: &AdoptCatalogRequest,
+    source_hash: &str,
+    target_client_version: &str,
+    version_status: &str,
+) -> anyhow::Result<()> {
+    ensure!(
+        request.expected_source_hash.as_deref() == Some(source_hash),
+        "外部目录已在预览后变化，请重新预览"
+    );
+    ensure!(
+        request.expected_target_client_version.as_deref() == Some(target_client_version)
+            && request.expected_version_status.as_deref() == Some(version_status),
+        "目标 CLI 或版本兼容状态已在预览后变化，请重新预览"
+    );
+    if version_status == "mismatch" {
+        ensure!(
+            request.accept_version_mismatch,
+            "需要明确接受外部目录版本不匹配警告"
+        );
+    }
+    Ok(())
+}
+
 fn adopt_external_model_catalog_blocking(
     request: AdoptCatalogRequest,
 ) -> CommandResult<AdoptionPreviewPayload> {
@@ -649,23 +673,12 @@ fn adopt_external_model_catalog_blocking(
         };
         if request.commit {
             ensure!(payload.collisions.is_empty(), "外部目录含冲突 slug");
-            ensure!(
-                request.expected_source_hash.as_deref() == Some(source_hash.as_str()),
-                "外部目录已在预览后变化，请重新预览"
-            );
-            ensure!(
-                request.expected_target_client_version.as_deref()
-                    == Some(payload.target_client_version.as_str())
-                    && request.expected_version_status.as_deref()
-                        == Some(payload.version_status.as_str()),
-                "目标 CLI 或版本兼容状态已在预览后变化，请重新预览"
-            );
-            if version_status == "mismatch" {
-                ensure!(
-                    request.accept_version_mismatch,
-                    "需要明确接受外部目录版本不匹配警告"
-                );
-            }
+            validate_adoption_commit_binding(
+                &request,
+                &source_hash,
+                &payload.target_client_version,
+                &payload.version_status,
+            )?;
             let profile_state = state.profiles.get_mut(&profile.id).unwrap();
             profile_state.mode = if state.official.is_some() {
                 CatalogMode::OfficialPlusCustom
@@ -3637,6 +3650,75 @@ mod tests {
         assert_eq!(state.profiles["inactive"].generation, 7);
         assert!(state.profiles["inactive"].restart_required);
         assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn adoption_commit_binding_requires_the_reviewed_source_and_version_tuple() {
+        let request =
+            |source: &str, target: &str, status: &str, accept_mismatch: bool| AdoptCatalogRequest {
+                profile_id: "external".to_string(),
+                commit: true,
+                expected_source_hash: Some(source.to_string()),
+                expected_target_client_version: Some(target.to_string()),
+                expected_version_status: Some(status.to_string()),
+                accept_version_mismatch: accept_mismatch,
+                confirm_context_cleanup: false,
+            };
+
+        assert!(
+            validate_adoption_commit_binding(
+                &request("source-a", "0.147.0", "match", false),
+                "source-a",
+                "0.147.0",
+                "match",
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_adoption_commit_binding(
+                &request("source-b", "0.147.0", "match", false),
+                "source-a",
+                "0.147.0",
+                "match",
+            )
+            .is_err()
+        );
+        assert!(
+            validate_adoption_commit_binding(
+                &request("source-a", "0.148.0", "match", false),
+                "source-a",
+                "0.147.0",
+                "match",
+            )
+            .is_err()
+        );
+        assert!(
+            validate_adoption_commit_binding(
+                &request("source-a", "0.147.0", "mismatch", true),
+                "source-a",
+                "0.147.0",
+                "match",
+            )
+            .is_err()
+        );
+        assert!(
+            validate_adoption_commit_binding(
+                &request("source-a", "0.147.0", "mismatch", false),
+                "source-a",
+                "0.147.0",
+                "mismatch",
+            )
+            .is_err()
+        );
+        assert!(
+            validate_adoption_commit_binding(
+                &request("source-a", "0.147.0", "mismatch", true),
+                "source-a",
+                "0.147.0",
+                "mismatch",
+            )
+            .is_ok()
+        );
     }
 
     #[test]
