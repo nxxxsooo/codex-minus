@@ -103,6 +103,7 @@ pub enum NativeCapabilityReason {
     RawProviderContractChangeRequiresExplicitAction,
     RawProviderSourceRequired,
     RawProviderSourceInvalid,
+    MalformedContextLimit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -725,6 +726,27 @@ pub fn draft_provider_native_capability_with_boundary(
 pub fn transform_provider_native_capability_draft(
     request: ProviderNativeCapabilityDraftRequest,
 ) -> ProviderNativeCapabilityDraftPayload {
+    transform_provider_native_capability_draft_from_settings_path(
+        &codex_plus_core::paths::default_settings_path(),
+        request,
+    )
+}
+
+pub fn transform_provider_native_capability_draft_from_settings_path(
+    settings_path: &Path,
+    request: ProviderNativeCapabilityDraftRequest,
+) -> ProviderNativeCapabilityDraftPayload {
+    if request.action == NativeCapabilityDraftAction::ValidateRawEdit
+        && !raw_source_matches_persisted(settings_path, &request)
+    {
+        return unchanged_draft_payload(
+            &request,
+            &EvaluatorDraftReadOnlyBoundary,
+            NativeCapabilityDraftStatus::Blocked,
+            vec![NativeCapabilityReason::RawProviderSourceInvalid],
+            ProviderNativeCapabilityDraftPreview::default(),
+        );
+    }
     draft_provider_native_capability(&request)
 }
 
@@ -807,31 +829,102 @@ fn raw_provider_contract_projection(document: &DocumentMut) -> RawProviderContra
     }
 }
 
-fn project_raw_provider_fields(profile: &mut RelayProfile, document: &DocumentMut) {
-    if let Some(model) = document.get("model").and_then(Item::as_str) {
-        profile.model = model.to_string();
+fn raw_source_matches_persisted(
+    settings_path: &Path,
+    request: &ProviderNativeCapabilityDraftRequest,
+) -> bool {
+    let Some(source_config_contents) = request.source_config_contents.as_deref() else {
+        return false;
+    };
+    let Ok(settings_bytes) = std::fs::read(settings_path) else {
+        return false;
+    };
+    let Ok(settings) = serde_json::from_slice::<BackendSettings>(&settings_bytes) else {
+        return false;
+    };
+    let Some(persisted_profile) = settings
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == request.profile.id)
+    else {
+        return false;
+    };
+    let Ok(persisted_document) = persisted_profile.config_contents.parse::<DocumentMut>() else {
+        return false;
+    };
+    let Ok(source_document) = source_config_contents.parse::<DocumentMut>() else {
+        return false;
+    };
+    raw_source_is_structurally_valid(&persisted_document)
+        && raw_source_is_structurally_valid(&source_document)
+        && raw_provider_contract_projection(&persisted_document)
+            == raw_provider_contract_projection(&source_document)
+}
+
+fn raw_source_is_structurally_valid(document: &DocumentMut) -> bool {
+    let Some(provider_id) = document
+        .get("model_provider")
+        .and_then(Item::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    document
+        .get("model_providers")
+        .and_then(Item::as_table_like)
+        .and_then(|providers| providers.get(provider_id))
+        .and_then(Item::as_table_like)
+        .is_some()
+}
+
+fn raw_integer_projection(
+    document: &DocumentMut,
+    key: &str,
+) -> Result<String, NativeCapabilityReason> {
+    match document.get(key) {
+        None => Ok(String::new()),
+        Some(item) => item
+            .as_integer()
+            .map(|value| value.to_string())
+            .ok_or(NativeCapabilityReason::MalformedContextLimit),
     }
-    if let Some(provider_id) = document.get("model_provider").and_then(Item::as_str)
-        && let Some(provider) = document
-            .get("model_providers")
-            .and_then(Item::as_table_like)
-            .and_then(|providers| providers.get(provider_id))
-            .and_then(Item::as_table_like)
-        && let Some(base_url) = provider.get("base_url").and_then(Item::as_str)
-    {
-        profile.base_url = base_url.to_string();
-        profile.upstream_base_url = base_url.to_string();
-    }
-    profile.context_window = document
-        .get("model_context_window")
-        .and_then(Item::as_integer)
-        .map(|value| value.to_string())
-        .unwrap_or_default();
-    profile.auto_compact_limit = document
-        .get("model_auto_compact_token_limit")
-        .and_then(Item::as_integer)
-        .map(|value| value.to_string())
-        .unwrap_or_default();
+}
+
+fn project_raw_provider_fields(
+    profile: &mut RelayProfile,
+    document: &DocumentMut,
+) -> Result<(), NativeCapabilityReason> {
+    profile.model = match document.get("model") {
+        None => String::new(),
+        Some(item) => item
+            .as_str()
+            .map(str::to_string)
+            .ok_or(NativeCapabilityReason::MalformedModel)?,
+    };
+    let provider_id = document
+        .get("model_provider")
+        .and_then(Item::as_str)
+        .expect("validated raw provider source has a selected provider");
+    let provider = document
+        .get("model_providers")
+        .and_then(Item::as_table_like)
+        .and_then(|providers| providers.get(provider_id))
+        .and_then(Item::as_table_like)
+        .expect("validated raw provider source has a selected provider table");
+    let base_url = match provider.get("base_url") {
+        None => String::new(),
+        Some(item) => item
+            .as_str()
+            .map(str::to_string)
+            .ok_or(NativeCapabilityReason::MalformedBaseUrl)?,
+    };
+    profile.base_url = base_url.clone();
+    profile.upstream_base_url = base_url;
+    profile.context_window = raw_integer_projection(document, "model_context_window")?;
+    profile.auto_compact_limit =
+        raw_integer_projection(document, "model_auto_compact_token_limit")?;
+    Ok(())
 }
 
 fn validate_raw_provider_config_edit(
@@ -859,6 +952,15 @@ fn validate_raw_provider_config_edit(
             );
         }
     };
+    if !raw_source_is_structurally_valid(&source_document) {
+        return unchanged_draft_payload(
+            request,
+            boundary,
+            NativeCapabilityDraftStatus::Blocked,
+            vec![NativeCapabilityReason::RawProviderSourceInvalid],
+            ProviderNativeCapabilityDraftPreview::default(),
+        );
+    }
     let candidate_document = match request.profile.config_contents.parse::<DocumentMut>() {
         Ok(document) => document,
         Err(_) => {
@@ -883,7 +985,15 @@ fn validate_raw_provider_config_edit(
         );
     }
     let mut profile = request.profile.clone();
-    project_raw_provider_fields(&mut profile, &candidate_document);
+    if let Err(reason) = project_raw_provider_fields(&mut profile, &candidate_document) {
+        return unchanged_draft_payload(
+            request,
+            boundary,
+            NativeCapabilityDraftStatus::Blocked,
+            vec![reason],
+            ProviderNativeCapabilityDraftPreview::default(),
+        );
+    }
     ready_draft_payload(
         request,
         boundary,

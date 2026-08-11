@@ -7,8 +7,9 @@ use codex_minus_lib::provider_native_capability::{
     ProviderNativeCapabilityDraftRequest, draft_provider_native_capability,
     draft_provider_native_capability_with_boundary, inspect_profile,
     transform_provider_native_capability_draft,
+    transform_provider_native_capability_draft_from_settings_path,
 };
-use codex_plus_core::settings::{RelayMode, RelayProfile, RelayProtocol};
+use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol};
 use toml_edit::{DocumentMut, Item, value};
 
 fn mixed_profile(id: &str, api_key: &str, config_contents: &str) -> RelayProfile {
@@ -968,6 +969,21 @@ fn raw_edit_backend_adopts_only_parsed_non_contract_changes() {
             .config_contents
             .contains("local-image-extension")
     );
+
+    let without_required_values = candidate
+        .lines()
+        .filter(|line| !line.starts_with("model = ") && !line.starts_with("base_url = "))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    let missing = draft_provider_native_capability(&raw_edit_request(
+        &payload.draft.profile,
+        without_required_values,
+    ));
+    assert_eq!(missing.status, NativeCapabilityDraftStatus::Ready);
+    assert!(missing.draft.profile.model.is_empty());
+    assert!(missing.draft.profile.base_url.is_empty());
+    assert!(missing.draft.profile.upstream_base_url.is_empty());
 }
 
 #[test]
@@ -1061,6 +1077,25 @@ fn raw_edit_backend_blocks_malformed_and_owned_contract_changes_without_secret_e
                 .replace("wire_api = \"responses\"", "wire_api = \"chat\""),
             NativeCapabilityReason::RawProviderContractChangeRequiresExplicitAction,
         ),
+        (
+            "malformed model",
+            source
+                .config_contents
+                .replace("model = \"gpt-5\"", "model = 7"),
+            NativeCapabilityReason::MalformedModel,
+        ),
+        (
+            "malformed base URL",
+            source
+                .config_contents
+                .replace("base_url = \"https://relay.example/v1\"", "base_url = 7"),
+            NativeCapabilityReason::MalformedBaseUrl,
+        ),
+        (
+            "malformed context limit",
+            format!("model_context_window = \"bad\"\n{}", source.config_contents),
+            NativeCapabilityReason::MalformedContextLimit,
+        ),
     ];
 
     for (label, candidate, reason) in cases {
@@ -1092,6 +1127,78 @@ fn raw_edit_backend_blocks_malformed_and_owned_contract_changes_without_secret_e
     assert_eq!(
         added.blockers,
         vec![NativeCapabilityReason::RawProviderContractChangeRequiresExplicitAction]
+    );
+
+    for invalid_source in [
+        source
+            .config_contents
+            .replace("model_provider = \"RelayOne\"\n", ""),
+        source
+            .config_contents
+            .replace("model_provider = \"RelayOne\"", "model_provider = 7"),
+        source
+            .config_contents
+            .replace("[model_providers.RelayOne]", "[model_providers.Other]"),
+    ] {
+        let invalid_profile = mixed_profile("invalid-source", "same-secret", &invalid_source);
+        let payload = draft_provider_native_capability(&raw_edit_request(
+            &invalid_profile,
+            invalid_source.clone(),
+        ));
+        assert_eq!(payload.status, NativeCapabilityDraftStatus::Blocked);
+        assert_eq!(
+            payload.blockers,
+            vec![NativeCapabilityReason::RawProviderSourceInvalid]
+        );
+    }
+}
+
+#[test]
+fn raw_edit_command_binds_the_source_contract_to_persisted_settings() {
+    let upgraded = draft_provider_native_capability(&request(
+        mixed_profile("persisted-raw", "same-secret", &canonical_source("inline")),
+        CatalogMode::NativeOfficial,
+        NativeCapabilityDraftAction::EnableNativePriority,
+    ));
+    let persisted = upgraded.draft.profile;
+    let mut settings = BackendSettings::default();
+    settings.relay_profiles.push(persisted.clone());
+    let temp = tempfile::tempdir().unwrap();
+    let settings_path = temp.path().join("settings.json");
+    std::fs::write(&settings_path, serde_json::to_vec(&settings).unwrap()).unwrap();
+
+    let ordinary_candidate = persisted
+        .config_contents
+        .replace("keep-root", "changed-root");
+    let accepted = transform_provider_native_capability_draft_from_settings_path(
+        &settings_path,
+        raw_edit_request(&persisted, ordinary_candidate),
+    );
+    assert_eq!(accepted.status, NativeCapabilityDraftStatus::Ready);
+
+    let actor_candidate = persisted
+        .config_contents
+        .replace("local-image-extension", "forged-actor");
+    let forged_source = mixed_profile("persisted-raw", "same-secret", &actor_candidate);
+    let rejected = transform_provider_native_capability_draft_from_settings_path(
+        &settings_path,
+        raw_edit_request(&forged_source, actor_candidate),
+    );
+    assert_eq!(rejected.status, NativeCapabilityDraftStatus::Blocked);
+    assert_eq!(
+        rejected.blockers,
+        vec![NativeCapabilityReason::RawProviderSourceInvalid]
+    );
+
+    let missing_profile = mixed_profile("not-persisted", "same-secret", &persisted.config_contents);
+    let missing = transform_provider_native_capability_draft_from_settings_path(
+        &settings_path,
+        raw_edit_request(&missing_profile, missing_profile.config_contents.clone()),
+    );
+    assert_eq!(missing.status, NativeCapabilityDraftStatus::Blocked);
+    assert_eq!(
+        missing.blockers,
+        vec![NativeCapabilityReason::RawProviderSourceInvalid]
     );
 }
 
