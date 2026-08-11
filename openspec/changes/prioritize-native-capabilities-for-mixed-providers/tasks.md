@@ -20,13 +20,13 @@
 
 ## 3. Build the pure draft transformer test-first
 
-- [ ] 3.1 Add failing tests that enabling native priority preserves a non-legacy provider ID, Base URL, matching bearer, comments where supported, arbitrary provider keys, and unrelated headers while setting only the canonical owned fields.
-- [ ] 3.2 Add failing tests that enablement produces `name = "OpenAI"`, `wire_api = "responses"`, `requires_openai_auth = false`, a nonblank provider bearer, and `x-openai-actor-authorization = "local-image-extension"`.
-- [ ] 3.3 Add failing tests that legacy alias IDs move to `custom` only when absent or semantically identical; a different existing `custom` table blocks migration until the user chooses an unused non-reserved ID, with all references/table content preserved.
-- [ ] 3.4 Add failing conflict tests proving custom actor-header values and structured-key/raw-bearer mismatches remain redacted blockers until an explicit synchronization or replacement decision.
-- [ ] 3.5 Add failing exit tests proving pure API/legacy preserve unowned custom-provider fields, while true pure OAuth previews and removes the complete custom provider table with no dormant copy; preserve unadopted external catalog ownership in every case.
-- [ ] 3.6 Implement minimal `toml_edit` transformations for inspect, enable, legacy-ID migration, conflict-confirmed replacement, and exit without touching global live configuration.
-- [ ] 3.7 Expose the transformer as a revisioned pure draft command; discard stale responses and add filesystem spies proving it writes no settings, catalog files, live `config.toml`, or `auth.json`.
+- [x] 3.1 Add failing tests that enabling native priority preserves a non-legacy provider ID, Base URL, matching bearer, comments where supported, arbitrary provider keys, and unrelated headers while setting only the canonical owned fields.
+- [x] 3.2 Add failing tests that enablement produces `name = "OpenAI"`, `wire_api = "responses"`, `requires_openai_auth = false`, a nonblank provider bearer, and `x-openai-actor-authorization = "local-image-extension"`.
+- [x] 3.3 Add failing tests that legacy alias IDs move to `custom` only when absent or semantically identical; a different existing `custom` table blocks migration until the user chooses an unused non-reserved ID, with all references/table content preserved.
+- [x] 3.4 Add failing conflict tests proving custom actor-header values and structured-key/raw-bearer mismatches remain redacted blockers until an explicit synchronization or replacement decision.
+- [x] 3.5 Add failing exit tests proving pure API/legacy preserve unowned custom-provider fields, while true pure OAuth previews and removes the complete custom provider table with no dormant copy; preserve unadopted external catalog ownership in every case.
+- [x] 3.6 Implement minimal `toml_edit` transformations for inspect, enable, legacy-ID migration, conflict-confirmed replacement, and exit without touching global live configuration.
+- [x] 3.7 Expose the transformer as a revision-echoing pure draft command so a later TypeScript consumer can discard stale responses, and add an audited read-only-boundary regression proving the command path writes no settings, catalog files, live `config.toml`, or `auth.json`.
 
 ## 4. Enforce the contract at the unified backend commit boundary
 
