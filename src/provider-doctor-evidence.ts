@@ -80,6 +80,19 @@ export function providerQuickProbeEvidence(
   return unknownProbeEvidence();
 }
 
+export function mergeProviderProbeEvidence(
+  ledger: ProviderCapabilityLedger,
+  evidence: ProviderProbeCapabilityEvidence,
+): ProviderCapabilityLedger {
+  return {
+    ...ledger,
+    upstream: {
+      ...ledger.upstream,
+      textResponses: evidence.textResponses,
+    },
+  };
+}
+
 export function providerCapabilityOwnershipCopy(language: "zh" | "en"): {
   oauth: string;
   providerKey: string;
@@ -101,3 +114,4 @@ export function providerCapabilityOwnershipCopy(language: "zh" | "en"): {
     gates: "Upstream routing, model metadata, account plan, and runtime state still require independent evidence.",
   };
 }
+import type { ProviderCapabilityLedger } from "./provider-capability-ledger";

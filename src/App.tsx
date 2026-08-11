@@ -155,6 +155,12 @@ import {
   type ProviderCapabilityEvidenceLoadState,
   type ProviderCapabilityLedger,
 } from "./provider-capability-ledger";
+import {
+  mergeProviderProbeEvidence,
+  providerCapabilityOwnershipCopy,
+  providerDoctorEvidence,
+  type ProviderProbeCapabilityEvidence,
+} from "./provider-doctor-evidence";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 
 
@@ -663,6 +669,7 @@ type ProviderDoctorResult = CommandResult<{
   checks: ProviderDoctorCheck[];
   compatibilityFallbackUsed: boolean;
   initialHttpStatus: number | null;
+  requestHttpStatus: number | null;
 }>;
 
 type ProviderCapabilityEvidenceResult = CommandResult<ProviderCapabilityEvidencePayload>;
@@ -3295,6 +3302,24 @@ function RelayProfileDetail({
     && capabilityEvidenceLoad.sourceFingerprint === capabilityEvidenceCatalogSourceFingerprint
     ? capabilityEvidenceLoad.ledger
     : null;
+  const capabilityOwnershipCopy = providerCapabilityOwnershipCopy(getLanguage());
+  const applyDoctorEvidence = (
+    probedProfile: RelayProfile,
+    evidence: ProviderProbeCapabilityEvidence,
+  ) => {
+    const currentDetail = detailStateRef.current;
+    const currentLoad = capabilityEvidenceLoadRef.current;
+    if (
+      JSON.stringify(probedProfile) !== JSON.stringify(currentDetail.profile)
+      || !capabilityEvidenceRefreshAllowedForState(currentDetail)
+      || !currentLoad.ledger
+      || currentLoad.sourceFingerprint !== capabilityEvidenceCatalogSourceFingerprint
+    ) return;
+    updateCapabilityEvidenceLoad({
+      ...currentLoad,
+      ledger: mergeProviderProbeEvidence(currentLoad.ledger, evidence),
+    });
+  };
   const nativeCapabilityView = deriveProviderNativeCapabilityView({
     inspection: detailState.inspection,
     officialAuth: {
@@ -3771,9 +3796,15 @@ function RelayProfileDetail({
               </Button>
             </div>
           )}
+          <div className="catalog-evidence-list">
+            <div className="catalog-evidence-row"><span>{capabilityOwnershipCopy.oauth}</span></div>
+            <div className="catalog-evidence-row"><span>{capabilityOwnershipCopy.providerKey}</span></div>
+            <div className="catalog-evidence-row"><span>{capabilityOwnershipCopy.actor}</span></div>
+            <div className="catalog-evidence-row"><span>{capabilityOwnershipCopy.gates}</span></div>
+          </div>
         </section>
       )}
-        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={replaceDraft} onProfileEdit={editDraft} onSwitch={switchDraft} actions={actions} modelWindowRows={modelWindowRows} setModelWindowRows={setModelWindowRows} catalogProfile={catalogProfile} draftCommitBlocked={detailState.pendingTransformRevision !== null || detailState.rawConfigContents !== null || detailState.pendingConfirmation !== null || detailState.pendingLegacyProviderIdResolution !== null || detailState.blockers.length > 0} />
+        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={replaceDraft} onProfileEdit={editDraft} onSwitch={switchDraft} onDoctorEvidence={applyDoctorEvidence} actions={actions} modelWindowRows={modelWindowRows} setModelWindowRows={setModelWindowRows} catalogProfile={catalogProfile} draftCommitBlocked={detailState.pendingTransformRevision !== null || detailState.rawConfigContents !== null || detailState.pendingConfirmation !== null || detailState.pendingLegacyProviderIdResolution !== null || detailState.blockers.length > 0} />
       {!managedCatalogCapable(draft) ? null : catalogDraft ? (
         <CatalogProfileEditor
           catalog={modelCatalog}
@@ -3818,6 +3849,7 @@ function RelayProfileEditor({
   onProfileChange,
   onProfileEdit,
   onSwitch,
+  onDoctorEvidence,
   actions,
   modelWindowRows,
   setModelWindowRows,
@@ -3830,6 +3862,7 @@ function RelayProfileEditor({
   onProfileChange: (value: RelayProfile) => void;
   onProfileEdit?: (patch: Partial<RelayProfile>) => void;
   onSwitch: () => void;
+  onDoctorEvidence?: (profile: RelayProfile, evidence: ProviderProbeCapabilityEvidence) => void;
   actions: Actions;
   modelWindowRows: ModelWindowRow[];
   setModelWindowRows: (value: ModelWindowRow[]) => void;
@@ -3840,6 +3873,10 @@ function RelayProfileEditor({
   const [doctorResult, setDoctorResult] = useState<ProviderDoctorResult | null>(null);
   const [doctorOpen, setDoctorOpen] = useState(false);
   const [doctorRunning, setDoctorRunning] = useState(false);
+  const doctorRequestSequenceRef = useRef(0);
+  useEffect(() => () => {
+    doctorRequestSequenceRef.current += 1;
+  }, []);
   if (isAggregateRelayProfile(profile)) {
     return (
       <AggregateRelayProfileEditor
@@ -3865,18 +3902,27 @@ function RelayProfileEditor({
     }));
   };
   const runProviderDoctor = async () => {
+    const requestSequence = doctorRequestSequenceRef.current + 1;
+    doctorRequestSequenceRef.current = requestSequence;
     setDoctorOpen(true);
     setDoctorRunning(true);
     setDoctorResult(null);
     const serializedRows = serializeModelWindowRows(modelWindowRows);
-    const result = await actions.diagnoseRelayProfile(
-      deriveRelayProfileFromFiles({
-        ...profile,
-        modelList: serializedRows.modelList,
-        modelWindows: serializedRows.modelWindows,
-      }),
-    );
+    const probedProfile = deriveRelayProfileFromFiles({
+      ...profile,
+      modelList: serializedRows.modelList,
+      modelWindows: serializedRows.modelWindows,
+    });
+    const result = await actions.diagnoseRelayProfile(probedProfile);
+    if (doctorRequestSequenceRef.current !== requestSequence) return;
     setDoctorResult(result);
+    onDoctorEvidence?.(probedProfile, providerDoctorEvidence({
+      status: result?.status ?? "failed",
+      protocol: probedProfile.protocol,
+      requestHttpStatus: result?.requestHttpStatus ?? null,
+      compatibilityFallbackUsed: result?.compatibilityFallbackUsed ?? false,
+      checks: result?.checks ?? [],
+    }));
     setDoctorRunning(false);
   };
   return (

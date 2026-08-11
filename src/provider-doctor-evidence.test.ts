@@ -2,10 +2,12 @@ import assert from "node:assert";
 import { describe, it } from "node:test";
 
 import {
+  mergeProviderProbeEvidence,
   providerCapabilityOwnershipCopy,
   providerDoctorEvidence,
   providerQuickProbeEvidence,
 } from "./provider-doctor-evidence.ts";
+import { buildProviderCapabilityLedger } from "./provider-capability-ledger.ts";
 
 describe("Provider Doctor capability evidence", () => {
   it("maps only a successful Responses request to text reachability", () => {
@@ -161,5 +163,35 @@ describe("Provider Doctor capability evidence", () => {
     assert.match(en.actor, /eligibility/i);
     assert.match(en.gates, /upstream.*model.*account/i);
     assert.doesNotMatch(`${zh.actor} ${en.actor}`, /所有.*能力|all.*capabilities.*enabled/i);
+  });
+
+  it("merges only the text row into an existing trusted ledger", () => {
+    const ledger = buildProviderCapabilityLedger({
+      providerContract: "ready",
+      oauthSession: "signedIn",
+      localPlan: "free",
+      actorMarker: "eligible",
+      catalogModel: "supported",
+      upstream: { textResponses: "unknown", imageGeneration: "permissionVerified" },
+      runtime: "restartRequired",
+      routeKind: "nativePriorityMixed",
+      imagePlanEvidence: { kind: "unknown" },
+    });
+    const merged = mergeProviderProbeEvidence(ledger, providerDoctorEvidence({
+      status: "ok",
+      protocol: "responses",
+      requestHttpStatus: 200,
+      compatibilityFallbackUsed: true,
+      checks: [{ id: "request", status: "ok" }],
+    }));
+    assert.equal(merged.upstream.textResponses, "fallbackReachable");
+    assert.equal(merged.upstream.imageGeneration, "permissionVerified");
+    assert.deepEqual(merged.provider, ledger.provider);
+    assert.deepEqual(merged.oauth, ledger.oauth);
+    assert.deepEqual(merged.plan, ledger.plan);
+    assert.deepEqual(merged.actor, ledger.actor);
+    assert.deepEqual(merged.catalogModel, ledger.catalogModel);
+    assert.deepEqual(merged.runtime, ledger.runtime);
+    assert.deepEqual(merged.image, ledger.image);
   });
 });

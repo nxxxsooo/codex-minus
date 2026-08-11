@@ -354,6 +354,7 @@ pub struct ProviderDoctorPayload {
     pub checks: Vec<ProviderDoctorCheck>,
     pub compatibility_fallback_used: bool,
     pub initial_http_status: Option<u16>,
+    pub request_http_status: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4080,6 +4081,7 @@ pub async fn diagnose_relay_profile(profile: RelayProfile) -> CommandResult<Prov
             checks,
             compatibility_fallback_used: false,
             initial_http_status: None,
+            request_http_status: None,
         };
         return sanitize_provider_doctor_result(
             &profile,
@@ -4109,6 +4111,7 @@ pub async fn diagnose_relay_profile(profile: RelayProfile) -> CommandResult<Prov
             checks,
             compatibility_fallback_used: false,
             initial_http_status: None,
+            request_http_status: None,
         };
         return sanitize_provider_doctor_result(
             &profile,
@@ -4169,10 +4172,12 @@ pub async fn diagnose_relay_profile(profile: RelayProfile) -> CommandResult<Prov
 
     let mut compatibility_fallback_used = false;
     let mut initial_http_status = None;
+    let mut request_http_status = None;
     match test_relay_profile_with_compatibility(&profile, &test_model).await {
         Ok(result) => {
             compatibility_fallback_used = result.compatibility_fallback_used;
             initial_http_status = result.initial_http_status;
+            request_http_status = Some(result.http_status);
             let status = if result.http_status < 400 {
                 "ok"
             } else {
@@ -4246,6 +4251,7 @@ pub async fn diagnose_relay_profile(profile: RelayProfile) -> CommandResult<Prov
                 checks,
                 compatibility_fallback_used,
                 initial_http_status,
+                request_http_status,
             },
         },
     )
@@ -5921,6 +5927,7 @@ mod provider_test_compatibility_tests {
         assert_eq!(result.status, "ok");
         assert!(result.payload.compatibility_fallback_used);
         assert_eq!(result.payload.initial_http_status, Some(400));
+        assert_eq!(result.payload.request_http_status, Some(200));
         let bodies = server.join().unwrap();
         let request_check = result
             .payload
