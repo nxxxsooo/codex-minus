@@ -2,9 +2,11 @@ import assert from "node:assert";
 import { describe, it } from "node:test";
 
 import {
+  mergeCurrentProviderProbeObservation,
   mergeProviderProbeEvidence,
   providerCapabilityOwnershipCopy,
   providerDoctorEvidence,
+  providerDoctorRequestMatchesSource,
   providerQuickProbeEvidence,
 } from "./provider-doctor-evidence.ts";
 import { buildProviderCapabilityLedger } from "./provider-capability-ledger.ts";
@@ -193,5 +195,76 @@ describe("Provider Doctor capability evidence", () => {
     assert.deepEqual(merged.catalogModel, ledger.catalogModel);
     assert.deepEqual(merged.runtime, ledger.runtime);
     assert.deepEqual(merged.image, ledger.image);
+  });
+
+  it("rejects a Doctor response after its profile or model-row source changes", () => {
+    assert.equal(providerDoctorRequestMatchesSource({
+      requestSequence: 4,
+      latestRequestSequence: 4,
+      requestSourceFingerprint: "profile-a@rows-1",
+      currentSourceFingerprint: "profile-a@rows-1",
+    }), true);
+    assert.equal(providerDoctorRequestMatchesSource({
+      requestSequence: 4,
+      latestRequestSequence: 4,
+      requestSourceFingerprint: "profile-a@rows-1",
+      currentSourceFingerprint: "profile-a@rows-2",
+    }), false);
+    assert.equal(providerDoctorRequestMatchesSource({
+      requestSequence: 4,
+      latestRequestSequence: 5,
+      requestSourceFingerprint: "profile-a@rows-1",
+      currentSourceFingerprint: "profile-a@rows-1",
+    }), false);
+  });
+
+  it("merges a same-source Doctor observation when the trusted base ledger arrives later", () => {
+    const sessionToken = Symbol("detail-session");
+    const evidence = providerDoctorEvidence({
+      status: "ok",
+      protocol: "responses",
+      requestHttpStatus: 200,
+      compatibilityFallbackUsed: false,
+      checks: [{ id: "request", status: "ok" }],
+    });
+    const observation = {
+      sessionToken,
+      revision: 3,
+      catalogEvidenceFingerprint: "catalog-a",
+      evidence,
+    };
+    assert.equal(mergeCurrentProviderProbeObservation({
+      ledger: null,
+      observation,
+      currentSessionToken: sessionToken,
+      currentRevision: 3,
+      currentCatalogEvidenceFingerprint: "catalog-a",
+    }), null);
+
+    const ledger = buildProviderCapabilityLedger({
+      providerContract: "ready",
+      oauthSession: "signedIn",
+      localPlan: "unknown",
+      actorMarker: "eligible",
+      catalogModel: "supported",
+      upstream: { textResponses: "unknown", imageGeneration: "unknown" },
+      runtime: "adopted",
+      routeKind: "nativePriorityMixed",
+      imagePlanEvidence: { kind: "unknown" },
+    });
+    assert.equal(mergeCurrentProviderProbeObservation({
+      ledger,
+      observation,
+      currentSessionToken: sessionToken,
+      currentRevision: 3,
+      currentCatalogEvidenceFingerprint: "catalog-a",
+    })?.upstream.textResponses, "reachable");
+    assert.equal(mergeCurrentProviderProbeObservation({
+      ledger,
+      observation,
+      currentSessionToken: sessionToken,
+      currentRevision: 4,
+      currentCatalogEvidenceFingerprint: "catalog-a",
+    })?.upstream.textResponses, "unknown");
   });
 });

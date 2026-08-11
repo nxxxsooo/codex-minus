@@ -6,6 +6,9 @@
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
   "原生能力优先": "Native-capability priority",
+  "能力所有权与证据边界": "Capability ownership and evidence boundaries",
+  "配置只建立可路由资格；每项能力仍以独立证据为准。":
+    "Configuration establishes route eligibility only; each capability still requires independent evidence.",
   "配置就绪": "Configuration ready",
   "可升级": "Upgrade available",
   "兼容模式": "Compatibility mode",

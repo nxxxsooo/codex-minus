@@ -156,10 +156,12 @@ import {
   type ProviderCapabilityLedger,
 } from "./provider-capability-ledger";
 import {
-  mergeProviderProbeEvidence,
+  mergeCurrentProviderProbeObservation,
   providerCapabilityOwnershipCopy,
   providerDoctorEvidence,
+  providerDoctorRequestMatchesSource,
   type ProviderProbeCapabilityEvidence,
+  type ProviderProbeEvidenceObservation,
 } from "./provider-doctor-evidence";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 
@@ -3188,6 +3190,8 @@ function RelayProfileDetail({
   const [capabilityEvidenceLoad, setCapabilityEvidenceLoad] = useState<ProviderCapabilityEvidenceLoadState>(
     createProviderCapabilityEvidenceLoadState,
   );
+  const [doctorEvidenceObservation, setDoctorEvidenceObservation] =
+    useState<ProviderProbeEvidenceObservation | null>(null);
   const capabilityEvidenceLoadRef = useRef(capabilityEvidenceLoad);
   const detailStateRef = useRef(detailState);
   const authoritativeCapabilityProfile = isAggregateRelayProfile(profile)
@@ -3258,6 +3262,7 @@ function RelayProfileDetail({
       || JSON.stringify(next.catalogDraft) !== JSON.stringify(current.catalogDraft)
     ) {
       invalidateCapabilityEvidenceLoad();
+      setDoctorEvidenceObservation(null);
     }
     detailStateRef.current = next;
     setDetailState(next);
@@ -3298,26 +3303,32 @@ function RelayProfileDetail({
   const draft = detailState.profile;
   const catalogDraft = detailState.catalogDraft;
   const isActive = !isNew && profile.id === form.activeRelayId;
-  const displayedCapabilityLedger = capabilityEvidenceRefreshAllowedForState(detailState)
+  const displayedBaseCapabilityLedger = capabilityEvidenceRefreshAllowedForState(detailState)
     && capabilityEvidenceLoad.sourceFingerprint === capabilityEvidenceCatalogSourceFingerprint
     ? capabilityEvidenceLoad.ledger
     : null;
+  const displayedCapabilityLedger = mergeCurrentProviderProbeObservation({
+    ledger: displayedBaseCapabilityLedger,
+    observation: doctorEvidenceObservation,
+    currentSessionToken: detailState.sessionToken,
+    currentRevision: detailState.latestTransformRevision,
+    currentCatalogEvidenceFingerprint: capabilityEvidenceCatalogSourceFingerprint,
+  });
   const capabilityOwnershipCopy = providerCapabilityOwnershipCopy(getLanguage());
   const applyDoctorEvidence = (
     probedProfile: RelayProfile,
     evidence: ProviderProbeCapabilityEvidence,
   ) => {
     const currentDetail = detailStateRef.current;
-    const currentLoad = capabilityEvidenceLoadRef.current;
     if (
       JSON.stringify(probedProfile) !== JSON.stringify(currentDetail.profile)
       || !capabilityEvidenceRefreshAllowedForState(currentDetail)
-      || !currentLoad.ledger
-      || currentLoad.sourceFingerprint !== capabilityEvidenceCatalogSourceFingerprint
     ) return;
-    updateCapabilityEvidenceLoad({
-      ...currentLoad,
-      ledger: mergeProviderProbeEvidence(currentLoad.ledger, evidence),
+    setDoctorEvidenceObservation({
+      sessionToken: currentDetail.sessionToken,
+      revision: currentDetail.latestTransformRevision,
+      catalogEvidenceFingerprint: capabilityEvidenceCatalogSourceFingerprint,
+      evidence,
     });
   };
   const nativeCapabilityView = deriveProviderNativeCapabilityView({
@@ -3436,6 +3447,9 @@ function RelayProfileDetail({
     authoritativeCapabilityProfileRevision,
     capabilityEvidenceCatalogSourceFingerprint,
   ]);
+  useEffect(() => {
+    setDoctorEvidenceObservation(null);
+  }, [authoritativeCapabilityProfileRevision, capabilityEvidenceCatalogSourceFingerprint]);
   const replaceDraft = (next: RelayProfile) => {
     updateDetailState(replaceProviderDetailProfile(detailStateRef.current, next));
   };
@@ -3796,6 +3810,16 @@ function RelayProfileDetail({
               </Button>
             </div>
           )}
+        </section>
+      )}
+      {isAggregateRelayProfile(draft) ? null : (
+        <section className="catalog-profile-editor">
+          <div className="catalog-editor-head">
+            <div>
+              <strong>{t("能力所有权与证据边界")}</strong>
+              <span>{t("配置只建立可路由资格；每项能力仍以独立证据为准。")}</span>
+            </div>
+          </div>
           <div className="catalog-evidence-list">
             <div className="catalog-evidence-row"><span>{capabilityOwnershipCopy.oauth}</span></div>
             <div className="catalog-evidence-row"><span>{capabilityOwnershipCopy.providerKey}</span></div>
@@ -3874,9 +3898,18 @@ function RelayProfileEditor({
   const [doctorOpen, setDoctorOpen] = useState(false);
   const [doctorRunning, setDoctorRunning] = useState(false);
   const doctorRequestSequenceRef = useRef(0);
-  useEffect(() => () => {
+  const doctorSourceRevision = JSON.stringify({ profile, modelWindowRows });
+  const doctorSourceRevisionRef = useRef(doctorSourceRevision);
+  doctorSourceRevisionRef.current = doctorSourceRevision;
+  useEffect(() => {
     doctorRequestSequenceRef.current += 1;
-  }, []);
+    setDoctorResult(null);
+    setDoctorOpen(false);
+    setDoctorRunning(false);
+    return () => {
+      doctorRequestSequenceRef.current += 1;
+    };
+  }, [doctorSourceRevision]);
   if (isAggregateRelayProfile(profile)) {
     return (
       <AggregateRelayProfileEditor
@@ -3902,6 +3935,7 @@ function RelayProfileEditor({
     }));
   };
   const runProviderDoctor = async () => {
+    const requestSourceFingerprint = doctorSourceRevisionRef.current;
     const requestSequence = doctorRequestSequenceRef.current + 1;
     doctorRequestSequenceRef.current = requestSequence;
     setDoctorOpen(true);
@@ -3914,7 +3948,12 @@ function RelayProfileEditor({
       modelWindows: serializedRows.modelWindows,
     });
     const result = await actions.diagnoseRelayProfile(probedProfile);
-    if (doctorRequestSequenceRef.current !== requestSequence) return;
+    if (!providerDoctorRequestMatchesSource({
+      requestSequence,
+      latestRequestSequence: doctorRequestSequenceRef.current,
+      requestSourceFingerprint,
+      currentSourceFingerprint: doctorSourceRevisionRef.current,
+    })) return;
     setDoctorResult(result);
     onDoctorEvidence?.(probedProfile, providerDoctorEvidence({
       status: result?.status ?? "failed",

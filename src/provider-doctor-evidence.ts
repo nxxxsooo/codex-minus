@@ -14,6 +14,13 @@ export type ProviderProbeCapabilityEvidence = {
   providerGroup: "unknown";
 };
 
+export type ProviderProbeEvidenceObservation = {
+  sessionToken: symbol;
+  revision: number;
+  catalogEvidenceFingerprint: string;
+  evidence: ProviderProbeCapabilityEvidence;
+};
+
 type ProviderDoctorEvidenceInput = {
   status: string;
   protocol: "responses" | "chatCompletions" | "unknown";
@@ -91,6 +98,34 @@ export function mergeProviderProbeEvidence(
       textResponses: evidence.textResponses,
     },
   };
+}
+
+export function mergeCurrentProviderProbeObservation(input: {
+  ledger: ProviderCapabilityLedger | null;
+  observation: ProviderProbeEvidenceObservation | null;
+  currentSessionToken: symbol;
+  currentRevision: number;
+  currentCatalogEvidenceFingerprint: string;
+}): ProviderCapabilityLedger | null {
+  if (!input.ledger) return null;
+  if (
+    !input.observation
+    || input.observation.sessionToken !== input.currentSessionToken
+    || input.observation.revision !== input.currentRevision
+    || input.observation.catalogEvidenceFingerprint
+      !== input.currentCatalogEvidenceFingerprint
+  ) return input.ledger;
+  return mergeProviderProbeEvidence(input.ledger, input.observation.evidence);
+}
+
+export function providerDoctorRequestMatchesSource(input: {
+  requestSequence: number;
+  latestRequestSequence: number;
+  requestSourceFingerprint: string;
+  currentSourceFingerprint: string;
+}): boolean {
+  return input.requestSequence === input.latestRequestSequence
+    && input.requestSourceFingerprint === input.currentSourceFingerprint;
 }
 
 export function providerCapabilityOwnershipCopy(language: "zh" | "en"): {
