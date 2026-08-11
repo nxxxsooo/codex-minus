@@ -58,6 +58,7 @@ pub struct SettingsPayload {
     pub settings: BackendSettings,
     pub settings_path: String,
     pub user_scripts: Value,
+    pub provider_fingerprint: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -550,7 +551,7 @@ impl std::fmt::Display for GenericSettingsSaveError {
 
 impl std::error::Error for GenericSettingsSaveError {}
 
-fn settings_snapshot_for_ui_projection(
+pub(crate) fn settings_snapshot_for_ui_projection(
     mut settings: BackendSettings,
 ) -> Result<BackendSettings, GenericSettingsSaveError> {
     let (common_without_context, extracted_context) =
@@ -608,7 +609,7 @@ fn serialize_settings_with_raw_provider_snapshot(
     serde_json::to_vec_pretty(&next).map_err(|_| GenericSettingsSaveError::SecureStorageFailed)
 }
 
-fn ui_provider_topology_projection(
+pub(crate) fn ui_provider_topology_projection(
     mut settings: BackendSettings,
 ) -> Result<crate::provider_commit::ProviderOwnedTopologyDraft, GenericSettingsSaveError> {
     let all_context = codex_plus_core::relay_config::list_context_entries_from_common_config(
@@ -2847,7 +2848,11 @@ fn validate_provider_topology_mutation_scope(
             "provider topology contains detail-owned changes",
         )
     };
-    let persisted = ProviderOwnedTopologyDraft::from_settings(persisted_settings);
+    let persisted_raw = ProviderOwnedTopologyDraft::from_settings(persisted_settings);
+    let persisted_ui = ui_provider_topology_projection(
+        settings_snapshot_for_ui_projection(persisted_settings.clone()).map_err(|_| invalid())?,
+    )
+    .map_err(|_| invalid())?;
     let profile_copy_signature = |profile: &crate::provider_commit::ProviderRelayProfileDraft| {
         let mut profile = profile.clone();
         profile.id.clear();
@@ -2867,122 +2872,129 @@ fn validate_provider_topology_mutation_scope(
             && draft.external_pointer == prior.external_pointer
             && draft.overlay == prior.overlay
     };
-    if request.topology.active_relay_id != persisted.active_relay_id
-        || request.topology.active_aggregate_relay_id != persisted.active_aggregate_relay_id
-        || request.topology.relay_base_url != persisted.relay_base_url
-        || request.topology.relay_api_key != persisted.relay_api_key
-        || request.topology.relay_common_config_contents != persisted.relay_common_config_contents
-        || request.topology.relay_context_config_contents != persisted.relay_context_config_contents
-    {
-        return Err(invalid());
-    }
-
-    let mut copied_from = std::collections::HashMap::<String, String>::new();
-    for profile in &request.topology.relay_profiles {
-        let prior = persisted
-            .relay_profiles
-            .iter()
-            .find(|prior| prior.id == profile.id);
-        match prior {
-            Some(prior) => {
-                let prior = serde_json::to_vec(prior).map_err(|_| invalid())?;
-                let incoming = serde_json::to_vec(profile).map_err(|_| invalid())?;
-                if incoming != prior {
-                    return Err(invalid());
-                }
-            }
-            None => {
-                let signature = profile_copy_signature(profile)?;
-                let copy_draft = request
-                    .catalog_drafts
-                    .iter()
-                    .find(|draft| draft.profile_id == profile.id);
-                let source = persisted
-                    .relay_profiles
-                    .iter()
-                    .find(|prior| {
-                        profile_copy_signature(prior)
-                            .map(|prior| prior == signature)
-                            .unwrap_or(false)
-                            && copy_draft
-                                .is_none_or(|draft| catalog_draft_matches_source(draft, &prior.id))
-                    })
-                    .ok_or_else(invalid)?;
-                copied_from.insert(profile.id.clone(), source.id.clone());
-            }
-        }
-    }
-
-    let retained_profile_ids = request
-        .topology
-        .relay_profiles
-        .iter()
-        .map(|profile| profile.id.as_str())
-        .collect::<HashSet<_>>();
-    for aggregate in &request.topology.aggregate_relay_profiles {
-        let prior = persisted
-            .aggregate_relay_profiles
-            .iter()
-            .find(|prior| prior.id == aggregate.id);
-        match prior {
-            Some(prior) => {
-                let expected_members = prior
-                    .members
-                    .iter()
-                    .filter(|member| retained_profile_ids.contains(member.relay_id.as_str()))
-                    .collect::<Vec<_>>();
-                if aggregate.name != prior.name
-                    || aggregate.strategy != prior.strategy
-                    || serde_json::to_vec(&aggregate.members).map_err(|_| invalid())?
-                        != serde_json::to_vec(&expected_members).map_err(|_| invalid())?
-                {
-                    return Err(invalid());
-                }
-            }
-            None => {
-                let source_id = copied_from.get(&aggregate.id).ok_or_else(invalid)?;
-                let source = persisted
-                    .aggregate_relay_profiles
-                    .iter()
-                    .find(|prior| prior.id == *source_id)
-                    .ok_or_else(invalid)?;
-                if aggregate.strategy != source.strategy
-                    || serde_json::to_vec(&aggregate.members).map_err(|_| invalid())?
-                        != serde_json::to_vec(&source.members).map_err(|_| invalid())?
-                {
-                    return Err(invalid());
-                }
-            }
-        }
-    }
-
-    for draft in &request.catalog_drafts {
-        if !persisted
-            .relay_profiles
-            .iter()
-            .any(|profile| profile.id == draft.profile_id)
-        {
-            let source_id = copied_from.get(&draft.profile_id).ok_or_else(invalid)?;
-            if !catalog_draft_matches_source(draft, source_id) {
-                return Err(invalid());
-            }
-            continue;
-        }
-        let prior = persisted_state
-            .profiles
-            .get(&draft.profile_id)
-            .cloned()
-            .unwrap_or_default();
-        if draft.mode != prior.mode
-            || draft.mode_explicit != prior.mode_explicit
-            || draft.upstream_topology != prior.upstream_topology
-            || draft.external_pointer != prior.external_pointer
-            || draft.overlay != prior.overlay
+    let validate_against = |persisted: &ProviderOwnedTopologyDraft| {
+        if request.topology.active_relay_id != persisted.active_relay_id
+            || request.topology.active_aggregate_relay_id != persisted.active_aggregate_relay_id
+            || request.topology.relay_base_url != persisted.relay_base_url
+            || request.topology.relay_api_key != persisted.relay_api_key
+            || request.topology.relay_common_config_contents
+                != persisted.relay_common_config_contents
+            || request.topology.relay_context_config_contents
+                != persisted.relay_context_config_contents
         {
             return Err(invalid());
         }
-    }
-    Ok(())
+
+        let mut copied_from = std::collections::HashMap::<String, String>::new();
+        for profile in &request.topology.relay_profiles {
+            let prior = persisted
+                .relay_profiles
+                .iter()
+                .find(|prior| prior.id == profile.id);
+            match prior {
+                Some(prior) => {
+                    let prior = serde_json::to_vec(prior).map_err(|_| invalid())?;
+                    let incoming = serde_json::to_vec(profile).map_err(|_| invalid())?;
+                    if incoming != prior {
+                        return Err(invalid());
+                    }
+                }
+                None => {
+                    let signature = profile_copy_signature(profile)?;
+                    let copy_draft = request
+                        .catalog_drafts
+                        .iter()
+                        .find(|draft| draft.profile_id == profile.id);
+                    let source = persisted
+                        .relay_profiles
+                        .iter()
+                        .find(|prior| {
+                            profile_copy_signature(prior)
+                                .map(|prior| prior == signature)
+                                .unwrap_or(false)
+                                && copy_draft.is_none_or(|draft| {
+                                    catalog_draft_matches_source(draft, &prior.id)
+                                })
+                        })
+                        .ok_or_else(invalid)?;
+                    copied_from.insert(profile.id.clone(), source.id.clone());
+                }
+            }
+        }
+
+        let retained_profile_ids = request
+            .topology
+            .relay_profiles
+            .iter()
+            .map(|profile| profile.id.as_str())
+            .collect::<HashSet<_>>();
+        for aggregate in &request.topology.aggregate_relay_profiles {
+            let prior = persisted
+                .aggregate_relay_profiles
+                .iter()
+                .find(|prior| prior.id == aggregate.id);
+            match prior {
+                Some(prior) => {
+                    let expected_members = prior
+                        .members
+                        .iter()
+                        .filter(|member| retained_profile_ids.contains(member.relay_id.as_str()))
+                        .collect::<Vec<_>>();
+                    if aggregate.name != prior.name
+                        || aggregate.strategy != prior.strategy
+                        || serde_json::to_vec(&aggregate.members).map_err(|_| invalid())?
+                            != serde_json::to_vec(&expected_members).map_err(|_| invalid())?
+                    {
+                        return Err(invalid());
+                    }
+                }
+                None => {
+                    let source_id = copied_from.get(&aggregate.id).ok_or_else(invalid)?;
+                    let source = persisted
+                        .aggregate_relay_profiles
+                        .iter()
+                        .find(|prior| prior.id == *source_id)
+                        .ok_or_else(invalid)?;
+                    if aggregate.strategy != source.strategy
+                        || serde_json::to_vec(&aggregate.members).map_err(|_| invalid())?
+                            != serde_json::to_vec(&source.members).map_err(|_| invalid())?
+                    {
+                        return Err(invalid());
+                    }
+                }
+            }
+        }
+
+        for draft in &request.catalog_drafts {
+            if !persisted
+                .relay_profiles
+                .iter()
+                .any(|profile| profile.id == draft.profile_id)
+            {
+                let source_id = copied_from.get(&draft.profile_id).ok_or_else(invalid)?;
+                if !catalog_draft_matches_source(draft, source_id) {
+                    return Err(invalid());
+                }
+                continue;
+            }
+            let prior = persisted_state
+                .profiles
+                .get(&draft.profile_id)
+                .cloned()
+                .unwrap_or_default();
+            if draft.mode != prior.mode
+                || draft.mode_explicit != prior.mode_explicit
+                || draft.upstream_topology != prior.upstream_topology
+                || draft.external_pointer != prior.external_pointer
+                || draft.overlay != prior.overlay
+            {
+                return Err(invalid());
+            }
+        }
+        Ok(())
+    };
+
+    validate_against(&persisted_raw).or_else(|_| validate_against(&persisted_ui))
 }
 
 fn normalize_provider_topology_settings_fallible(
@@ -4918,17 +4930,26 @@ fn settings_payload_value() -> Result<SettingsPayload, (anyhow::Error, SettingsP
         .to_string_lossy()
         .to_string();
     match store.load() {
-        Ok(settings) => Ok(SettingsPayload {
-            settings: sanitize_settings_for_output(settings),
-            settings_path,
-            user_scripts: user_script_inventory(),
-        }),
+        Ok(settings) => {
+            let settings = sanitize_settings_for_output(settings);
+            let provider_fingerprint = crate::provider_commit::provider_owned_fingerprint(
+                &crate::provider_commit::ProviderOwnedTopologyDraft::from_settings(&settings),
+            )
+            .unwrap_or_default();
+            Ok(SettingsPayload {
+                settings,
+                settings_path,
+                user_scripts: user_script_inventory(),
+                provider_fingerprint,
+            })
+        }
         Err(error) => Err((
             error,
             SettingsPayload {
                 settings: BackendSettings::default(),
                 settings_path,
                 user_scripts: user_script_inventory(),
+                provider_fingerprint: String::new(),
             },
         )),
     }
@@ -4941,6 +4962,7 @@ fn fallback_settings_payload() -> SettingsPayload {
             .to_string_lossy()
             .to_string(),
         user_scripts: user_script_inventory(),
+        provider_fingerprint: String::new(),
     }
 }
 

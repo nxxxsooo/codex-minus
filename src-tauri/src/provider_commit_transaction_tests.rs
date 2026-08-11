@@ -5,6 +5,7 @@ use crate::commands::{
     ProviderCommitPaths, ProviderCommitPayload, assert_staged_native_provider_contract,
     commit_provider_detail_from_paths, commit_provider_detail_from_paths_observed,
     save_settings_with_provider_guard_at, save_settings_with_provider_guard_at_observed,
+    settings_snapshot_for_ui_projection, ui_provider_topology_projection,
 };
 use crate::provider_commit::{
     CatalogMode, CatalogOverlay, CatalogState, CustomModel, OfficialSnapshot, ProfileCatalogDraft,
@@ -1399,6 +1400,63 @@ fn topology_adapter_rejects_active_detail_and_catalog_bypasses_without_mutation(
         assert_eq!(error.code(), ProviderCommitErrorCode::InvalidDraft);
         assert_eq!(fixture.file_generation(), before);
     }
+}
+
+#[test]
+fn topology_adapter_accepts_one_complete_ui_canonical_generation() {
+    let initial = settings_with(
+        vec![
+            canonical_profile(
+                "relay-a",
+                "official-a",
+                "https://a.example/v1",
+                "provider-key-a",
+            ),
+            canonical_profile(
+                "relay-b",
+                "official-a",
+                "https://b.example/v1",
+                "provider-key-b",
+            ),
+        ],
+        "relay-a",
+    );
+    let fixture = Fixture::new(&initial, &state_with_official());
+    let persisted = fixture.read_settings();
+    assert!(!persisted.relay_profiles[0].context_selection_initialized);
+    let mut ui_topology = ui_provider_topology_projection(
+        settings_snapshot_for_ui_projection(persisted.clone()).unwrap(),
+    )
+    .unwrap();
+    ui_topology.relay_profiles.reverse();
+    ui_topology.relay_test_model = "ui-topology-test-model".to_string();
+    let request = ProviderCommitRequest {
+        topology: ui_topology,
+        catalog_drafts: Vec::new(),
+        focused_profile_id: None,
+        action: ProviderCommitAction::Save,
+        previous_active_relay_id: persisted.active_relay_id.clone(),
+        confirm_context_cleanup: false,
+        draft_revision: 43,
+        expected_provider_fingerprint: provider_owned_fingerprint(
+            &ProviderOwnedTopologyDraft::from_settings(&persisted),
+        )
+        .unwrap(),
+    };
+
+    let payload = commit_provider_detail_from_paths(&fixture.paths, request).unwrap();
+
+    let saved = fixture.read_settings();
+    assert_eq!(payload.draft_revision, 43);
+    assert_eq!(saved.relay_test_model, "ui-topology-test-model");
+    assert_eq!(
+        saved
+            .relay_profiles
+            .iter()
+            .map(|profile| profile.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["relay-b", "relay-a"]
+    );
 }
 
 #[test]

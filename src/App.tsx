@@ -78,7 +78,11 @@ import {
   catalogProfileDraft,
   updateCatalogProfileDraft,
 } from "./catalog-profile-draft";
-import type { ProfileCatalogDraft } from "./provider-commit";
+import {
+  buildProviderMutationInvocation,
+  type ProfileCatalogDraft,
+  type ProviderMutationKind,
+} from "./provider-commit";
 import { providerConfigDraft, RelayConfigPanels } from "./relay-config-panels";
 import {
   networkPolicyDirty,
@@ -315,6 +319,15 @@ type SettingsResult = CommandResult<{
   settings: BackendSettings;
   settings_path: string;
   user_scripts: UserScriptInventory;
+  provider_fingerprint: string;
+}>;
+
+type ProviderCommitResult = CommandResult<{
+  settings: BackendSettings | null;
+  draftRevision: number;
+  providerFingerprint: string;
+  restartRequired: boolean;
+  errorCode: string | null;
 }>;
 
 type RelayResult = CommandResult<{
@@ -327,8 +340,6 @@ type RelayResult = CommandResult<{
   hasBearerToken: boolean;
   backupPath: string | null;
 }>;
-
-type RelayPayload = Omit<RelayResult, "status" | "message">;
 
 type RelayFilesResult = CommandResult<{
   configPath: string;
@@ -463,16 +474,6 @@ type LiveContextEntriesResult = CommandResult<{
 type ExtractRelayCommonConfigResult = CommandResult<{
   commonConfigContents: string;
   profileConfigContents: string;
-}>;
-
-type RelaySwitchResult = CommandResult<{
-  settings: BackendSettings;
-  settingsPath: string;
-  userScripts: unknown;
-  relay: RelayPayload;
-  previousProvider: string;
-  currentProvider: string;
-  providerChanged: boolean;
 }>;
 
 type RelayProfileTestResult = CommandResult<{
@@ -866,6 +867,7 @@ export function App() {
   const [providerCompatibilityLoading, setProviderCompatibilityLoading] = useState(false);
   const [settingsForm, setSettingsForm] = useState<BackendSettings>({ ...defaultSettings });
   const [relaySwitching, setRelaySwitching] = useState(false);
+  const providerDraftRevision = useRef(0);
 
   const call = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
 
@@ -1297,58 +1299,6 @@ export function App() {
   };
 
 
-  const applyRelayInjection = async (silent = false) => {
-    const settingsResult = await run(() => call<SettingsResult>("save_settings", { settings: settingsForm }));
-    if (settingsResult) {
-      setSettings(settingsResult);
-      setSettingsForm(normalizeSettings(settingsResult.settings));
-      if (!isSuccessStatus(settingsResult.status)) {
-        showNotice(t("设置保存"), settingsResult.message, settingsResult.status);
-        return false;
-      }
-    } else {
-      return false;
-    }
-    const result = await run(() => call<RelayResult>("apply_relay_injection"));
-    if (result) {
-      setRelay(result);
-      await Promise.all([refreshRelayFiles(true), refreshModelCatalog(true)]);
-      if (!silent || !isSuccessStatus(result.status)) showNotice(t("官方混入 API Key"), result.message, result.status);
-    }
-    return !!result && isSuccessStatus(result.status) && result.configured;
-  };
-
-  const applyPureApiInjection = async (silent = false) => {
-    const settingsResult = await run(() => call<SettingsResult>("save_settings", { settings: settingsForm }));
-    if (settingsResult) {
-      setSettings(settingsResult);
-      setSettingsForm(normalizeSettings(settingsResult.settings));
-      if (!isSuccessStatus(settingsResult.status)) {
-        showNotice(t("设置保存"), settingsResult.message, settingsResult.status);
-        return false;
-      }
-    } else {
-      return false;
-    }
-    const result = await run(() => call<RelayResult>("apply_pure_api_injection"));
-    if (result) {
-      setRelay(result);
-      await Promise.all([refreshRelayFiles(true), refreshModelCatalog(true)]);
-      if (!silent || !isSuccessStatus(result.status)) showNotice(t("纯 API 模式"), result.message, result.status);
-    }
-    return !!result && isSuccessStatus(result.status) && result.configured;
-  };
-
-  const clearRelayInjection = async (silent = false) => {
-    const result = await run(() => call<RelayResult>("clear_relay_injection"));
-    if (result) {
-      setRelay(result);
-      await Promise.all([refreshRelayFiles(true), refreshModelCatalog(true)]);
-      if (!silent || !isSuccessStatus(result.status)) showNotice(t("官方登录模式"), result.message, result.status);
-    }
-    return !!result && isSuccessStatus(result.status) && !result.configured;
-  };
-
   const extractRelayCommonConfig = async (configContents: string) => {
     const result = await run(() =>
       call<ExtractRelayCommonConfigResult>("extract_relay_common_config", {
@@ -1377,12 +1327,111 @@ export function App() {
     return result && isSuccessStatus(result.status) ? result.models : null;
   };
 
-  const switchRelayProfile = async (next: BackendSettings, previousActiveRelayId = settingsForm.activeRelayId) => {
+  const catalogDraftForProfile = (profile: RelayProfile): ProfileCatalogDraft => {
+    const summary = modelCatalog?.profiles.find((item) => item.profileId === profile.id) ?? null;
+    return catalogProfileDraft({
+      profileId: profile.id,
+      fallbackMode: defaultCatalogMode(profile.relayMode, profile.officialMixApiKey) as CatalogMode,
+      summary,
+    });
+  };
+
+  const persistedCatalogDrafts = () =>
+    (modelCatalog?.profiles ?? []).map((summary) => catalogProfileDraft({
+      profileId: summary.profileId,
+      fallbackMode: summary.mode,
+      summary,
+    }));
+
+  const submitProviderCommit = async (invocation: ReturnType<typeof buildProviderMutationInvocation>) => {
+    const result = await run(() => call<ProviderCommitResult>(invocation.command, { request: invocation.request }));
+    if (!result || !isSuccessStatus(result.status) || !result.settings) {
+      if (result) showNotice(t("保存供应商"), result.message, result.status);
+      return false;
+    }
+    const selectedSettings = normalizeSettings(result.settings);
+    setSettings({
+      status: result.status,
+      message: result.message,
+      settings: selectedSettings,
+      settings_path: settings?.settings_path ?? "",
+      user_scripts: settings?.user_scripts ?? {},
+      provider_fingerprint: result.providerFingerprint,
+    });
+    setSettingsForm(selectedSettings);
+    await Promise.all([
+      refreshRelay(true),
+      refreshRelayFiles(true),
+      refreshModelCatalog(true),
+    ]);
+    return true;
+  };
+
+  const providerCommitCommon = (next: BackendSettings, confirmContextCleanup = false) => {
+    if (!settings?.provider_fingerprint) throw new Error("provider settings fingerprint is unavailable");
+    providerDraftRevision.current += 1;
+    return {
+      settings: normalizeSettings(next),
+      persistedSettings: normalizeSettings(settings.settings),
+      catalogDrafts: persistedCatalogDrafts(),
+      previousActiveRelayId: settings.settings.activeRelayId,
+      confirmContextCleanup,
+      draftRevision: providerDraftRevision.current,
+      expectedProviderFingerprint: settings.provider_fingerprint,
+    };
+  };
+
+  const commitProviderTopology = async (
+    next: BackendSettings,
+    kind: Exclude<ProviderMutationKind, "detailSave" | "setCurrent">,
+    copySourceProfileId?: string,
+  ) => {
+    try {
+      const common = providerCommitCommon(next);
+      const invocation = kind === "copy"
+        ? buildProviderMutationInvocation({ ...common, kind, copySourceProfileId: copySourceProfileId ?? "" })
+        : buildProviderMutationInvocation({ ...common, kind });
+      return await submitProviderCommit(invocation);
+    } catch (error) {
+      showNotice(t("保存供应商"), stringifyError(error), "failed");
+      return false;
+    }
+  };
+
+  const commitProviderDetail = async (
+    next: BackendSettings,
+    focusedProfileId: string,
+    catalogDraft: ProfileCatalogDraft | null,
+    focusedProfileWasPersisted: boolean,
+    kind: "detailSave" | "setCurrent",
+    confirmContextCleanup = false,
+  ) => {
+    try {
+      const common = providerCommitCommon(next, confirmContextCleanup);
+      const invocation = buildProviderMutationInvocation({
+        ...common,
+        kind,
+        focusedProfileId,
+        focusedProfileWasPersisted,
+        catalogDrafts: catalogDraft ? [catalogDraft] : [],
+      });
+      return await submitProviderCommit(invocation);
+    } catch (error) {
+      showNotice(t("保存供应商"), stringifyError(error), "failed");
+      return false;
+    }
+  };
+
+  const switchRelayProfile = async (
+    next: BackendSettings,
+    previousActiveRelayId = settingsForm.activeRelayId,
+    catalogDraftOverride?: ProfileCatalogDraft,
+  ) => {
     if (relaySwitching) {
       showNotice(t("供应商切换中"), t("上一次切换还没有完成，请稍后再试。"), "failed");
       return;
     }
-    let switchSettings = normalizeSettings(next);
+    const switchSettings = normalizeSettings(next);
     if (!switchSettings.relayProfilesEnabled) {
       showNotice(t("供应商配置已关闭"), t("当前不会写入 Codex live 配置。打开供应商配置总开关后再切换。"), "failed");
       return;
@@ -1406,9 +1455,9 @@ export function App() {
       return;
     }
     const selectedAfterSave = activeRelayProfile(switchSettings);
-    const command = relayProfileSwitchCommand(selectedAfterSave);
     const selectedCatalog = modelCatalog?.profiles.find((item) => item.profileId === selectedAfterSave.id);
-    const contextConflicts = selectedCatalog && managedCatalogMode(selectedCatalog.mode)
+    const selectedCatalogMode = catalogDraftOverride?.mode ?? selectedCatalog?.mode;
+    const contextConflicts = selectedCatalogMode && managedCatalogMode(selectedCatalogMode)
       ? managedContextConflictKeys(selectedAfterSave.configContents)
       : [];
     const confirmContextCleanup = contextConflicts.length
@@ -1420,97 +1469,34 @@ export function App() {
       targetRelayId: selectedAfterSave.id,
       targetRelayName: selectedAfterSave.name,
       previousActiveRelayId,
-      command,
     });
     setRelaySwitching(true);
     try {
-      const result = await run(() =>
-        call<RelaySwitchResult>("switch_relay_profile", {
-          request: { settings: switchSettings, previousActiveRelayId, confirmContextCleanup },
-        }),
+      const committed = await commitProviderDetail(
+        switchSettings,
+        selectedAfterSave.id,
+        isAggregateRelayProfile(selectedAfterSave) || selectedAfterSave.protocol === "chatCompletions"
+          ? null
+          : catalogDraftOverride ?? catalogDraftForProfile(selectedAfterSave),
+        true,
+        "setCurrent",
+        confirmContextCleanup,
       );
-      if (!result) {
+      if (!committed) {
         logDiagnostic("switchRelayProfile.apply_no_result", {
           targetRelayId: selectedAfterSave.id,
         });
         return;
       }
-      const selectedSettings = normalizeSettings(result.settings);
-      setSettings({
-        status: result.status,
-        message: result.message,
-        settings: selectedSettings,
-        settings_path: result.settingsPath,
-        user_scripts: result.userScripts as UserScriptInventory,
-      });
-      setSettingsForm(selectedSettings);
-      setRelay({
-        status: result.status,
-        message: result.message,
-        ...result.relay,
-      });
-      await Promise.all([refreshRelayFiles(true), refreshModelCatalog(true)]);
-      if (!isSuccessStatus(result.status)) {
-        logDiagnostic("switchRelayProfile.apply_failed", {
-          targetRelayId: selectedAfterSave.id,
-          status: result.status,
-          message: result.message,
-          activeRelayId: selectedSettings.activeRelayId,
-        });
-        showNotice(t("供应商切换"), result.message, result.status);
-        return;
-      }
-      const currentSelected = activeRelayProfile(selectedSettings);
       logDiagnostic("switchRelayProfile.ok", {
-        targetRelayId: currentSelected.id,
-        launchMode: selectedSettings.launchMode,
-        status: result.status,
-        previousProvider: result.previousProvider,
-        currentProvider: result.currentProvider,
-        providerChanged: result.providerChanged,
+        targetRelayId: selectedAfterSave.id,
+        launchMode: switchSettings.launchMode,
+        status: "ok",
       });
-      if (result.providerChanged) await refreshProviderCompatibility(true);
+      await refreshProviderCompatibility(true);
     } finally {
       setRelaySwitching(false);
     }
-  };
-
-  const saveActiveRelayProfile = async (next: BackendSettings) => {
-    const normalized = normalizeSettings(next);
-    const active = activeRelayProfile(normalized);
-    const activeCatalog = modelCatalog?.profiles.find((item) => item.profileId === active.id);
-    const contextConflicts = activeCatalog && managedCatalogMode(activeCatalog.mode)
-      ? managedContextConflictKeys(active.configContents)
-      : [];
-    const confirmContextCleanup = contextConflicts.length
-      ? window.confirm(tf("保存托管目录将移除这些全局上下文设置：\n\n{0}", [contextConflicts.join("\n")]))
-      : false;
-    if (contextConflicts.length && !confirmContextCleanup) return false;
-    const result = await run(() =>
-      call<RelaySwitchResult>("save_active_relay_profile", {
-        request: {
-          settings: normalized,
-          previousActiveRelayId: normalized.activeRelayId,
-          confirmContextCleanup,
-        },
-      }),
-    );
-    if (!result) return false;
-    const selectedSettings = normalizeSettings(result.settings);
-    setSettings({
-      status: result.status,
-      message: result.message,
-      settings: selectedSettings,
-      settings_path: result.settingsPath,
-      user_scripts: result.userScripts as UserScriptInventory,
-    });
-    setSettingsForm(selectedSettings);
-    setRelay({ status: result.status, message: result.message, ...result.relay });
-    await refreshRelayFiles(true);
-    if (!isSuccessStatus(result.status)) {
-      showNotice(t("保存供应商"), result.message, result.status);
-    }
-    return isSuccessStatus(result.status);
   };
 
 
@@ -1601,15 +1587,13 @@ export function App() {
       refreshProviderCompatibility,
       adaptActiveSessions,
       openExternalUrl,
-      applyRelayInjection,
-      applyPureApiInjection,
-      clearRelayInjection,
       extractRelayCommonConfig,
       testRelayProfile,
       diagnoseRelayProfile,
       fetchRelayProfileModels,
+      commitProviderTopology,
+      commitProviderDetail,
       switchRelayProfile,
-      saveActiveRelayProfile,
       relaySwitching,
       showMessage: async (title: string, message: string, status?: Status) => showNotice(title, message, status),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
@@ -1775,15 +1759,13 @@ type Actions = {
   deleteLocalSession: (session: LocalSession) => Promise<void>;
   deleteLocalSessions: (sessions: LocalSession[]) => Promise<void>;
   openExternalUrl: (url: string) => Promise<void>;
-  applyRelayInjection: () => Promise<boolean>;
-  applyPureApiInjection: () => Promise<boolean>;
-  clearRelayInjection: () => Promise<boolean>;
   extractRelayCommonConfig: (configContents: string) => Promise<ExtractRelayCommonConfigResult | null>;
   testRelayProfile: (profile: RelayProfile) => Promise<void>;
   diagnoseRelayProfile: (profile: RelayProfile) => Promise<ProviderDoctorResult | null>;
   fetchRelayProfileModels: (profile: RelayProfile) => Promise<string[] | null>;
-  switchRelayProfile: (settings: BackendSettings, previousActiveRelayId?: string) => Promise<void>;
-  saveActiveRelayProfile: (settings: BackendSettings) => Promise<boolean>;
+  commitProviderTopology: (settings: BackendSettings, kind: Exclude<ProviderMutationKind, "detailSave" | "setCurrent">, copySourceProfileId?: string) => Promise<boolean>;
+  commitProviderDetail: (settings: BackendSettings, focusedProfileId: string, catalogDraft: ProfileCatalogDraft | null, focusedProfileWasPersisted: boolean, kind: "detailSave" | "setCurrent", confirmContextCleanup?: boolean) => Promise<boolean>;
+  switchRelayProfile: (settings: BackendSettings, previousActiveRelayId?: string, catalogDraftOverride?: ProfileCatalogDraft) => Promise<void>;
   relaySwitching: boolean;
   showMessage: (title: string, message: string, status?: Status) => Promise<void>;
   toggleTheme: () => void;
@@ -1825,9 +1807,13 @@ function RelayScreen({
   const catalogProfile = detailProfile
     ? modelCatalog?.profiles.find((item) => item.profileId === detailProfile.id) ?? null
     : null;
-  const saveRelaySettings = async (next: BackendSettings) => {
+  const saveRelaySettings = async (
+    next: BackendSettings,
+    kind: Exclude<ProviderMutationKind, "detailSave" | "setCurrent">,
+    copySourceProfileId?: string,
+  ) => {
     onFormChange(next);
-    return actions.saveSettingsValue(next, true);
+    return actions.commitProviderTopology(next, kind, copySourceProfileId);
   };
   const createNewAggregateProfile = () => {
     const draft = createAggregateRelayProfile(normalized);
@@ -1871,7 +1857,6 @@ function RelayScreen({
           setNewProfileDraft(null);
           setDetailProfileId(null);
         }}
-        onFormChange={saveRelaySettings}
         onSaved={() => {
           setNewProfileDraft(null);
           setDetailProfileId(null);
@@ -1904,7 +1889,7 @@ function RelayScreen({
               checked={normalized.relayProfilesEnabled}
               onChange={(event) => {
                 const next = { ...normalized, relayProfilesEnabled: event.currentTarget.checked };
-                void saveRelaySettings(next);
+                void saveRelaySettings(next, "enablement");
               }}
               type="checkbox"
             />
@@ -1938,7 +1923,7 @@ function RelayScreen({
               <Input
                 value={form.relayTestModel}
                 onChange={(event) => onFormChange({ ...form, relayTestModel: event.currentTarget.value })}
-                onBlur={() => void actions.saveSettingsValue(normalizeSettings(form), true)}
+                onBlur={() => void saveRelaySettings(normalizeSettings(form), "testModel")}
                 placeholder={t("例如 gpt-5.4-mini")}
               />
             </Field>
@@ -2819,7 +2804,7 @@ function RelayProfileList({
   actions,
 }: {
   form: BackendSettings;
-  onFormChange: (value: BackendSettings) => void;
+  onFormChange: (value: BackendSettings, kind: "reorder" | "copy" | "delete" | "aggregateCleanup", copySourceProfileId?: string) => void;
   onEdit: (id: string) => void;
   disabled?: boolean;
   actions: Actions;
@@ -2836,7 +2821,7 @@ function RelayProfileList({
     const { active, over } = event;
     if (!over || active.id === over.id) return;
     const next = reorderRelayProfiles(form, String(active.id), String(over.id));
-    if (next !== form) onFormChange(next);
+    if (next !== form) onFormChange(next, "reorder");
   };
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
@@ -2872,7 +2857,7 @@ function SortableRelayProfileCard({
   form: BackendSettings;
   profile: RelayProfile;
   index: number;
-  onFormChange: (value: BackendSettings) => void;
+  onFormChange: (value: BackendSettings, kind: "reorder" | "copy" | "delete" | "aggregateCleanup", copySourceProfileId?: string) => void;
   onEdit: (id: string) => void;
   disabled?: boolean;
   actions: Actions;
@@ -2959,7 +2944,7 @@ function SortableRelayProfileCard({
           <Button
             onClick={(event) => {
               event.stopPropagation();
-              onFormChange(duplicateRelayProfile(form, profile.id));
+              onFormChange(duplicateRelayProfile(form, profile.id), "copy", profile.id);
             }}
             size="icon"
             title={t("复制")}
@@ -2971,7 +2956,7 @@ function SortableRelayProfileCard({
             disabled={form.relayProfiles.length <= 1}
             onClick={(event) => {
               event.stopPropagation();
-              onFormChange(removeRelayProfile(form, profile.id));
+              onFormChange(removeRelayProfile(form, profile.id), "delete");
             }}
             size="icon"
             title={t("删除供应商")}
@@ -2993,7 +2978,6 @@ function RelayProfileDetail({
   form,
   isNew = false,
   onBack,
-  onFormChange,
   onSaved,
   actions,
 }: {
@@ -3004,7 +2988,6 @@ function RelayProfileDetail({
   form: BackendSettings;
   isNew?: boolean;
   onBack: () => void;
-  onFormChange: (value: BackendSettings) => Promise<boolean>;
   onSaved?: () => void;
   actions: Actions;
 }) {
@@ -3064,9 +3047,26 @@ function RelayProfileDetail({
       ? addRelayProfile(form, normalizedDraft)
       : updateRelayProfile(form, profile.id, normalizedDraft);
     try {
-      const saved = isActive
-        ? await actions.saveActiveRelayProfile(next)
-        : await onFormChange(next);
+      const managedCatalog = !isAggregateRelayProfile(normalizedDraft)
+        && normalizedDraft.protocol !== "chatCompletions"
+        && managedCatalogMode(catalogDraft.mode);
+      const contextConflicts = isActive && managedCatalog
+        ? managedContextConflictKeys(normalizedDraft.configContents)
+        : [];
+      const confirmContextCleanup = contextConflicts.length
+        ? window.confirm(tf("保存托管目录将移除这些全局上下文设置：\n\n{0}", [contextConflicts.join("\n")]))
+        : false;
+      if (contextConflicts.length && !confirmContextCleanup) return;
+      const saved = await actions.commitProviderDetail(
+        next,
+        normalizedDraft.id,
+        isAggregateRelayProfile(normalizedDraft) || normalizedDraft.protocol === "chatCompletions"
+          ? null
+          : catalogDraft,
+        !isNew,
+        "detailSave",
+        confirmContextCleanup,
+      );
       if (!saved) return;
       await actions.showMessage(t("保存供应商"), t("供应商配置已保存。"), "ok");
       onSaved?.();
@@ -3085,7 +3085,13 @@ function RelayProfileDetail({
       relayProfiles: form.relayProfiles.map((item) => (item.id === profile.id ? normalizedDraft : item)),
       activeRelayId: profile.id,
     });
-    void actions.switchRelayProfile(next, previousActiveRelayId);
+    void actions.switchRelayProfile(
+      next,
+      previousActiveRelayId,
+      isAggregateRelayProfile(normalizedDraft) || normalizedDraft.protocol === "chatCompletions"
+        ? undefined
+        : catalogDraft,
+    );
   };
   return (
     <div className="relay-detail-page" key={profile.id}>
@@ -4535,14 +4541,6 @@ function relayProfileModeHelp(profile: RelayProfile): string {
   return t("此供应商会保留官方登录模式，并把请求混入当前 API Key。");
 }
 
-
-function relayProfileSwitchCommand(profile: RelayProfile): "clear_relay_injection" | "apply_relay_injection" | "apply_pure_api_injection" {
-  if (isAggregateRelayProfile(profile)) return "apply_relay_injection";
-  if (profile.relayMode === "pureApi") return "apply_pure_api_injection";
-  if (profile.relayMode === "official" && !profile.officialMixApiKey) return "clear_relay_injection";
-  if (profile.configContents.trim()) return "apply_relay_injection";
-  return profile.officialMixApiKey ? "apply_relay_injection" : "clear_relay_injection";
-}
 
 function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {
   if (isAggregateRelayProfile(profile)) {
