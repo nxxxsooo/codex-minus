@@ -6,6 +6,13 @@
 
 ## Changelog
 
+### 2026-08-12
+
+- **feat/providers**: made the canonical native-capability contract (provider name `OpenAI`, `wire_api = "responses"`, `requires_openai_auth = false`, provider bearer, one exact actor header) change only through an explicit, previewed, revisioned commit on the focused profile, and fixed four defects each exposed by a failing test first: startup migration silently rewriting contracts of profiles never opened, compare-and-swap permanently reporting stale for any non-core-canonical profile, a confirmed pure-OAuth exit leaving the provider table and bearer in live `config.toml`, and custom-only catalogs discarding a declared model whose slug the official baseline also carries
+  - why: the pinned core rewrites legacy aliases to its own `custom` shape, drops the replaced table's actor header, and defaults `requires_openai_auth` back to `true`, so any implicit normalization path destroys the mixed OAuth+key contract; there is no bulk migration — an existing profile upgrades only when the user opens it and saves, and no path writes or restores `auth.json`
+  - verified: 164 Rust lib + 45 integration tests pass with the live OAuth test intentionally ignored, including golden startup/inspection/bystander no-rewrite regressions, the pure-OAuth-exit liveness test, pinned-core semantics, and sentinel-credential sweeps proving secret-free failures and zero OAuth writes; 151 frontend tests, TypeScript check, Vite production build, `cargo fmt --check`, and the full ad-hoc-signed macOS Tauri bundle build pass; a 96-scenario reconciliation is recorded in the change's implementation-notes; the on-screen manual flow (8.7/8.8) and quota-bearing capability probes (8.10) remain user-owned and unverified
+  - refs: OpenSpec `prioritize-native-capabilities-for-mixed-providers`, `src-tauri/src/commands.rs`, `src-tauri/src/model_catalog.rs`, `src-tauri/src/provider_commit_transaction_tests.rs`, `src/provider-capability-claims.test.ts`, `AGENTS.md`, `README.md`
+
 ### 2026-08-11
 
 - **fix/model-catalogs**: made native-official catalog selection a confirmed draft until Save, described every unsaved mode by its actual destination, kept dormant custom models recoverable, and wired the production mode controls without pre-Save persistence
