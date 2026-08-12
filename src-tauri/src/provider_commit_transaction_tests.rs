@@ -4097,3 +4097,118 @@ fn target_switching_changes_the_contract_only_on_commit_and_keeps_unowned_conten
         "returning to native priority must restore the actor marker"
     );
 }
+
+/// Pinned-core compatibility: the dependency semantics this contract is built on.
+///
+/// The manager stages a provider table and then trusts the pinned core to read it, preserve it,
+/// and keep its own rewriting rules stable. Each assertion below is a semantic the native
+/// capability contract depends on. A future core upgrade that changes one of these must fail
+/// here and be evaluated, rather than silently changing what a saved provider means.
+#[test]
+fn pinned_core_semantics_for_the_staged_contract_are_unchanged() {
+    let provider_id = |config: &str| {
+        config.parse::<toml_edit::DocumentMut>().unwrap()["model_provider"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let provider_flag = |config: &str, field: &str| {
+        let document = config.parse::<toml_edit::DocumentMut>().unwrap();
+        let id = document["model_provider"].as_str().unwrap().to_string();
+        document["model_providers"][&id][field].as_bool()
+    };
+    let staged = format!(
+        "model = \"official-a\"\nmodel_provider = \"RelayOne\"\n\n{GOLDEN_STAGED_PROVIDER}"
+    );
+    let home = tempfile::tempdir().unwrap();
+    fs::write(home.path().join("config.toml"), &staged).unwrap();
+
+    // 1. The staged contract still reads as a configured provider that does not require official
+    //    auth and does carry a bearer.
+    let status = codex_plus_core::relay_config::relay_config_status_from_home(home.path());
+    assert!(
+        !status.configured,
+        "core's `configured` now accepts the native-priority contract; the manager decides \
+         readiness itself precisely because `configured` still means the legacy shape, where \
+         requires_openai_auth is true"
+    );
+    assert!(
+        !status.requires_openai_auth,
+        "core stopped reading requires_openai_auth = false"
+    );
+    assert!(
+        status.has_bearer_token,
+        "core stopped reading experimental_bearer_token"
+    );
+
+    // 2. Storage normalization preserves the canonical contract byte-for-byte, including the
+    //    provider name, the Responses wire API, the actor marker, and unowned headers.
+    let mut canonical = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    let authored = canonical.config_contents.clone();
+    codex_plus_core::relay_config::normalize_relay_profile_for_storage(&mut canonical).unwrap();
+    assert_eq!(
+        canonical.config_contents, authored,
+        "core normalization now rewrites the canonical contract"
+    );
+
+    // 3. A reserved provider identifier is still rewritten away, which is why the contract
+    //    refuses one instead of trying to keep it.
+    let mut reserved = canonical_profile(
+        "reserved",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    reserved.config_contents = reserved.config_contents.replace("RelayOne", "openai");
+    codex_plus_core::relay_config::normalize_relay_profile_for_storage(&mut reserved).unwrap();
+    assert_eq!(
+        provider_id(&reserved.config_contents),
+        "custom",
+        "core stopped rewriting a reserved provider identifier"
+    );
+
+    // 4. A legacy alias is still rewritten away, and still loses the table it replaces. This is
+    //    why an alias must be renamed by an explicit action instead of being carried forward.
+    let mut alias = canonical_profile(
+        "alias",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    alias.config_contents = alias.config_contents.replace("RelayOne", "CodexPlusPlus");
+    codex_plus_core::relay_config::normalize_relay_profile_for_storage(&mut alias).unwrap();
+    assert_eq!(
+        provider_id(&alias.config_contents),
+        "custom",
+        "core stopped rewriting a legacy provider alias"
+    );
+    assert!(
+        !alias
+            .config_contents
+            .contains("x-openai-actor-authorization"),
+        "core now preserves the actor header across an alias rewrite; the rename rule can relax"
+    );
+
+    // 5. An absent official-auth requirement is still defaulted to true, which is why the
+    //    startup credential migration must not decide that field.
+    let mut absent = canonical_profile(
+        "absent",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    absent.config_contents = absent
+        .config_contents
+        .replace("requires_openai_auth = false\n", "");
+    codex_plus_core::relay_config::normalize_relay_profile_for_storage(&mut absent).unwrap();
+    assert_eq!(
+        provider_flag(&absent.config_contents, "requires_openai_auth"),
+        Some(true),
+        "core stopped defaulting requires_openai_auth to true"
+    );
+}
