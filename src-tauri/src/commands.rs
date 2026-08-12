@@ -2621,9 +2621,13 @@ pub fn commit_provider_detail_from_paths_observed(
         })?
     };
 
-    let active_commit = focused_id
-        .as_deref()
-        .is_some_and(|focused_id| plan.settings.active_relay_id == focused_id);
+    // The master switch governs live writes, not whether a draft can be saved: the page states
+    // that a disabled switch still saves configuration and simply does not write Codex's live
+    // file, so a disabled switch commits as an inactive draft rather than refusing the save.
+    let active_commit = plan.settings.relay_profiles_enabled
+        && focused_id
+            .as_deref()
+            .is_some_and(|focused_id| plan.settings.active_relay_id == focused_id);
     let mut mutations = materialize_provider_commit_catalogs(paths, &normalized_request, &plan)
         .map_err(|_| {
             provider_commit_failure(
@@ -2640,12 +2644,6 @@ pub fn commit_provider_detail_from_paths_observed(
     let mut context_snapshot = None;
 
     if active_commit {
-        if !plan.settings.relay_profiles_enabled {
-            return Err(provider_commit_failure(
-                ProviderCommitErrorCode::StagingRejected,
-                "provider routing is disabled",
-            ));
-        }
         let staged =
             stage_active_relay_config_at(&paths.codex_home, &paths.app_state, &plan.settings)
                 .map_err(|_| {

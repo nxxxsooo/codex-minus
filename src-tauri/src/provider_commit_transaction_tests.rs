@@ -3014,26 +3014,6 @@ fn provider_commit_failures_are_typed_and_failure_payloads_are_secret_free() {
         ProviderCommitErrorCode::CatalogUnavailable
     );
 
-    let staging_fixture = Fixture::new(&persisted, &state_with_official());
-    let staging_persisted = staging_fixture.read_settings();
-    let mut staging_next = staging_persisted.clone();
-    staging_next.relay_profiles_enabled = false;
-    let staging_error = commit_provider_detail_from_paths(
-        &staging_fixture.paths,
-        request(
-            &staging_persisted,
-            &staging_next,
-            "sub2api",
-            ProviderCommitAction::Save,
-            43,
-        ),
-    )
-    .unwrap_err();
-    assert_eq!(
-        staging_error.code(),
-        ProviderCommitErrorCode::StagingRejected
-    );
-
     let transaction_fixture = Fixture::new(&persisted, &state_with_official());
     let transaction_persisted = transaction_fixture.read_settings();
     let mut broken_paths = transaction_fixture.paths.clone();
@@ -3058,7 +3038,6 @@ fn provider_commit_failures_are_typed_and_failure_payloads_are_secret_free() {
         (40, stale_error),
         (41, invalid_error),
         (42, catalog_error),
-        (43, staging_error),
         (44, transaction_error),
     ] {
         let serialized = serde_json::to_string(&ProviderCommitPayload::failure(
@@ -3663,5 +3642,45 @@ requires_openai_auth = true
         saved.relay_profiles[0]
             .config_contents
             .contains("official-a")
+    );
+}
+
+#[test]
+fn a_disabled_routing_switch_saves_the_draft_without_writing_live_config() {
+    let profile = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    let mut persisted = settings_with(vec![profile], "sub2api");
+    persisted.relay_profiles_enabled = false;
+    let fixture = Fixture::new(&persisted, &state_with_official());
+    let persisted = fixture.read_settings();
+    let live_before = fs::read(fixture.paths.codex_home.join("config.toml")).unwrap();
+
+    let mut next = persisted.clone();
+    next.relay_profiles[0] = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay-updated.example/v1",
+        "provider-key-updated",
+    );
+
+    let result = commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(&persisted, &next, "sub2api", ProviderCommitAction::Save, 6),
+    )
+    .expect("the switch governs live writes, not whether a draft can be saved");
+
+    assert!(!result.restart_required);
+    assert_eq!(
+        fixture.read_settings().relay_profiles[0].base_url,
+        "https://relay-updated.example/v1"
+    );
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join("config.toml")).unwrap(),
+        live_before,
+        "a disabled switch must leave live configuration untouched"
     );
 }
