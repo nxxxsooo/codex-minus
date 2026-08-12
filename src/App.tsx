@@ -1465,6 +1465,15 @@ export function App() {
       summary,
     }));
 
+  // Reads the committed generation back without extending the caller's pending state: the
+  // transaction has already landed, so awaiting a slow status read would leave a save that
+  // succeeded looking unfinished. Each refresh reports its own failure through `run`.
+  const refreshAfterCommit = () => {
+    void refreshRelay(true);
+    void refreshRelayFiles(true);
+    void refreshModelCatalog(true);
+  };
+
   const submitProviderCommit = async (invocation: ReturnType<typeof buildProviderMutationInvocation>) => {
     const revision = invocation.request.draftRevision;
     providerCommitState.current = registerProviderCommit(providerCommitState.current, revision);
@@ -1519,15 +1528,11 @@ export function App() {
     if (!nextBaseline || !selectedSettings) return false;
     setSettings(nextBaseline);
     if (settled.disposition === "adopt-baseline") {
-      await refreshModelCatalog(true);
+      refreshAfterCommit();
       return false;
     }
     setSettingsForm(selectedSettings);
-    await Promise.all([
-      refreshRelay(true),
-      refreshRelayFiles(true),
-      refreshModelCatalog(true),
-    ]);
+    refreshAfterCommit();
     return true;
   };
 
@@ -3646,12 +3651,14 @@ function RelayProfileDetail({
     if (validationError || savingRef.current) return;
     savingRef.current = true;
     setSaving(true);
-    const draftWithWindows = draftWithModelRows();
-    const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
-    const next = isNew
-      ? addRelayProfile(form, normalizedDraft)
-      : updateRelayProfile(form, profile.id, normalizedDraft);
     try {
+      // Deriving the draft inside the guard keeps the `finally` reset reachable: a throw before it
+      // would leave the button pending forever, and its click handler discards the rejection.
+      const draftWithWindows = draftWithModelRows();
+      const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
+      const next = isNew
+        ? addRelayProfile(form, normalizedDraft)
+        : updateRelayProfile(form, profile.id, normalizedDraft);
       const catalogCapable = !isAggregateRelayProfile(normalizedDraft)
         && normalizedDraft.protocol !== "chatCompletions";
       const catalogAvailability = catalogDraftAvailability(!isNew, catalogCapable, !!catalogProfile);
@@ -3690,6 +3697,10 @@ function RelayProfileDetail({
       if (!saved) return;
       await actions.showMessage(t("保存供应商"), t("供应商配置已保存。"), "ok");
       onSaved?.();
+    } catch (error) {
+      // The click handler discards this rejection, so an unreported throw would look like a save
+      // that simply did nothing.
+      await actions.showMessage(t("保存供应商"), stringifyError(error), "failed");
     } finally {
       savingRef.current = false;
       setSaving(false);
