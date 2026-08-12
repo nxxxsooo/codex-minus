@@ -81,7 +81,6 @@ http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
       ...createNewRelayProfileDraft({ id: "relay-new", contextSelection: {} }),
       model: "gpt-5.5",
       baseUrl: "https://relay.example/v1",
-      upstreamBaseUrl: "https://relay.example/v1",
       apiKey: "provider-key",
     });
     assert.match(materialized.configContents, /^model_provider = "OpenAI"$/m);

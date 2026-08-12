@@ -36,7 +36,6 @@ import {
   Plus,
   RefreshCw,
   Save,
-  Settings,
   ShieldCheck,
   ShieldAlert,
   Stethoscope,
@@ -45,8 +44,6 @@ import {
   Trash2,
   type LucideIcon,
 } from "lucide-react";
-import { ProviderPresetSelector } from "@/components/ProviderPresetSelector";
-import type { PresetPatch } from "@/components/ProviderPresetSelector";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 import { Badge as UiBadge } from "@/components/ui/badge";
@@ -3726,7 +3723,6 @@ function RelayProfileEditor({
   catalogProfile: ProfileCatalogSummary | null;
   draftCommitBlocked?: boolean;
 }) {
-  const [showAdvanced, setShowAdvanced] = useState(false);
   const [doctorResult, setDoctorResult] = useState<ProviderDoctorResult | null>(null);
   const [doctorOpen, setDoctorOpen] = useState(false);
   const [doctorRunning, setDoctorRunning] = useState(false);
@@ -3755,14 +3751,25 @@ function RelayProfileEditor({
   }
 
   const newProviderFieldErrors = isNew ? validateNewProviderDraft(profile) : {};
-  const showApiFields = profile.relayMode !== "official" || profile.officialMixApiKey;
+  // Every profile shows its endpoint and key, including one that has none yet: supplying them is
+  // how a profile that predates this contract upgrades itself.
+  const showApiFields = true;
   const updateDraft = (patch: Partial<RelayProfile>) => {
+    // Holding a provider key is what makes an official profile mixed; there is no separate
+    // switch. Clearing the key never flips it back, because leaving the mixed contract deletes a
+    // provider table and stays an explicit, previewed action.
+    const merged = { ...profile, ...patch };
+    const resolved = merged.relayMode === "official"
+      && !merged.officialMixApiKey
+      && merged.apiKey.trim()
+      ? { ...patch, officialMixApiKey: true }
+      : patch;
     if (onProfileEdit) {
-      onProfileEdit(patch);
+      onProfileEdit(resolved);
       return;
     }
-    const target = providerConfigTargetContract({ ...profile, ...patch }, isNew);
-    onProfileChange(applyRelayProfilePatchToFiles(profile, patch, {
+    const target = providerConfigTargetContract({ ...profile, ...resolved }, isNew);
+    onProfileChange(applyRelayProfilePatchToFiles(profile, resolved, {
       allowGenerateFiles: isNew,
       target,
     }));
@@ -3807,13 +3814,6 @@ function RelayProfileEditor({
           </Button>
         )}
       </div>
-      {isNew ? (
-        <ProviderPresetSelector
-          onSelect={(patch: PresetPatch) => {
-            updateDraft(patch as unknown as Partial<RelayProfile>);
-          }}
-        />
-      ) : null}
       <div className="relay-fields">
         <Field className="relay-field-name" label={t("名称")}>
           <Input
@@ -3821,25 +3821,11 @@ function RelayProfileEditor({
             onChange={(event) => updateDraft({ name: event.currentTarget.value })}
           />
         </Field>
-        {isNew ? (
+        {profile.relayMode === "official" ? (
           <Field className="relay-field-mode" label={t("接入模式")}>
             <p className="field-hint">{t("官方登录＋混入 API Key＋Responses API")}</p>
           </Field>
-        ) : (
-          <Field className="relay-field-mode" label={t("接入模式")}>
-            <select
-              className="field-select"
-              value={profile.relayMode}
-              onChange={(event) => {
-                const relayMode = event.currentTarget.value as RelayMode;
-                updateDraft(relayMode === "official" ? { relayMode, officialMixApiKey: false } : { relayMode });
-              }}
-            >
-              <option value="official">{t("官方登录")}</option>
-              <option value="pureApi">{t("纯 API")}</option>
-            </select>
-          </Field>
-        )}
+        ) : null}
         <Field className="relay-field-config-model" label={t("配置模型")}>
           <Input
             aria-describedby={newProviderFieldErrors.model ? "provider-model-error" : undefined}
@@ -3853,65 +3839,6 @@ function RelayProfileEditor({
             {t("默认启动 Codex 时使用的模型名，请勿带后缀；上下文窗口请在下方「模型列表」中按模型单独配置。")}
           </p>
         </Field>
-        <div className="relay-advanced-toggle">
-          <Button
-            aria-expanded={showAdvanced}
-            onClick={() => setShowAdvanced((current) => !current)}
-            size="sm"
-            type="button"
-            variant="secondary"
-          >
-            <Settings className="h-4 w-4" />
-            {t("更多选项")}
-          </Button>
-        </div>
-        {showAdvanced ? (
-          <div className="relay-advanced-fields">
-            <Field className="relay-field-test-model" label={t("测试模型")}>
-              <Input
-                value={profile.testModel}
-                onChange={(event) => updateDraft({ testModel: event.currentTarget.value })}
-                placeholder={tf("留空使用默认：{0}", [form.relayTestModel || defaultSettings.relayTestModel])}
-              />
-            </Field>
-            <Field className="relay-field-context-window" label={t("上下文大小")}>
-              <Input
-                disabled={!!catalogProfile && managedCatalogMode(catalogProfile.mode)}
-                inputMode="numeric"
-                value={profile.contextWindow}
-                onChange={(event) => updateDraft({ contextWindow: event.currentTarget.value.replace(/[^\d]/g, "") })}
-                placeholder={t("留空不改写，例如 200000")}
-              />
-            </Field>
-            <Field className="relay-field-auto-compact" label={t("压缩上下文大小")}>
-              <Input
-                disabled={!!catalogProfile && managedCatalogMode(catalogProfile.mode)}
-                inputMode="numeric"
-                value={profile.autoCompactLimit}
-                onChange={(event) => updateDraft({ autoCompactLimit: event.currentTarget.value.replace(/[^\d]/g, "") })}
-                placeholder={t("留空不改写，例如 160000")}
-              />
-            </Field>
-            {catalogProfile && managedCatalogMode(catalogProfile.mode) ? (
-              <div className="hint-line relay-protocol-hint">
-                <Info className="h-4 w-4" />
-                <span>{t("托管模型目录使用每个模型自己的上下文窗口；全局窗口在确认后移除。")}</span>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-        {!isNew && profile.relayMode === "official" ? (
-          <Field className="relay-field-official-key" label="API Key">
-            <label className="inline-check">
-              <input
-                checked={profile.officialMixApiKey}
-                onChange={(event) => updateDraft({ officialMixApiKey: event.currentTarget.checked })}
-                type="checkbox"
-              />
-              <span>{t("混入 API KEY")}</span>
-            </label>
-          </Field>
-        ) : null}
         {showApiFields ? (
           <div className="relay-api-fields">
             <Field className="relay-field-base-url" label="Base URL">
@@ -3935,26 +3862,6 @@ function RelayProfileEditor({
               />
               {newProviderFieldErrors.apiKey ? <p className="field-hint" id="provider-api-key-error" role="alert">{t("必填")}</p> : null}
             </Field>
-            {isNew ? null : (
-              <Field className="relay-field-protocol" label={t("上游协议")}>
-                <div className="protocol-options">
-                  <button
-                    className={`protocol-option ${profile.protocol === "responses" ? "active" : ""}`}
-                    onClick={() => updateDraft({ protocol: "responses" })}
-                    type="button"
-                  >
-                    Responses API
-                  </button>
-                  <button
-                    className={`protocol-option ${profile.protocol === "chatCompletions" ? "active" : ""}`}
-                    onClick={() => updateDraft({ protocol: "chatCompletions" })}
-                    type="button"
-                  >
-                    Chat Completions
-                  </button>
-                </div>
-              </Field>
-            )}
           </div>
         ) : null}
         {showApiFields ? (
@@ -3971,15 +3878,6 @@ function RelayProfileEditor({
             </div>
             <span>{doctorResult?.summary ?? t("点击后会打开诊断弹框，按步骤检查供应商。")}</span>
           </div>
-        ) : null}
-        {showApiFields ? (
-          <Field className="relay-field-user-agent" label="User-Agent">
-            <Input
-              value={profile.userAgent}
-              onChange={(event) => updateDraft({ userAgent: event.currentTarget.value })}
-              placeholder={t("留空使用默认值")}
-            />
-          </Field>
         ) : null}
       </div>
       {showApiFields && profile.protocol === "chatCompletions" ? (

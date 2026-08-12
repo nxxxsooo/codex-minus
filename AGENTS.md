@@ -5,7 +5,6 @@ Trimmed fork of upstream Codex++ Manager (`BigPizzaV3/CodexPlusPlus`, `apps/code
 
 ## Architecture
 - **Frontend**: `src/App.tsx` — single-file SPA, dual-mounted screens (relay / sessions / doctor), v1.2.35 green theme
-- **Presets**: `src/presets.ts` — provider presets consumed by `src/components/ProviderPresetSelector.tsx` (App.tsx:~2166). NOT dead code.
 - **Backend**: `src-tauri/src/commands.rs` — all Tauri commands; IO-heavy commands are async (off main thread)
 - **Live state**: `src-tauri/src/live_state.rs` — process-wide coordinator, owner-only multi-file transaction journal, and crash recovery for settings/config/catalog generations
 - **Model catalogs**: `src-tauri/src/model_catalog.rs` — verified target-CLI official refresh, four catalog modes, overlays, provider evidence, materialization, and external ownership
