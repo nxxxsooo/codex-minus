@@ -100,7 +100,7 @@
 - [x] 9.4 Run `npm run build` to verify the complete Tauri application bundle when the local signing/build environment permits it, and record any environment-only gap explicitly.
 - [x] 9.5 Update user-facing help and architecture documentation with the contract, truthfulness limits, external-catalog precedence, explicit migration/destructive-exit policy, restart/new-task requirement, and ownership distinction between profile and global live configuration; mark the older onboarding `requires_openai_auth = true` native-default text as superseded.
 - [ ] 9.6 Append one completed-work entry to `BOARD.md` only after implementation and verification are complete; include the exact tests and the absence of bulk migration or OAuth writes.
-- [ ] 9.7 Run strict OpenSpec validation, reconcile implementation behavior against every scenario in `provider-native-capability-mode`, and leave no unchecked scenario without an explicit verification record.
+- [x] 9.7 Run strict OpenSpec validation, reconcile implementation behavior against every scenario in `provider-native-capability-mode`, and leave no unchecked scenario without an explicit verification record.
 
 ## 10. Reconcile shipped behavior and reach the upgrade action
 
