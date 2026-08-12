@@ -6,6 +6,13 @@
 
 ## Changelog
 
+### 2026-08-12
+
+- **docs/windows**: created and delivered Eva's Windows manual fallback for keeping the Stable ChatGPT login while routing Codex inference through a case-sensitive custom `OpenAI` provider, Sub2API API-key authentication, server-side OAuth/API account pooling, Responses, and live web search
+  - why: the desktop app still could not reliably complete this onboarding flow, so FIT needed a deterministic manual path covering Clash/UWP Store setup and one exact TOML merge without touching OAuth files or historical sessions
+  - verified: Windows 11 ARM Stable ChatGPT launched with the existing Free login; an Eva-key Responses request succeeded through the FIT Sub2API pool and selected an OAuth upstream; Stable app-server metadata registered `web__run` with `web_search = "live"`; the final Markdown was imported and read back as a FIT Feishu Docx, Eva received view access, and the default FIT product group received a real `@Eva` link message
+  - refs: `docs/eva-windows-sub2api-manual.md`, https://favhej6sxti.feishu.cn/docx/KeLBdvZEPolp3yx6MyqcFVXXnpc, message `om_x100b68fc0697b4a0dee5efff2a8f45c`
+
 ### 2026-08-10
 
 - **fix/providers**: made Quick Test and Provider Doctor retry one strictly allowlisted Responses HTTP 400 without the optional `max_output_tokens` field, while preserving the original status, final endpoint, redacted preview, and an explicit compatibility marker
