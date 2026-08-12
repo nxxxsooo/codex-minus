@@ -554,3 +554,16 @@ Accepting only the normalized form strands such a profile: the expected fingerpr
 
 - **WHEN** a provider draft is committed while another persisted profile is not in core-canonical form
 - **THEN** the commit is not refused as stale, and the focused profile persists
+
+### Requirement: A confirmed pure OAuth exit leaves no dormant provider copy
+
+When the user confirms the destructive exit to pure OAuth, the provider that was deleted SHALL NOT survive anywhere the system controls: not in the profile contract, not in any other persisted provider field, and not in Codex's live configuration.
+
+Live cleanup SHALL cover the provider the live configuration was actually pointed at, not only the identifiers the pinned core recognizes as its own. A provider staged under any other identifier would otherwise keep its complete table, including `experimental_bearer_token`, in the file the user was told it had been removed from.
+
+Official authentication SHALL NOT be written by this exit, and a non-external profile SHALL return to the native official catalog.
+
+#### Scenario: The exit removes the staged provider from live configuration
+
+- **WHEN** an active native-priority provider is staged into live configuration and the user then confirms the pure OAuth exit
+- **THEN** live configuration no longer contains that provider's table, identifier, or bearer, persisted settings retain no copy of them, the profile's catalog mode returns to `native-official`, and `auth.json` is byte-identical

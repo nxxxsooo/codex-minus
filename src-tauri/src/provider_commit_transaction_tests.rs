@@ -3818,3 +3818,146 @@ fn golden_commit_never_migrates_a_bystander_profile_contract() {
         "a commit migrated a profile the user never opened"
     );
 }
+
+#[test]
+fn explicit_pure_oauth_exit_deletes_the_provider_without_leaving_a_dormant_copy() {
+    use crate::provider_native_capability::{
+        NativeCapabilityDraftAction, NativeCapabilityDraftConfirmation,
+        NativeCapabilityDraftStatus, ProviderNativeCapabilityDraftRequest,
+        transform_provider_native_capability_draft_from_paths,
+    };
+
+    let persisted = settings_with(
+        vec![canonical_profile(
+            "sub2api",
+            "official-a",
+            "https://relay.example/v1",
+            "provider-key",
+        )],
+        "sub2api",
+    );
+    let mut state = state_with_official();
+    state.profiles.insert(
+        "sub2api".to_string(),
+        crate::model_catalog::ProfileCatalogState {
+            mode: CatalogMode::OfficialPlusCustom,
+            mode_explicit: true,
+            ..crate::model_catalog::ProfileCatalogState::default()
+        },
+    );
+    let fixture = Fixture::new(&persisted, &state);
+    let auth_before = fs::read(fixture.paths.codex_home.join("auth.json")).unwrap();
+
+    // Stage the provider for real first, so live configuration carries the contract this exit is
+    // supposed to remove. Asserting removal against a live file that never held it proves nothing.
+    let seed = fixture.read_settings();
+    commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(&seed, &seed, "sub2api", ProviderCommitAction::Save, 29),
+    )
+    .expect("the provider stages before it is exited");
+    let live_before = fs::read_to_string(fixture.paths.codex_home.join("config.toml")).unwrap();
+    assert!(
+        live_before.contains("RelayOne") && live_before.contains("provider-key"),
+        "the exit must be measured against live configuration that holds the contract"
+    );
+
+    let persisted = fixture.read_settings();
+    let config_before = raw_stored_profile_config(&fixture.paths.settings_path, "sub2api");
+
+    let draft_request = |confirmations: Vec<NativeCapabilityDraftConfirmation>| {
+        ProviderNativeCapabilityDraftRequest {
+            draft_revision: 30,
+            profile: persisted.relay_profiles[0].clone(),
+            catalog_mode: CatalogMode::OfficialPlusCustom,
+            action: NativeCapabilityDraftAction::ExitPureOAuth,
+            source_config_contents: None,
+            confirmations,
+            replacement_provider_id: None,
+        }
+    };
+
+    // The preview discloses the deletion, and discloses it without performing any of it.
+    let preview = transform_provider_native_capability_draft_from_paths(
+        &fixture.paths.settings_path,
+        &fixture.paths.catalog_state_path,
+        draft_request(vec![]),
+    );
+    assert_eq!(
+        preview.status,
+        NativeCapabilityDraftStatus::ConfirmationRequired
+    );
+    assert!(preview.preview.removes_provider_table);
+    assert_eq!(
+        preview.preview.removed_provider_id.as_deref(),
+        Some("RelayOne")
+    );
+    assert!(
+        preview
+            .preview
+            .removed_provider_fields
+            .iter()
+            .any(|field| field == "experimental_bearer_token"),
+        "the preview must name the credential it deletes"
+    );
+    assert_eq!(
+        raw_stored_profile_config(&fixture.paths.settings_path, "sub2api"),
+        config_before,
+        "a preview persisted a change"
+    );
+
+    let confirmed = transform_provider_native_capability_draft_from_paths(
+        &fixture.paths.settings_path,
+        &fixture.paths.catalog_state_path,
+        draft_request(vec![
+            NativeCapabilityDraftConfirmation::ConfirmDestructivePureOAuth,
+        ]),
+    );
+    assert_eq!(confirmed.status, NativeCapabilityDraftStatus::Ready);
+    assert_eq!(confirmed.draft.catalog_mode, CatalogMode::NativeOfficial);
+
+    let mut next = persisted.clone();
+    next.relay_profiles[0] = confirmed.draft.profile.clone();
+    let mut commit = request(&persisted, &next, "sub2api", ProviderCommitAction::Save, 30);
+    commit.catalog_drafts = vec![ProfileCatalogDraft {
+        mode: CatalogMode::NativeOfficial,
+        mode_explicit: true,
+        ..catalog_draft("sub2api")
+    }];
+
+    commit_provider_detail_from_paths(&fixture.paths, commit)
+        .expect("an explicitly confirmed pure OAuth exit commits");
+
+    // No dormant copy: not in the profile contract, not in any other persisted field, not live.
+    let persisted_bytes = fs::read(&fixture.paths.settings_path).unwrap();
+    let persisted_text = String::from_utf8(persisted_bytes).unwrap();
+    for dormant in ["provider-key", "RelayOne", "x-openai-actor-authorization"] {
+        assert!(
+            !persisted_text.contains(dormant),
+            "persisted settings retained {dormant} after the exit"
+        );
+    }
+    let live = fs::read_to_string(fixture.paths.codex_home.join("config.toml")).unwrap();
+    assert_ne!(
+        live, live_before,
+        "the active commit never reached live configuration, so the checks below prove nothing"
+    );
+    for dormant in ["provider-key", "RelayOne", "experimental_bearer_token"] {
+        assert!(
+            !live.contains(dormant),
+            "live configuration retained {dormant} after the exit"
+        );
+    }
+
+    // A non-external profile returns to the native official catalog.
+    assert_eq!(
+        fixture.read_state().profiles["sub2api"].mode,
+        CatalogMode::NativeOfficial
+    );
+
+    // Official auth is the official client's to write.
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
+        auth_before
+    );
+}

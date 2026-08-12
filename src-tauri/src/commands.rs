@@ -3754,6 +3754,21 @@ fn stage_active_relay_config_at(
         profile.relay_mode != codex_plus_core::settings::RelayMode::Aggregate,
         "聚合供应商依赖已移除的本地代理，不能写入 live 配置"
     );
+    // The provider Codex is currently pointed at. Exiting to pure OAuth deletes that provider, and
+    // the core clear only knows to delete its own relay identifiers — a provider staged under any
+    // other id would keep its whole table, `experimental_bearer_token` included, in the live file
+    // the user was told it had been removed from.
+    let live_provider_id = read_optional_bytes(&home.join("config.toml"))?
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .and_then(|config| config.parse::<toml_edit::DocumentMut>().ok())
+        .and_then(|document| {
+            document
+                .get("model_provider")
+                .and_then(toml_edit::Item::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        });
     with_private_staging_home_at(app_state, "provider", |stage_home| {
         seed_staging_config(home, stage_home)?;
         if profile.relay_mode == codex_plus_core::settings::RelayMode::Official
@@ -3795,8 +3810,33 @@ fn stage_active_relay_config_at(
                 .context("纯 API staged 配置缺少 provider bearer token")?;
             config = set_provider_config_bearer(&config, &api_key, Some(false))?;
         }
+        if profile.relay_mode == codex_plus_core::settings::RelayMode::Official
+            && !profile.official_mix_api_key
+            && let Some(removed) = live_provider_id.as_deref()
+        {
+            config = remove_live_provider_table(&config, removed)?;
+        }
         Ok(config)
     })
+}
+
+/// Removes one provider table from a staged live configuration, leaving everything else intact.
+///
+/// Used only where the user explicitly confirmed deleting that provider. An empty
+/// `model_providers` container is removed with it so the exit does not leave a husk behind.
+fn remove_live_provider_table(config: &str, provider_id: &str) -> anyhow::Result<String> {
+    let mut document: toml_edit::DocumentMut = config.parse()?;
+    let Some(providers) = document
+        .get_mut("model_providers")
+        .and_then(toml_edit::Item::as_table_like_mut)
+    else {
+        return Ok(config.to_string());
+    };
+    providers.remove(provider_id);
+    if providers.is_empty() {
+        document.as_table_mut().remove("model_providers");
+    }
+    Ok(document.to_string())
 }
 
 fn seed_staging_config(live_home: &Path, stage_home: &Path) -> anyhow::Result<()> {
