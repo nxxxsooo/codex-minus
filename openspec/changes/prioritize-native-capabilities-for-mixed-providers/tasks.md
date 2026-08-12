@@ -76,7 +76,7 @@
 - [x] 7.5 Preserve `adopt_external_model_catalog` as the source/version-hash-bound specialized catalog transaction and make the combined provider-detail command reject any unreviewed external-to-managed ownership transition.
 - [x] 7.6 Add an independent `appliedRuntimeFingerprint` to `ProfileCatalogState`, using provider ID/name, protocol, auth requirement, actor header, and stable catalog runtime identity (`generated_hash`, external source identity, or native sentinel); add migration/default tests.
 - [x] 7.7 Add diff and transaction tests that update the runtime fingerprint and existing `restart_required` signal without incrementing catalog generation, including two identical consecutive active saves that make no second generation or restart transition.
-- [ ] 7.8 Present complete host quit/relaunch plus new-task guidance without terminating Codex, adding a second restart flag, or auto-clearing the marker without a trustworthy runtime observer.
+- [x] 7.8 Present complete host quit/relaunch plus new-task guidance without terminating Codex, adding a second restart flag, or auto-clearing the marker without a trustworthy runtime observer.
 - [x] 7.9 Prove inactive Save sets no restart marker and an unobserved post-restart runtime remains `unknown` rather than being reported as adopted.
 
 ## 8. Run end-to-end preservation and security regressions

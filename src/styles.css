@@ -4520,3 +4520,13 @@ select {
     justify-content: flex-start;
   }
 }
+
+.catalog-restart-guidance {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted-foreground);
+}

@@ -5,6 +5,14 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "完整退出并重新启动 Codex / Desktop / IDE 宿主；本工具不会替你结束或重启这些进程。":
+    "Fully quit and relaunch the Codex / Desktop / IDE host; this tool never ends or restarts those processes for you.",
+  "重启后新建一个任务，本地扩展注册表才会按新的供应商与目录重建。":
+    "Start a new task after relaunching so the local extension registry rebuilds against the new provider and catalog.",
+  "重启并新建任务之前，现有任务仍在旧的注册表上运行。":
+    "Until you relaunch and start a new task, existing tasks keep running against the old registry.",
+  "本工具没有可信的运行时观察器，不会自动清除该提示；运行时是否已采用保持未知。":
+    "This tool has no trustworthy runtime observer and never clears this notice on its own; whether the runtime adopted the change stays unknown.",
   "无法读取已保存的供应商设置。": "The saved provider settings could not be read.",
   "需要当前有效的官方 ChatGPT 登录。": "A currently valid official ChatGPT sign-in is required.",
   "官方模型目录与当前目标客户端或账号范围不一致，请先刷新官方模型目录后重试。":

@@ -9,6 +9,7 @@ import {
   catalogModeDraftController,
   catalogModePresentation,
   catalogRefreshGate,
+  catalogRestartGuidance,
   defaultCatalogMode,
   externalVersionRequiresAcceptance,
   managedContextConflictKeys,
@@ -233,3 +234,20 @@ describe("model catalog UI state", () => {
     assert.equal(externalVersionRequiresAcceptance("unknown"), false);
   });
 });
+
+describe("restart guidance", () => {
+  it("says nothing until a committed generation requires a restart", () => {
+    assert.deepEqual(catalogRestartGuidance(false), []);
+  });
+
+  it("states host relaunch, the new-task requirement, and the limits of the marker", () => {
+    const guidance = catalogRestartGuidance(true);
+    assert.equal(guidance.length, 4);
+    assert.ok(guidance.every((line) => line.trim().length > 0));
+    assert.ok(guidance.some((line) => line.includes("完整退出")));
+    assert.ok(guidance.some((line) => line.includes("新建") && line.includes("任务")));
+    assert.ok(guidance.some((line) => line.includes("不会")));
+    assert.ok(guidance.some((line) => line.includes("未知")));
+    assert.equal(new Set(guidance).size, guidance.length);
+  });
+})

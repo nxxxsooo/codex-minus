@@ -266,3 +266,17 @@ export function providerManagedContextConflictKeys(
 export function externalVersionRequiresAcceptance(status: string): boolean {
   return status === "mismatch";
 }
+
+/// Complete guidance for a committed generation whose runtime contract changed. Codex-- never
+/// terminates or relaunches a host, keeps this bound to the single existing restart marker, and
+/// has no trustworthy runtime observer, so it states the unknown adoption instead of clearing
+/// the marker on its own.
+export function catalogRestartGuidance(restartRequired: boolean): string[] {
+  if (!restartRequired) return [];
+  return [
+    "完整退出并重新启动 Codex / Desktop / IDE 宿主；本工具不会替你结束或重启这些进程。",
+    "重启后新建一个任务，本地扩展注册表才会按新的供应商与目录重建。",
+    "重启并新建任务之前，现有任务仍在旧的注册表上运行。",
+    "本工具没有可信的运行时观察器，不会自动清除该提示；运行时是否已采用保持未知。",
+  ];
+}

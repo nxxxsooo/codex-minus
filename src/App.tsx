@@ -69,6 +69,7 @@ import {
   defaultCatalogMode,
   externalVersionRequiresAcceptance,
   managedContextConflictKeys,
+  catalogRestartGuidance,
   providerManagedContextConflictKeys,
   providerEvidenceState,
   validateCatalogDraft,
@@ -2459,6 +2460,11 @@ function CatalogProfileEditor({
           <UiBadge variant="outline">{t(editingAvailability.label)}</UiBadge>
         </div>
       </div>
+      {presentation.restart ? (
+        <ul className="catalog-restart-guidance">
+          {catalogRestartGuidance(true).map((line) => <li key={line}>{t(line)}</li>)}
+        </ul>
+      ) : null}
       <CatalogModeControls
         confirmDiscard={(decision) => window.confirm(decision === "confirm-discard-external"
           ? t("切换到原生目录模式将停止管理外部目录。当前目录会在保存成功前继续生效。是否继续？")
