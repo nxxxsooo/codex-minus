@@ -64,3 +64,14 @@ A stale implicit mode otherwise deadlocks its profile: the provider contract rej
 
 - **WHEN** state carries a catalog mode the user selected explicitly
 - **THEN** the loaded mode is unchanged regardless of what the default rule would derive
+
+### Requirement: A custom-only catalog carries every custom model it declares
+
+A custom-only catalog SHALL contain each model the profile's overlay declares, including a model whose slug the official baseline also carries. Deduplication against the official baseline applies only where an official model of that slug is actually present in the composed output.
+
+A custom-only catalog contains no official models, so dropping such a slug removes the model outright. When that slug is the profile's default model, the model becomes unrepresentable and an active commit fails as catalog-unavailable, with no indication that a declared model was silently discarded.
+
+#### Scenario: A custom-only overlay keeps a slug the official baseline shares
+
+- **WHEN** a custom-only profile declares a custom model whose slug the official baseline also carries, and that slug is the profile's default model
+- **THEN** the composed catalog contains exactly that model and planning succeeds

@@ -2412,7 +2412,14 @@ pub(crate) fn compose_profile_catalog(
         .overlay
         .custom
         .iter()
-        .filter(|custom| !official_slugs.contains(&custom.slug))
+        // A slug the official baseline also carries is skipped only where an official model of
+        // that slug is already in the output and would be duplicated. A custom-only catalog
+        // contains no official models, so skipping it there deletes the model outright — and a
+        // profile whose default model was that slug becomes unrepresentable, which surfaces to
+        // the user as an unexplained catalog-unavailable commit failure.
+        .filter(|custom| {
+            profile_state.mode == CatalogMode::CustomOnly || !official_slugs.contains(&custom.slug)
+        })
         .map(|custom| codex_plus_core::model_suffix::ModelCatalogEntry {
             slug: custom.slug.clone(),
             display_name: if custom.display_name.trim().is_empty() {
@@ -3559,6 +3566,41 @@ mod tests {
         assert_eq!(promoted[0]["context_window"], 444000);
         assert_eq!(promoted[0]["visibility"], "hide");
         assert_eq!(promoted[0]["unknown_future_field"]["kept"], true);
+    }
+
+    #[test]
+    fn a_custom_only_catalog_keeps_a_model_whose_slug_the_official_baseline_also_carries() {
+        let mut state = CatalogState::default();
+        state.official = Some(OfficialSnapshot {
+            raw_catalog: official_catalog(),
+            ..OfficialSnapshot::default()
+        });
+        let profile = RelayProfile {
+            id: "p".to_string(),
+            config_contents: "model = \"official-a\"\n".to_string(),
+            ..RelayProfile::default()
+        };
+        let profile_state = ProfileCatalogState {
+            mode: CatalogMode::CustomOnly,
+            overlay: CatalogOverlay {
+                custom: vec![CustomModel {
+                    slug: "official-a".to_string(),
+                    display_name: "Relay's own official-a".to_string(),
+                    ..CustomModel::default()
+                }],
+                ..CatalogOverlay::default()
+            },
+            ..ProfileCatalogState::default()
+        };
+
+        let output = compose_profile_catalog(&state, &profile, &profile_state)
+            .expect("a custom-only catalog must be able to carry this model");
+        let slugs = catalog_models(&output)
+            .unwrap()
+            .iter()
+            .filter_map(|model| model["slug"].as_str().map(str::to_string))
+            .collect::<Vec<_>>();
+        assert_eq!(slugs, vec!["official-a".to_string()]);
     }
 
     #[test]

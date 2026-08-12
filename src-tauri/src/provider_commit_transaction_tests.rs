@@ -3961,3 +3961,139 @@ fn explicit_pure_oauth_exit_deletes_the_provider_without_leaving_a_dormant_copy(
         auth_before
     );
 }
+
+#[test]
+fn target_switching_changes_the_contract_only_on_commit_and_keeps_unowned_content() {
+    use crate::provider_native_capability::{
+        NativeCapabilityDraftAction, NativeCapabilityDraftConfirmation,
+        NativeCapabilityDraftStatus, ProviderNativeCapabilityDraftRequest,
+        transform_provider_native_capability_draft_from_paths,
+    };
+
+    let persisted = settings_with(
+        vec![canonical_profile(
+            "sub2api",
+            // A slug the official baseline does not carry, so a custom-only target can represent
+            // this profile's default model at all: an official slug is filtered out of the custom
+            // entries, leaving a custom-only catalog with nothing in it.
+            "relay-model",
+            "https://relay.example/v1",
+            "provider-key",
+        )],
+        "sub2api",
+    );
+    let mut state = state_with_official();
+    state.profiles.insert(
+        "sub2api".to_string(),
+        crate::model_catalog::ProfileCatalogState {
+            mode: CatalogMode::OfficialPlusCustom,
+            mode_explicit: true,
+            ..crate::model_catalog::ProfileCatalogState::default()
+        },
+    );
+    let fixture = Fixture::new(&persisted, &state);
+
+    let mut revision = 40;
+    for (action, expected_name, expected_auth) in [
+        (NativeCapabilityDraftAction::ExitPureApi, "OpenAI", false),
+        (
+            NativeCapabilityDraftAction::ExitLegacyCompatibility,
+            "custom",
+            true,
+        ),
+        (
+            NativeCapabilityDraftAction::EnableNativePriority,
+            "OpenAI",
+            false,
+        ),
+    ] {
+        revision += 1;
+        let persisted = fixture.read_settings();
+        let before = raw_stored_profile_config(&fixture.paths.settings_path, "sub2api");
+
+        let payload = transform_provider_native_capability_draft_from_paths(
+            &fixture.paths.settings_path,
+            &fixture.paths.catalog_state_path,
+            ProviderNativeCapabilityDraftRequest {
+                draft_revision: revision,
+                profile: persisted.relay_profiles[0].clone(),
+                catalog_mode: CatalogMode::OfficialPlusCustom,
+                action,
+                source_config_contents: None,
+                confirmations: vec![
+                    NativeCapabilityDraftConfirmation::ConfirmCapabilityLoss,
+                    NativeCapabilityDraftConfirmation::UseStructuredKey,
+                ],
+                replacement_provider_id: None,
+            },
+        );
+        assert_eq!(
+            payload.status,
+            NativeCapabilityDraftStatus::Ready,
+            "{action:?} was not ready: {:?}",
+            payload.blockers
+        );
+        assert_eq!(
+            raw_stored_profile_config(&fixture.paths.settings_path, "sub2api"),
+            before,
+            "{action:?} changed the persisted contract before any commit"
+        );
+
+        let mut next = persisted.clone();
+        next.relay_profiles[0] = payload.draft.profile.clone();
+        let mut commit = request(
+            &persisted,
+            &next,
+            "sub2api",
+            ProviderCommitAction::Save,
+            revision,
+        );
+        commit.catalog_drafts = vec![ProfileCatalogDraft {
+            mode: payload.draft.catalog_mode,
+            mode_explicit: true,
+            // A target without official catalog access carries its own model, so planning can
+            // represent the profile's default instead of failing as catalog-unavailable.
+            overlay: CatalogOverlay {
+                custom: vec![CustomModel {
+                    slug: "relay-model".to_string(),
+                    display_name: "Relay Model".to_string(),
+                    ..CustomModel::default()
+                }],
+                ..CatalogOverlay::default()
+            },
+            ..catalog_draft("sub2api")
+        }];
+        commit_provider_detail_from_paths(&fixture.paths, commit)
+            .unwrap_or_else(|error| panic!("{action:?} must commit: {error:?}"));
+
+        let stored = raw_stored_profile_config(&fixture.paths.settings_path, "sub2api");
+        assert_ne!(stored, before, "{action:?} committed no change");
+        let document: toml_edit::DocumentMut = stored.parse().unwrap();
+        let provider = document["model_providers"]["RelayOne"]
+            .as_table_like()
+            .unwrap();
+        assert_eq!(
+            provider.get("name").and_then(toml_edit::Item::as_str),
+            Some(expected_name),
+            "{action:?}"
+        );
+        assert_eq!(
+            provider
+                .get("requires_openai_auth")
+                .and_then(toml_edit::Item::as_bool),
+            Some(expected_auth),
+            "{action:?}"
+        );
+        // The header the manager does not own survives every target it is carried through.
+        assert!(
+            stored.contains("\"x-keep\" = \"yes\""),
+            "{action:?} dropped an unowned provider header"
+        );
+    }
+
+    let final_config = raw_stored_profile_config(&fixture.paths.settings_path, "sub2api");
+    assert!(
+        final_config.contains("x-openai-actor-authorization"),
+        "returning to native priority must restore the actor marker"
+    );
+}
