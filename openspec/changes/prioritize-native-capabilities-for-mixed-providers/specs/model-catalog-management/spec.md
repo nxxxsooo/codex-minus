@@ -48,3 +48,19 @@ The system SHALL assign every catalog-capable relay profile one catalog mode: `n
 
 - **WHEN** an Aggregate, Chat Completions, pure-OAuth, missing-credential, or otherwise non-single-upstream profile is marked `server-side-composite`
 - **THEN** validation fails before catalog materialization or live mutation and the prior provider/catalog generation remains unchanged
+
+### Requirement: An implicit catalog mode follows the current default
+
+A catalog mode that was derived rather than chosen SHALL be re-derived when state is loaded, the same way an implicit external pointer is already re-derived. A mode the user chose explicitly SHALL never be re-derived.
+
+A stale implicit mode otherwise deadlocks its profile: the provider contract rejects every commit while the mode disagrees, and correcting the mode requires a commit.
+
+#### Scenario: A stale implicit mode is corrected on load
+
+- **WHEN** state carries an implicit catalog mode that disagrees with the mode the current default rule derives for that profile
+- **THEN** the loaded mode becomes the current default and the profile can be committed
+
+#### Scenario: An explicit mode is preserved
+
+- **WHEN** state carries a catalog mode the user selected explicitly
+- **THEN** the loaded mode is unchanged regardless of what the default rule would derive

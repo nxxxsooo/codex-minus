@@ -101,3 +101,15 @@
 - [ ] 9.5 Update user-facing help and architecture documentation with the contract, truthfulness limits, external-catalog precedence, explicit migration/destructive-exit policy, restart/new-task requirement, and ownership distinction between profile and global live configuration; mark the older onboarding `requires_openai_auth = true` native-default text as superseded.
 - [ ] 9.6 Append one completed-work entry to `BOARD.md` only after implementation and verification are complete; include the exact tests and the absence of bulk migration or OAuth writes.
 - [ ] 9.7 Run strict OpenSpec validation, reconcile implementation behavior against every scenario in `provider-native-capability-mode`, and leave no unchecked scenario without an explicit verification record.
+
+## 10. Reconcile shipped behavior and reach the upgrade action
+
+- [x] 10.1 Re-derive an implicit catalog mode on load and never re-derive an explicit one, so a stale derived mode cannot deadlock its profile (`0e21b44`).
+- [x] 10.2 Grade the commit gate: refuse only unusable or ambiguous gaps, and accept a draft that is merely un-upgraded so a contract can be completed in steps (`c3948b0`).
+- [x] 10.3 Treat the master routing switch as a live-write gate, committing a disabled switch as an inactive draft instead of refusing the commit (`31d5299`).
+- [x] 10.4 Surface the typed commit failure code, an actionable hint, and the static rejecting reason, naming the specific contract field for a contract gap (`5e902c5`, `321e99f`, `4972cb4`).
+- [x] 10.5 Prefill a new provider with the built-in Pro model list and a default the official bundled catalog carries, leaving only the Base URL and provider key to supply (`d8bd01d`, `070a3f1`).
+- [ ] 10.6 Restore coverage for `StagingRejected`, whose only exercised trigger was removed by 10.3; drive it from a staged-contract rejection rather than the routing switch.
+- [ ] 10.7 Offer the upgrade action whenever every unsatisfied contract field is one the upgrade transform writes, keeping it withheld for a missing model, missing endpoint, unusable identifier, or unparseable structure, and name the input to supply first.
+- [ ] 10.8 Prove the reachable upgrade path end to end at the real entry point: a legacy `custom` profile supplies its missing input, saves, upgrades in one explicit revisioned transform, and reaches the canonical contract without any automatic migration of other profiles.
+- [ ] 10.9 Add a maintenance check that the built-in Pro list contains no slug the official bundled catalog hides, so a retired model is caught instead of shipped.

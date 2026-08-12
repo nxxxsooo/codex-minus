@@ -272,3 +272,13 @@ Rollback of the application code does not require rewriting profiles: the canoni
 
 - A quota-bearing image-generation verification action is not part of this change. If later desired, it requires its own proposal covering explicit consent, cost, artifact cleanup, and evidence expiry.
 - A future standard-Pro baseline, signed-update channel, or optional Sol 372k policy requires its own catalog delta and is not a prerequisite for this change. Until a minimum target Codex version is verified, plan- and actor-policy evidence remains `unknown` rather than making optimistic claims.
+
+### 10. Make the upgrade action reachable from any repairable contract
+
+The upgrade action was offered only from `upgrade-available`, which required the profile to already match the legacy contract exactly — the same provider identifier, name, wire API, and official-auth requirement, with no other unsatisfied field. Any additional gap, including a missing default model, dropped the profile to `degraded` and hid the action. Completing the contract then required editing every remaining field by hand, one refused commit at a time.
+
+Graded commit acceptance removed the hard deadlock: a repairable draft now saves, so a user can supply the missing input and arrive at `upgrade-available`. That still asks the user to discover which input to supply, and still hides a one-click transform behind a contract the transform itself would have written.
+
+Offer the upgrade whenever every unsatisfied contract field is one the upgrade transform writes: provider name, official-auth requirement, provider bearer, actor-authorization header, and wire API. Gaps the transform cannot fill — a missing default model, a missing endpoint, an unusable identifier, or unparseable structure — continue to withhold the action, and the page names the input to supply first. This keeps the transform explicit and revisioned, keeps existing profiles free of automatic migration, and stops a legacy profile from being unreachable from its own upgrade path.
+
+The legacy-value shape check stays only where it belongs: deciding whether the classic `custom` contract is recognized for presentation, not whether the user is allowed to reach the transform.

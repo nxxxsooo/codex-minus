@@ -455,3 +455,68 @@ The system SHALL allow the user to leave native-capability priority deliberately
 
 - **WHEN** an explicit target mode retains a custom provider table and encounters an actor-authorization value different from the manager-owned value
 - **THEN** the system preserves the custom value or requires an explicit conflict decision and never silently deletes it
+
+### Requirement: Provider drafts remain repairable in steps
+
+A provider contract is completed by editing several fields, so the system SHALL refuse a commit only for gaps that make the draft unusable or ambiguous, and SHALL accept a draft that is merely not yet upgraded. Refusing an incomplete-but-interpretable draft would strand the profile, because the fields that complete the contract can only be persisted by a commit.
+
+The system SHALL refuse unparseable provider TOML, a missing or malformed selected provider table, a reserved or legacy provider identifier, a missing endpoint or default model, a malformed contract value, and conflicting or duplicated actor-authorization headers. The system SHALL accept a provider name mismatch, an unsatisfied official-auth requirement, a missing provider bearer, a missing actor-authorization header, a wire-API mismatch, and a catalog-mode mismatch.
+
+#### Scenario: A legacy provider is repaired one field at a time
+
+- **WHEN** a profile still carrying the legacy provider contract is saved with only some of the target fields corrected
+- **THEN** the commit succeeds, the corrected fields persist, and the remaining gaps are reported without claiming the native-capability contract is active
+
+#### Scenario: An uninterpretable draft is still refused
+
+- **WHEN** a draft has unparseable TOML, no usable provider table, a reserved or legacy identifier, no endpoint, no default model, a malformed value, or two conflicting actor-authorization headers
+- **THEN** the commit is refused, settings and live configuration are unchanged, and the failure names the specific rejecting rule
+
+#### Scenario: A degraded contract never claims native-capability priority
+
+- **WHEN** a saved draft is accepted while its contract remains incomplete
+- **THEN** the derived state stays degraded or upgrade-available, the staged live configuration carries only the provider table the user authored, and no native-capability claim is made
+
+### Requirement: Typed commit failures name their rejecting rule
+
+The unified provider commit already returns a typed error code, and the commit failure path writes no log entry, so the system SHALL surface both the typed code and a static rejecting reason to the user. Every reason SHALL be a literal chosen at the failing call site, so dynamic content cannot reach the notice by construction.
+
+#### Scenario: A rejected commit identifies its gate
+
+- **WHEN** a provider commit is refused
+- **THEN** the notice carries the typed code, an actionable hint for that code, and the static reason identifying the rejecting rule, including for a code the frontend does not yet map
+
+#### Scenario: A contract gap names its field
+
+- **WHEN** a commit is refused because the native contract is incomplete
+- **THEN** the reason names the specific contract field rather than a generic contract message
+
+#### Scenario: Failure payloads stay secret-free
+
+- **WHEN** any typed failure payload is serialized
+- **THEN** it contains no provider key, OAuth material, account identity, or endpoint value
+
+### Requirement: Built-in Pro model list for a new provider
+
+A brand-new provider SHALL be prefilled with a built-in list of models a ChatGPT Pro account can route, and with a default model drawn from that list, so that only a Base URL and a provider key remain for the user to supply. The list SHALL ship with the application rather than being discovered, so a new provider is usable before any upstream call.
+
+The default SHALL be a slug the official bundled catalog carries; a default the catalog cannot represent fails the first commit at catalog planning. Slugs SHALL be taken verbatim from the official client rather than guessed, and retired models SHALL be removed once the official bundled catalog hides them.
+
+#### Scenario: A new provider needs only an endpoint and a key
+
+- **WHEN** the user creates a provider
+- **THEN** the draft carries the built-in model list and a default model from it, reports only the Base URL and provider key as missing inputs, and keeps the canonical native-capability target it already generated
+
+#### Scenario: The built-in default is representable
+
+- **WHEN** a brand-new provider is committed with its prefilled default model
+- **THEN** catalog planning represents that default and the commit is not refused as catalog-unavailable
+
+### Requirement: Provider routing switch governs live writes only
+
+The provider page states that a disabled master switch still saves configuration and simply does not write Codex's live file, so the system SHALL honor that meaning. A disabled switch SHALL commit as an inactive draft rather than refusing the commit.
+
+#### Scenario: A disabled switch saves without touching live configuration
+
+- **WHEN** a provider draft is committed while the master routing switch is disabled
+- **THEN** settings and catalog state persist, live configuration is byte-identical, no restart is claimed, and the commit is not refused
