@@ -2908,46 +2908,15 @@ fn current_official_catalog_scope(
     persisted_state: &crate::model_catalog::CatalogState,
     active: bool,
 ) -> Result<bool, ProviderCommitFailure> {
+    // The baseline ships with the application, so it is neither account-scoped nor tied to an
+    // installed CLI. What remains is the requirement the mixed contract actually has: the official
+    // client must be signed in, because inference still travels under that session.
     let auth_path = paths.codex_home.join("auth.json");
-    let current_scope_hash =
-        match crate::model_catalog::current_activation_scope_hash_at(persisted_state, &auth_path) {
-            Ok(scope_hash) => scope_hash,
-            Err(_) if active => {
-                return Err(provider_commit_failure(
-                    ProviderCommitErrorCode::OfficialAuthRequired,
-                    "official ChatGPT authentication is required",
-                ));
-            }
-            Err(_) => return Ok(false),
-        };
-
-    #[cfg(test)]
-    let current_target = match paths.current_target.clone() {
-        Some(target) => Ok(target),
-        None => crate::model_catalog::verify_current_target_cli(),
-    };
-    #[cfg(not(test))]
-    let current_target = crate::model_catalog::verify_current_target_cli();
-    let current_target = match current_target {
-        Ok(target) => target,
-        Err(_) if active => {
-            return Err(provider_commit_failure(
-                ProviderCommitErrorCode::CatalogScopeStale,
-                "provider catalog target scope is stale",
-            ));
-        }
-        Err(_) => return Ok(false),
-    };
-
-    match crate::model_catalog::validate_activation_catalog_scope(
-        persisted_state,
-        &current_scope_hash,
-        &current_target,
-    ) {
-        Ok(()) => Ok(true),
+    match crate::model_catalog::current_activation_scope_hash_at(persisted_state, &auth_path) {
+        Ok(_) => Ok(true),
         Err(_) if active => Err(provider_commit_failure(
-            ProviderCommitErrorCode::CatalogScopeStale,
-            "provider catalog identity or target scope is stale",
+            ProviderCommitErrorCode::OfficialAuthRequired,
+            "official ChatGPT authentication is required",
         )),
         Err(_) => Ok(false),
     }

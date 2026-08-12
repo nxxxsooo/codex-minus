@@ -16,8 +16,8 @@
 
 ## 3. Bundled official baseline
 
-- [ ] 3.1 Author the bundled baseline JSON (slug, corrected display name, context window, effective percent, reasoning levels, visibility) from a verified official output plus the fleet overlay `gpt-5.6-sol`; record the source client version inside the asset; review display names with the user.
-- [ ] 3.2 Load the bundled asset as the official baseline: composition, readiness, activation-scope, and commit planning re-anchor to it; account-scope staleness for the baseline is removed; the stored runtime `state.official` is migrated or ignored without erroring.
+- [x] 3.1 Author the bundled baseline JSON (slug, corrected display name, context window, effective percent, reasoning levels, visibility) from a verified official output plus the fleet overlay `gpt-5.6-sol`; record the source client version inside the asset; review display names with the user.
+- [x] 3.2 Load the bundled asset as the official baseline: composition, readiness, activation-scope, and commit planning re-anchor to it; account-scope staleness for the baseline is removed; the stored runtime `state.official` is migrated or ignored without erroring.
 - [ ] 3.3 Remove the runtime refresh machinery: isolated CODEX_HOME projection, access-token handling, publisher-signature shell-out, `refresh_official_model_catalog` command, and the 官方模型目录 band; keep `/v1/models` provider evidence collection working.
 - [ ] 3.4 Remove the Manager network-policy feature end to end (module, three commands, panel, `network-policy-ui.ts`, CSS `styles.css:1061-1168`, i18n block, tests); saved policy state is left on disk untouched and unread.
 - [ ] 3.5 Re-anchor the "active default model disappears" continuity behavior to bundled-baseline updates with a regression test.

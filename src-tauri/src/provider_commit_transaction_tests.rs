@@ -56,10 +56,10 @@ fn pure_oauth_profile(id: &str) -> RelayProfile {
     RelayProfile {
         id: id.to_string(),
         name: "Official".to_string(),
-        model: "official-a".to_string(),
+        model: "gpt-5.6-sol".to_string(),
         relay_mode: RelayMode::Official,
         protocol: RelayProtocol::Responses,
-        config_contents: "model = \"official-a\"\n".to_string(),
+        config_contents: "model = \"gpt-5.6-sol\"\n".to_string(),
         ..RelayProfile::default()
     }
 }
@@ -67,7 +67,7 @@ fn pure_oauth_profile(id: &str) -> RelayProfile {
 fn legacy_pure_api_profile(id: &str, auth_contents: &str) -> RelayProfile {
     let mut profile = canonical_profile(
         id,
-        "official-a",
+        "gpt-5.6-sol",
         "https://legacy.example/v1",
         "legacy-provider-key",
     );
@@ -89,7 +89,7 @@ fn settings_with(profiles: Vec<RelayProfile>, active: &str) -> BackendSettings {
 fn official_catalog() -> Value {
     json!({
         "models": [{
-            "slug": "official-a",
+            "slug": "gpt-5.6-sol",
             "display_name": "Official A",
             "description": "A",
             "visibility": "list",
@@ -404,7 +404,7 @@ fn raw_stored_profile_config(settings_path: &Path, profile_id: &str) -> String {
 fn successful_active_commit_preserves_context_semantics_and_auth_bytes() {
     let active = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -421,7 +421,7 @@ fn successful_active_commit_preserves_context_semantics_and_auth_bytes() {
     let mut next = persisted.clone();
     next.relay_profiles[0] = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://changed.example/v1",
         "changed-provider-key",
     );
@@ -452,7 +452,7 @@ fn successful_active_commit_preserves_context_semantics_and_auth_bytes() {
 fn managed_context_cleanup_requires_confirmation_and_commits_settings_and_live_atomically() {
     let mut structured_only = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -460,7 +460,7 @@ fn managed_context_cleanup_requires_confirmation_and_commits_settings_and_live_a
     structured_only.auto_compact_limit = "240000".to_string();
     let mut raw_only = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -577,7 +577,7 @@ fn managed_context_cleanup_requires_confirmation_and_commits_settings_and_live_a
 fn managed_context_cleanup_detects_live_only_conflicts_before_active_commit() {
     let active = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -643,7 +643,7 @@ fn managed_context_cleanup_detects_live_only_conflicts_before_active_commit() {
 fn injected_normalization_failure_preserves_the_complete_prior_generation() {
     let active = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -684,7 +684,7 @@ fn injected_normalization_failure_preserves_the_complete_prior_generation() {
 fn injected_catalog_materialization_failure_preserves_the_complete_prior_generation() {
     let active = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -725,7 +725,7 @@ fn injected_catalog_materialization_failure_preserves_the_complete_prior_generat
 fn injected_settings_persistence_failure_rolls_back_the_complete_prior_generation() {
     let active = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -741,7 +741,7 @@ fn injected_settings_persistence_failure_rolls_back_the_complete_prior_generatio
     let mut next = persisted.clone();
     next.relay_profiles[0] = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://changed.example/v1",
         "changed-provider-key",
     );
@@ -767,7 +767,7 @@ fn injected_settings_persistence_failure_rolls_back_the_complete_prior_generatio
 fn injected_live_config_commit_failure_rolls_back_the_complete_prior_generation() {
     let active = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -783,7 +783,7 @@ fn injected_live_config_commit_failure_rolls_back_the_complete_prior_generation(
     let mut next = persisted.clone();
     next.relay_profiles[0] = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://changed.example/v1",
         "changed-provider-key",
     );
@@ -809,7 +809,7 @@ fn injected_live_config_commit_failure_rolls_back_the_complete_prior_generation(
 fn injected_context_verification_failure_rolls_back_the_complete_prior_generation() {
     let active = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -827,7 +827,7 @@ fn injected_context_verification_failure_rolls_back_the_complete_prior_generatio
     let mut next = persisted.clone();
     next.relay_profiles[0] = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://changed.example/v1",
         "changed-provider-key",
     );
@@ -859,7 +859,7 @@ fn injected_context_verification_failure_rolls_back_the_complete_prior_generatio
 fn injected_post_commit_verification_failure_rolls_back_the_complete_prior_generation() {
     let active = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -875,7 +875,7 @@ fn injected_post_commit_verification_failure_rolls_back_the_complete_prior_gener
     let mut next = persisted.clone();
     next.relay_profiles[0] = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://changed.example/v1",
         "changed-provider-key",
     );
@@ -901,7 +901,7 @@ fn injected_post_commit_verification_failure_rolls_back_the_complete_prior_gener
 fn concurrent_official_auth_update_is_preserved_while_manager_targets_roll_back() {
     let active = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -918,12 +918,12 @@ fn concurrent_official_auth_update_is_preserved_while_manager_targets_roll_back(
     let mut next = persisted.clone();
     next.relay_profiles[0] = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://changed.example/v1",
         "changed-provider-key",
     );
     let auth_path = fixture.paths.codex_home.join("auth.json");
-    let newer_auth = b"official-auth-newer".to_vec();
+    let newer_auth = b"gpt-5.6-soluth-newer".to_vec();
     let mut auth_updates = 0;
 
     let error = commit_provider_detail_from_paths_observed(
@@ -940,7 +940,7 @@ fn concurrent_official_auth_update_is_preserved_while_manager_targets_roll_back(
     .unwrap_err();
 
     assert_eq!(error.code(), ProviderCommitErrorCode::TransactionFailed);
-    assert!(!error.to_string().contains("official-auth-newer"));
+    assert!(!error.to_string().contains("gpt-5.6-soluth-newer"));
     assert_eq!(auth_updates, 1);
     assert_eq!(fs::read(&auth_path).unwrap(), newer_auth);
     let mut manager_after = fixture.file_generation();
@@ -952,7 +952,7 @@ fn concurrent_official_auth_update_is_preserved_while_manager_targets_roll_back(
 fn auth_update_after_scope_gate_cannot_become_the_commit_baseline() {
     let active = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -969,7 +969,7 @@ fn auth_update_after_scope_gate_cannot_become_the_commit_baseline() {
     let mut next = persisted.clone();
     next.relay_profiles[0] = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://changed.example/v1",
         "changed-provider-key",
     );
@@ -1004,7 +1004,7 @@ fn real_transaction_keeps_secret_stages_private_and_cleans_faulted_recovery_mate
 
     let active = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         PRIOR_KEY,
     );
@@ -1025,7 +1025,7 @@ fn real_transaction_keeps_secret_stages_private_and_cleans_faulted_recovery_mate
     let mut next = persisted.clone();
     next.relay_profiles[0] = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://changed.example/v1",
         NEXT_KEY,
     );
@@ -1121,13 +1121,13 @@ fn real_transaction_keeps_secret_stages_private_and_cleans_faulted_recovery_mate
 fn generic_settings_save_allows_unrelated_changes_but_rejects_every_provider_owned_difference() {
     let first = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
     let second = canonical_profile(
         "backup",
-        "official-a",
+        "gpt-5.6-sol",
         "https://backup.example/v1",
         "backup-key",
     );
@@ -1199,7 +1199,7 @@ fn generic_settings_save_allows_unrelated_changes_but_rejects_every_provider_own
 fn generic_settings_save_accepts_real_ui_derived_provider_shape_for_unrelated_changes() {
     let first = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -1284,7 +1284,7 @@ fn generic_settings_save_accepts_first_run_ui_shape_and_active_aggregate_ui_proj
 
     let api = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -1360,7 +1360,7 @@ fn generic_settings_save_rejects_a_concurrent_persisted_provider_generation_chan
     let initial = settings_with(
         vec![canonical_profile(
             "sub2api",
-            "official-a",
+            "gpt-5.6-sol",
             "https://relay.example/v1",
             "provider-key",
         )],
@@ -1391,13 +1391,13 @@ fn generic_settings_save_rejects_a_concurrent_persisted_provider_generation_chan
 fn direct_invoke_matrix_rejects_provider_bypasses_without_mutating_any_generation() {
     let first = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
     let second = canonical_profile(
         "backup",
-        "official-a",
+        "gpt-5.6-sol",
         "https://backup.example/v1",
         "backup-key",
     );
@@ -1477,13 +1477,13 @@ fn direct_invoke_matrix_rejects_provider_bypasses_without_mutating_any_generatio
     for context in ["active-detail", "inactive-detail", "topology"] {
         let active = canonical_profile(
             "sub2api",
-            "official-a",
+            "gpt-5.6-sol",
             "https://stale-provider.example/v1",
             "stale-provider-key",
         );
         let inactive = canonical_profile(
             "backup",
-            "official-a",
+            "gpt-5.6-sol",
             "https://inactive.example/v1",
             "inactive-provider-key",
         );
@@ -1530,7 +1530,7 @@ fn provider_commit_rejects_a_concurrent_raw_settings_generation_change() {
     let active = pure_oauth_profile("official");
     let inactive = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -1576,13 +1576,13 @@ fn provider_commit_rejects_a_concurrent_raw_settings_generation_change() {
 fn topology_adapter_commits_list_mutations_through_the_shared_provider_transaction() {
     let a = canonical_profile(
         "relay-a",
-        "official-a",
+        "gpt-5.6-sol",
         "https://a.example/v1",
         "provider-key-a",
     );
     let b = canonical_profile(
         "relay-b",
-        "official-a",
+        "gpt-5.6-sol",
         "https://b.example/v1",
         "provider-key-b",
     );
@@ -1591,7 +1591,7 @@ fn topology_adapter_commits_list_mutations_through_the_shared_provider_transacti
     shadow.name = "Relay B shadow".to_string();
     let c = canonical_profile(
         "relay-c",
-        "official-a",
+        "gpt-5.6-sol",
         "https://c.example/v1",
         "provider-key-c",
     );
@@ -1724,18 +1724,19 @@ fn topology_copy_uses_trusted_catalog_scope_and_saves_stale_copy_action_required
     let official = pure_oauth_profile("official");
     let source = canonical_profile(
         "relay-source",
-        "official-a",
+        "gpt-5.6-sol",
         "https://source.example/v1",
         "provider-key-source",
     );
     let initial = settings_with(vec![official, source], "official");
-    let mut catalog_state = stale_scope_state();
+    let mut catalog_state = state_with_official();
     catalog_state
         .profiles
         .entry("relay-source".to_string())
         .or_default()
         .mode = CatalogMode::OfficialPlusCustom;
     let fixture = Fixture::new(&initial, &catalog_state);
+    fs::remove_file(fixture.paths.codex_home.join("auth.json")).unwrap();
     let persisted = fixture.read_settings();
     let source_state_before = fixture.read_state().profiles["relay-source"].clone();
     let mut copy = persisted
@@ -1762,7 +1763,7 @@ fn topology_copy_uses_trusted_catalog_scope_and_saves_stale_copy_action_required
         .unwrap(),
     };
     let live_before = fs::read(fixture.paths.codex_home.join("config.toml")).unwrap();
-    let auth_before = fs::read(fixture.paths.codex_home.join("auth.json")).unwrap();
+    let auth_before = fs::read(fixture.paths.codex_home.join("auth.json")).ok();
 
     let payload = commit_provider_detail_from_paths(&fixture.paths, request).unwrap();
 
@@ -1785,7 +1786,7 @@ fn topology_copy_uses_trusted_catalog_scope_and_saves_stale_copy_action_required
         live_before
     );
     assert_eq!(
-        fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
+        fs::read(fixture.paths.codex_home.join("auth.json")).ok(),
         auth_before
     );
 }
@@ -1794,7 +1795,7 @@ fn topology_copy_uses_trusted_catalog_scope_and_saves_stale_copy_action_required
 fn topology_adapter_rejects_active_detail_and_catalog_bypasses_without_mutation() {
     let active = canonical_profile(
         "relay-a",
-        "official-a",
+        "gpt-5.6-sol",
         "https://a.example/v1",
         "provider-key-a",
     );
@@ -1819,7 +1820,7 @@ fn topology_adapter_rejects_active_detail_and_catalog_bypasses_without_mutation(
             profile.api_key = "changed-provider-key".to_string();
             profile.config_contents = profile
                 .config_contents
-                .replace("official-a", "changed-model")
+                .replace("gpt-5.6-sol", "changed-model")
                 .replace("https://a.example/v1", "https://changed.example/v1")
                 .replace("provider-key-a", "changed-provider-key");
         } else {
@@ -1853,7 +1854,7 @@ fn topology_adapter_rejects_active_detail_and_catalog_bypasses_without_mutation(
 fn unified_provider_commit_rejects_unreviewed_external_to_managed_transition() {
     let mut external = canonical_profile(
         "external",
-        "official-a",
+        "gpt-5.6-sol",
         "https://external.example/v1",
         "provider-key",
     );
@@ -1901,13 +1902,13 @@ fn topology_adapter_accepts_one_complete_ui_canonical_generation() {
         vec![
             canonical_profile(
                 "relay-a",
-                "official-a",
+                "gpt-5.6-sol",
                 "https://a.example/v1",
                 "provider-key-a",
             ),
             canonical_profile(
                 "relay-b",
-                "official-a",
+                "gpt-5.6-sol",
                 "https://b.example/v1",
                 "provider-key-b",
             ),
@@ -2027,7 +2028,7 @@ fn persisted_legacy_auth_migrates_only_api_key_only_payloads() {
 fn active_native_commit_requires_current_official_auth_and_catalog_scope() {
     let active = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -2097,7 +2098,7 @@ fn active_native_commit_requires_current_official_auth_and_catalog_scope() {
             pure_oauth_profile("official"),
             canonical_profile(
                 "sub2api",
-                "official-a",
+                "gpt-5.6-sol",
                 "https://relay.example/v1",
                 "provider-key",
             ),
@@ -2124,17 +2125,19 @@ fn active_native_commit_requires_current_official_auth_and_catalog_scope() {
     assert_eq!(error.code(), ProviderCommitErrorCode::OfficialAuthRequired);
     assert_eq!(missing_auth_set_current.file_generation(), before);
 
+    // The baseline ships with the application, so it belongs to no account and no installed CLI.
+    // Switching either used to strand every managed profile until a refresh that can no longer be
+    // run; both must now commit normally as long as the official session is valid.
     for (account, workspace) in [("account-b", "workspace-a"), ("account-a", "workspace-b")] {
-        let stale_scope = Fixture::new(&initial, &state_with_official());
+        let other_scope = Fixture::new(&initial, &state_with_official());
         fs::write(
-            stale_scope.paths.codex_home.join("auth.json"),
+            other_scope.paths.codex_home.join("auth.json"),
             official_auth_bytes(account, workspace),
         )
         .unwrap();
-        let before = stale_scope.file_generation();
-        let persisted = stale_scope.read_settings();
-        let error = commit_provider_detail_from_paths(
-            &stale_scope.paths,
+        let persisted = other_scope.read_settings();
+        commit_provider_detail_from_paths(
+            &other_scope.paths,
             request(
                 &persisted,
                 &persisted,
@@ -2143,17 +2146,16 @@ fn active_native_commit_requires_current_official_auth_and_catalog_scope() {
                 62,
             ),
         )
-        .unwrap_err();
-        assert_eq!(error.code(), ProviderCommitErrorCode::CatalogScopeStale);
-        assert_eq!(stale_scope.file_generation(), before);
+        .unwrap_or_else(|error| {
+            panic!("a different official account must not strand the bundled baseline: {error:?}")
+        });
     }
 
-    let mut stale_target = Fixture::new(&initial, &state_with_official());
-    stale_target.paths.current_target = Some(target_identity("0.148.0", "target-b"));
-    let before = stale_target.file_generation();
-    let persisted = stale_target.read_settings();
-    let error = commit_provider_detail_from_paths(
-        &stale_target.paths,
+    let mut other_target = Fixture::new(&initial, &state_with_official());
+    other_target.paths.current_target = Some(target_identity("0.148.0", "target-b"));
+    let persisted = other_target.read_settings();
+    commit_provider_detail_from_paths(
+        &other_target.paths,
         request(
             &persisted,
             &persisted,
@@ -2162,13 +2164,13 @@ fn active_native_commit_requires_current_official_auth_and_catalog_scope() {
             63,
         ),
     )
-    .unwrap_err();
-    assert_eq!(error.code(), ProviderCommitErrorCode::CatalogScopeStale);
-    assert_eq!(stale_target.file_generation(), before);
+    .unwrap_or_else(|error| {
+        panic!("a different installed CLI must not strand the bundled baseline: {error:?}")
+    });
 
     let inactive = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -2194,41 +2196,35 @@ fn active_native_commit_requires_current_official_auth_and_catalog_scope() {
             .profiles
             .get("sub2api")
             .and_then(|state| state.action_required.as_ref())
-            .is_some()
+            .is_some(),
+        "a signed-out save still records that the profile cannot be activated yet"
     );
 }
 
 #[test]
 fn active_catalog_readiness_failures_preserve_the_complete_prior_generation() {
-    for (label, catalog_state, model, expected_code) in [
+    for (label, catalog_state, model, signed_in, expected_code) in [
         (
-            "missing",
-            CatalogState::default(),
-            "official-a",
-            ProviderCommitErrorCode::CatalogScopeStale,
-        ),
-        (
-            "scope-stale",
-            stale_scope_state(),
-            "official-a",
-            ProviderCommitErrorCode::CatalogScopeStale,
-        ),
-        (
-            "invalid",
-            invalid_official_catalog_state(),
-            "official-a",
-            ProviderCommitErrorCode::CatalogUnavailable,
+            "signed-out",
+            state_with_official(),
+            "gpt-5.6-sol",
+            false,
+            ProviderCommitErrorCode::OfficialAuthRequired,
         ),
         (
             "default-model-absent",
             state_with_official(),
             "missing-model",
+            true,
             ProviderCommitErrorCode::CatalogUnavailable,
         ),
     ] {
         let active =
             canonical_profile("sub2api", model, "https://relay.example/v1", "provider-key");
         let fixture = Fixture::new(&settings_with(vec![active], "sub2api"), &catalog_state);
+        if !signed_in {
+            fs::remove_file(fixture.paths.codex_home.join("auth.json")).unwrap();
+        }
         let before = fixture.file_generation();
         let persisted = fixture.read_settings();
 
@@ -2253,7 +2249,7 @@ fn active_catalog_readiness_failures_preserve_the_complete_prior_generation() {
 fn active_commit_re_grafts_live_globals_and_rejects_profile_global_injection() {
     let active = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -2268,7 +2264,7 @@ fn active_commit_re_grafts_live_globals_and_rejects_profile_global_injection() {
     let live_globals_before = unrelated_live_semantics(rich_live_config());
     let mut injected = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://changed.example/v1",
         "changed-provider-key",
     );
@@ -2330,7 +2326,7 @@ fn first_and_later_inactive_save_commit_provider_and_catalog_without_live_side_e
 
     let first_profile = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key-one",
     );
@@ -2361,7 +2357,7 @@ fn first_and_later_inactive_save_commit_provider_and_catalog_without_live_side_e
 
     let mut later_profile = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay-two.example/v1",
         "provider-key-two",
     );
@@ -2398,14 +2394,14 @@ fn first_and_later_inactive_save_commit_provider_and_catalog_without_live_side_e
 fn inactive_save_without_catalog_readiness_persists_one_action_required_state() {
     let old = pure_oauth_profile("official");
     let persisted = settings_with(vec![old.clone()], "official");
-    let fixture = Fixture::new(&persisted, &CatalogState::default());
+    let fixture = Fixture::new(&persisted, &state_with_official());
+    fs::remove_file(fixture.paths.codex_home.join("auth.json")).unwrap();
     let persisted = fixture.read_settings();
     let live_before = fs::read(fixture.paths.codex_home.join("config.toml")).unwrap();
-    let auth_before = fs::read(fixture.paths.codex_home.join("auth.json")).unwrap();
     let mut next = persisted.clone();
     next.relay_profiles.push(canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     ));
@@ -2428,42 +2424,30 @@ fn inactive_save_without_catalog_readiness_persists_one_action_required_state() 
         live_before
     );
     assert_eq!(
-        fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
-        auth_before
+        fs::read(fixture.paths.codex_home.join("auth.json")).ok(),
+        None
     );
-}
-
-fn stale_scope_state() -> CatalogState {
-    let mut stale_state = state_with_official();
-    let scope_salt = stale_state.scope_salt.clone();
-    stale_state.official.as_mut().unwrap().scope_hash =
-        official_scope_hash(&scope_salt, "different-account", "workspace-a");
-    stale_state
-}
-
-fn invalid_official_catalog_state() -> CatalogState {
-    let mut invalid_state = state_with_official();
-    invalid_state.official.as_mut().unwrap().raw_catalog["models"][0]["visibility"] = json!("hide");
-    invalid_state
 }
 
 #[test]
 fn inactive_catalog_readiness_failures_persist_action_required_without_live_claims() {
-    for (label, catalog_state, model) in [
-        ("missing", CatalogState::default(), "official-a"),
-        ("invalid", invalid_official_catalog_state(), "official-a"),
+    for (label, catalog_state, model, signed_in) in [
         (
             "default-model-absent",
             state_with_official(),
             "missing-model",
+            true,
         ),
-        ("scope-stale", stale_scope_state(), "official-a"),
+        ("signed-out", state_with_official(), "gpt-5.6-sol", false),
     ] {
         let persisted = settings_with(vec![pure_oauth_profile("official")], "official");
         let fixture = Fixture::new(&persisted, &catalog_state);
+        if !signed_in {
+            fs::remove_file(fixture.paths.codex_home.join("auth.json")).unwrap();
+        }
         let persisted = fixture.read_settings();
         let live_before = fs::read(fixture.paths.codex_home.join("config.toml")).unwrap();
-        let auth_before = fs::read(fixture.paths.codex_home.join("auth.json")).unwrap();
+        let auth_before = fs::read(fixture.paths.codex_home.join("auth.json")).ok();
         let mut next = persisted.clone();
         next.relay_profiles.push(canonical_profile(
             "sub2api",
@@ -2499,7 +2483,7 @@ fn inactive_catalog_readiness_failures_persist_action_required_without_live_clai
             "{label}"
         );
         assert_eq!(
-            fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
+            fs::read(fixture.paths.codex_home.join("auth.json")).ok(),
             auth_before,
             "{label}"
         );
@@ -2514,7 +2498,7 @@ fn inactive_readiness_failure_preserves_the_last_valid_catalog_artifact() {
     let mut first = persisted.clone();
     first.relay_profiles.push(canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     ));
@@ -2530,20 +2514,11 @@ fn inactive_readiness_failure_preserves_the_last_valid_catalog_artifact() {
     )
     .unwrap();
 
-    let mut stale_state = fixture.read_state();
-    let prior_profile_state = stale_state.profiles["sub2api"].clone();
+    let prior_profile_state = fixture.read_state().profiles["sub2api"].clone();
     let generated_path = prior_profile_state.generated_path.as_ref().unwrap().clone();
     let generated_before = fs::read(fixture.paths.codex_home.join(&generated_path)).unwrap();
-    let scope_salt = stale_state.scope_salt.clone();
-    stale_state.official.as_mut().unwrap().scope_hash =
-        official_scope_hash(&scope_salt, "different-account", "workspace-a");
-    fs::write(
-        &fixture.paths.catalog_state_path,
-        serde_json::to_vec_pretty(&stale_state).unwrap(),
-    )
-    .unwrap();
+    fs::remove_file(fixture.paths.codex_home.join("auth.json")).unwrap();
     let live_before = fs::read(fixture.paths.codex_home.join("config.toml")).unwrap();
-    let auth_before = fs::read(fixture.paths.codex_home.join("auth.json")).unwrap();
     let persisted = fixture.read_settings();
 
     commit_provider_detail_from_paths(
@@ -2574,8 +2549,8 @@ fn inactive_readiness_failure_preserves_the_last_valid_catalog_artifact() {
         live_before
     );
     assert_eq!(
-        fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
-        auth_before
+        fs::read(fixture.paths.codex_home.join("auth.json")).ok(),
+        None
     );
 }
 
@@ -2584,7 +2559,7 @@ fn active_readiness_failure_preserves_a_preexisting_valid_catalog_generation() {
     let official = pure_oauth_profile("official");
     let provider = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -2605,16 +2580,12 @@ fn active_readiness_failure_preserves_a_preexisting_valid_catalog_generation() {
     )
     .unwrap();
 
-    let mut stale_state = fixture.read_state();
-    assert!(stale_state.profiles["sub2api"].generated_path.is_some());
-    let scope_salt = stale_state.scope_salt.clone();
-    stale_state.official.as_mut().unwrap().scope_hash =
-        official_scope_hash(&scope_salt, "different-account", "workspace-a");
-    fs::write(
-        &fixture.paths.catalog_state_path,
-        serde_json::to_vec_pretty(&stale_state).unwrap(),
-    )
-    .unwrap();
+    assert!(
+        fixture.read_state().profiles["sub2api"]
+            .generated_path
+            .is_some()
+    );
+    fs::remove_file(fixture.paths.codex_home.join("auth.json")).unwrap();
     let before = fixture.file_generation();
     let persisted = fixture.read_settings();
 
@@ -2630,19 +2601,20 @@ fn active_readiness_failure_preserves_a_preexisting_valid_catalog_generation() {
     )
     .unwrap_err();
 
-    assert_eq!(error.code(), ProviderCommitErrorCode::CatalogScopeStale);
+    assert_eq!(error.code(), ProviderCommitErrorCode::OfficialAuthRequired);
     assert_eq!(fixture.file_generation(), before);
 }
 
 #[test]
 fn later_valid_detail_commit_clears_catalog_readiness_action_and_allows_activation_retry() {
     let persisted = settings_with(vec![pure_oauth_profile("official")], "official");
-    let fixture = Fixture::new(&persisted, &stale_scope_state());
+    let fixture = Fixture::new(&persisted, &state_with_official());
+    fs::remove_file(fixture.paths.codex_home.join("auth.json")).unwrap();
     let persisted = fixture.read_settings();
     let mut first = persisted.clone();
     first.relay_profiles.push(canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     ));
@@ -2664,13 +2636,9 @@ fn later_valid_detail_commit_clears_catalog_readiness_action_and_allows_activati
         Some("catalog-readiness-unavailable")
     );
 
-    let mut recovered_state = fixture.read_state();
-    let current = state_with_official();
-    recovered_state.official = current.official;
-    recovered_state.target = current.target;
     fs::write(
-        &fixture.paths.catalog_state_path,
-        serde_json::to_vec_pretty(&recovered_state).unwrap(),
+        fixture.paths.codex_home.join("auth.json"),
+        official_auth_bytes("account-a", "workspace-a"),
     )
     .unwrap();
     let live_before = fs::read(fixture.paths.codex_home.join("config.toml")).unwrap();
@@ -2720,7 +2688,7 @@ fn set_current_commits_settings_catalog_pointer_activation_and_restart_together(
     let old = pure_oauth_profile("official");
     let next_profile = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -2771,7 +2739,7 @@ fn set_current_commits_settings_catalog_pointer_activation_and_restart_together(
     let mut updated_active = first_active.clone();
     updated_active.relay_profiles[1] = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay-updated.example/v1",
         "provider-key-updated",
     );
@@ -2800,7 +2768,7 @@ fn set_current_commits_settings_catalog_pointer_activation_and_restart_together(
 fn fallible_normalizer_rejects_structured_raw_conflicts_before_any_mutation() {
     let canonical = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -2876,7 +2844,7 @@ fn fallible_normalizer_rejects_structured_raw_conflicts_before_any_mutation() {
 fn fallible_normalizer_rejects_byte_distinct_raw_values_before_any_mutation() {
     let canonical = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -2910,7 +2878,7 @@ fn fallible_normalizer_rejects_byte_distinct_raw_values_before_any_mutation() {
             ),
             "model" => conflicted
                 .config_contents
-                .replace("model = \"official-a\"", "model = \"official-a \""),
+                .replace("model = \"gpt-5.6-sol\"", "model = \"gpt-5.6-sol \""),
             "key" => conflicted.config_contents.replace(
                 "experimental_bearer_token = \"provider-key\"",
                 "experimental_bearer_token = \" provider-key \"",
@@ -2958,7 +2926,7 @@ fn fallible_normalizer_rejects_byte_distinct_raw_values_before_any_mutation() {
 fn provider_commit_failures_are_typed_and_failure_payloads_are_secret_free() {
     let active = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://provider-commit-secret.example/v1",
         "provider-key-sentinel",
     );
@@ -3060,7 +3028,7 @@ fn provider_commit_failures_are_typed_and_failure_payloads_are_secret_free() {
 fn commit_boundary_rejects_missing_reserved_ambiguous_malformed_and_structural_catalog_inputs() {
     let base_profile = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -3070,7 +3038,7 @@ fn commit_boundary_rejects_missing_reserved_ambiguous_malformed_and_structural_c
     missing_model.model.clear();
     missing_model.config_contents = missing_model
         .config_contents
-        .replace("model = \"official-a\"", "model = \"\"");
+        .replace("model = \"gpt-5.6-sol\"", "model = \"\"");
     invalid_profiles.push(missing_model);
 
     let mut reserved = base_profile.clone();
@@ -3178,7 +3146,7 @@ fn commit_boundary_rejects_missing_reserved_ambiguous_malformed_and_structural_c
 fn staged_native_contract_assertion_rejects_core_drift() {
     let profile = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -3221,7 +3189,7 @@ fn staged_native_contract_assertion_rejects_core_drift() {
 fn active_commit_binds_restart_to_the_runtime_fingerprint_without_a_catalog_generation() {
     let profile = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -3306,7 +3274,7 @@ fn active_commit_binds_restart_to_the_runtime_fingerprint_without_a_catalog_gene
 fn active_commit_refires_restart_when_the_runtime_contract_changes_without_a_catalog_generation() {
     let profile = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -3393,7 +3361,7 @@ fn inactive_save_records_no_restart_marker_and_no_applied_runtime_fingerprint() 
     let active = pure_oauth_profile("official");
     let inactive = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -3405,7 +3373,7 @@ fn inactive_save_records_no_restart_marker_and_no_applied_runtime_fingerprint() 
     let mut next = persisted.clone();
     next.relay_profiles[1] = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay-updated.example/v1",
         "provider-key-updated",
     );
@@ -3434,7 +3402,7 @@ fn inactive_save_records_no_restart_marker_and_no_applied_runtime_fingerprint() 
 fn failure_payloads_carry_the_static_rejecting_reason_without_dynamic_content() {
     let profile = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://provider-reason-secret.example/v1",
         "provider-key-sentinel",
     );
@@ -3520,7 +3488,7 @@ fn failure_payloads_carry_the_static_rejecting_reason_without_dynamic_content() 
 fn an_incomplete_native_contract_reports_its_own_reason_rather_than_the_generic_fallback() {
     let mut profile = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -3528,7 +3496,7 @@ fn an_incomplete_native_contract_reports_its_own_reason_rather_than_the_generic_
     // collapsed into the catch-all normalization message.
     profile.config_contents = profile
         .config_contents
-        .replace("model = \"official-a\"\n", "");
+        .replace("model = \"gpt-5.6-sol\"\n", "");
     profile.model = String::new();
     let persisted = settings_with(vec![profile], "sub2api");
     let fixture = Fixture::new(&persisted, &state_with_official());
@@ -3555,7 +3523,7 @@ fn a_contract_gap_names_the_field_it_is_missing() {
     let build = |mutate: &dyn Fn(&mut RelayProfile)| {
         let mut profile = canonical_profile(
             "sub2api",
-            "official-a",
+            "gpt-5.6-sol",
             "https://relay.example/v1",
             "provider-key",
         );
@@ -3581,7 +3549,7 @@ fn a_contract_gap_names_the_field_it_is_missing() {
         build(&|profile| {
             profile.config_contents = profile
                 .config_contents
-                .replace("model = \"official-a\"\n", "");
+                .replace("model = \"gpt-5.6-sol\"\n", "");
             profile.model = String::new();
         }),
         "provider model is required"
@@ -3605,7 +3573,7 @@ fn a_degraded_contract_saves_instead_of_locking_the_profile_out_of_its_own_repai
     // save, and the save was what the contract check refused.
     let mut profile = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -3624,9 +3592,9 @@ requires_openai_auth = true
     let persisted = fixture.read_settings();
 
     let mut next = persisted.clone();
-    next.relay_profiles[0].model = "official-a".to_string();
+    next.relay_profiles[0].model = "gpt-5.6-sol".to_string();
     next.relay_profiles[0].config_contents = format!(
-        "model = \"official-a\"\n{}",
+        "model = \"gpt-5.6-sol\"\n{}",
         next.relay_profiles[0].config_contents
     );
 
@@ -3641,7 +3609,7 @@ requires_openai_auth = true
     assert!(
         saved.relay_profiles[0]
             .config_contents
-            .contains("official-a")
+            .contains("gpt-5.6-sol")
     );
 }
 
@@ -3649,7 +3617,7 @@ requires_openai_auth = true
 fn a_disabled_routing_switch_saves_the_draft_without_writing_live_config() {
     let profile = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -3662,7 +3630,7 @@ fn a_disabled_routing_switch_saves_the_draft_without_writing_live_config() {
     let mut next = persisted.clone();
     next.relay_profiles[0] = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay-updated.example/v1",
         "provider-key-updated",
     );
@@ -3703,7 +3671,7 @@ http_headers = { "x-openai-actor-authorization" = "local-image-extension", "x-ke
 fn golden_active_commit_stages_the_exact_actor_authorized_contract() {
     let mut profile = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -3757,7 +3725,7 @@ fn golden_active_commit_stages_the_exact_actor_authorized_contract() {
 /// `custom` identity, drops the table it replaces along with the actor header, and restores
 /// `requires_openai_auth = true`. A commit focused on a different profile must never apply that
 /// to a bystander: this profile's upgrade is the user's to authorize, one profile at a time.
-const GOLDEN_UNTOUCHED_BYSTANDER_ALIAS: &str = r#"model = "official-a"
+const GOLDEN_UNTOUCHED_BYSTANDER_ALIAS: &str = r#"model = "gpt-5.6-sol"
 model_provider = "CodexPlusPlus"
 
 [model_providers.CodexPlusPlus]
@@ -3773,7 +3741,7 @@ http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
 fn golden_commit_never_migrates_a_bystander_profile_contract() {
     let mut bystander = canonical_profile(
         "bystander",
-        "official-a",
+        "gpt-5.6-sol",
         "https://bystander.example/v1",
         "bystander-key",
     );
@@ -3782,7 +3750,7 @@ fn golden_commit_never_migrates_a_bystander_profile_contract() {
         vec![
             canonical_profile(
                 "sub2api",
-                "official-a",
+                "gpt-5.6-sol",
                 "https://relay.example/v1",
                 "provider-key",
             ),
@@ -3801,7 +3769,7 @@ fn golden_commit_never_migrates_a_bystander_profile_contract() {
     let mut next = persisted.clone();
     next.relay_profiles[0] = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay-updated.example/v1",
         "provider-key",
     );
@@ -3830,7 +3798,7 @@ fn explicit_pure_oauth_exit_deletes_the_provider_without_leaving_a_dormant_copy(
     let persisted = settings_with(
         vec![canonical_profile(
             "sub2api",
-            "official-a",
+            "gpt-5.6-sol",
             "https://relay.example/v1",
             "provider-key",
         )],
@@ -4118,7 +4086,7 @@ fn pinned_core_semantics_for_the_staged_contract_are_unchanged() {
         document["model_providers"][&id][field].as_bool()
     };
     let staged = format!(
-        "model = \"official-a\"\nmodel_provider = \"RelayOne\"\n\n{GOLDEN_STAGED_PROVIDER}"
+        "model = \"gpt-5.6-sol\"\nmodel_provider = \"RelayOne\"\n\n{GOLDEN_STAGED_PROVIDER}"
     );
     let home = tempfile::tempdir().unwrap();
     fs::write(home.path().join("config.toml"), &staged).unwrap();
@@ -4145,7 +4113,7 @@ fn pinned_core_semantics_for_the_staged_contract_are_unchanged() {
     //    provider name, the Responses wire API, the actor marker, and unowned headers.
     let mut canonical = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -4160,7 +4128,7 @@ fn pinned_core_semantics_for_the_staged_contract_are_unchanged() {
     //    refuses one instead of trying to keep it.
     let mut reserved = canonical_profile(
         "reserved",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -4176,7 +4144,7 @@ fn pinned_core_semantics_for_the_staged_contract_are_unchanged() {
     //    why an alias must be renamed by an explicit action instead of being carried forward.
     let mut alias = canonical_profile(
         "alias",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -4199,7 +4167,7 @@ fn pinned_core_semantics_for_the_staged_contract_are_unchanged() {
     //    an upgrade preserves it, so a rewrite here would silently rename every shipped profile.
     let mut mixed_case = canonical_profile(
         "mixed-case",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -4216,11 +4184,11 @@ fn pinned_core_semantics_for_the_staged_contract_are_unchanged() {
         "core now rewrites a profile whose identifier is `OpenAI`"
     );
 
-    // 5. An absent official-auth requirement is still defaulted to true, which is why the
+    // 5. An absent gpt-5.6-soluth requirement is still defaulted to true, which is why the
     //    startup credential migration must not decide that field.
     let mut absent = canonical_profile(
         "absent",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -4246,7 +4214,7 @@ fn sentinel_credentials_never_reach_artifacts_payloads_errors_or_logs() {
     let persisted = settings_with(
         vec![canonical_profile(
             "sub2api",
-            "official-a",
+            "gpt-5.6-sol",
             "https://relay.example/v1",
             PROVIDER_SENTINEL,
         )],
@@ -4410,7 +4378,7 @@ fn sentinel_credentials_never_reach_artifacts_payloads_errors_or_logs() {
 fn injected_staging_failure_is_typed_as_staging_rejected_and_mutates_nothing() {
     let active = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -4465,7 +4433,7 @@ fn a_legacy_custom_profile_reaches_the_canonical_contract_at_the_real_entry_poin
     // the upgrade is withheld until it is supplied.
     let mut legacy = canonical_profile(
         "sub2api",
-        "official-a",
+        "gpt-5.6-sol",
         "https://relay.example/v1",
         "provider-key",
     );
@@ -4483,7 +4451,7 @@ experimental_bearer_token = "provider-key"
 
     let mut bystander = canonical_profile(
         "bystander",
-        "official-a",
+        "gpt-5.6-sol",
         "https://bystander.example/v1",
         "bystander-key",
     );
@@ -4518,9 +4486,9 @@ experimental_bearer_token = "provider-key"
     // Step 1: supply the missing input and save. This is the step the old gate refused, which is
     // what stranded the profile: the input can only be persisted by a save.
     let mut next = persisted.clone();
-    next.relay_profiles[0].model = "official-a".to_string();
+    next.relay_profiles[0].model = "gpt-5.6-sol".to_string();
     next.relay_profiles[0].config_contents = format!(
-        "model = \"official-a\"\n{}",
+        "model = \"gpt-5.6-sol\"\n{}",
         next.relay_profiles[0].config_contents
     );
     commit_provider_detail_from_paths(

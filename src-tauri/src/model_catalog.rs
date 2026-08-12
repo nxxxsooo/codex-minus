@@ -28,6 +28,44 @@ const CAPABILITY_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_COMMAND_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
 const MIN_SUPPORTED_CLI: &str = "0.147.0-alpha.1";
 pub(crate) const CATALOG_READINESS_ACTION: &str = "catalog-readiness-unavailable";
+
+/// The official model baseline, authored from verified official client output at release time.
+///
+/// Shipping it removes the only reason the manager ever ran the official CLI with a projected
+/// access token: a profile can compose and commit a managed catalog before any upstream call, and
+/// a machine whose CLI cache is stale or absent no longer strands its provider.
+const BUNDLED_OFFICIAL_CATALOG: &str = include_str!("../assets/official-model-catalog.json");
+
+pub(crate) fn bundled_official_snapshot() -> anyhow::Result<OfficialSnapshot> {
+    let asset: Value = serde_json::from_str(BUNDLED_OFFICIAL_CATALOG)
+        .context("bundled model catalog is invalid")?;
+    let client_version = asset
+        .get("sourceClientVersion")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let raw_catalog = json!({ "models": asset.get("models").cloned().unwrap_or(json!([])) });
+    let models = catalog_models(&raw_catalog)?;
+    let total_count = models.len();
+    let visible_count = models
+        .iter()
+        .filter(|model| model.get("visibility").and_then(Value::as_str) != Some("hide"))
+        .count();
+    let content_hash = canonical_json_hash(&raw_catalog)?;
+    Ok(OfficialSnapshot {
+        source: "bundled".to_string(),
+        fetched_at_ms: 0,
+        etag: None,
+        client_version,
+        // The baseline ships with the application, so its identity is the asset itself rather
+        // than the account it was observed under.
+        scope_hash: content_hash.clone(),
+        content_hash,
+        raw_catalog,
+        visible_count,
+        total_count,
+    })
+}
 #[cfg(any(target_os = "macos", test))]
 const OPENAI_MAC_TEAM_IDS: &[&str] = &["2DC432GLL2"];
 
@@ -567,33 +605,6 @@ pub(crate) fn current_activation_scope_hash_at(
     )))
 }
 
-pub(crate) fn validate_activation_catalog_scope(
-    state: &CatalogState,
-    current_scope_hash: &str,
-    current_target: &VerifiedTargetIdentity,
-) -> Result<(), ActivationScopeError> {
-    let official = state
-        .official
-        .as_ref()
-        .ok_or(ActivationScopeError::CatalogScopeStale)?;
-    let catalog_target = state
-        .target
-        .as_ref()
-        .ok_or(ActivationScopeError::CatalogScopeStale)?;
-    if !current_target.trusted
-        || !current_target.capability_available
-        || !catalog_target.trusted
-        || catalog_target.identity_hash.is_empty()
-        || catalog_target.identity_hash != current_target.identity_hash
-        || catalog_target.client_version != current_target.client_version
-        || official.client_version != current_target.client_version
-        || official.scope_hash != current_scope_hash
-    {
-        return Err(ActivationScopeError::CatalogScopeStale);
-    }
-    Ok(())
-}
-
 fn auth_snapshot_matches(expected: &AuthSnapshot, current: &AuthSnapshot) -> bool {
     expected.generation_hash == current.generation_hash
         && expected.scope_identity == current.scope_identity
@@ -1020,6 +1031,9 @@ pub(crate) fn load_and_migrate_state_from_path(
     if state.scope_salt.trim().is_empty() {
         state.scope_salt = new_scope_salt();
     }
+    // The baseline ships with the application. Anything a retired runtime refresh left behind is
+    // superseded here rather than deleted, so an older manager's state stays readable.
+    state.official = Some(bundled_official_snapshot()?);
     let official_slugs = state
         .official
         .as_ref()
