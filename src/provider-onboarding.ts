@@ -24,6 +24,19 @@ type NewProviderMaterializationInput = {
   configContents: string;
 };
 
+/// Models a ChatGPT Pro account can route through a native-priority provider.
+///
+/// Shipped in the app rather than discovered, so a brand-new provider is usable before any
+/// upstream call. The first entry is the prefilled default and must be a slug the official
+/// bundled catalog carries: a default the catalog cannot represent fails the first save.
+export const PRO_MODEL_SLUGS = [
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-5.6-sol",
+  "gpt-5.5",
+  "gpt-5.4-mini",
+] as const;
+
 export function createNewRelayProfileDraft<TContext>({
   id,
   contextSelection,
@@ -34,7 +47,7 @@ export function createNewRelayProfileDraft<TContext>({
   return {
     id,
     name: "" as const,
-    model: "" as const,
+    model: PRO_MODEL_SLUGS[0] as string,
     baseUrl: "" as const,
     upstreamBaseUrl: "" as const,
     apiKey: "" as const,
@@ -50,7 +63,7 @@ export function createNewRelayProfileDraft<TContext>({
     contextSelectionInitialized: true as const,
     contextWindow: "" as const,
     autoCompactLimit: "" as const,
-    modelList: "" as const,
+    modelList: PRO_MODEL_SLUGS.join("\n"),
     modelWindows: "" as const,
     userAgent: "" as const,
     aggregate: null,

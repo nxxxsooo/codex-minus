@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   OFFICIAL_AUTH_GUIDE_URL,
+  PRO_MODEL_SLUGS,
   createNewRelayProfileDraft,
   materializeNewProviderConfig,
   officialLoginGuide,
@@ -19,7 +20,7 @@ describe("provider onboarding", () => {
     assert.equal(draft.baseUrl, "");
     assert.equal(draft.upstreamBaseUrl, "");
     assert.equal(draft.apiKey, "");
-    assert.equal(draft.model, "");
+    assert.equal(draft.model, PRO_MODEL_SLUGS[0]);
     assert.equal(draft.relayMode, "official");
     assert.equal(draft.officialMixApiKey, true);
     assert.equal(draft.protocol, "responses");
@@ -30,7 +31,7 @@ describe("provider onboarding", () => {
     assert.deepEqual(materializeNewProviderConfig(draft), {
       target: "nativePriority",
       status: "incomplete",
-      missingFields: ["baseUrl", "apiKey", "model"],
+      missingFields: ["baseUrl", "apiKey"],
       configContents: "",
     });
   });
@@ -110,5 +111,29 @@ http_headers = { "x-owned" = "keep" }
     );
     assert.equal(officialLoginGuide({ isNew: true, authenticated: true }).visible, false);
     assert.equal(officialLoginGuide({ isNew: false, authenticated: false }).visible, false);
+  });
+});
+
+describe("built-in Pro model list", () => {
+  it("prefills a new provider with the Pro list and a default that the official catalog carries", () => {
+    const draft = createNewRelayProfileDraft({ id: "relay-x", contextSelection: null });
+    const list = PRO_MODEL_SLUGS;
+    assert.ok(draft);
+    assert.ok(list);
+    assert.ok(list.length >= 4);
+    assert.equal(new Set(list).size, list.length);
+    assert.equal(draft.modelList, list.join("\n"));
+    assert.equal(draft.model, list[0]);
+    // The default must be a slug the official bundled catalog carries, or the first save of a
+    // brand-new provider fails catalog planning with an unrepresentable default model.
+    assert.ok(list[0].startsWith("gpt-"));
+  });
+
+  it("keeps the canonical native-priority target for a brand-new provider", () => {
+    const draft = createNewRelayProfileDraft({ id: "relay-y", contextSelection: null });
+    assert.equal(draft?.transientTarget, "nativePriority");
+    assert.equal(draft?.relayMode, "official");
+    assert.equal(draft?.officialMixApiKey, true);
+    assert.equal(draft?.protocol, "responses");
   });
 });
