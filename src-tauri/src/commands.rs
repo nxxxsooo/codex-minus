@@ -950,6 +950,13 @@ fn list_local_sessions_blocking(
 }
 
 const ARCHIVE_CHECK_INTERVAL_MS: i64 = 24 * 60 * 60 * 1_000;
+/// Upper bound for one provider-facing probe.
+///
+/// The pinned core builds these HTTP clients without a timeout of their own, so an upstream that
+/// accepts a connection and then stalls would otherwise keep the request — and, for the model
+/// probe, the coordinator lock its result needs — outstanding for the life of the process.
+const PROVIDER_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+
 const ARCHIVE_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 const ARCHIVE_CAPABILITY_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -4025,11 +4032,29 @@ struct RelayProfileCompatibilityTestResult {
     initial_http_status: Option<u16>,
 }
 
+/// Awaits a provider-facing request, failing instead of waiting on a stalled upstream forever.
+async fn bounded_probe<T>(
+    task: impl std::future::Future<Output = anyhow::Result<T>>,
+    what: &str,
+) -> anyhow::Result<T> {
+    match tokio::time::timeout(PROVIDER_PROBE_TIMEOUT, task).await {
+        Ok(result) => result,
+        Err(_) => anyhow::bail!(
+            "{what}超时（{} 秒内没有响应）",
+            PROVIDER_PROBE_TIMEOUT.as_secs()
+        ),
+    }
+}
+
 async fn test_relay_profile_with_compatibility(
     profile: &RelayProfile,
     model: &str,
 ) -> anyhow::Result<RelayProfileCompatibilityTestResult> {
-    let initial = codex_plus_core::relay_config::test_relay_profile(profile, model).await?;
+    let initial = bounded_probe(
+        codex_plus_core::relay_config::test_relay_profile(profile, model),
+        "供应商测试请求",
+    )
+    .await?;
     if !responses_output_limit_fallback_allowed(
         profile.protocol,
         initial.http_status,
@@ -4056,6 +4081,7 @@ async fn test_relay_profile_with_compatibility(
         .bearer_auth(api_key.trim())
         .header("content-type", "application/json")
         .body(payload.to_string())
+        .timeout(PROVIDER_PROBE_TIMEOUT)
         .send()
         .await?;
     let http_status = response.status().as_u16();
@@ -4310,16 +4336,32 @@ pub async fn fetch_relay_profile_models(
     } else {
         profile.name.trim().to_string()
     };
-    let result = match codex_plus_core::model_catalog::fetch_relay_profile_model_ids(&profile).await
+    let result = match bounded_probe(
+        codex_plus_core::model_catalog::fetch_relay_profile_model_ids(&profile),
+        "获取模型列表",
+    )
+    .await
     {
         Ok((models, endpoint)) => {
             let models = sanitize_provider_model_ids(&profile, models);
-            match crate::model_catalog::record_provider_evidence(&profile.id, &endpoint, &models) {
-                Ok(()) => ok(
+            // Recording evidence takes the coordinator lock and writes owner-only files. Running
+            // that on an async worker blocks the whole runtime thread, so a later save waits on a
+            // lock held by a task that cannot yield.
+            let recorded = {
+                let profile_id = profile.id.clone();
+                let endpoint = endpoint.clone();
+                let models = models.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    crate::model_catalog::record_provider_evidence(&profile_id, &endpoint, &models)
+                })
+                .await
+            };
+            match recorded {
+                Ok(Ok(())) => ok(
                     &format!("已从「{profile_name}」获取 {} 个模型。", models.len()),
                     RelayProfileModelsPayload { models, endpoint },
                 ),
-                Err(_) => failed(
+                Ok(Err(_)) | Err(_) => failed(
                     "模型已获取，但供应商证据保存失败。",
                     RelayProfileModelsPayload { models, endpoint },
                 ),
@@ -4425,7 +4467,12 @@ pub async fn diagnose_relay_profile(profile: RelayProfile) -> CommandResult<Prov
         ),
     });
 
-    match codex_plus_core::model_catalog::fetch_relay_profile_model_ids(&profile).await {
+    match bounded_probe(
+        codex_plus_core::model_catalog::fetch_relay_profile_model_ids(&profile),
+        "获取模型列表",
+    )
+    .await
+    {
         Ok((models, endpoint)) => {
             let contains_model = !test_model.trim().is_empty()
                 && models.iter().any(|model| model == test_model.trim());

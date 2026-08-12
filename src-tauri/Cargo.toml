@@ -29,6 +29,7 @@ semver = "1"
 sha2 = "0.10"
 tauri = { version = "2", features = ["custom-protocol", "tray-icon"] }
 tauri-plugin-dialog = "2"
+tokio = { version = "1", features = ["time"] }
 toml_edit = "0.22"
 
 [build-dependencies]

@@ -63,6 +63,28 @@ describe("a provider save always settles", () => {
     assert.match(platformSource, /did not finish within/);
   });
 
+  it("bounds every provider-facing probe and keeps its blocking write off the async runtime", () => {
+    assert.match(commandsSource, /const PROVIDER_PROBE_TIMEOUT: Duration/);
+    for (const probe of [
+      "codex_plus_core::relay_config::test_relay_profile",
+      "codex_plus_core::model_catalog::fetch_relay_profile_model_ids",
+    ]) {
+      const unbounded = new RegExp(
+        `${probe.replace(/[:]/g, "[:]")}\\((&profile[^)]*)\\)\\s*\\.await`,
+      );
+      assert.doesNotMatch(
+        commandsSource,
+        unbounded,
+        `${probe} must be awaited through bounded_probe`,
+      );
+    }
+    const fetchCommand = commandsSource.match(
+      /pub async fn fetch_relay_profile_models\([\s\S]*?\n\}/,
+    )?.[0] ?? "";
+    assert.ok(fetchCommand.length > 0, "the model-fetch command was located");
+    assert.match(fetchCommand, /spawn_blocking\(move \|\| \{?\s*crate::model_catalog::record_provider_evidence/);
+  });
+
   it("answers the caller when the blocking body panics and keeps the coordinator usable", () => {
     const command = commandsSource.match(
       /pub async fn commit_provider_detail\([\s\S]*?\n\}/,
