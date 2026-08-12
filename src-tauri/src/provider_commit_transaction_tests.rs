@@ -3536,3 +3536,37 @@ fn failure_payloads_carry_the_static_rejecting_reason_without_dynamic_content() 
         );
     }
 }
+
+#[test]
+fn an_incomplete_native_contract_reports_its_own_reason_rather_than_the_generic_fallback() {
+    let mut profile = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    // Drop the required top-level model: a native-priority contract gap that previously
+    // collapsed into the catch-all normalization message.
+    profile.config_contents = profile
+        .config_contents
+        .replace("model = \"official-a\"\n", "");
+    profile.model = String::new();
+    let persisted = settings_with(vec![profile], "sub2api");
+    let fixture = Fixture::new(&persisted, &state_with_official());
+    let persisted = fixture.read_settings();
+
+    let error = commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(
+            &persisted,
+            &persisted,
+            "sub2api",
+            ProviderCommitAction::Save,
+            3,
+        ),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code(), ProviderCommitErrorCode::InvalidDraft);
+    assert_eq!(error.reason(), "provider native contract is incomplete");
+}

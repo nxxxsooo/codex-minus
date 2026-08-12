@@ -1047,11 +1047,16 @@ pub(crate) fn load_and_migrate_state_from_path(
             }
             entry.overlay = migrate_legacy_overlay(profile, &official_slugs)?;
         } else if !entry.mode_explicit {
-            if let Some(pointer) = existing_pointer.as_deref() {
-                if !manager_owned_pointer_path(&profile.id, pointer, entry) {
+            match existing_pointer.as_deref() {
+                Some(pointer) if !manager_owned_pointer_path(&profile.id, pointer, entry) => {
                     entry.mode = CatalogMode::External;
                     entry.external_pointer = Some(pointer.to_string());
                 }
+                Some(_) => {}
+                // An implicit mode is a derived value, not a user choice. Leaving a stale one in
+                // place deadlocks the profile: the provider contract rejects every commit while
+                // the mode disagrees, and correcting the mode requires a commit.
+                None => entry.mode = default_mode(profile, None, entry.upstream_topology),
             }
         }
         if profile.relay_mode == RelayMode::Aggregate
@@ -4542,5 +4547,87 @@ http_headers = {{ {actor}"x-unrelated" = "{unrelated_header}" }}
         assert!(second.payload.diff.updated.is_empty());
         assert!(second.payload.diff.removed.is_empty());
         assert_eq!(fs::read(&auth_path).unwrap(), auth_before);
+    }
+}
+
+#[cfg(test)]
+mod implicit_catalog_mode_tests {
+    use super::*;
+
+    fn mixed_profile(id: &str) -> RelayProfile {
+        RelayProfile {
+            id: id.to_string(),
+            name: format!("Provider {id}"),
+            model: "gpt-5.4".to_string(),
+            relay_mode: RelayMode::Official,
+            official_mix_api_key: true,
+            protocol: codex_plus_core::settings::RelayProtocol::Responses,
+            config_contents: "model = \"gpt-5.4\"\n".to_string(),
+            ..RelayProfile::default()
+        }
+    }
+
+    fn state_with_mode(id: &str, mode: CatalogMode, explicit: bool) -> CatalogState {
+        let mut state = CatalogState::default();
+        state.profiles.insert(
+            id.to_string(),
+            ProfileCatalogState {
+                mode,
+                mode_explicit: explicit,
+                ..ProfileCatalogState::default()
+            },
+        );
+        state
+    }
+
+    fn migrate(settings: &BackendSettings, state: &CatalogState) -> CatalogState {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("model-catalog-state.json");
+        fs::write(&path, serde_json::to_vec_pretty(state).unwrap()).unwrap();
+        load_and_migrate_state_from_path(settings, temp.path(), &path).unwrap()
+    }
+
+    #[test]
+    fn an_implicit_mode_follows_the_current_default_instead_of_deadlocking_the_profile() {
+        let profile = mixed_profile("default");
+        let settings = BackendSettings {
+            relay_profiles: vec![profile.clone()],
+            active_relay_id: "default".to_string(),
+            ..BackendSettings::default()
+        };
+        assert_eq!(
+            default_catalog_mode_for_profile(&profile),
+            CatalogMode::OfficialPlusCustom
+        );
+
+        let migrated = migrate(
+            &settings,
+            &state_with_mode("default", CatalogMode::NativeOfficial, false),
+        );
+
+        assert_eq!(
+            migrated.profiles["default"].mode,
+            CatalogMode::OfficialPlusCustom,
+            "a stale implicit mode must not permanently reject every save"
+        );
+    }
+
+    #[test]
+    fn an_explicit_mode_is_never_re_derived() {
+        let settings = BackendSettings {
+            relay_profiles: vec![mixed_profile("default")],
+            active_relay_id: "default".to_string(),
+            ..BackendSettings::default()
+        };
+
+        let migrated = migrate(
+            &settings,
+            &state_with_mode("default", CatalogMode::NativeOfficial, true),
+        );
+
+        assert_eq!(
+            migrated.profiles["default"].mode,
+            CatalogMode::NativeOfficial
+        );
     }
 }

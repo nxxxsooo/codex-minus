@@ -2949,6 +2949,10 @@ fn migrate_persisted_legacy_api_key_auth(profile: &mut RelayProfile) -> anyhow::
 fn sanitized_provider_normalization_error(error: &anyhow::Error) -> &'static str {
     let message = error.to_string();
     for (needle, safe) in [
+        (
+            "native provider contract is invalid",
+            "provider native contract is incomplete",
+        ),
         ("base URL conflict", "provider base URL conflict"),
         ("model conflict", "provider model conflict"),
         ("key conflict", "provider key conflict"),
