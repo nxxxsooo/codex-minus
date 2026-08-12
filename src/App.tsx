@@ -1688,7 +1688,7 @@ export function App() {
       void invoke("update_tray_labels", {
         showLabel: "Show window",
         quitLabel: "Quit",
-        windowTitle: "Codex-- Manager",
+        windowTitle: "Codex Minus",
       });
     }
   }, []);
@@ -1765,7 +1765,7 @@ export function App() {
         <div className="brand">
           <div className="brand-copy">
             <div className="brand-title-row">
-              <div className="brand-title">Codex--</div>
+              <div className="brand-title">Codex Minus</div>
             </div>
             <div className="brand-subtitle">{t("管理控制台")}</div>
           </div>
@@ -3848,7 +3848,7 @@ function RelayProfileEditor({
       {showApiFields && profile.protocol === "chatCompletions" ? (
         <div className="hint-line relay-protocol-hint">
           <MessageCircle className="h-4 w-4" />
-          <span>{t("此上游依赖本地 127.0.0.1:57321 协议代理转成 Responses API；Codex-- 不提供该代理，选择此协议后 Codex 将无法请求，请慎用。")}</span>
+          <span>{t("此上游依赖本地 127.0.0.1:57321 协议代理转成 Responses API；Codex Minus 不提供该代理，选择此协议后 Codex 将无法请求，请慎用。")}</span>
         </div>
       ) : null}
       <div className="hint-line relay-protocol-hint">

@@ -1,7 +1,7 @@
-# codex-minus (Codex-- Manager)
+# codex-minus (Codex Minus)
 
 ## Overview
-Trimmed fork of upstream Codex++ Manager (`BigPizzaV3/CodexPlusPlus`, `apps/codex-plus-manager`): relay provider switching + model catalog management + session management + config doctor only. Tauri 2 + React 19 + Vite. No renderer injection, no launcher. AGPL-3.0-only. Installed as `/Applications/Codex-- Manager.app`; replaced Codex++ (2026-07-15).
+Trimmed fork of upstream Codex++ Manager (`BigPizzaV3/CodexPlusPlus`, `apps/codex-plus-manager`): relay provider switching + model catalog management + session management + config doctor only. Tauri 2 + React 19 + Vite. No renderer injection, no launcher. AGPL-3.0-only. Installed as `/Applications/Codex Minus.app`; replaced Codex++ (2026-07-15) and renamed from `Codex-- Manager` (2026-08-12), so an older bundle can remain until it is removed by hand.
 
 ## Architecture
 - **Frontend**: `src/App.tsx` — single-file SPA, dual-mounted screens (relay / sessions / doctor), v1.2.35 green theme

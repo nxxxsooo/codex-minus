@@ -2244,7 +2244,7 @@ fn save_relay_file_blocking(request: SaveRelayFileRequest) -> CommandResult<Rela
 fn validate_relay_file_save_kind(kind: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         kind == "config",
-        "auth.json 由官方客户端管理，Codex-- 不接受认证文件写入"
+        "auth.json 由官方客户端管理，Codex Minus 不接受认证文件写入"
     );
     Ok(())
 }
@@ -5029,7 +5029,7 @@ fn relay_switch_payload(
     }
 }
 
-/// Codex-- 核心保证：供应商切换/注入永远不改动 config.toml 里不属于供应商的
+/// Codex Minus 核心保证：供应商切换/注入永远不改动 config.toml 里不属于供应商的
 /// mcp_servers / skills / plugins 三张表。上游 core 的写入流程会用 settings 里的
 /// managed 副本对这些表做合并与选择过滤（正是历史上吞掉 `[mcp_servers.memory]`
 /// 的根源），所以这里在写入前快照、写入后原样回植。
@@ -5554,7 +5554,7 @@ pub async fn adapt_active_sessions_to_current_provider(
         let message = if scan_generation != payload.scan_generation {
             "兼容性检查结果已过期，请重新检查。"
         } else {
-            "当前上游 provider-sync 不能限定为活动会话；Codex-- 已阻止全历史回退，升级上游接口后才会开放适配。"
+            "当前上游 provider-sync 不能限定为活动会话；Codex Minus 已阻止全历史回退，升级上游接口后才会开放适配。"
         };
         CommandResult {
             status: "not_implemented".to_string(),

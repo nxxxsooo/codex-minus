@@ -34,11 +34,11 @@
 
 - [x] 5.1 Remove the evidence panel and ownership section (App.tsx 3751-3861), their state/refresh plumbing, label tables, `inspect_provider_capability_evidence`, `provider_capability_evidence.rs`, and registration; delete `provider-capability-ledger.ts` / `provider-doctor-evidence.ts` and their four test files; update `provider-command-registration.test.ts` and `provider-capability-claims.test.ts` (keep the no-overclaim sweep, keep i18n line 26 usage consistent).
 
-## 6. Rename to Codex Minus (gated: single-workstream ownership confirmed)
+## 6. Rename to Codex Minus (ownership confirmed 2026-08-12: this workstream)
 
-- [ ] 6.1 `productName` "Codex Minus" + `mainBinaryName: "codex-minus"`; update window titles, brand text, user-facing strings, doc comments; verify the Windows single-instance check matches the pinned binary name.
-- [ ] 6.2 Update `.github/workflows/build.yml` artifact paths/names (including lines 70/81) and release naming; keep BOARD.md history, identifier, settings dir, and on-disk slugs unchanged.
-- [ ] 6.3 Update README/README.en/AGENTS naming and rewrite the AGENTS baseline-ownership constraint per D4.
+- [x] 6.1 `productName` "Codex Minus" + `mainBinaryName: "codex-minus"`; update window titles, brand text, user-facing strings, doc comments; verify the Windows single-instance check matches the pinned binary name.
+- [x] 6.2 Update `.github/workflows/build.yml` artifact paths/names (including lines 70/81) and release naming; keep BOARD.md history, identifier, settings dir, and on-disk slugs unchanged.
+- [x] 6.3 Update README/README.en/AGENTS naming and rewrite the AGENTS baseline-ownership constraint per D4.
 
 ## 7. Verification and handoff
 

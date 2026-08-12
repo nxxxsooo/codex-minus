@@ -1,4 +1,4 @@
-# Build Codex-- Manager for macOS (arm64) and Windows (x64 + arm64)
+# Build Codex Minus for macOS (arm64) and Windows (x64 + arm64)
 #
 # Triggered by:
 #   - push/PR to master
@@ -67,7 +67,7 @@ jobs:
       - name: Ad-hoc sign and verify macOS bundle
         shell: bash
         run: |
-          APP="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Codex-- Manager.app"
+          APP="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Codex Minus.app"
           codesign --force --deep --sign - "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
 
@@ -78,15 +78,15 @@ jobs:
           for f in *.app/Contents/Info.plist; do
             [ -f "$f" ] || { echo "::error::No .app bundle found"; exit 1; }
           done
-          APP_NAME="Codex-- Manager.app"
-          zip -r "Codex--Manager_${GITHUB_REF_NAME#v}_aarch64.app.zip" "$APP_NAME"
-          ls -lh "Codex--Manager_${GITHUB_REF_NAME#v}_aarch64.app.zip"
+          APP_NAME="Codex Minus.app"
+          zip -r "CodexMinus_${GITHUB_REF_NAME#v}_aarch64.app.zip" "$APP_NAME"
+          ls -lh "CodexMinus_${GITHUB_REF_NAME#v}_aarch64.app.zip"
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Codex--Manager-macOS-arm64
-          path: src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Codex--Manager_*.app.zip
+          name: CodexMinus-macOS-arm64
+          path: src-tauri/target/aarch64-apple-darwin/release/bundle/macos/CodexMinus_*.app.zip
           if-no-files-found: error
 
   # ─── Windows (x64 + arm64) ─────────────────────────────────────────────
@@ -152,7 +152,7 @@ jobs:
       - name: Upload Windows MSI artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Codex--Manager-Windows-${{ matrix.arch }}-MSI
+          name: CodexMinus-Windows-${{ matrix.arch }}-MSI
           path: src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
           compression-level: 0
           if-no-files-found: error
@@ -160,7 +160,7 @@ jobs:
       - name: Upload Windows NSIS artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Codex--Manager-Windows-${{ matrix.arch }}-NSIS
+          name: CodexMinus-Windows-${{ matrix.arch }}-NSIS
           path: src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
           compression-level: 0
           if-no-files-found: error
@@ -191,22 +191,22 @@ jobs:
           mkdir -p dist
 
           # macOS: copy the pre-built .app.zip
-          MAC_DIR="Codex--Manager-macOS-arm64"
+          MAC_DIR="CodexMinus-macOS-arm64"
           if [ -d "$MAC_DIR" ]; then
-            cp "$MAC_DIR"/Codex--Manager_*.app.zip dist/ 2>/dev/null || true
+            cp "$MAC_DIR"/CodexMinus_*.app.zip dist/ 2>/dev/null || true
           fi
 
           # Windows: require one MSI and one NSIS installer per architecture.
           for WIN_ARCH in x64 arm64; do
-            WIN_MSI_DIR="Codex--Manager-Windows-${WIN_ARCH}-MSI"
+            WIN_MSI_DIR="CodexMinus-Windows-${WIN_ARCH}-MSI"
             MSI_SOURCES=( "$WIN_MSI_DIR"/*.msi )
             [ "${#MSI_SOURCES[@]}" -eq 1 ] || { echo "::error::Expected one Windows ${WIN_ARCH} MSI artifact"; exit 1; }
-            cp "${MSI_SOURCES[0]}" "dist/Codex--Manager_${GITHUB_REF_NAME#v}_${WIN_ARCH}.msi"
+            cp "${MSI_SOURCES[0]}" "dist/CodexMinus_${GITHUB_REF_NAME#v}_${WIN_ARCH}.msi"
 
-            WIN_NSIS_DIR="Codex--Manager-Windows-${WIN_ARCH}-NSIS"
+            WIN_NSIS_DIR="CodexMinus-Windows-${WIN_ARCH}-NSIS"
             EXE_SOURCES=( "$WIN_NSIS_DIR"/*.exe )
             [ "${#EXE_SOURCES[@]}" -eq 1 ] || { echo "::error::Expected one Windows ${WIN_ARCH} NSIS artifact"; exit 1; }
-            cp "${EXE_SOURCES[0]}" "dist/Codex--Manager_${GITHUB_REF_NAME#v}_${WIN_ARCH}-setup.exe"
+            cp "${EXE_SOURCES[0]}" "dist/CodexMinus_${GITHUB_REF_NAME#v}_${WIN_ARCH}-setup.exe"
           done
 
           cd dist
@@ -222,9 +222,9 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          name: Codex-- Manager ${{ github.ref_name }}
+          name: Codex Minus ${{ github.ref_name }}
           body: |
-            ## Codex-- Manager ${{ github.ref_name }}
+            ## Codex Minus ${{ github.ref_name }}
 
             ### 下载
 
@@ -245,7 +245,7 @@ jobs:
 
             ### 安装说明
 
-            **macOS**: 解压后将 `Codex-- Manager.app` 移入 `/Applications`。首次启动如被拦截，在「系统设置 → 隐私与安全性」中选择「仍要打开」。
+            **macOS**: 解压后将 `Codex Minus.app` 移入 `/Applications`。首次启动如被拦截，在「系统设置 → 隐私与安全性」中选择「仍要打开」。
 
             **Windows**: ARM 设备请选择 `arm64`，Intel／AMD 设备请选择 `x64`；运行对应的 `.msi` 或 `.exe` 安装程序。
           files: |

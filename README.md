@@ -1,10 +1,10 @@
 <p align="right"><a href="README.en.md">English</a></p>
 
 <p align="center">
-  <img src="docs/assets/codex-minus-hero.webp" alt="Codex-- Manager 供应商配置界面" width="960">
+  <img src="docs/assets/codex-minus-hero.webp" alt="Codex Minus 供应商配置界面" width="960">
 </p>
 
-<h1 align="center">Codex-- Manager</h1>
+<h1 align="center">Codex Minus</h1>
 
 <p align="center">安全切换供应商，管理模型目录，不交出你的 OAuth 与 Context。</p>
 
@@ -15,7 +15,7 @@
   <a href="LICENSE"><img alt="AGPL-3.0-only" src="https://img.shields.io/badge/license-AGPL--3.0--only-197547?style=flat-square"></a>
 </p>
 
-Codex-- Manager 是 [Codex++ Manager](https://github.com/BigPizzaV3/CodexPlusPlus) 的精简 fork，只保留供应商切换、模型目录、本地会话生命周期和配置诊断。没有渲染注入、launcher、市场或自动更新器。
+Codex Minus 是 [Codex++ Manager](https://github.com/BigPizzaV3/CodexPlusPlus) 的精简 fork，只保留供应商切换、模型目录、本地会话生命周期和配置诊断。没有渲染注入、launcher、市场或自动更新器。
 
 ## 下载
 
@@ -34,11 +34,11 @@ Codex-- Manager 是 [Codex++ Manager](https://github.com/BigPizzaV3/CodexPlusPlu
 shasum -a 256 -c SHA256SUMS
 ```
 
-校验后解压，将 `Codex-- Manager.app` 移入 `/Applications`。当前版本采用 ad-hoc 签名，尚未使用 Developer ID 签名或 Apple 公证。首次启动如被 macOS 拦截，请在「系统设置 → 隐私与安全性」中选择「仍要打开」。
+校验后解压，将 `Codex Minus.app` 移入 `/Applications`。当前版本采用 ad-hoc 签名，尚未使用 Developer ID 签名或 Apple 公证。首次启动如被 macOS 拦截，请在「系统设置 → 隐私与安全性」中选择「仍要打开」。
 
 ## 为什么需要它
 
-供应商切换只应该改供应商配置。Codex-- 会在每条写入路径执行前快照 `~/.codex/config.toml` 中的三张 Context 表，并在上游写入结束后把原始 TOML 内容逐字回植：
+供应商切换只应该改供应商配置。Codex Minus 会在每条写入路径执行前快照 `~/.codex/config.toml` 中的三张 Context 表，并在上游写入结束后把原始 TOML 内容逐字回植：
 
 ```toml
 [mcp_servers]
@@ -46,7 +46,7 @@ shasum -a 256 -c SHA256SUMS
 [plugins]
 ```
 
-这层保护来自一次真实事故：旧的 managed context 副本在供应商切换时覆盖了有效 MCP 配置。Codex-- 删除了该管理功能，并用 Rust 测试固定保护契约。
+这层保护来自一次真实事故：旧的 managed context 副本在供应商切换时覆盖了有效 MCP 配置。Codex Minus 删除了该管理功能，并用 Rust 测试固定保护契约。
 
 ## 功能范围
 
@@ -99,7 +99,7 @@ shasum -a 256 -c SHA256SUMS
 
 ## 更新与卸载
 
-更新时先退出 Codex-- Manager，再下载最新版覆盖 `/Applications/Codex-- Manager.app`。应用不包含自动更新器，GitHub Release 不会自动更新本机副本。
+更新时先退出 Codex Minus，再下载最新版覆盖 `/Applications/Codex Minus.app`。应用不包含自动更新器，GitHub Release 不会自动更新本机副本。
 
 用户设置位于 `~/.codex-session-delete/`，覆盖应用不会删除。卸载应用时可单独决定是否保留该目录。
 
@@ -133,7 +133,7 @@ npm run build
 
 完整 Tauri 构建会生成：
 
-- macOS: `src-tauri/target/release/bundle/macos/Codex-- Manager.app`
+- macOS: `src-tauri/target/release/bundle/macos/Codex Minus.app`
 - Windows: `src-tauri/target/release/bundle/msi/*.msi` 或 `src-tauri/target/release/bundle/nsis/*.exe`
 
 ## License

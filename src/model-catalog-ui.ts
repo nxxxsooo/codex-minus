@@ -267,7 +267,7 @@ export function externalVersionRequiresAcceptance(status: string): boolean {
   return status === "mismatch";
 }
 
-/// Complete guidance for a committed generation whose runtime contract changed. Codex-- never
+/// Complete guidance for a committed generation whose runtime contract changed. Codex Minus never
 /// terminates or relaunches a host, keeps this bound to the single existing restart marker, and
 /// has no trustworthy runtime observer, so it states the unknown adoption instead of clearing
 /// the marker on its own.
