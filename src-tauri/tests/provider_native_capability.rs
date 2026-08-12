@@ -85,7 +85,7 @@ fn classifies_the_binding_fixture_matrix_from_profile_catalog_and_toml() {
             "partial",
             mixed_profile("partial", PARTIAL),
             CatalogMode::OfficialPlusCustom,
-            NativeCapabilityState::Degraded,
+            NativeCapabilityState::UpgradeAvailable,
         ),
         (
             "conflicting actor header",
@@ -248,7 +248,9 @@ fn actor_header_uses_http_lookup_but_requires_one_exact_canonical_entry() {
         &mixed_profile("wrong-case", WRONG_CASE_HEADER),
         CatalogMode::OfficialPlusCustom,
     );
-    assert_eq!(wrong_case.state, NativeCapabilityState::Degraded);
+    // The transform rewrites the actor header, so the action stays reachable; the frontend
+    // still routes an actor-header-only conflict to its explicit confirmation path first.
+    assert_eq!(wrong_case.state, NativeCapabilityState::UpgradeAvailable);
     assert_eq!(
         reason(&wrong_case, NativeCapabilityField::ActorHeader),
         (
@@ -632,7 +634,7 @@ fn command_loader_preserves_raw_persisted_evidence_before_evaluation() {
             ),
             ("CodexPP-profile", NativeCapabilityState::UpgradeAvailable),
             ("key-conflict", NativeCapabilityState::Degraded),
-            ("missing-field", NativeCapabilityState::Degraded),
+            ("missing-field", NativeCapabilityState::UpgradeAvailable),
         ]
     );
     assert_eq!(
@@ -712,4 +714,51 @@ fn command_loader_rejects_malformed_settings_with_one_sanitized_typed_error() {
     assert!(!serialized.contains("secret-settings-parser"));
     assert_eq!(std::fs::read(&settings_path).unwrap(), before);
     assert!(!catalog_path.exists());
+}
+
+const NON_LEGACY_REPAIRABLE: &str =
+    include_str!("fixtures/provider-native-capability/non-legacy-repairable.toml");
+const REPAIRABLE_WITHOUT_MODEL: &str =
+    include_str!("fixtures/provider-native-capability/repairable-without-model.toml");
+
+#[test]
+fn upgrade_is_offered_whenever_the_transform_writes_every_remaining_gap() {
+    // Not the classic `custom` shape: a different identifier and provider name, no bearer, no
+    // actor header, and official auth still required. Every one of those is a field the upgrade
+    // transform writes, so the profile must be able to reach its own upgrade.
+    let profile = mixed_profile("relay-one", NON_LEGACY_REPAIRABLE);
+    let inspection = inspect_profile(&profile, CatalogMode::OfficialPlusCustom);
+
+    assert_eq!(inspection.state, NativeCapabilityState::UpgradeAvailable);
+    assert!(
+        inspection
+            .fields
+            .iter()
+            .any(|field| field.outcome != NativeCapabilityOutcome::Satisfied),
+        "the contract is still incomplete; only its reachability changed"
+    );
+}
+
+#[test]
+fn upgrade_is_withheld_when_a_gap_the_transform_cannot_fill_remains() {
+    // Same profile without a default model. The transform never invents a model, so the action
+    // stays withheld and the missing input is reported instead.
+    let profile = mixed_profile("relay-one", REPAIRABLE_WITHOUT_MODEL);
+    let inspection = inspect_profile(&profile, CatalogMode::OfficialPlusCustom);
+
+    assert_eq!(inspection.state, NativeCapabilityState::Degraded);
+    assert!(inspection.fields.iter().any(|field| {
+        field.field == NativeCapabilityField::Model
+            && field.reason == NativeCapabilityReason::MissingModel
+    }));
+}
+
+#[test]
+fn the_classic_legacy_contract_still_reaches_its_upgrade() {
+    let profile = mixed_profile("relay-one", LEGACY_MIXED);
+
+    assert_eq!(
+        inspect_profile(&profile, CatalogMode::OfficialPlusCustom).state,
+        NativeCapabilityState::UpgradeAvailable
+    );
 }

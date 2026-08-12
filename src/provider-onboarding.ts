@@ -37,6 +37,10 @@ export const PRO_MODEL_SLUGS = [
   "gpt-5.3-codex-spark",
 ] as const;
 
+/// Slugs the official bundled catalog hides. Kept beside the shipped list so a retired model is
+/// caught by a test rather than shipped to a user whose catalog can no longer represent it.
+export const RETIRED_MODEL_SLUGS = ["gpt-5.4", "gpt-5.4-mini"] as const;
+
 export function createNewRelayProfileDraft<TContext>({
   id,
   contextSelection,

@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import {
   OFFICIAL_AUTH_GUIDE_URL,
   PRO_MODEL_SLUGS,
+  RETIRED_MODEL_SLUGS,
   createNewRelayProfileDraft,
   materializeNewProviderConfig,
   officialLoginGuide,
@@ -135,5 +136,18 @@ describe("built-in Pro model list", () => {
     assert.equal(draft?.relayMode, "official");
     assert.equal(draft?.officialMixApiKey, true);
     assert.equal(draft?.protocol, "responses");
+  });
+});
+
+describe("Pro model list maintenance", () => {
+  it("ships no slug the official bundled catalog hides", () => {
+    const retired = new Set<string>(RETIRED_MODEL_SLUGS);
+    const shipped = PRO_MODEL_SLUGS.filter((slug) => retired.has(slug));
+    assert.deepEqual(shipped, [], `retired slugs are still shipped: ${shipped.join(", ")}`);
+  });
+
+  it("records the retired slugs it guards against", () => {
+    assert.ok((RETIRED_MODEL_SLUGS as readonly string[]).includes("gpt-5.4"));
+    assert.ok((RETIRED_MODEL_SLUGS as readonly string[]).includes("gpt-5.4-mini"));
   });
 });

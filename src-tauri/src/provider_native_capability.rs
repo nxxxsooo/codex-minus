@@ -519,7 +519,13 @@ fn evaluate_document(
         NativeCapabilityState::NativePriority
     } else if chat_compatible {
         NativeCapabilityState::Compatibility
-    } else if alias_requires_rename && only_alias_mismatch(&fields) || legacy_compatible {
+    } else if alias_requires_rename && only_alias_mismatch(&fields)
+        || legacy_compatible
+        || fields.iter().all(|entry| {
+            entry.outcome == NativeCapabilityOutcome::Satisfied
+                || upgrade_transform_writes(entry.reason)
+        })
+    {
         NativeCapabilityState::UpgradeAvailable
     } else {
         NativeCapabilityState::Degraded
@@ -637,6 +643,29 @@ pub fn reason_blocks_save(reason: NativeCapabilityReason) -> bool {
             // the staged contract would mean.
             | NativeCapabilityReason::DuplicateActorHeader
             | NativeCapabilityReason::ActorHeaderValueConflict
+    )
+}
+
+/// Whether the upgrade transform itself writes the field this gap belongs to.
+///
+/// The transform sets the provider name, the official-auth requirement, the provider bearer, the
+/// actor-authorization header, and the wire API. A profile whose only remaining gaps are those
+/// must be able to reach its own upgrade; requiring the contract to already be nearly complete
+/// left a legacy profile unreachable from the one action that would complete it. Gaps the
+/// transform cannot fill — a missing default model or endpoint, an unusable identifier, an
+/// ambiguous header, or a malformed value — continue to withhold the action.
+fn upgrade_transform_writes(reason: NativeCapabilityReason) -> bool {
+    matches!(
+        reason,
+        NativeCapabilityReason::ProviderNameMismatch
+            | NativeCapabilityReason::MissingProviderName
+            | NativeCapabilityReason::OpenAiAuthRequired
+            | NativeCapabilityReason::MissingOpenAiAuthRequirement
+            | NativeCapabilityReason::MissingProviderBearer
+            | NativeCapabilityReason::MissingActorHeader
+            | NativeCapabilityReason::ActorHeaderNameMismatch
+            | NativeCapabilityReason::MissingWireApi
+            | NativeCapabilityReason::WireApiMismatch
     )
 }
 
