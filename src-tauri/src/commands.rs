@@ -2949,6 +2949,52 @@ fn migrate_persisted_legacy_api_key_auth(profile: &mut RelayProfile) -> anyhow::
 fn sanitized_provider_normalization_error(error: &anyhow::Error) -> &'static str {
     let message = error.to_string();
     for (needle, safe) in [
+        // The bail carries the contract reason variant name, so the specific gap is matched
+        // before the family fallback and the user learns which field to fix.
+        ("MissingModel", "provider model is required"),
+        ("MalformedModel", "provider model is malformed"),
+        ("MissingBaseUrl", "provider base URL is required"),
+        ("MalformedBaseUrl", "provider base URL is malformed"),
+        ("MissingProviderName", "provider name is required"),
+        ("ProviderNameMismatch", "provider name mismatch"),
+        ("MalformedProviderName", "provider name is malformed"),
+        ("MissingProviderBearer", "provider key is required"),
+        ("MalformedProviderBearer", "provider key is malformed"),
+        ("StructuredKeyBearerConflict", "provider key conflict"),
+        ("MissingWireApi", "provider wire API is required"),
+        ("WireApiMismatch", "provider wire API mismatch"),
+        (
+            "OpenAiAuthRequired",
+            "provider must not require official auth",
+        ),
+        ("MissingActorHeader", "provider actor header is required"),
+        (
+            "ActorHeaderNameMismatch",
+            "provider actor header name mismatch",
+        ),
+        (
+            "ActorHeaderValueConflict",
+            "provider actor header value conflict",
+        ),
+        (
+            "DuplicateActorHeader",
+            "provider actor header is duplicated",
+        ),
+        ("CatalogModeMismatch", "provider catalog mode mismatch"),
+        ("ReservedProviderId", "provider id is reserved"),
+        (
+            "LegacyProviderIdRequiresRename",
+            "legacy provider id requires rename",
+        ),
+        (
+            "SelectedProviderTableMissing",
+            "selected provider table is missing",
+        ),
+        (
+            "MalformedProviderTable",
+            "selected provider table is malformed",
+        ),
+        ("MissingProviderSelection", "provider selection is required"),
         (
             "native provider contract is invalid",
             "provider native contract is incomplete",

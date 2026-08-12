@@ -3568,5 +3568,59 @@ fn an_incomplete_native_contract_reports_its_own_reason_rather_than_the_generic_
     .unwrap_err();
 
     assert_eq!(error.code(), ProviderCommitErrorCode::InvalidDraft);
-    assert_eq!(error.reason(), "provider native contract is incomplete");
+    assert_eq!(error.reason(), "provider model is required");
+}
+
+#[test]
+fn a_contract_gap_names_the_field_it_is_missing() {
+    let build = |mutate: &dyn Fn(&mut RelayProfile)| {
+        let mut profile = canonical_profile(
+            "sub2api",
+            "official-a",
+            "https://relay.example/v1",
+            "provider-key",
+        );
+        mutate(&mut profile);
+        let persisted = settings_with(vec![profile], "sub2api");
+        let fixture = Fixture::new(&persisted, &state_with_official());
+        let persisted = fixture.read_settings();
+        commit_provider_detail_from_paths(
+            &fixture.paths,
+            request(
+                &persisted,
+                &persisted,
+                "sub2api",
+                ProviderCommitAction::Save,
+                3,
+            ),
+        )
+        .unwrap_err()
+        .reason()
+    };
+
+    assert_eq!(
+        build(&|profile| {
+            profile.config_contents = profile
+                .config_contents
+                .replace("model = \"official-a\"\n", "");
+            profile.model = String::new();
+        }),
+        "provider model is required"
+    );
+    assert_eq!(
+        build(&|profile| {
+            profile.config_contents = profile
+                .config_contents
+                .replace("base_url = \"https://relay.example/v1\"\n", "");
+            profile.base_url = String::new();
+            profile.upstream_base_url = String::new();
+        }),
+        "provider base URL is required"
+    );
+    assert_eq!(
+        build(&|profile| {
+            profile.config_contents = profile.config_contents.replace("name = \"OpenAI\"\n", "");
+        }),
+        "provider name mismatch"
+    );
 }
