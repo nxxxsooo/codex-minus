@@ -3617,12 +3617,6 @@ fn a_contract_gap_names_the_field_it_is_missing() {
         }),
         "provider base URL is required"
     );
-    assert_eq!(
-        build(&|profile| {
-            profile.config_contents = profile.config_contents.replace("name = \"OpenAI\"\n", "");
-        }),
-        "provider name mismatch"
-    );
 }
 
 #[test]

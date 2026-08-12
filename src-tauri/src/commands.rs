@@ -3397,22 +3397,20 @@ fn validate_provider_detail_contract(
     use crate::provider_native_capability::NativeCapabilityState;
 
     let inspection = crate::provider_native_capability::inspect_profile(profile, catalog_mode);
-    // A degraded contract is refused only when saving cannot repair it. A profile still in the
-    // legacy `custom` shape is the start of the upgrade path: the fields that complete the
-    // contract can only be persisted by a save, so refusing it left the profile unrepairable.
-    if inspection.state == NativeCapabilityState::Degraded
-        && !crate::provider_native_capability::legacy_upgradeable_shape(profile)
+    // A degraded contract is refused only for gaps that make the draft unusable. A provider is
+    // edited toward the target contract in steps, so a half-repaired draft must stay savable;
+    // refusing it strands the profile, because the fields that complete the contract can only be
+    // persisted by a save.
+    if let Some(blocking) = inspection
+        .fields
+        .iter()
+        .filter(|field| {
+            field.outcome != crate::provider_native_capability::NativeCapabilityOutcome::Satisfied
+        })
+        .map(|field| field.reason)
+        .find(|reason| crate::provider_native_capability::reason_blocks_save(*reason))
     {
-        let reason = inspection
-            .fields
-            .iter()
-            .find(|field| {
-                field.outcome
-                    != crate::provider_native_capability::NativeCapabilityOutcome::Satisfied
-            })
-            .map(|field| format!("{:?}", field.reason))
-            .unwrap_or_else(|| "invalid".to_string());
-        anyhow::bail!("native provider contract is invalid: {reason}");
+        anyhow::bail!("native provider contract is invalid: {blocking:?}");
     }
     if inspection.state != NativeCapabilityState::NativePriority {
         return Ok(());

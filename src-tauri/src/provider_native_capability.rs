@@ -609,28 +609,35 @@ fn evaluate_actor_header(provider: Option<&dyn TableLike>) -> NativeCapabilityFi
     }
 }
 
-/// The legacy `custom` provider shape this change upgrades from. A profile in this shape is
-/// always savable: it is the starting point of the upgrade path, and refusing it would leave the
-/// profile unrepairable, since the fields that complete the contract can only be persisted by a
-/// save.
-pub fn legacy_upgradeable_shape(profile: &RelayProfile) -> bool {
-    let Ok(document) = profile.config_contents.parse::<toml_edit::DocumentMut>() else {
-        return false;
-    };
-    if document.get("model_provider").and_then(Item::as_str) != Some("custom") {
-        return false;
-    }
-    document
-        .get("model_providers")
-        .and_then(Item::as_table_like)
-        .and_then(|providers| providers.get("custom"))
-        .and_then(Item::as_table_like)
-        .is_some_and(|provider| {
-            provider.get("name").and_then(Item::as_str) == Some("custom")
-                && provider.get("wire_api").and_then(Item::as_str) == Some(MANAGED_WIRE_API)
-                && provider.get("requires_openai_auth").and_then(Item::as_bool) == Some(true)
-                && provider.get("http_headers").is_none()
-        })
+/// Whether a contract gap makes the draft unusable rather than merely un-upgraded.
+///
+/// A provider is edited toward the target contract in steps, so a half-repaired draft has to be
+/// savable: refusing it strands the profile, because the fields that complete the contract can
+/// only be persisted by a save. What stays refused is a draft that cannot be interpreted or run
+/// at all — unparseable TOML, no usable provider table, a reserved or legacy identifier, or a
+/// missing endpoint or default model.
+pub fn reason_blocks_save(reason: NativeCapabilityReason) -> bool {
+    matches!(
+        reason,
+        NativeCapabilityReason::MalformedToml
+            | NativeCapabilityReason::MissingProviderSelection
+            | NativeCapabilityReason::SelectedProviderTableMissing
+            | NativeCapabilityReason::MalformedProviderTable
+            | NativeCapabilityReason::ReservedProviderId
+            | NativeCapabilityReason::LegacyProviderIdRequiresRename
+            | NativeCapabilityReason::MissingBaseUrl
+            | NativeCapabilityReason::MalformedBaseUrl
+            | NativeCapabilityReason::MissingModel
+            | NativeCapabilityReason::MalformedModel
+            | NativeCapabilityReason::MalformedProviderName
+            | NativeCapabilityReason::MalformedWireApi
+            | NativeCapabilityReason::MalformedOpenAiAuthRequirement
+            | NativeCapabilityReason::MalformedProviderBearer
+            // Ambiguity, not incompleteness: two actor headers give no single answer for what
+            // the staged contract would mean.
+            | NativeCapabilityReason::DuplicateActorHeader
+            | NativeCapabilityReason::ActorHeaderValueConflict
+    )
 }
 
 fn legacy_compatible_contract(
