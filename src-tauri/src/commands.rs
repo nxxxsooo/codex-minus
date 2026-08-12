@@ -2335,6 +2335,13 @@ pub enum ProviderCommitCheckpoint {
     Normalization,
     ActivationScopeVerification,
     CatalogMaterialization,
+    /// Immediately before the active profile is staged into a private home.
+    ///
+    /// Staging failure is the only source of `StagingRejected`, and no input reachable through
+    /// the public commit API produces one: common configuration is sanitized before it gets here.
+    /// The checkpoint exists so that code can be exercised the same way catalog materialization
+    /// already is, rather than being asserted only in theory.
+    Staging,
     SettingsPersistence,
     LiveConfigCommit,
     ContextVerification,
@@ -2666,14 +2673,16 @@ pub fn commit_provider_detail_from_paths_observed(
     let mut context_snapshot = None;
 
     if active_commit {
-        let staged =
-            stage_active_relay_config_at(&paths.codex_home, &paths.app_state, &plan.settings)
-                .map_err(|_| {
-                    provider_commit_failure(
-                        ProviderCommitErrorCode::StagingRejected,
-                        "provider staging failed",
-                    )
-                })?;
+        let staged = observe(ProviderCommitCheckpoint::Staging)
+            .and_then(|()| {
+                stage_active_relay_config_at(&paths.codex_home, &paths.app_state, &plan.settings)
+            })
+            .map_err(|_| {
+                provider_commit_failure(
+                    ProviderCommitErrorCode::StagingRejected,
+                    "provider staging failed",
+                )
+            })?;
         let active_profile = plan.settings.active_relay_profile();
         let active_state = plan
             .catalog_state

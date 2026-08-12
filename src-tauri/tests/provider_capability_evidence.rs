@@ -359,7 +359,10 @@ fn capability_rows_are_scoped_and_never_inferred_from_a_complete_contract() {
     // The contract itself is complete and the client is eligible to mark itself.
     assert_eq!(payload.provider_contract, ProviderContractEvidence::Ready);
     assert_eq!(payload.actor_marker, ActorMarkerEvidence::Eligible);
-    assert_eq!(payload.route_kind, ProviderRouteEvidence::NativePriorityMixed);
+    assert_eq!(
+        payload.route_kind,
+        ProviderRouteEvidence::NativePriorityMixed
+    );
 
     // None of that is evidence for any capability row.
     assert_eq!(payload.text_responses, TextResponsesEvidence::Unknown);

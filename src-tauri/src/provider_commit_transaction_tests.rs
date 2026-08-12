@@ -4396,3 +4396,49 @@ fn sentinel_credentials_never_reach_artifacts_payloads_errors_or_logs() {
         }
     }
 }
+
+#[test]
+fn injected_staging_failure_is_typed_as_staging_rejected_and_mutates_nothing() {
+    let active = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    let initial = settings_with(vec![active], "sub2api");
+    let fixture = Fixture::new(&initial, &state_with_official());
+    fs::write(
+        fixture.paths.codex_home.join("config.toml"),
+        rich_live_config(),
+    )
+    .unwrap();
+    let persisted = fixture.read_settings();
+    let before = fixture.file_generation();
+
+    let error = commit_provider_detail_from_paths_observed(
+        &fixture.paths,
+        request(
+            &persisted,
+            &persisted,
+            "sub2api",
+            ProviderCommitAction::Save,
+            60,
+        ),
+        |checkpoint| {
+            if checkpoint == ProviderCommitCheckpoint::Staging {
+                anyhow::bail!("staging-fault-sentinel");
+            }
+            Ok(())
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code(), ProviderCommitErrorCode::StagingRejected);
+    assert_eq!(error.reason(), "provider staging failed");
+    assert!(!error.to_string().contains("staging-fault-sentinel"));
+    assert_eq!(
+        fixture.file_generation(),
+        before,
+        "a rejected staging must leave the complete prior generation"
+    );
+}
