@@ -1057,7 +1057,7 @@ fn codex_cli_from_app_dir(app_dir: &Path) -> PathBuf {
     }
     #[cfg(windows)]
     {
-        return app_dir.join("codex.exe");
+        return windows_codex_cli_from_app_dir(app_dir);
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
@@ -1069,9 +1069,58 @@ fn codex_cli_from_app_dir(app_dir: &Path) -> PathBuf {
     }
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_codex_cli_from_app_dir(app_dir: &Path) -> PathBuf {
+    let direct = app_dir.join("codex.exe");
+    if direct.is_file() {
+        return direct;
+    }
+
+    std::fs::read_dir(app_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join("codex.exe"))
+        .filter(|candidate| candidate.is_file())
+        .max_by_key(|candidate| {
+            candidate
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .ok()
+        })
+        .unwrap_or(direct)
+}
+
+/// Standalone Codex installs keep the CLI in a content-addressed subdirectory, e.g.
+/// `%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe`. Shared app-directory resolution only
+/// probes the fixed roots, and on a machine that also carries the MS Store package it resolves
+/// to `WindowsApps\...\app`, whose binaries cannot be spawned by path. The standalone CLI is
+/// therefore the only usable target whenever it exists.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_standalone_codex_cli_in(local_app_data: &Path) -> Option<PathBuf> {
+    [
+        local_app_data.join("OpenAI").join("Codex").join("bin"),
+        local_app_data.join("OpenAI").join("Codex"),
+        local_app_data.join("Programs").join("OpenAI").join("Codex"),
+    ]
+    .into_iter()
+    .map(|root| windows_codex_cli_from_app_dir(&root))
+    .find(|candidate| candidate.is_file())
+}
+
 pub(crate) fn discover_target_codex_cli() -> anyhow::Result<PathBuf> {
     let settings = SettingsStore::default().load().unwrap_or_default();
     let saved = settings.codex_app_path.trim();
+    #[cfg(windows)]
+    if saved.is_empty()
+        && let Some(cli) = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .as_deref()
+            .and_then(windows_standalone_codex_cli_in)
+    {
+        return Ok(cli);
+    }
     let app_dir = codex_plus_core::app_paths::resolve_codex_app_dir_with_saved(
         None,
         (!saved.is_empty()).then_some(saved),
@@ -5444,6 +5493,46 @@ mod session_lifecycle_tests {
             codex_cli_from_app_dir(&app.join("Contents/MacOS")),
             app.join("Contents/Resources/codex")
         );
+    }
+
+    #[test]
+    fn windows_cli_path_accepts_versioned_standalone_bin_layout() {
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("bin");
+        let versioned = bin.join("a61afac3bb4ee395");
+        std::fs::create_dir_all(&versioned).unwrap();
+        std::fs::write(versioned.join("codex.exe"), b"test cli").unwrap();
+
+        assert_eq!(
+            windows_codex_cli_from_app_dir(&bin),
+            versioned.join("codex.exe")
+        );
+    }
+
+    #[test]
+    fn windows_standalone_cli_is_found_under_versioned_local_appdata_bin() {
+        let temp = tempfile::tempdir().unwrap();
+        let versioned = temp
+            .path()
+            .join("OpenAI")
+            .join("Codex")
+            .join("bin")
+            .join("a61afac3bb4ee395");
+        std::fs::create_dir_all(&versioned).unwrap();
+        std::fs::write(versioned.join("codex.exe"), b"test cli").unwrap();
+
+        assert_eq!(
+            windows_standalone_codex_cli_in(temp.path()),
+            Some(versioned.join("codex.exe"))
+        );
+    }
+
+    #[test]
+    fn windows_standalone_cli_is_absent_without_a_codex_binary() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("OpenAI").join("Codex").join("bin")).unwrap();
+
+        assert_eq!(windows_standalone_codex_cli_in(temp.path()), None);
     }
 }
 
