@@ -141,7 +141,6 @@ import {
 } from "./provider-config-transform-router";
 import {
   deriveProviderNativeCapabilityView,
-  deriveProviderModePresentation,
   providerTransitionDecisionForStructuredPatch,
 } from "./provider-native-capability-view";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
@@ -3214,7 +3213,6 @@ function RelayProfileDetail({
       localPlan: "unknown",
     },
   });
-  const modePresentation = deriveProviderModePresentation(detailState.inspection);
   useEffect(() => {
     const nextDraft = isAggregateRelayProfile(profile)
       ? normalizeAggregateRelayProfile(profile, form)
@@ -3315,46 +3313,49 @@ function RelayProfileDetail({
   const replaceDraft = (next: RelayProfile) => {
     updateDetailState(replaceProviderDetailProfile(detailStateRef.current, next));
   };
-  const dispatchProviderDetailStep = (step: ProviderDetailStep<RelayProfile>) => {
+  const dispatchProviderDetailStep = (step: ProviderDetailStep<RelayProfile>): Promise<boolean> => {
     updateDetailState(step.state);
     const effect = step.effects.find((candidate) => candidate.kind === "transform");
-    if (!effect || effect.kind !== "transform") return;
-    void actions.transformProviderNativeCapability(effect.invocation).then((response) => {
+    if (!effect || effect.kind !== "transform") return Promise.resolve(true);
+    return actions.transformProviderNativeCapability(effect.invocation).then((response) => {
       const settled = settleProviderDetailTransform(
         detailStateRef.current,
         effect.correlation,
         response,
       );
-      if (settled.disposition === "stale") return;
+      if (settled.disposition === "stale") return false;
       updateDetailState(settled.state);
       if (settled.disposition === "notApplied") {
-        if (settled.state.pendingLegacyProviderIdResolution) return;
+        if (settled.state.pendingLegacyProviderIdResolution) return false;
         if (
           response.status === "confirmationRequired"
           && settled.state.pendingConfirmation
         ) {
           const accepted = window.confirm(providerTransitionConfirmationMessage(settled.state));
-          dispatchProviderDetailStep(
+          return dispatchProviderDetailStep(
             accepted
               ? confirmProviderDetailTransition(settled.state)
               : cancelProviderDetailTransition(settled.state),
           );
-          return;
         }
         void actions.showMessage(
           t("供应商配置转换"),
           response.blockers.join("、") || t("当前供应商配置不能完成该转换。"),
           "failed",
         );
+        return false;
       }
+      return true;
     }).catch((error) => {
       const settled = settleProviderDetailTransformError(
         detailStateRef.current,
         effect.correlation,
       );
-      if (!settled.report) return;
-      updateDetailState(settled.state);
-      void actions.showMessage(t("供应商配置转换"), stringifyError(error), "failed");
+      if (settled.report) {
+        updateDetailState(settled.state);
+        void actions.showMessage(t("供应商配置转换"), stringifyError(error), "failed");
+      }
+      return false;
     });
   };
   const editDraft = (patch: Partial<RelayProfile>) => {
@@ -3413,23 +3414,7 @@ function RelayProfileDetail({
       void actions.showMessage(t("供应商配置转换"), stringifyError(error), "failed");
       return;
     }
-    dispatchProviderDetailStep(step);
-  };
-  const upgradeNativePriorityDraft = () => {
-    try {
-      const action = nativeCapabilityView.upgradeAction;
-      if (action === "resolveLegacyProviderId") {
-        dispatchProviderDetailStep(beginProviderDetailLegacyIdUpgrade(detailStateRef.current));
-      } else if (action === "upgrade" || action === "replaceActorHeader") {
-        dispatchProviderDetailStep(
-          beginProviderDetailNativePriorityUpgrade(detailStateRef.current),
-        );
-      } else {
-        throw new Error("This provider has no available native-priority action.");
-      }
-    } catch (error) {
-      void actions.showMessage(t("原生能力优先"), stringifyError(error), "failed");
-    }
+    void dispatchProviderDetailStep(step);
   };
   const retryLegacyProviderIdDraft = () => {
     try {
@@ -3456,7 +3441,7 @@ function RelayProfileDetail({
       catalogMode: current.catalogDraft?.mode
         ?? defaultCatalogMode(current.profile.relayMode, current.profile.officialMixApiKey),
     });
-    dispatchProviderDetailStep(step);
+    void dispatchProviderDetailStep(step);
   };
   const newProviderFieldErrors = isNew && !isAggregateRelayProfile(draft)
     ? validateNewProviderDraft(draft)
@@ -3476,18 +3461,33 @@ function RelayProfileDetail({
             : detailState.blockers.length
               ? t("供应商草稿被后端验证阻止，请处理提示后重试。")
               : null;
-  const draftWithModelRows = () => {
+  const draftWithModelRows = (source: RelayProfile = draft) => {
     const serializedRows = serializeModelWindowRows(modelWindowRows);
-    return { ...draft, modelList: serializedRows.modelList, modelWindows: serializedRows.modelWindows };
+    return { ...source, modelList: serializedRows.modelList, modelWindows: serializedRows.modelWindows };
   };
   const saveDraft = async () => {
     if (validationError || savingRef.current) return;
     savingRef.current = true;
     setSaving(true);
     try {
+      // Opening a profile that predates this contract and pressing save upgrades it in place: the
+      // save is the explicit action, so there is no separate upgrade control to find. A legacy
+      // alias still needs a name from the user, so that one only opens its prompt.
+      const upgradeAction = isNew ? null : nativeCapabilityView.upgradeAction;
+      if (upgradeAction === "upgrade" || upgradeAction === "replaceActorHeader") {
+        const upgraded = await dispatchProviderDetailStep(
+          beginProviderDetailNativePriorityUpgrade(detailStateRef.current),
+        );
+        if (!upgraded) return;
+      } else if (upgradeAction === "resolveLegacyProviderId") {
+        await dispatchProviderDetailStep(
+          beginProviderDetailLegacyIdUpgrade(detailStateRef.current),
+        );
+        return;
+      }
       // Deriving the draft inside the guard keeps the `finally` reset reachable: a throw before it
       // would leave the button pending forever, and its click handler discards the rejection.
-      const draftWithWindows = draftWithModelRows();
+      const draftWithWindows = draftWithModelRows(detailStateRef.current.profile);
       const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
       const next = isNew
         ? addRelayProfile(form, normalizedDraft)
@@ -3589,67 +3589,32 @@ function RelayProfileDetail({
           </Button>
         </Toolbar>
       </div>
-      {isNew || isAggregateRelayProfile(draft) ? null : (
+      {detailState.pendingLegacyProviderIdResolution === null ? null : (
         <section className="catalog-profile-editor">
           <div className="catalog-editor-head">
             <div>
-              <strong>{t("原生能力优先")}</strong>
-              <span>{t("Actor 标记只表示客户端资格；上游、模型和运行时能力仍需独立验证。")}</span>
-            </div>
-            <div className="catalog-editor-actions">
-              <UiBadge variant="outline">
-                {providerModePresentationLabel(modePresentation, nativeCapabilityView.state)}
-              </UiBadge>
-              {nativeCapabilityView.upgradeAction ? (
-                <Button
-                  disabled={
-                    detailState.pendingTransformRevision !== null
-                    || detailState.pendingLegacyProviderIdResolution !== null
-                  }
-                  onClick={upgradeNativePriorityDraft}
-                  size="sm"
-                  type="button"
-                  variant="secondary"
-                >
-                  {nativeCapabilityView.upgradeAction === "resolveLegacyProviderId"
-                    ? t("处理旧供应商 ID")
-                    : nativeCapabilityView.upgradeAction === "replaceActorHeader"
-                      ? t("替换自定义 Actor 标记")
-                      : t("升级为原生能力优先")}
-                </Button>
-              ) : null}
+              <strong>{t("旧供应商 ID 需要一个新名字")}</strong>
+              <span>{t("这个供应商用的是旧版名称，保存前请给它取一个未被占用的名字。")}</span>
             </div>
           </div>
-          {modePresentation === "nativeOfficial" ? (
-            <span>{t("当前为 native-official；仅使用官方 OAuth，不会自动转换为混合供应商。")}</span>
-          ) : modePresentation === "external" ? (
-            <span>{t("当前目录由 external 所有；采用或移除前不会自动改为托管模式。")}</span>
-          ) : modePresentation === "advancedCompatibility" ? (
-            <span>{t("当前是高级兼容路径，不是新供应商默认模式，也不会被静默转换。")}</span>
-          ) : null}
-          {nativeCapabilityView.upgradeAvailability === "manualResolutionRequired" ? (
-            <span>{t("旧供应商 ID 需要先明确重命名，当前不会执行一键升级。")}</span>
-          ) : null}
-          {detailState.pendingLegacyProviderIdResolution === null ? null : (
-            <div className="catalog-editor-actions">
-              <Input
-                value={legacyReplacementProviderId}
-                onChange={(event) => setLegacyReplacementProviderId(event.currentTarget.value)}
-                placeholder={t("未使用的供应商 ID")}
-              />
-              <Button type="button" size="sm" onClick={retryLegacyProviderIdDraft}>
-                {t("重试重命名")}
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
-                onClick={cancelLegacyProviderIdDraft}
-              >
-                {t("取消")}
-              </Button>
-            </div>
-          )}
+          <div className="catalog-editor-actions">
+            <Input
+              value={legacyReplacementProviderId}
+              onChange={(event) => setLegacyReplacementProviderId(event.currentTarget.value)}
+              placeholder={t("未使用的供应商 ID")}
+            />
+            <Button type="button" size="sm" onClick={retryLegacyProviderIdDraft}>
+              {t("重试重命名")}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              onClick={cancelLegacyProviderIdDraft}
+            >
+              {t("取消")}
+            </Button>
+          </div>
           {detailState.preview?.renamedProviderFrom && detailState.preview.renamedProviderTo ? (
             <span>
               {tf("供应商 ID 将从 {0} 重命名为 {1}；当前仍是未保存草稿。", [
@@ -3939,21 +3904,6 @@ function providerNativeCapabilityStateLabel(state: string): string {
   }
 }
 
-function providerModePresentationLabel(
-  presentation: "nativePriority" | "nativeOfficial" | "external" | "advancedCompatibility" | "unknown",
-  state: string,
-): string {
-  switch (presentation) {
-    case "nativeOfficial":
-      return "native-official";
-    case "external":
-      return "external";
-    case "advancedCompatibility":
-      return t("高级兼容路径");
-    default:
-      return providerNativeCapabilityStateLabel(state);
-  }
-}
 
 
 function AggregateRelayProfileEditor({

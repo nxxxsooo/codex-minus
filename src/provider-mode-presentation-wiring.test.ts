@@ -5,19 +5,14 @@ import { describe, it } from "node:test";
 const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
 
 describe("provider mode presentation wiring", () => {
-  it("derives the detail badge only from response-only native inspection", () => {
+  it("shows no provider-mode badge or label in the detail screen", () => {
     const detail = appSource.match(
       /function RelayProfileDetail[\s\S]*?(?=\nfunction RelayProfileEditor)/,
     )?.[0] ?? "";
-    assert.match(
-      detail,
-      /deriveProviderModePresentation\(detailState\.inspection\)/,
-    );
-    assert.match(detail, /providerModePresentationLabel/);
-    assert.doesNotMatch(
-      detail.match(/const modePresentation[\s\S]*?(?=\n\s*const replaceDraft)/)?.[0] ?? "",
-      /commitProvider|saveSettings|updateCatalogProfileDraft|transformProvider/,
-    );
+    assert.ok(detail.includes("saveDraft"), "the detail body was located");
+    // The mode is not a user-facing state any more: every save materializes the one contract.
+    assert.doesNotMatch(detail, /providerModePresentationLabel|deriveProviderModePresentation/);
+    assert.doesNotMatch(appSource, /function providerModePresentationLabel/);
   });
 
   it("marks the removed local aggregate path as advanced without changing its data", () => {

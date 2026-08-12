@@ -14,7 +14,7 @@ describe("provider detail draft wiring", () => {
     assert.match(source, /settleProviderDetailTransformError\([^;]*effect\.correlation/s);
     assert.match(
       source,
-      /settleProviderDetailTransformError\([\s\S]*?if \(!settled\.report\) return;\s*updateDetailState\(settled\.state\)/,
+      /settleProviderDetailTransformError\([\s\S]*?if \(settled\.report\) \{\s*updateDetailState\(settled\.state\)/,
     );
     assert.doesNotMatch(source, /transformProviderNativeCapability\(effect\)/);
   });
@@ -51,8 +51,8 @@ describe("provider detail draft wiring", () => {
     assert.match(source, /beginProviderDetailLegacyIdUpgrade/);
     assert.match(source, /resolveProviderDetailLegacyProviderId\(\s*detailStateRef\.current/);
     assert.match(source, /cancelProviderDetailLegacyProviderIdResolution\(\s*detailStateRef\.current\s*\)/);
-    assert.match(source, /nativeCapabilityView\.upgradeAction === "resolveLegacyProviderId"/);
-    assert.match(source, /nativeCapabilityView\.upgradeAction === "replaceActorHeader"/);
+    assert.match(source, /upgradeAction === "resolveLegacyProviderId"/);
+    assert.match(source, /upgradeAction === "replaceActorHeader"/);
     assert.match(source, /pendingLegacyProviderIdResolution !== null/);
     assert.match(
       source,

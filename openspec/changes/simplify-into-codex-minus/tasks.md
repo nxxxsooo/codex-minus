@@ -25,7 +25,7 @@
 
 ## 4. Foolproof editor
 
-- [ ] 4.1 Reduce the provider editor to 名称 / 配置模型 / Base URL / API Key / Provider Doctor; remove preset selector, 接入模式, 混入 checkbox, 上游协议, User-Agent, context-size fields; every save materializes the canonical contract; legacy profiles upgrade on save.
+- [x] 4.1 Reduce the provider editor to 名称 / 配置模型 / Base URL / API Key / Provider Doctor; remove preset selector, 接入模式, 混入 checkbox, 上游协议, User-Agent, context-size fields; every save materializes the canonical contract; legacy profiles upgrade on save.
 - [ ] 4.2 Remove the raw provider-TOML editor; the bearer never renders in plaintext anywhere (test sweeps UI state and DOM copy paths with a sentinel key).
 - [ ] 4.3 Reduce the catalog section to the 配置模型 list (mode control, official override table, topology, external-adopt removed); existing external profiles keep their pointer behavior untouched; custom rows need only slug + optional display name.
 - [ ] 4.4 Render every typed failure as one plain-language sentence with the code and raw detail behind 详情; no path ends in a spinner or bare code; snapshot tests cover the common failures (stale, staging-rejected, contract-gap, timeout).
