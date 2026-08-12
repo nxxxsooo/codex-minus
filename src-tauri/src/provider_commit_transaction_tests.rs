@@ -3404,3 +3404,45 @@ fn active_commit_refires_restart_when_the_runtime_contract_changes_without_a_cat
         "a runtime-only change must not open a new catalog generation"
     );
 }
+
+#[test]
+fn inactive_save_records_no_restart_marker_and_no_applied_runtime_fingerprint() {
+    let active = pure_oauth_profile("official");
+    let inactive = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    let persisted = settings_with(vec![active, inactive], "official");
+    let fixture = Fixture::new(&persisted, &state_with_official());
+    let persisted = fixture.read_settings();
+    let live_before = fs::read(fixture.paths.codex_home.join("config.toml")).unwrap();
+
+    let mut next = persisted.clone();
+    next.relay_profiles[1] = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay-updated.example/v1",
+        "provider-key-updated",
+    );
+
+    let result = commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(&persisted, &next, "sub2api", ProviderCommitAction::Save, 1),
+    )
+    .unwrap();
+
+    assert!(!result.restart_required);
+    let state = fixture.read_state();
+    let profile_state = &state.profiles["sub2api"];
+    assert!(!profile_state.restart_required);
+    assert!(
+        profile_state.applied_runtime_fingerprint.is_none(),
+        "an inactive save applies no runtime, so it records no applied fingerprint"
+    );
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join("config.toml")).unwrap(),
+        live_before
+    );
+}
