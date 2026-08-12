@@ -2278,16 +2278,24 @@ pub struct ProviderCommitPayload {
     pub provider_fingerprint: String,
     pub restart_required: bool,
     pub error_code: Option<ProviderCommitErrorCode>,
+    /// Static rejecting rule. Every value is a literal chosen at the failing call site, so the
+    /// discriminator can reach the user without a redaction pass over dynamic content.
+    pub reason: Option<&'static str>,
 }
 
 impl ProviderCommitPayload {
-    pub fn failure(draft_revision: u64, error_code: ProviderCommitErrorCode) -> Self {
+    pub fn failure(
+        draft_revision: u64,
+        error_code: ProviderCommitErrorCode,
+        reason: &'static str,
+    ) -> Self {
         Self {
             settings: None,
             draft_revision,
             provider_fingerprint: String::new(),
             restart_required: false,
             error_code: Some(error_code),
+            reason: Some(reason),
         }
     }
 }
@@ -2334,6 +2342,10 @@ impl ProviderCommitFailure {
     pub fn code(&self) -> ProviderCommitErrorCode {
         self.code
     }
+
+    pub fn reason(&self) -> &'static str {
+        self.message
+    }
 }
 
 impl std::fmt::Display for ProviderCommitFailure {
@@ -2361,7 +2373,7 @@ pub async fn commit_provider_detail(
             Ok(payload) => ok("供应商与模型目录已作为同一代提交。", payload),
             Err(error) => failed(
                 "供应商提交失败；已保留原有设置与 live 配置。",
-                ProviderCommitPayload::failure(draft_revision, error.code()),
+                ProviderCommitPayload::failure(draft_revision, error.code(), error.reason()),
             ),
         }
     })
@@ -2808,6 +2820,7 @@ pub fn commit_provider_detail_from_paths_observed(
         provider_fingerprint,
         restart_required,
         error_code: None,
+        reason: None,
     })
 }
 

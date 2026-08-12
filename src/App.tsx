@@ -397,6 +397,7 @@ type ProviderCommitResult = CommandResult<{
   providerFingerprint: string;
   restartRequired: boolean;
   errorCode: string | null;
+  reason: string | null;
 }>;
 
 type ProviderNativeCapabilityInspectionResult = CommandResult<{
@@ -1512,7 +1513,7 @@ export function App() {
     if (settled.disposition === "ignore") return false;
     if (settled.disposition === "report") {
       await reconcileTopologyFailure(settled.disposition);
-      showNotice(t("保存供应商"), providerCommitFailureMessage(result.message, result.errorCode, t), result.status);
+      showNotice(t("保存供应商"), providerCommitFailureMessage(result.message, result.errorCode, t, result.reason), result.status);
       return false;
     }
     if (!nextBaseline || !selectedSettings) return false;

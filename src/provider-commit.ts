@@ -413,9 +413,12 @@ export function providerCommitFailureMessage(
   message: string,
   errorCode: string | null | undefined,
   translate: (text: string) => string = (text) => text,
+  reason?: string | null,
 ): string {
   const code = (errorCode ?? "").trim();
   if (!code) return message;
   const hint = PROVIDER_COMMIT_FAILURE_HINTS[code];
-  return hint ? `${message}${translate(hint)}（${code}）` : `${message}（${code}）`;
+  const rule = (reason ?? "").trim();
+  const discriminator = rule ? `${code}: ${rule}` : code;
+  return hint ? `${message}${translate(hint)}（${discriminator}）` : `${message}（${discriminator}）`;
 }

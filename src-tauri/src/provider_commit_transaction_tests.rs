@@ -3061,8 +3061,12 @@ fn provider_commit_failures_are_typed_and_failure_payloads_are_secret_free() {
         (43, staging_error),
         (44, transaction_error),
     ] {
-        let serialized =
-            serde_json::to_string(&ProviderCommitPayload::failure(revision, error.code())).unwrap();
+        let serialized = serde_json::to_string(&ProviderCommitPayload::failure(
+            revision,
+            error.code(),
+            error.reason(),
+        ))
+        .unwrap();
         assert!(!serialized.contains("provider-key-sentinel"));
         assert!(!serialized.contains("oauth-output-sentinel"));
         assert!(!serialized.contains("provider-output@example.test"));
@@ -3445,4 +3449,90 @@ fn inactive_save_records_no_restart_marker_and_no_applied_runtime_fingerprint() 
         fs::read(fixture.paths.codex_home.join("config.toml")).unwrap(),
         live_before
     );
+}
+
+#[test]
+fn failure_payloads_carry_the_static_rejecting_reason_without_dynamic_content() {
+    let profile = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://provider-reason-secret.example/v1",
+        "provider-key-sentinel",
+    );
+    let persisted = settings_with(vec![profile], "sub2api");
+    let fixture = Fixture::new(&persisted, &state_with_official());
+    let persisted = fixture.read_settings();
+
+    let mut stale = request(
+        &persisted,
+        &persisted,
+        "sub2api",
+        ProviderCommitAction::Save,
+        7,
+    );
+    stale.expected_provider_fingerprint = "sha256:stale".to_string();
+    let stale_error = commit_provider_detail_from_paths(&fixture.paths, stale).unwrap_err();
+    let stale_payload = ProviderCommitPayload::failure(7, stale_error.code(), stale_error.reason());
+    assert_eq!(
+        stale_payload.error_code,
+        Some(ProviderCommitErrorCode::StaleState)
+    );
+    assert_eq!(
+        stale_payload.reason,
+        Some("provider state changed; reload or merge before saving")
+    );
+
+    // Two different InvalidDraft rejections must stay distinguishable in the payload.
+    let mut prohibited_auth = persisted.clone();
+    prohibited_auth.relay_profiles[0].auth_contents =
+        r#"{"tokens":{"access_token":"oauth-output-sentinel"}}"#.to_string();
+    let auth_error = commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(
+            &persisted,
+            &prohibited_auth,
+            "sub2api",
+            ProviderCommitAction::Save,
+            8,
+        ),
+    )
+    .unwrap_err();
+    assert_eq!(auth_error.code(), ProviderCommitErrorCode::InvalidDraft);
+
+    let mut base_url_conflict = persisted.clone();
+    base_url_conflict.relay_profiles[0].base_url =
+        "https://provider-reason-other.example/v1".to_string();
+    base_url_conflict.relay_profiles[0].upstream_base_url =
+        "https://provider-reason-other.example/v1".to_string();
+    let conflict_error = commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(
+            &persisted,
+            &base_url_conflict,
+            "sub2api",
+            ProviderCommitAction::Save,
+            9,
+        ),
+    )
+    .unwrap_err();
+    assert_eq!(conflict_error.code(), ProviderCommitErrorCode::InvalidDraft);
+    assert_ne!(
+        conflict_error.reason(),
+        auth_error.reason(),
+        "distinct InvalidDraft rules must remain distinguishable"
+    );
+
+    let payload = ProviderCommitPayload::failure(9, conflict_error.code(), conflict_error.reason());
+    let encoded = serde_json::to_string(&payload).unwrap();
+    for forbidden in [
+        "provider-key-sentinel",
+        "oauth-output-sentinel",
+        "provider-reason-secret.example",
+        "provider-reason-other.example",
+    ] {
+        assert!(
+            !encoded.contains(forbidden),
+            "leaked {forbidden}: {encoded}"
+        );
+    }
 }

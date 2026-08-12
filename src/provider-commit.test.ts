@@ -482,6 +482,19 @@ describe("provider commit failure reporting", () => {
     );
   });
 
+  it("appends the static backend reason so sibling rules stay distinguishable", () => {
+    const failureMessage = commitModule?.providerCommitFailureMessage;
+    assert.ok(failureMessage);
+    assert.equal(
+      failureMessage("提交失败。", "invalidDraft", (text) => text, "provider base URL conflict"),
+      "提交失败。本次草稿未通过校验。（invalidDraft: provider base URL conflict）",
+    );
+    assert.equal(
+      failureMessage("提交失败。", "invalidDraft", (text) => text, "   "),
+      "提交失败。本次草稿未通过校验。（invalidDraft）",
+    );
+  });
+
   it("still reports an unmapped code so support never loses the discriminator", () => {
     const failureMessage = commitModule?.providerCommitFailureMessage;
     assert.ok(failureMessage);
