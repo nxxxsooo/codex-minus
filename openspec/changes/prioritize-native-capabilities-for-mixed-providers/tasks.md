@@ -94,11 +94,11 @@
 
 ## 9. Validate, document, and hand off
 
-- [ ] 9.1 Run focused TypeScript tests for onboarding, provider draft editing, upgrade/exit UX, catalog integration, and restart presentation.
-- [ ] 9.2 Run focused Rust tests for evaluator/transformer behavior, fallible combined commands, live-state transactions, Context protection, model catalogs, permissions, recovery, OAuth byte equality without a race, and preservation of concurrent official auth updates.
-- [ ] 9.3 Run `npm run check`, `npm run vite:build`, and `cargo test` from their documented project directories; resolve every change-caused failure.
-- [ ] 9.4 Run `npm run build` to verify the complete Tauri application bundle when the local signing/build environment permits it, and record any environment-only gap explicitly.
-- [ ] 9.5 Update user-facing help and architecture documentation with the contract, truthfulness limits, external-catalog precedence, explicit migration/destructive-exit policy, restart/new-task requirement, and ownership distinction between profile and global live configuration; mark the older onboarding `requires_openai_auth = true` native-default text as superseded.
+- [x] 9.1 Run focused TypeScript tests for onboarding, provider draft editing, upgrade/exit UX, catalog integration, and restart presentation.
+- [x] 9.2 Run focused Rust tests for evaluator/transformer behavior, fallible combined commands, live-state transactions, Context protection, model catalogs, permissions, recovery, OAuth byte equality without a race, and preservation of concurrent official auth updates.
+- [x] 9.3 Run `npm run check`, `npm run vite:build`, and `cargo test` from their documented project directories; resolve every change-caused failure.
+- [x] 9.4 Run `npm run build` to verify the complete Tauri application bundle when the local signing/build environment permits it, and record any environment-only gap explicitly.
+- [x] 9.5 Update user-facing help and architecture documentation with the contract, truthfulness limits, external-catalog precedence, explicit migration/destructive-exit policy, restart/new-task requirement, and ownership distinction between profile and global live configuration; mark the older onboarding `requires_openai_auth = true` native-default text as superseded.
 - [ ] 9.6 Append one completed-work entry to `BOARD.md` only after implementation and verification are complete; include the exact tests and the absence of bulk migration or OAuth writes.
 - [ ] 9.7 Run strict OpenSpec validation, reconcile implementation behavior against every scenario in `provider-native-capability-mode`, and leave no unchecked scenario without an explicit verification record.
 

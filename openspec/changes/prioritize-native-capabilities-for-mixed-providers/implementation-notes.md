@@ -57,3 +57,16 @@ Automated proof: `capability_rows_are_scoped_and_never_inferred_from_a_complete_
 is `ready`, the actor marker is `eligible`, and the route is `nativePriorityMixed`.
 `src/provider-capability-claims.test.ts` proves no shipped copy claims a subscription upgrade or a
 blanket grant of Pro capabilities.
+
+### Final verification record
+
+- `npm test`: 151 passed, 0 failed (30 suites).
+- `npm run check`: passed.
+- `npm run vite:build`: passed; only the pre-existing 500 kB chunk-size advisory.
+- `cargo test` (`src-tauri/`): 162 lib passed, 45 integration passed across four targets, 1 intentionally ignored live-OAuth catalog test, 0 failed.
+- `cargo fmt --check`: clean. `cargo clippy --all-targets`: 45 pre-existing advisories, none in code this change added.
+- `npm run build`: the complete macOS app bundle built and ad-hoc signed at
+  `src-tauri/target/release/bundle/macos/Codex-- Manager.app`.
+  **Environment-only gap**: notarization was skipped because no `APPLE_ID`/`APPLE_PASSWORD`/`APPLE_TEAM_ID`
+  or API-key credentials are present, and no Developer ID identity is configured; the bundle is signed
+  with the ad-hoc identity `-`. Nothing was installed over the production `/Applications` copy.
