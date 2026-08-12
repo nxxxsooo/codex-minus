@@ -27,3 +27,33 @@
 - This correction closes an implementation gap in the original artifacts without changing OAuth, Context, external-catalog, or native-capability contracts.
 
 Focused, final full-suite, bundle, manual-flow, and scenario reconciliation evidence is appended here as the corresponding task groups complete.
+
+### Provider-routable capability matrix (redacted)
+
+Row scope is the point of this table. A complete native-capability contract is evidence about the
+contract, not about any row below. Each row is `success`, `denial`, `fallback`, or `unknown` on its
+own observation; no row may be inferred from another, and none may be inferred from the contract,
+the actor marker, or the local plan.
+
+Recorded from this change's automated verification only. No quota-bearing probe was run: task 8.10
+requires separate explicit approval, and without it every row that needs a paid call stays
+`unknown` rather than being reported from a text probe.
+
+| Row | Outcome | Basis |
+| --- | --- | --- |
+| Text Responses | unknown | Modeled as `TextResponsesEvidence`; never derived, only observed. No request was issued. |
+| Model discovery | unknown (`missingMetadata`) | A materialized catalog artifact proves an artifact exists, not that the selected model carries capability metadata. |
+| Image generation | unknown | Modeled as `ImageGenerationEvidence` plus `ImagePlanEvidence`; both stay `unknown` without a verified target policy. Permission, `gpt-image-2` allowance, and tool registration are unverified (8.8). |
+| Image editing | unknown | Not modeled by this build. Nothing in any payload can report it, so it cannot be claimed. |
+| Remote compaction | unknown | Not modeled by this build. Same guarantee by construction. |
+| Web search | unknown | Not modeled by this build. Same guarantee by construction. |
+
+Redaction: no provider key, OAuth token, account or workspace identity, or endpoint value appears
+in any row or in the evidence payload these rows are derived from (verified by the sentinel sweep
+in 8.6).
+
+Automated proof: `capability_rows_are_scoped_and_never_inferred_from_a_complete_contract`
+(`src-tauri/tests/provider_capability_evidence.rs`) holds every row at `unknown` while the contract
+is `ready`, the actor marker is `eligible`, and the route is `nativePriorityMixed`.
+`src/provider-capability-claims.test.ts` proves no shipped copy claims a subscription upgrade or a
+blanket grant of Pro capabilities.

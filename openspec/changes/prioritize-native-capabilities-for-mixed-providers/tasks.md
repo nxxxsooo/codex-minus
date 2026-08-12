@@ -89,7 +89,7 @@
 - [x] 8.6 Audit transaction artifacts, application logs, telemetry, inspection/status/evidence/Doctor payloads, errors, and generated catalogs for provider-key or OAuth leakage using sentinel credentials; allow the local masked provider-detail draft/settings IPC to carry the bearer and prove it is never logged or copied into status surfaces.
 - [ ] 8.7 Perform a controlled no-image-cost manual flow without concurrent auth refresh: create a provider, preview/save it inactive, activate it, inspect the live provider/catalog generation and restart guidance, and verify live `auth.json` hash equality.
 - [ ] 8.8 Record image-generation permission, `gpt-image-2` allowance, and runtime tool registration as unverified in the manual result unless independently observed; do not convert a text probe into a success claim.
-- [ ] 8.9 Add the redacted provider-routable capability matrix for text Responses, model discovery, image generation, image editing, remote compaction, and web search; prove success, denial, fallback, and unknown are row-scoped and that no UI copy claims a local subscription upgrade or “all Pro capabilities.”
+- [x] 8.9 Add the redacted provider-routable capability matrix for text Responses, model discovery, image generation, image editing, remote compaction, and web search; prove success, denial, fallback, and unknown are row-scoped and that no UI copy claims a local subscription upgrade or “all Pro capabilities.”
 - [ ] 8.10 With separate explicit approval for quota-bearing operations, run selected image-generation/edit or other costly probes and record target version, provider/profile ID, model, observation time, and redacted result per row; without that approval, leave those rows unknown.
 
 ## 9. Validate, document, and hand off

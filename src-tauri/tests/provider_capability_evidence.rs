@@ -296,3 +296,84 @@ fn an_unobserved_runtime_stays_unknown_instead_of_being_reported_as_adopted() {
     assert_eq!(payload.runtime, RuntimeEvidence::Unknown);
     assert_ne!(payload.runtime, RuntimeEvidence::Adopted);
 }
+
+/// The provider-routable capability matrix is row-scoped.
+///
+/// Rows: text Responses, model discovery, image generation, image editing, remote compaction,
+/// web search. A complete native-priority contract is evidence about the contract, not about any
+/// row. Each row's outcome — success, denial, fallback, or unknown — belongs to that row alone
+/// and must be observed independently. Rows this build models explicitly are asserted here; rows
+/// it does not model at all cannot be claimed, which is the same guarantee by construction.
+#[test]
+fn capability_rows_are_scoped_and_never_inferred_from_a_complete_contract() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings_path = temp.path().join("settings.json");
+    let catalog_path = temp.path().join("model-catalog-state.json");
+    let codex_home = temp.path().join("codex-home");
+    std::fs::create_dir(&codex_home).unwrap();
+    std::fs::write(
+        codex_home.join("auth.json"),
+        br#"{"auth_mode":"chatgpt","tokens":{"account_id":"account-sentinel"}}"#,
+    )
+    .unwrap();
+    let settings = BackendSettings {
+        relay_profiles: vec![RelayProfile {
+            id: "relay-one".to_string(),
+            name: "Relay One".to_string(),
+            model: "gpt-5.5".to_string(),
+            base_url: "https://relay.example/v1".to_string(),
+            upstream_base_url: "https://relay.example/v1".to_string(),
+            api_key: "provider-key-sentinel".to_string(),
+            protocol: RelayProtocol::Responses,
+            relay_mode: RelayMode::Official,
+            official_mix_api_key: true,
+            config_contents: CONFIG.to_string(),
+            ..RelayProfile::default()
+        }],
+        ..BackendSettings::default()
+    };
+    std::fs::write(
+        &settings_path,
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        &catalog_path,
+        br#"{
+          "target":{"clientVersion":"0.147.0-alpha.6.6","trusted":true},
+          "profiles":{"relay-one":{"mode":"official-plus-custom","modeExplicit":true,"generatedHash":"catalog-hash"}}
+        }"#,
+    )
+    .unwrap();
+
+    let payload = inspect_provider_capability_evidence_from_paths(
+        &settings_path,
+        &catalog_path,
+        &codex_home,
+        ProviderCapabilityEvidenceRequest {
+            profile_id: "relay-one".to_string(),
+        },
+    )
+    .unwrap();
+
+    // The contract itself is complete and the client is eligible to mark itself.
+    assert_eq!(payload.provider_contract, ProviderContractEvidence::Ready);
+    assert_eq!(payload.actor_marker, ActorMarkerEvidence::Eligible);
+    assert_eq!(payload.route_kind, ProviderRouteEvidence::NativePriorityMixed);
+
+    // None of that is evidence for any capability row.
+    assert_eq!(payload.text_responses, TextResponsesEvidence::Unknown);
+    assert_eq!(payload.image_generation, ImageGenerationEvidence::Unknown);
+    assert_eq!(payload.image_plan_evidence, ImagePlanEvidence::Unknown);
+    // Model discovery: an existing artifact is not metadata for the selected model.
+    assert_eq!(payload.catalog_model, CatalogModelEvidence::MissingMetadata);
+    // Remote compaction and web search have no observation at all, so the payload carries no
+    // field that could report them as available.
+    let serialized = serde_json::to_string(&payload).unwrap();
+    for absent in ["compaction", "webSearch", "imageEdit"] {
+        assert!(
+            !serialized.contains(absent),
+            "an unobserved capability row appeared in the payload as {absent}"
+        );
+    }
+}
