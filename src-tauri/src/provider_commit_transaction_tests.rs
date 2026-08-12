@@ -3684,3 +3684,69 @@ fn a_disabled_routing_switch_saves_the_draft_without_writing_live_config() {
         "a disabled switch must leave live configuration untouched"
     );
 }
+
+/// Golden: the exact effective contract an active native-priority commit stages.
+///
+/// Pins the provider table byte-for-byte so a future normalization, core upgrade, or staging
+/// change cannot quietly alter provider identity, name, wire API, auth requirement, bearer, or
+/// the actor-authorization marker. Profile-scoped global keys must not reach live root.
+const GOLDEN_STAGED_PROVIDER: &str = r#"[model_providers.RelayOne]
+name = "OpenAI"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = "provider-key"
+http_headers = { "x-openai-actor-authorization" = "local-image-extension", "x-keep" = "yes" }
+"#;
+
+#[test]
+fn golden_active_commit_stages_the_exact_actor_authorized_contract() {
+    let mut profile = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    // Profile-scoped globals, one unrelated and one invalid for a provider draft. Neither may
+    // reach live root, and neither may disturb the staged provider table.
+    profile.config_contents = format!(
+        "unrelated_profile_key = \"kept-out-of-live\"\nhide_agent_reasoning = true\n{}",
+        profile.config_contents
+    );
+    let persisted = settings_with(vec![profile], "sub2api");
+    let fixture = Fixture::new(&persisted, &state_with_official());
+    let persisted = fixture.read_settings();
+
+    commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(
+            &persisted,
+            &persisted,
+            "sub2api",
+            ProviderCommitAction::Save,
+            12,
+        ),
+    )
+    .expect("the supplied custom OpenAI configuration commits");
+
+    let live = fs::read_to_string(fixture.paths.codex_home.join("config.toml")).unwrap();
+    let staged: toml_edit::DocumentMut = live.parse().unwrap();
+
+    let mut rendered = toml_edit::DocumentMut::new();
+    rendered["model_providers"] = staged["model_providers"].clone();
+    // Leading decor travels with a grafted table and is not part of the contract.
+    assert_eq!(rendered.to_string().trim_start(), GOLDEN_STAGED_PROVIDER);
+
+    assert_eq!(
+        staged
+            .get("model_provider")
+            .and_then(toml_edit::Item::as_str),
+        Some("RelayOne")
+    );
+    for leaked in ["unrelated_profile_key", "hide_agent_reasoning"] {
+        assert!(
+            !staged.as_table().contains_key(leaked),
+            "profile-scoped global {leaked} reached live root"
+        );
+    }
+}

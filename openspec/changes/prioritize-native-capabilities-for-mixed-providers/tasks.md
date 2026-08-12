@@ -81,7 +81,7 @@
 
 ## 8. Run end-to-end preservation and security regressions
 
-- [ ] 8.1 Add a golden regression for the supplied custom `OpenAI` provider configuration, excluding invalid/unrelated global keys, and prove normalization plus live staging retain the exact effective actor-authorized contract.
+- [x] 8.1 Add a golden regression for the supplied custom `OpenAI` provider configuration, excluding invalid/unrelated global keys, and prove normalization plus live staging retain the exact effective actor-authorized contract.
 - [ ] 8.2 Add golden regressions for an existing legacy mixed profile, a legacy provider-ID alias, and a custom-header profile, proving startup and inspection do not change actor/native-capability fields automatically.
 - [ ] 8.3 Test the explicit native-priority-to-pure-OAuth transition, proving the preview discloses custom-provider deletion, no dormant copy is retained, the catalog returns to `native-official` only when non-external, and official auth is never written.
 - [ ] 8.4 Test switching among native priority, pure API, and legacy compatibility, proving target-specific fields change only after commit and unowned provider headers survive every round trip.
