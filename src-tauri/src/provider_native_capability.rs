@@ -609,6 +609,30 @@ fn evaluate_actor_header(provider: Option<&dyn TableLike>) -> NativeCapabilityFi
     }
 }
 
+/// The legacy `custom` provider shape this change upgrades from. A profile in this shape is
+/// always savable: it is the starting point of the upgrade path, and refusing it would leave the
+/// profile unrepairable, since the fields that complete the contract can only be persisted by a
+/// save.
+pub fn legacy_upgradeable_shape(profile: &RelayProfile) -> bool {
+    let Ok(document) = profile.config_contents.parse::<toml_edit::DocumentMut>() else {
+        return false;
+    };
+    if document.get("model_provider").and_then(Item::as_str) != Some("custom") {
+        return false;
+    }
+    document
+        .get("model_providers")
+        .and_then(Item::as_table_like)
+        .and_then(|providers| providers.get("custom"))
+        .and_then(Item::as_table_like)
+        .is_some_and(|provider| {
+            provider.get("name").and_then(Item::as_str) == Some("custom")
+                && provider.get("wire_api").and_then(Item::as_str) == Some(MANAGED_WIRE_API)
+                && provider.get("requires_openai_auth").and_then(Item::as_bool) == Some(true)
+                && provider.get("http_headers").is_none()
+        })
+}
+
 fn legacy_compatible_contract(
     provider_id: Option<&str>,
     provider: Option<&dyn TableLike>,

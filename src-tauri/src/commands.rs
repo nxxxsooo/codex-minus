@@ -3397,7 +3397,12 @@ fn validate_provider_detail_contract(
     use crate::provider_native_capability::NativeCapabilityState;
 
     let inspection = crate::provider_native_capability::inspect_profile(profile, catalog_mode);
-    if inspection.state == NativeCapabilityState::Degraded {
+    // A degraded contract is refused only when saving cannot repair it. A profile still in the
+    // legacy `custom` shape is the start of the upgrade path: the fields that complete the
+    // contract can only be persisted by a save, so refusing it left the profile unrepairable.
+    if inspection.state == NativeCapabilityState::Degraded
+        && !crate::provider_native_capability::legacy_upgradeable_shape(profile)
+    {
         let reason = inspection
             .fields
             .iter()

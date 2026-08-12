@@ -3624,3 +3624,50 @@ fn a_contract_gap_names_the_field_it_is_missing() {
         "provider name mismatch"
     );
 }
+
+#[test]
+fn a_degraded_contract_saves_instead_of_locking_the_profile_out_of_its_own_repair() {
+    // A legacy `custom` provider that is one field short of the recognized upgradeable shape.
+    // Rejecting it made the profile unrepairable: the missing field can only be persisted by a
+    // save, and the save was what the contract check refused.
+    let mut profile = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    profile.config_contents = r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#
+    .to_string();
+    profile.model = String::new();
+    let persisted = settings_with(vec![profile], "sub2api");
+    let fixture = Fixture::new(&persisted, &state_with_official());
+    let persisted = fixture.read_settings();
+
+    let mut next = persisted.clone();
+    next.relay_profiles[0].model = "official-a".to_string();
+    next.relay_profiles[0].config_contents = format!(
+        "model = \"official-a\"\n{}",
+        next.relay_profiles[0].config_contents
+    );
+
+    let result = commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(&persisted, &next, "sub2api", ProviderCommitAction::Save, 5),
+    )
+    .expect("a degraded contract must still be savable");
+
+    assert_eq!(result.draft_revision, 5);
+    let saved = fixture.read_settings();
+    assert!(
+        saved.relay_profiles[0]
+            .config_contents
+            .contains("official-a")
+    );
+}
