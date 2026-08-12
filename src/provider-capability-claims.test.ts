@@ -56,6 +56,25 @@ describe("provider capability claims", () => {
     }
   });
 
+  it("offers no capability-evidence surface to inspect or refresh", () => {
+    const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+    assert.ok(app.includes("原生能力优先"), "App.tsx was not read");
+    for (const surface of [
+      "inspect_provider_capability_evidence",
+      "displayedCapabilityLedger",
+      "capabilityOwnershipCopy",
+      "刷新能力证据",
+      "供应商契约",
+      "Actor 资格",
+    ]) {
+      assert.ok(!app.includes(surface), `App.tsx still renders "${surface}"`);
+    }
+    assert.throws(
+      () => readFileSync(new URL("../src-tauri/src/provider_capability_evidence.rs", import.meta.url)),
+      "the evidence command module is gone",
+    );
+  });
+
   it("keeps the eligibility wording it does use", () => {
     // The guard above only proves an absence. This pins the claim the product actually makes, so
     // the absence cannot be satisfied by deleting every explanation of what the mode means.

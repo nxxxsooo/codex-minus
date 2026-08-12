@@ -4282,7 +4282,7 @@ fn sentinel_credentials_never_reach_artifacts_payloads_errors_or_logs() {
         }
     }
 
-    // Payloads: the commit result, the native-capability inspection, and the capability evidence.
+    // Payloads: the commit result and the native-capability inspection.
     let inspection =
         crate::provider_native_capability::inspect_provider_native_capabilities_from_paths(
             &fixture.paths.settings_path,
@@ -4290,21 +4290,8 @@ fn sentinel_credentials_never_reach_artifacts_payloads_errors_or_logs() {
             crate::provider_native_capability::ProviderNativeCapabilityInspectionRequest::default(),
         )
         .unwrap();
-    let evidence =
-        crate::provider_capability_evidence::inspect_provider_capability_evidence_from_paths(
-            &fixture.paths.settings_path,
-            &fixture.paths.catalog_state_path,
-            &fixture.paths.codex_home,
-            crate::provider_capability_evidence::ProviderCapabilityEvidenceRequest {
-                profile_id: "sub2api".to_string(),
-            },
-        )
-        .unwrap();
     let commit_surface = serde_json::to_string(&payload).unwrap();
-    let status_surfaces = [
-        ("inspection", serde_json::to_string(&inspection).unwrap()),
-        ("evidence", serde_json::to_string(&evidence).unwrap()),
-    ];
+    let status_surfaces = [("inspection", serde_json::to_string(&inspection).unwrap())];
     // The commit reply is the local provider-detail IPC the editor round-trips, so it is allowed
     // to carry the bearer back. It may still never carry official identity.
     for identity in [OAUTH_ACCOUNT, OAUTH_WORKSPACE] {

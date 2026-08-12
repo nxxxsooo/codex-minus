@@ -147,25 +147,6 @@ import {
   deriveProviderModePresentation,
   providerTransitionDecisionForStructuredPatch,
 } from "./provider-native-capability-view";
-import {
-  beginProviderCapabilityEvidenceLoad,
-  buildProviderCapabilityLedgerFromBackendEvidence,
-  createProviderCapabilityEvidenceLoadState,
-  invalidateProviderCapabilityEvidenceLoad,
-  providerCapabilityEvidenceRefreshAllowed,
-  settleProviderCapabilityEvidenceLoad,
-  type ProviderCapabilityEvidencePayload,
-  type ProviderCapabilityEvidenceLoadState,
-  type ProviderCapabilityLedger,
-} from "./provider-capability-ledger";
-import {
-  mergeCurrentProviderProbeObservation,
-  providerCapabilityOwnershipCopy,
-  providerDoctorEvidence,
-  providerDoctorRequestMatchesSource,
-  type ProviderProbeCapabilityEvidence,
-  type ProviderProbeEvidenceObservation,
-} from "./provider-doctor-evidence";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 
 
@@ -678,7 +659,6 @@ type ProviderDoctorResult = CommandResult<{
   requestHttpStatus: number | null;
 }>;
 
-type ProviderCapabilityEvidenceResult = CommandResult<ProviderCapabilityEvidencePayload>;
 
 type CcsProviderImport = {
   sourceId: string;
@@ -1421,19 +1401,6 @@ export function App() {
     }
   };
 
-  const inspectProviderCapabilityEvidence = async (profileId: string) => {
-    try {
-      const result = await call<ProviderCapabilityEvidenceResult>(
-        "inspect_provider_capability_evidence",
-        { request: { profileId } },
-      );
-      if (!isSuccessStatus(result.status) || result.profileId !== profileId) return null;
-      return buildProviderCapabilityLedgerFromBackendEvidence(result);
-    } catch {
-      return null;
-    }
-  };
-
   const transformProviderNativeCapability = async (
     invocation: ProviderDetailTransformInvocation<RelayProfile>,
   ) => call<ProviderDetailTransformResponse<RelayProfile>>(
@@ -1768,7 +1735,6 @@ export function App() {
       testRelayProfile,
       diagnoseRelayProfile,
       inspectProviderNativeCapabilities,
-      inspectProviderCapabilityEvidence,
       transformProviderNativeCapability,
       fetchRelayProfileModels,
       commitProviderTopology,
@@ -1943,7 +1909,6 @@ type Actions = {
   testRelayProfile: (profile: RelayProfile) => Promise<void>;
   diagnoseRelayProfile: (profile: RelayProfile) => Promise<ProviderDoctorResult | null>;
   inspectProviderNativeCapabilities: (profileId: string) => Promise<ProviderDetailInspectionMetadata | null>;
-  inspectProviderCapabilityEvidence: (profileId: string) => Promise<ProviderCapabilityLedger | null>;
   transformProviderNativeCapability: (invocation: ProviderDetailTransformInvocation<RelayProfile>) => Promise<ProviderDetailTransformResponse<RelayProfile>>;
   fetchRelayProfileModels: (profile: RelayProfile) => Promise<string[] | null>;
   commitProviderTopology: (settings: BackendSettings, kind: Exclude<ProviderMutationKind, "detailSave" | "setCurrent">, copySourceProfileId?: string) => Promise<boolean>;
@@ -3201,12 +3166,6 @@ function RelayProfileDetail({
   const [detailState, setDetailState] = useState<ProviderDetailDraftState<RelayProfile>>(() =>
     createProviderDetailDraftState({ profile, catalogDraft: initialCatalogDraft }),
   );
-  const [capabilityEvidenceLoad, setCapabilityEvidenceLoad] = useState<ProviderCapabilityEvidenceLoadState>(
-    createProviderCapabilityEvidenceLoadState,
-  );
-  const [doctorEvidenceObservation, setDoctorEvidenceObservation] =
-    useState<ProviderProbeEvidenceObservation | null>(null);
-  const capabilityEvidenceLoadRef = useRef(capabilityEvidenceLoad);
   const detailStateRef = useRef(detailState);
   const authoritativeCapabilityProfile = isAggregateRelayProfile(profile)
     ? normalizeAggregateRelayProfile(profile, form)
@@ -3221,14 +3180,7 @@ function RelayProfileDetail({
   const authoritativeCapabilityProfileRevision = JSON.stringify(
     authoritativeCapabilityProfile,
   );
-  const authoritativeCapabilityCatalogDraft = isNew || catalogProfile
-    ? catalogProfileDraft({
-        profileId: profile.id,
-        fallbackMode: fallbackCatalogMode,
-        summary: catalogProfile,
-      })
-    : null;
-  const capabilityEvidenceCatalogSourceFingerprint = JSON.stringify({
+  const catalogSummaryFingerprint = JSON.stringify({
     profileId: catalogProfile?.profileId ?? null,
     mode: catalogProfile?.mode ?? null,
     modeExplicit: catalogProfile?.modeExplicit ?? null,
@@ -3236,37 +3188,13 @@ function RelayProfileDetail({
     restartRequired: catalogProfile?.restartRequired ?? null,
     actionRequired: catalogProfile?.actionRequired ?? null,
   });
-  const authoritativeCapabilitySourceRef = useRef({
-    applicable: !isNew && !isAggregateRelayProfile(authoritativeCapabilityProfile),
-    profile: authoritativeCapabilityProfile,
-    catalogDraft: authoritativeCapabilityCatalogDraft,
-    catalogEvidenceFingerprint: capabilityEvidenceCatalogSourceFingerprint,
-  });
-  authoritativeCapabilitySourceRef.current = {
-    applicable: !isNew && !isAggregateRelayProfile(authoritativeCapabilityProfile),
-    profile: authoritativeCapabilityProfile,
-    catalogDraft: authoritativeCapabilityCatalogDraft,
-    catalogEvidenceFingerprint: capabilityEvidenceCatalogSourceFingerprint,
-  };
-  const capabilityEvidenceRefreshAllowedForState = (
-    sourceState: ProviderDetailDraftState<RelayProfile>,
-  ) => providerCapabilityEvidenceRefreshAllowed({
-    applicable: authoritativeCapabilitySourceRef.current.applicable
-      && !isAggregateRelayProfile(sourceState.profile),
-    currentProfile: sourceState.profile,
-    authoritativeProfile: authoritativeCapabilitySourceRef.current.profile,
-    currentCatalogDraft: sourceState.catalogDraft,
-    authoritativeCatalogDraft: authoritativeCapabilitySourceRef.current.catalogDraft,
-  });
-  const updateCapabilityEvidenceLoad = (next: ProviderCapabilityEvidenceLoadState) => {
-    capabilityEvidenceLoadRef.current = next;
-    setCapabilityEvidenceLoad(next);
-  };
-  const invalidateCapabilityEvidenceLoad = () => {
-    updateCapabilityEvidenceLoad(
-      invalidateProviderCapabilityEvidenceLoad(capabilityEvidenceLoadRef.current),
-    );
-  };
+  const authoritativeCapabilityCatalogDraft = isNew || catalogProfile
+    ? catalogProfileDraft({
+        profileId: profile.id,
+        fallbackMode: fallbackCatalogMode,
+        summary: catalogProfile,
+      })
+    : null;
   const updateDetailState = (next: ProviderDetailDraftState<RelayProfile>) => {
     const current = detailStateRef.current;
     if (
@@ -3275,86 +3203,13 @@ function RelayProfileDetail({
       || JSON.stringify(next.profile) !== JSON.stringify(current.profile)
       || JSON.stringify(next.catalogDraft) !== JSON.stringify(current.catalogDraft)
     ) {
-      invalidateCapabilityEvidenceLoad();
-      setDoctorEvidenceObservation(null);
     }
     detailStateRef.current = next;
     setDetailState(next);
   };
-  const refreshCapabilityLedger = (sourceState: ProviderDetailDraftState<RelayProfile>) => {
-    if (!capabilityEvidenceRefreshAllowedForState(sourceState)) {
-      invalidateCapabilityEvidenceLoad();
-      return;
-    }
-    const begun = beginProviderCapabilityEvidenceLoad(capabilityEvidenceLoadRef.current);
-    updateCapabilityEvidenceLoad(begun.state);
-    const correlation = {
-      sessionToken: sourceState.sessionToken,
-      profileId: sourceState.profile.id,
-      revision: sourceState.latestTransformRevision,
-      catalogEvidenceFingerprint:
-        authoritativeCapabilitySourceRef.current.catalogEvidenceFingerprint,
-    };
-    void actions.inspectProviderCapabilityEvidence(sourceState.profile.id).then((ledger) => {
-      const current = detailStateRef.current;
-      const sourceMatches = current.lifecycle === "active"
-        && current.sessionToken === correlation.sessionToken
-        && current.profile.id === correlation.profileId
-        && current.latestTransformRevision === correlation.revision
-        && authoritativeCapabilitySourceRef.current.catalogEvidenceFingerprint
-          === correlation.catalogEvidenceFingerprint
-        && capabilityEvidenceRefreshAllowedForState(current);
-      const settled = settleProviderCapabilityEvidenceLoad(
-        capabilityEvidenceLoadRef.current,
-        begun.requestSequence,
-        sourceMatches,
-        ledger,
-        correlation.catalogEvidenceFingerprint,
-      );
-      if (settled.disposition === "applied") updateCapabilityEvidenceLoad(settled.state);
-    });
-  };
   const draft = detailState.profile;
   const catalogDraft = detailState.catalogDraft;
   const isActive = !isNew && profile.id === form.activeRelayId;
-  const displayedBaseCapabilityLedger = capabilityEvidenceRefreshAllowedForState(detailState)
-    && capabilityEvidenceLoad.sourceFingerprint === capabilityEvidenceCatalogSourceFingerprint
-    ? capabilityEvidenceLoad.ledger
-    : null;
-  const doctorEvidenceSourceFingerprint = JSON.stringify({
-    profile: detailState.profile,
-    modelWindowRows,
-  });
-  const doctorEvidenceSourceFingerprintRef = useRef(doctorEvidenceSourceFingerprint);
-  doctorEvidenceSourceFingerprintRef.current = doctorEvidenceSourceFingerprint;
-  const displayedCapabilityLedger = mergeCurrentProviderProbeObservation({
-    ledger: displayedBaseCapabilityLedger,
-    observation: doctorEvidenceObservation,
-    currentSessionToken: detailState.sessionToken,
-    currentRevision: detailState.latestTransformRevision,
-    currentCatalogEvidenceFingerprint: capabilityEvidenceCatalogSourceFingerprint,
-    currentSourceFingerprint: doctorEvidenceSourceFingerprint,
-  });
-  const capabilityOwnershipCopy = providerCapabilityOwnershipCopy(getLanguage());
-  const applyDoctorEvidence = (
-    probedProfile: RelayProfile,
-    evidence: ProviderProbeCapabilityEvidence,
-    sourceFingerprint: string,
-  ) => {
-    const currentDetail = detailStateRef.current;
-    if (
-      JSON.stringify(probedProfile) !== JSON.stringify(currentDetail.profile)
-      || !capabilityEvidenceRefreshAllowedForState(currentDetail)
-      || sourceFingerprint !== doctorEvidenceSourceFingerprintRef.current
-    ) return;
-    setDoctorEvidenceObservation({
-      sessionToken: currentDetail.sessionToken,
-      revision: currentDetail.latestTransformRevision,
-      catalogEvidenceFingerprint: capabilityEvidenceCatalogSourceFingerprint,
-      sourceFingerprint,
-      evidence,
-    });
-  };
   const nativeCapabilityView = deriveProviderNativeCapabilityView({
     inspection: detailState.inspection,
     officialAuth: {
@@ -3400,9 +3255,6 @@ function RelayProfileDetail({
     }
     return () => {
       cancelled = true;
-      capabilityEvidenceLoadRef.current = invalidateProviderCapabilityEvidenceLoad(
-        capabilityEvidenceLoadRef.current,
-      );
       if (detailStateRef.current.sessionToken === nextState.sessionToken) {
         detailStateRef.current = endProviderDetailSession(detailStateRef.current, "close").state;
       }
@@ -3443,7 +3295,6 @@ function RelayProfileDetail({
         && !isNew
         && !isAggregateRelayProfile(refreshed.state.profile)
       ) {
-        refreshCapabilityLedger(refreshed.state);
         void actions.inspectProviderNativeCapabilities(profile.id).then((inspection) => {
           if (cancelled || !inspection) return;
           const applied = applyProviderDetailInspection(
@@ -3454,14 +3305,6 @@ function RelayProfileDetail({
           if (applied.disposition === "applied") updateDetailState(applied.state);
         });
       }
-    } else if (
-      detailStateRef.current.lifecycle === "active"
-      && detailStateRef.current.profile.id === profile.id
-      && !isNew
-      && !isAggregateRelayProfile(detailStateRef.current.profile)
-      && capabilityEvidenceRefreshAllowedForState(detailStateRef.current)
-    ) {
-      refreshCapabilityLedger(detailStateRef.current);
     }
     return () => {
       cancelled = true;
@@ -3470,14 +3313,7 @@ function RelayProfileDetail({
     profile.id,
     isNew,
     authoritativeCapabilityProfileRevision,
-    capabilityEvidenceCatalogSourceFingerprint,
-  ]);
-  useEffect(() => {
-    setDoctorEvidenceObservation(null);
-  }, [
-    authoritativeCapabilityProfileRevision,
-    capabilityEvidenceCatalogSourceFingerprint,
-    doctorEvidenceSourceFingerprint,
+    catalogSummaryFingerprint,
   ]);
   const replaceDraft = (next: RelayProfile) => {
     updateDetailState(replaceProviderDetailProfile(detailStateRef.current, next));
@@ -3733,9 +3569,6 @@ function RelayProfileDetail({
     );
   };
   const navigateBack = () => {
-    capabilityEvidenceLoadRef.current = invalidateProviderCapabilityEvidenceLoad(
-      capabilityEvidenceLoadRef.current,
-    );
     const ended = endProviderDetailSession(detailStateRef.current, "navigate");
     detailStateRef.current = ended.state;
     onBack();
@@ -3828,49 +3661,9 @@ function RelayProfileDetail({
               ])}
             </span>
           ) : null}
-          {displayedCapabilityLedger ? (
-            <div className="catalog-evidence-list">
-              <div className="catalog-evidence-row"><strong>{t("供应商契约")}</strong><span>{providerCapabilityEvidenceLabel(displayedCapabilityLedger.provider.state)}</span></div>
-              <div className="catalog-evidence-row"><strong>{t("OAuth 会话")}</strong><span>{providerCapabilityEvidenceLabel(displayedCapabilityLedger.oauth.session)}</span></div>
-              <div className="catalog-evidence-row"><strong>{t("本地账号计划")}</strong><span>{providerCapabilityPlanLabel(displayedCapabilityLedger.plan.observed)}</span></div>
-              <div className="catalog-evidence-row"><strong>{t("Actor 资格")}</strong><span>{providerCapabilityEvidenceLabel(displayedCapabilityLedger.actor.state)}</span></div>
-              <div className="catalog-evidence-row"><strong>{t("目录／模型")}</strong><span>{providerCapabilityEvidenceLabel(displayedCapabilityLedger.catalogModel.state)}</span></div>
-              <div className="catalog-evidence-row"><strong>{t("上游证据")}</strong><span>{tf("文本：{0}；图片：{1}", [providerCapabilityEvidenceLabel(displayedCapabilityLedger.upstream.textResponses), providerCapabilityEvidenceLabel(displayedCapabilityLedger.upstream.imageGeneration)])}</span></div>
-              <div className="catalog-evidence-row"><strong>{t("运行时")}</strong><span>{providerCapabilityEvidenceLabel(displayedCapabilityLedger.runtime.state)}</span></div>
-              <div className="catalog-evidence-row">
-                <span>{t("各项证据相互独立；Actor 标记与本地账号计划都不代表能力成功。")}</span>
-                <Button disabled={capabilityEvidenceLoad.loading || !capabilityEvidenceRefreshAllowedForState(detailState)} type="button" size="sm" variant="secondary" onClick={() => refreshCapabilityLedger(detailStateRef.current)}>
-                  <RefreshCw className="h-4 w-4" />{t("刷新能力证据")}
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <div className="catalog-evidence-row">
-              <span>{t("能力证据尚未加载；未知状态不会被视为成功或阻断。")}</span>
-              <Button disabled={capabilityEvidenceLoad.loading || !capabilityEvidenceRefreshAllowedForState(detailState)} type="button" size="sm" variant="secondary" onClick={() => refreshCapabilityLedger(detailStateRef.current)}>
-                <RefreshCw className="h-4 w-4" />{t("刷新能力证据")}
-              </Button>
-            </div>
-          )}
         </section>
       )}
-      {isAggregateRelayProfile(draft) ? null : (
-        <section className="catalog-profile-editor">
-          <div className="catalog-editor-head">
-            <div>
-              <strong>{t("能力所有权与证据边界")}</strong>
-              <span>{t("配置只建立可路由资格；每项能力仍以独立证据为准。")}</span>
-            </div>
-          </div>
-          <div className="catalog-evidence-list">
-            <div className="catalog-evidence-row"><span>{capabilityOwnershipCopy.oauth}</span></div>
-            <div className="catalog-evidence-row"><span>{capabilityOwnershipCopy.providerKey}</span></div>
-            <div className="catalog-evidence-row"><span>{capabilityOwnershipCopy.actor}</span></div>
-            <div className="catalog-evidence-row"><span>{capabilityOwnershipCopy.gates}</span></div>
-          </div>
-        </section>
-      )}
-        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={replaceDraft} onProfileEdit={editDraft} onSwitch={switchDraft} onDoctorEvidence={applyDoctorEvidence} actions={actions} modelWindowRows={modelWindowRows} setModelWindowRows={setModelWindowRows} catalogProfile={catalogProfile} draftCommitBlocked={detailState.pendingTransformRevision !== null || detailState.rawConfigContents !== null || detailState.pendingConfirmation !== null || detailState.pendingLegacyProviderIdResolution !== null || detailState.blockers.length > 0} />
+        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={replaceDraft} onProfileEdit={editDraft} onSwitch={switchDraft} actions={actions} modelWindowRows={modelWindowRows} setModelWindowRows={setModelWindowRows} catalogProfile={catalogProfile} draftCommitBlocked={detailState.pendingTransformRevision !== null || detailState.rawConfigContents !== null || detailState.pendingConfirmation !== null || detailState.pendingLegacyProviderIdResolution !== null || detailState.blockers.length > 0} />
       {!managedCatalogCapable(draft) ? null : catalogDraft ? (
         <CatalogProfileEditor
           catalog={modelCatalog}
@@ -3915,7 +3708,6 @@ function RelayProfileEditor({
   onProfileChange,
   onProfileEdit,
   onSwitch,
-  onDoctorEvidence,
   actions,
   modelWindowRows,
   setModelWindowRows,
@@ -3928,11 +3720,6 @@ function RelayProfileEditor({
   onProfileChange: (value: RelayProfile) => void;
   onProfileEdit?: (patch: Partial<RelayProfile>) => void;
   onSwitch: () => void;
-  onDoctorEvidence?: (
-    profile: RelayProfile,
-    evidence: ProviderProbeCapabilityEvidence,
-    sourceFingerprint: string,
-  ) => void;
   actions: Actions;
   modelWindowRows: ModelWindowRow[];
   setModelWindowRows: (value: ModelWindowRow[]) => void;
@@ -3994,24 +3781,12 @@ function RelayProfileEditor({
       modelWindows: serializedRows.modelWindows,
     });
     const result = await actions.diagnoseRelayProfile(probedProfile);
-    if (!providerDoctorRequestMatchesSource({
-      requestSequence,
-      latestRequestSequence: doctorRequestSequenceRef.current,
-      requestSourceFingerprint,
-      currentSourceFingerprint: doctorSourceRevisionRef.current,
-    })) return;
+    // Drop a result the draft has already moved past, so a slow probe cannot overwrite a newer one.
+    if (
+      requestSequence !== doctorRequestSequenceRef.current
+      || requestSourceFingerprint !== doctorSourceRevisionRef.current
+    ) return;
     setDoctorResult(result);
-    onDoctorEvidence?.(
-      probedProfile,
-      providerDoctorEvidence({
-        status: result?.status ?? "failed",
-        protocol: probedProfile.protocol,
-        requestHttpStatus: result?.requestHttpStatus ?? null,
-        compatibilityFallbackUsed: result?.compatibilityFallbackUsed ?? false,
-        checks: result?.checks ?? [],
-      }),
-      requestSourceFingerprint,
-    );
     setDoctorRunning(false);
   };
   return (
@@ -4282,40 +4057,6 @@ function providerModePresentationLabel(
   }
 }
 
-function providerCapabilityEvidenceLabel(state: string): string {
-  switch (state) {
-    case "ready": return t("就绪");
-    case "upgradeAvailable": return t("可升级");
-    case "conflicting": return t("存在冲突");
-    case "invalid": return t("无效");
-    case "signedIn": return t("已登录");
-    case "signedOut": return t("需要登录");
-    case "expired": return t("登录已过期");
-    case "eligible": return t("具备客户端资格（不代表上游授权）");
-    case "ineligible": return t("不具备客户端资格");
-    case "supported": return t("元数据支持");
-    case "missingMetadata": return t("缺少能力元数据");
-    case "stale": return t("证据已过期");
-    case "reachable": return t("文本可达");
-    case "fallbackReachable": return t("仅兼容回退可达");
-    case "permissionVerified": return t("权限已验证");
-    case "denied": return t("已拒绝");
-    case "restartRequired": return t("需要完整重启");
-    case "newTaskRequired": return t("需要新任务");
-    case "adopted": return t("已观察到采用");
-    case "notApplicable": return t("不适用");
-    default: return t("未知");
-  }
-}
-
-function providerCapabilityPlanLabel(plan: string): string {
-  switch (plan) {
-    case "free": return t("Free（仅描述账号计划）");
-    case "paid": return t("Paid（不代表能力成功）");
-    case "other": return t("其他（不代表能力成功）");
-    default: return t("未知（不推断能力）");
-  }
-}
 
 function AggregateRelayProfileEditor({
   profile,

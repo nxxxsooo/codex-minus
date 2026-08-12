@@ -24,9 +24,6 @@ export const EN_PLAIN: Record<string, string> = {
   "预写入校验拒绝了本次提交。": "Pre-write validation rejected this commit.",
   "写入事务失败，已回滚到上一代。": "The write transaction failed and rolled back to the previous generation.",
   "原生能力优先": "Native-capability priority",
-  "能力所有权与证据边界": "Capability ownership and evidence boundaries",
-  "配置只建立可路由资格；每项能力仍以独立证据为准。":
-    "Configuration establishes route eligibility only; each capability still requires independent evidence.",
   "高级兼容路径": "Advanced compatibility path",
   "当前为 native-official；仅使用官方 OAuth，不会自动转换为混合供应商。":
     "This profile is native-official and uses official OAuth only; it will not be converted to a mixed provider automatically.",

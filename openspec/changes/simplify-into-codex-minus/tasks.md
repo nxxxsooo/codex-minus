@@ -32,7 +32,7 @@
 
 ## 5. Capability-evidence removal
 
-- [ ] 5.1 Remove the evidence panel and ownership section (App.tsx 3751-3861), their state/refresh plumbing, label tables, `inspect_provider_capability_evidence`, `provider_capability_evidence.rs`, and registration; delete `provider-capability-ledger.ts` / `provider-doctor-evidence.ts` and their four test files; update `provider-command-registration.test.ts` and `provider-capability-claims.test.ts` (keep the no-overclaim sweep, keep i18n line 26 usage consistent).
+- [x] 5.1 Remove the evidence panel and ownership section (App.tsx 3751-3861), their state/refresh plumbing, label tables, `inspect_provider_capability_evidence`, `provider_capability_evidence.rs`, and registration; delete `provider-capability-ledger.ts` / `provider-doctor-evidence.ts` and their four test files; update `provider-command-registration.test.ts` and `provider-capability-claims.test.ts` (keep the no-overclaim sweep, keep i18n line 26 usage consistent).
 
 ## 6. Rename to Codex Minus (gated: single-workstream ownership confirmed)
 
