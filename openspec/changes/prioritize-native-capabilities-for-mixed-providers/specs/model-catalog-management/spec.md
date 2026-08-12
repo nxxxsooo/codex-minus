@@ -49,6 +49,8 @@ The system SHALL assign every catalog-capable relay profile one catalog mode: `n
 - **WHEN** an Aggregate, Chat Completions, pure-OAuth, missing-credential, or otherwise non-single-upstream profile is marked `server-side-composite`
 - **THEN** validation fails before catalog materialization or live mutation and the prior provider/catalog generation remains unchanged
 
+## ADDED Requirements
+
 ### Requirement: An implicit catalog mode follows the current default
 
 A catalog mode that was derived rather than chosen SHALL be re-derived when state is loaded, the same way an implicit external pointer is already re-derived. A mode the user chose explicitly SHALL never be re-derived.
