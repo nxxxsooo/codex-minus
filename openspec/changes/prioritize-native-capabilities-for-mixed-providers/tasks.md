@@ -82,7 +82,7 @@
 ## 8. Run end-to-end preservation and security regressions
 
 - [x] 8.1 Add a golden regression for the supplied custom `OpenAI` provider configuration, excluding invalid/unrelated global keys, and prove normalization plus live staging retain the exact effective actor-authorized contract.
-- [ ] 8.2 Add golden regressions for an existing legacy mixed profile, a legacy provider-ID alias, and a custom-header profile, proving startup and inspection do not change actor/native-capability fields automatically.
+- [x] 8.2 Add golden regressions for an existing legacy mixed profile, a legacy provider-ID alias, and a custom-header profile, proving startup and inspection do not change actor/native-capability fields automatically.
 - [ ] 8.3 Test the explicit native-priority-to-pure-OAuth transition, proving the preview discloses custom-provider deletion, no dormant copy is retained, the catalog returns to `native-official` only when non-external, and official auth is never written.
 - [ ] 8.4 Test switching among native priority, pure API, and legacy compatibility, proving target-specific fields change only after commit and unowned provider headers survive every round trip.
 - [ ] 8.5 Run a pinned-core compatibility test against the fully staged TOML to detect changes in provider-name, actor-header, Responses, bearer, or reserved-provider semantics before future dependency upgrades are accepted.
@@ -113,3 +113,5 @@
 - [x] 10.7 Offer the upgrade action whenever every unsatisfied contract field is one the upgrade transform writes, keeping it withheld for a missing model, missing endpoint, unusable identifier, or unparseable structure, and name the input to supply first.
 - [ ] 10.8 Prove the reachable upgrade path end to end at the real entry point: a legacy `custom` profile supplies its missing input, saves, upgrades in one explicit revisioned transform, and reaches the canonical contract without any automatic migration of other profiles.
 - [x] 10.9 Add a maintenance check that the built-in Pro list contains no slug the official bundled catalog hides, so a retired model is caught instead of shipped.
+- [x] 10.10 Confine core storage normalization to the focused profile, so startup, inspection, and a commit focused elsewhere never rewrite a provider contract, and let the startup credential migration relocate a key without deciding the official-auth requirement (`13932f0`).
+- [x] 10.11 Decide compare-and-swap once against either the normalized baseline or the persisted form the editor was shown, so a profile that is not core-canonical is not permanently stale (`13932f0`).

@@ -520,3 +520,37 @@ The provider page states that a disabled master switch still saves configuration
 
 - **WHEN** a provider draft is committed while the master routing switch is disabled
 - **THEN** settings and catalog state persist, live configuration is byte-identical, no restart is claimed, and the commit is not refused
+
+### Requirement: A contract changes only for the profile the user is editing
+
+A provider contract SHALL change only through an explicit commit focused on that profile. Startup, inspection, and a commit focused on a different profile SHALL leave every actor and native-capability field exactly as persisted.
+
+This is not automatic by default: the pinned core's storage normalizer rewrites a whole provider table on sight — it renames a legacy provider-ID alias to its own identity, discards the table it replaces along with the actor header that table carried, and restores `requires_openai_auth = true` where the value is absent. The system SHALL therefore confine that normalizer to the profile a commit is focused on, and SHALL NOT run it as part of reading, migrating credentials, or saving a neighbouring profile.
+
+The startup credential migration SHALL remain permitted to relocate a legacy API-key copy out of persisted settings, because that removes stored credential material rather than changing a contract, and SHALL NOT decide the official-auth requirement while doing so.
+
+#### Scenario: Startup leaves an unopened contract alone
+
+- **WHEN** the manager starts with a legacy mixed profile, a legacy provider-ID alias, and a custom-header profile persisted, each carrying a legacy API-key auth copy
+- **THEN** the credential copies are removed, and every provider identity, provider name, wire API, official-auth requirement, actor header, and unowned provider or header key is byte-identical to what was persisted
+
+#### Scenario: Inspection reports without rewriting
+
+- **WHEN** those profiles are inspected and classified
+- **THEN** the reported state reflects each contract as authored and no persisted byte changes
+
+#### Scenario: Saving one profile does not migrate another
+
+- **WHEN** a commit focused on one profile succeeds
+- **THEN** every other profile's persisted contract is byte-identical, including a legacy provider-ID alias and its actor header
+
+### Requirement: Compare-and-swap accepts the generation the editor was shown
+
+Compare-and-swap SHALL be decided once, at the commit boundary, against either the normalized baseline the transaction plans on or the persisted form the settings payload actually handed the editor. The two differ whenever a persisted profile is not already in core-canonical form.
+
+Accepting only the normalized form strands such a profile: the expected fingerprint can never be produced, every save reports stale state, and reloading reads the same file and reports it again. Later validators SHALL compare against the one accepted generation rather than re-deciding staleness.
+
+#### Scenario: A non-canonical persisted profile can still be saved
+
+- **WHEN** a provider draft is committed while another persisted profile is not in core-canonical form
+- **THEN** the commit is not refused as stale, and the focused profile persists
