@@ -4442,3 +4442,166 @@ fn injected_staging_failure_is_typed_as_staging_rejected_and_mutates_nothing() {
         "a rejected staging must leave the complete prior generation"
     );
 }
+
+#[test]
+fn a_legacy_custom_profile_reaches_the_canonical_contract_at_the_real_entry_points() {
+    use crate::provider_native_capability::{
+        NativeCapabilityDraftAction, NativeCapabilityDraftStatus, NativeCapabilityState,
+        ProviderNativeCapabilityDraftRequest, inspect_profile,
+        transform_provider_native_capability_draft_from_paths,
+    };
+
+    // The shape a user actually arrives with: provider name `custom`, official auth still
+    // required, no actor marker, and no default model. The missing model is the blocking gap, so
+    // the upgrade is withheld until it is supplied.
+    let mut legacy = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    legacy.config_contents = r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = "provider-key"
+"#
+    .to_string();
+    legacy.model = String::new();
+
+    let mut bystander = canonical_profile(
+        "bystander",
+        "official-a",
+        "https://bystander.example/v1",
+        "bystander-key",
+    );
+    bystander.config_contents = GOLDEN_UNTOUCHED_BYSTANDER_ALIAS.to_string();
+
+    let mut state = state_with_official();
+    for id in ["sub2api", "bystander"] {
+        state.profiles.insert(
+            id.to_string(),
+            crate::model_catalog::ProfileCatalogState {
+                mode: CatalogMode::OfficialPlusCustom,
+                mode_explicit: true,
+                ..crate::model_catalog::ProfileCatalogState::default()
+            },
+        );
+    }
+    let fixture = Fixture::new(&settings_with(vec![legacy, bystander], "sub2api"), &state);
+    let auth_before = fs::read(fixture.paths.codex_home.join("auth.json")).unwrap();
+    let bystander_before = raw_stored_profile_config(&fixture.paths.settings_path, "bystander");
+
+    let persisted = fixture.read_settings();
+    assert_eq!(
+        inspect_profile(
+            &persisted.relay_profiles[0],
+            CatalogMode::OfficialPlusCustom
+        )
+        .state,
+        NativeCapabilityState::Degraded,
+        "a profile missing its default model cannot reach its own upgrade yet"
+    );
+
+    // Step 1: supply the missing input and save. This is the step the old gate refused, which is
+    // what stranded the profile: the input can only be persisted by a save.
+    let mut next = persisted.clone();
+    next.relay_profiles[0].model = "official-a".to_string();
+    next.relay_profiles[0].config_contents = format!(
+        "model = \"official-a\"\n{}",
+        next.relay_profiles[0].config_contents
+    );
+    commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(&persisted, &next, "sub2api", ProviderCommitAction::Save, 70),
+    )
+    .expect("a repairable draft must save so the contract can be completed in steps");
+
+    let persisted = fixture.read_settings();
+    assert_eq!(
+        inspect_profile(
+            &persisted.relay_profiles[0],
+            CatalogMode::OfficialPlusCustom
+        )
+        .state,
+        NativeCapabilityState::UpgradeAvailable,
+        "with its input supplied, the profile must now be able to reach its upgrade"
+    );
+
+    // Step 2: one explicit revisioned transform at the real command boundary.
+    let payload = transform_provider_native_capability_draft_from_paths(
+        &fixture.paths.settings_path,
+        &fixture.paths.catalog_state_path,
+        ProviderNativeCapabilityDraftRequest {
+            draft_revision: 71,
+            profile: persisted.relay_profiles[0].clone(),
+            catalog_mode: CatalogMode::OfficialPlusCustom,
+            action: NativeCapabilityDraftAction::EnableNativePriority,
+            source_config_contents: None,
+            confirmations: vec![],
+            replacement_provider_id: None,
+        },
+    );
+    assert_eq!(payload.status, NativeCapabilityDraftStatus::Ready);
+    assert_eq!(payload.draft_revision, 71);
+    assert_eq!(
+        raw_stored_profile_config(&fixture.paths.settings_path, "sub2api"),
+        persisted.relay_profiles[0].config_contents,
+        "the transform must not persist anything on its own"
+    );
+
+    // Step 3: commit the upgraded draft.
+    let mut upgraded = persisted.clone();
+    upgraded.relay_profiles[0] = payload.draft.profile.clone();
+    commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(
+            &persisted,
+            &upgraded,
+            "sub2api",
+            ProviderCommitAction::Save,
+            71,
+        ),
+    )
+    .expect("the upgraded contract commits");
+
+    let committed = fixture.read_settings();
+    assert_eq!(
+        inspect_profile(
+            &committed.relay_profiles[0],
+            CatalogMode::OfficialPlusCustom
+        )
+        .state,
+        NativeCapabilityState::NativePriority
+    );
+    let stored = raw_stored_profile_config(&fixture.paths.settings_path, "sub2api");
+    let document: toml_edit::DocumentMut = stored.parse().unwrap();
+    let provider = document["model_providers"]["custom"]
+        .as_table_like()
+        .unwrap();
+    assert_eq!(
+        provider.get("name").and_then(toml_edit::Item::as_str),
+        Some("OpenAI")
+    );
+    assert_eq!(
+        provider
+            .get("requires_openai_auth")
+            .and_then(toml_edit::Item::as_bool),
+        Some(false)
+    );
+    assert!(stored.contains("x-openai-actor-authorization"));
+
+    // Nothing else moved: no other profile was migrated, and official auth was never written.
+    assert_eq!(
+        raw_stored_profile_config(&fixture.paths.settings_path, "bystander"),
+        bystander_before,
+        "another profile was migrated by this upgrade"
+    );
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
+        auth_before
+    );
+}
