@@ -2,11 +2,11 @@
 
 ## 1. Save liveness
 
-- [ ] 1.1 Bound every subprocess wait in the save/status path (`icacls` pair in `live_state.rs`, any remaining shell-outs) with the `run_bounded_command` pattern; a timeout fails the transaction typed and rolls back the generation.
-- [ ] 1.2 Replace the `spawn_blocking` panic `.expect` in command wrappers with typed `transactionFailed` mapping; add a panic-injection test proving the IPC reply settles with a typed failure and the next save is not poisoned into a hang.
-- [ ] 1.3 Move the pre-`try` draft derivation inside the guarded block so `saving`/`savingRef` always reset through `finally`.
-- [ ] 1.4 Report save success when `commit_provider_detail` returns; run the three post-commit refreshes after the pending state clears, surfacing their failures as a passive notice; test that a slow catalog status cannot hold the 保存中 state.
-- [ ] 1.5 Add a timeout to the relay HTTP client used by 获取模型列表/测试/体检 and move their blocking evidence writes off the async worker; test the timeout path returns a plain-language failure.
+- [x] 1.1 Bound every subprocess wait in the save/status path (`icacls` pair in `live_state.rs`, any remaining shell-outs) with the `run_bounded_command` pattern; a timeout fails the transaction typed and rolls back the generation.
+- [x] 1.2 Replace the `spawn_blocking` panic `.expect` in command wrappers with typed `transactionFailed` mapping; add a panic-injection test proving the IPC reply settles with a typed failure and the next save is not poisoned into a hang.
+- [x] 1.3 Move the pre-`try` draft derivation inside the guarded block so `saving`/`savingRef` always reset through `finally`.
+- [x] 1.4 Report save success when `commit_provider_detail` returns; run the three post-commit refreshes after the pending state clears, surfacing their failures as a passive notice; test that a slow catalog status cannot hold the 保存中 state.
+- [x] 1.5 Add a timeout to the relay HTTP client used by 获取模型列表/测试/体检 and move their blocking evidence writes off the async worker; test the timeout path returns a plain-language failure.
 
 ## 2. Canonical identifier and single generator
 
