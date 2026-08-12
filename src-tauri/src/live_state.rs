@@ -682,7 +682,7 @@ fn apply_windows_acl(path: &Path, directory: bool) -> anyhow::Result<()> {
 
 #[cfg(windows)]
 fn verify_windows_acl(path: &Path) -> anyhow::Result<()> {
-    let output = crate::platform_command::background_command("icacls")
+    let output = crate::platform_command::captured_output_command("icacls")
         .arg(path)
         .output()?;
     ensure!(

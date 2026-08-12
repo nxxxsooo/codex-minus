@@ -621,7 +621,7 @@ fn parse_macos_proxy_output(contents: &str) -> ProxyObservation {
 
 #[cfg(windows)]
 fn discover_windows_system_proxy() -> ProxyObservation {
-    let output = crate::platform_command::background_command("reg")
+    let output = crate::platform_command::captured_output_command("reg")
         .args([
             "query",
             r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",

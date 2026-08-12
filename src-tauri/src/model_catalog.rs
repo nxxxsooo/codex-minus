@@ -1732,7 +1732,7 @@ fn verify_platform_publisher(app: &Path, cli: &Path) -> anyhow::Result<(bool, St
         "$s=Get-AuthenticodeSignature -LiteralPath '{}'; Write-Output $s.Status; Write-Output $s.SignerCertificate.Subject",
         cli.to_string_lossy().replace('\'', "''")
     );
-    let output = crate::platform_command::background_command("powershell")
+    let output = crate::platform_command::captured_output_command("powershell")
         .args([
             "-NoProfile",
             "-NonInteractive",
