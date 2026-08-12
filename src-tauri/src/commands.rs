@@ -4174,7 +4174,7 @@ fn sanitize_provider_model_ids(profile: &RelayProfile, models: Vec<String>) -> V
         .collect()
 }
 
-fn sanitize_provider_doctor_result(
+pub(crate) fn sanitize_provider_doctor_result(
     profile: &RelayProfile,
     mut result: CommandResult<ProviderDoctorPayload>,
 ) -> CommandResult<ProviderDoctorPayload> {
@@ -4756,7 +4756,7 @@ fn sanitize_diagnostic_detail(detail: Value) -> Value {
     sanitize(detail, None).unwrap_or_else(|| json!({}))
 }
 
-fn sanitize_diagnostic_detail_for_event(event: &str, detail: Value) -> Value {
+pub(crate) fn sanitize_diagnostic_detail_for_event(event: &str, detail: Value) -> Value {
     let allowed_ui_fields: Option<&[&str]> = match event {
         "manager.ui.switchRelayProfile.start" => Some(&[
             "currentRelayId",

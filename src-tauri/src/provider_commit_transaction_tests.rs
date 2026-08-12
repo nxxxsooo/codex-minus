@@ -4212,3 +4212,187 @@ fn pinned_core_semantics_for_the_staged_contract_are_unchanged() {
         "core stopped defaulting requires_openai_auth to true"
     );
 }
+
+/// Sentinel audit: nothing outside the two files that are supposed to hold a credential may
+/// contain one, and no payload, error, or log detail may carry either kind of secret.
+#[test]
+fn sentinel_credentials_never_reach_artifacts_payloads_errors_or_logs() {
+    const PROVIDER_SENTINEL: &str = "SENTINEL-PROVIDER-KEY-a1b2";
+    const OAUTH_ACCOUNT: &str = "SENTINEL-OAUTH-ACCOUNT";
+    const OAUTH_WORKSPACE: &str = "SENTINEL-OAUTH-WORKSPACE";
+
+    let persisted = settings_with(
+        vec![canonical_profile(
+            "sub2api",
+            "official-a",
+            "https://relay.example/v1",
+            PROVIDER_SENTINEL,
+        )],
+        "sub2api",
+    );
+    let scope_salt = "provider-commit-test-salt".to_string();
+    let state = CatalogState {
+        scope_salt: scope_salt.clone(),
+        official: Some(OfficialSnapshot {
+            client_version: "0.147.0".to_string(),
+            scope_hash: official_scope_hash(&scope_salt, OAUTH_ACCOUNT, OAUTH_WORKSPACE),
+            raw_catalog: official_catalog(),
+            ..OfficialSnapshot::default()
+        }),
+        target: Some(target_identity("0.147.0", "target-a")),
+        ..CatalogState::default()
+    };
+    let fixture = Fixture::new(&persisted, &state);
+    fs::write(
+        fixture.paths.codex_home.join("auth.json"),
+        official_auth_bytes(OAUTH_ACCOUNT, OAUTH_WORKSPACE),
+    )
+    .unwrap();
+    let persisted = fixture.read_settings();
+
+    let payload = commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(
+            &persisted,
+            &persisted,
+            "sub2api",
+            ProviderCommitAction::Save,
+            50,
+        ),
+    )
+    .expect("the sentinel provider commits");
+
+    // Artifacts. Exactly two files are entitled to a credential: the persisted settings the
+    // manager owns, and the live configuration Codex reads. Everything the transaction leaves
+    // behind — catalogs, catalog state, staging remnants, recovery material, backups — must not
+    // carry one, and nothing at all may carry the official account identity except auth.json.
+    let entitled_to_provider_key = ["app-state/settings.json", "codex-home/config.toml"];
+    for (path, bytes) in fixture.file_generation() {
+        let text = String::from_utf8_lossy(&bytes).to_string();
+        if !entitled_to_provider_key.contains(&path.as_str()) {
+            assert!(
+                !text.contains(PROVIDER_SENTINEL),
+                "provider key leaked into {path}"
+            );
+        }
+        if path != "codex-home/auth.json" {
+            for identity in [OAUTH_ACCOUNT, OAUTH_WORKSPACE] {
+                assert!(!text.contains(identity), "{identity} leaked into {path}");
+            }
+        }
+    }
+
+    // Payloads: the commit result, the native-capability inspection, and the capability evidence.
+    let inspection =
+        crate::provider_native_capability::inspect_provider_native_capabilities_from_paths(
+            &fixture.paths.settings_path,
+            &fixture.paths.catalog_state_path,
+            crate::provider_native_capability::ProviderNativeCapabilityInspectionRequest::default(),
+        )
+        .unwrap();
+    let evidence =
+        crate::provider_capability_evidence::inspect_provider_capability_evidence_from_paths(
+            &fixture.paths.settings_path,
+            &fixture.paths.catalog_state_path,
+            &fixture.paths.codex_home,
+            crate::provider_capability_evidence::ProviderCapabilityEvidenceRequest {
+                profile_id: "sub2api".to_string(),
+            },
+        )
+        .unwrap();
+    let commit_surface = serde_json::to_string(&payload).unwrap();
+    let status_surfaces = [
+        ("inspection", serde_json::to_string(&inspection).unwrap()),
+        ("evidence", serde_json::to_string(&evidence).unwrap()),
+    ];
+    // The commit reply is the local provider-detail IPC the editor round-trips, so it is allowed
+    // to carry the bearer back. It may still never carry official identity.
+    for identity in [OAUTH_ACCOUNT, OAUTH_WORKSPACE] {
+        assert!(
+            !commit_surface.contains(identity),
+            "{identity} reached the commit reply"
+        );
+    }
+    for (name, surface) in &status_surfaces {
+        for secret in [PROVIDER_SENTINEL, OAUTH_ACCOUNT, OAUTH_WORKSPACE] {
+            assert!(
+                !surface.contains(secret),
+                "{secret} reached the {name} surface"
+            );
+        }
+    }
+
+    // Errors: a refused commit must not describe the credential it refused.
+    let mut stale = persisted.clone();
+    stale.relay_profiles[0].api_key = format!("{PROVIDER_SENTINEL}-changed");
+    let failure = commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(&stale, &stale, "sub2api", ProviderCommitAction::Save, 51),
+    )
+    .expect_err("a mismatched compare-and-swap baseline is refused");
+    let rendered = format!("{} {} {failure:?}", failure.reason(), failure);
+    for secret in [PROVIDER_SENTINEL, OAUTH_ACCOUNT, OAUTH_WORKSPACE] {
+        assert!(
+            !rendered.contains(secret),
+            "{secret} reached a failure payload"
+        );
+    }
+
+    // Doctor: an upstream answer that echoes the credential is redacted before it is shown.
+    let doctor_profile = persisted.relay_profiles[0].clone();
+    let doctor = crate::commands::sanitize_provider_doctor_result(
+        &doctor_profile,
+        crate::commands::CommandResult {
+            status: "ok".to_string(),
+            message: format!("upstream echoed {PROVIDER_SENTINEL}"),
+            payload: crate::commands::ProviderDoctorPayload {
+                profile_name: PROVIDER_SENTINEL.to_string(),
+                model: format!("model {PROVIDER_SENTINEL}"),
+                summary: format!("summary {PROVIDER_SENTINEL}"),
+                recommendation: format!("recommendation {PROVIDER_SENTINEL}"),
+                checks: vec![crate::commands::ProviderDoctorCheck {
+                    id: "auth".to_string(),
+                    title: format!("title {PROVIDER_SENTINEL}"),
+                    status: "ok".to_string(),
+                    detail: format!("detail {PROVIDER_SENTINEL}"),
+                }],
+                compatibility_fallback_used: false,
+                initial_http_status: None,
+                request_http_status: None,
+            },
+        },
+    );
+    let rendered = format!(
+        "{} {}",
+        doctor.message,
+        serde_json::to_string(&doctor.payload).unwrap()
+    );
+    assert!(
+        !rendered.contains(PROVIDER_SENTINEL),
+        "provider key reached the Doctor payload"
+    );
+
+    // Logs: diagnostic details are redacted before they are ever appended.
+    for event in [
+        "provider.commit",
+        "manager.normalize_relay_profile_for_storage.failed",
+        "manager.start",
+    ] {
+        let sanitized = crate::commands::sanitize_diagnostic_detail_for_event(
+            event,
+            json!({
+                "apiKey": PROVIDER_SENTINEL,
+                "configContents": format!("experimental_bearer_token = \"{PROVIDER_SENTINEL}\"\n"),
+                "authContents": format!("{{\"account_id\":\"{OAUTH_ACCOUNT}\"}}"),
+                "nested": { "workspace": OAUTH_WORKSPACE }
+            }),
+        );
+        let rendered = serde_json::to_string(&sanitized).unwrap();
+        for secret in [PROVIDER_SENTINEL, OAUTH_ACCOUNT, OAUTH_WORKSPACE] {
+            assert!(
+                !rendered.contains(secret),
+                "{secret} survived diagnostic sanitization of {event}"
+            );
+        }
+    }
+}
