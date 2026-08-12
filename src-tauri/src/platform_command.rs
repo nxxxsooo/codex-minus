@@ -1,8 +1,21 @@
+use anyhow::{Context, ensure};
 use std::ffi::OsStr;
-use std::process::Command;
+use std::fs;
+use std::process::{Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(windows)]
 const DETACHED_PROCESS: u32 = 0x0000_0008;
+
+/// Upper bound for a helper process that runs inside a live-state transaction.
+///
+/// The coordinator lock is held across the whole transaction, so a child that never exits is
+/// indistinguishable from a hung application: the editor keeps its pending state with nothing to
+/// report. Ten seconds is far above the observed cost of these helpers and matches the bound the
+/// target-CLI probes already use.
+pub(crate) const HELPER_TIMEOUT: Duration = Duration::from_secs(10);
+
+const MAX_HELPER_OUTPUT_BYTES: u64 = 1024 * 1024;
 
 /// Spawns a child with no window and no console of its own.
 ///
@@ -37,6 +50,103 @@ pub(crate) fn captured_output_command(program: impl AsRef<OsStr>) -> Command {
     command
 }
 
+/// Waits for an already-configured child, killing it once `timeout` elapses.
+fn wait_bounded(
+    command: &mut Command,
+    timeout: Duration,
+    what: &str,
+) -> anyhow::Result<ExitStatus> {
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("cannot start {what}"))?;
+    let started = Instant::now();
+    let mut interval = Duration::from_millis(1);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!("{what} did not finish within {} seconds", timeout.as_secs());
+        }
+        std::thread::sleep(interval);
+        if interval < Duration::from_millis(25) {
+            interval *= 2;
+        }
+    }
+}
+
+/// Runs a helper whose output is irrelevant, with a hard upper bound on its runtime.
+///
+/// Standard streams are closed rather than piped so no inherited handle can outlive the child.
+pub(crate) fn status_bounded(
+    command: &mut Command,
+    timeout: Duration,
+    what: &str,
+) -> anyhow::Result<ExitStatus> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    wait_bounded(command, timeout, what)
+}
+
+pub(crate) struct BoundedHelperOutput {
+    pub(crate) status: ExitStatus,
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: Vec<u8>,
+}
+
+/// Runs a helper whose output is needed, with a hard upper bound on its runtime.
+///
+/// Output lands in temporary files instead of pipes: waiting on a pipe means waiting for every
+/// inherited handle to close, which a process-creation interceptor can hold open long after the
+/// child itself has exited.
+pub(crate) fn output_bounded(
+    command: &mut Command,
+    timeout: Duration,
+    what: &str,
+) -> anyhow::Result<BoundedHelperOutput> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let root = std::env::temp_dir();
+    let stdout_path = root.join(format!(
+        "codex-minus-helper-{}-{nonce}.out",
+        std::process::id()
+    ));
+    let stderr_path = root.join(format!(
+        "codex-minus-helper-{}-{nonce}.err",
+        std::process::id()
+    ));
+    let result = (|| -> anyhow::Result<BoundedHelperOutput> {
+        let stdout_file = fs::File::create(&stdout_path)
+            .with_context(|| format!("cannot capture output of {what}"))?;
+        let stderr_file = fs::File::create(&stderr_path)
+            .with_context(|| format!("cannot capture output of {what}"))?;
+        command
+            .stdin(Stdio::null())
+            .stdout(stdout_file)
+            .stderr(stderr_file);
+        let status = wait_bounded(command, timeout, what)?;
+        ensure!(
+            fs::metadata(&stdout_path)?.len() <= MAX_HELPER_OUTPUT_BYTES
+                && fs::metadata(&stderr_path)?.len() <= MAX_HELPER_OUTPUT_BYTES,
+            "{what} produced more output than expected"
+        );
+        Ok(BoundedHelperOutput {
+            status,
+            stdout: fs::read(&stdout_path)?,
+            stderr: fs::read(&stderr_path)?,
+        })
+    })();
+    let _ = fs::remove_file(&stdout_path);
+    let _ = fs::remove_file(&stderr_path);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -51,6 +161,41 @@ mod tests {
     fn captured_output_command_preserves_the_requested_program() {
         let command = captured_output_command("codex-minus-test-command");
         assert_eq!(command.get_program(), "codex-minus-test-command");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_helper_that_never_finishes_is_killed_instead_of_waited_on() {
+        let started = Instant::now();
+        let error = status_bounded(
+            Command::new("sleep").arg("30"),
+            Duration::from_millis(300),
+            "the test helper",
+        )
+        .expect_err("an unbounded child must not be waited on forever");
+
+        assert!(
+            error.to_string().contains("did not finish"),
+            "the failure names the timeout: {error}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the wait returns near its bound rather than at the child's own pace"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_bounded_helper_returns_stdout_without_an_inherited_pipe() {
+        let output = output_bounded(
+            Command::new("echo").arg("BOUNDED"),
+            Duration::from_secs(5),
+            "the test helper",
+        )
+        .expect("the helper should run");
+
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "BOUNDED");
     }
 
     #[cfg(windows)]

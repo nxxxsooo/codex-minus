@@ -1482,13 +1482,11 @@ fn target_client_running() -> Option<bool> {
     #[cfg(target_os = "macos")]
     {
         for name in ["ChatGPT", "Codex", "codex"] {
-            match std::process::Command::new("/usr/bin/pgrep")
-                .args(["-x", name])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-            {
+            match crate::platform_command::status_bounded(
+                std::process::Command::new("/usr/bin/pgrep").args(["-x", name]),
+                crate::platform_command::HELPER_TIMEOUT,
+                "the process probe",
+            ) {
                 Ok(status) if status.success() => return Some(true),
                 Ok(_) => {}
                 Err(_) => return None,
@@ -2378,22 +2376,52 @@ fn provider_commit_failure(
     ProviderCommitFailure::new(code, message)
 }
 
+/// Awaits a blocking command, reporting a panic instead of dropping the reply.
+///
+/// Re-panicking inside a Tauri command drops its IPC responder without answering, so the caller's
+/// promise never settles and the editor keeps a pending state with nothing to show.
+pub(crate) async fn settle_blocking<T, F>(
+    task: tauri::async_runtime::JoinHandle<CommandResult<T>>,
+    message: &str,
+    on_panic: F,
+) -> CommandResult<T>
+where
+    T: Serialize,
+    F: FnOnce() -> T,
+{
+    match task.await {
+        Ok(result) => result,
+        Err(_) => failed(message, on_panic()),
+    }
+}
+
 #[tauri::command]
 pub async fn commit_provider_detail(
     request: crate::provider_commit::ProviderCommitRequest,
 ) -> CommandResult<ProviderCommitPayload> {
     let draft_revision = request.draft_revision;
-    tauri::async_runtime::spawn_blocking(move || {
-        match commit_provider_detail_from_paths(&ProviderCommitPaths::defaults(), request) {
-            Ok(payload) => ok("供应商与模型目录已作为同一代提交。", payload),
-            Err(error) => failed(
-                "供应商提交失败；已保留原有设置与 live 配置。",
-                ProviderCommitPayload::failure(draft_revision, error.code(), error.reason()),
-            ),
-        }
-    })
+    let task =
+        tauri::async_runtime::spawn_blocking(move || {
+            match commit_provider_detail_from_paths(&ProviderCommitPaths::defaults(), request) {
+                Ok(payload) => ok("供应商与模型目录已作为同一代提交。", payload),
+                Err(error) => failed(
+                    "供应商提交失败；已保留原有设置与 live 配置。",
+                    ProviderCommitPayload::failure(draft_revision, error.code(), error.reason()),
+                ),
+            }
+        });
+    settle_blocking(
+        task,
+        "供应商提交中断；已保留原有设置与 live 配置。",
+        move || {
+            ProviderCommitPayload::failure(
+                draft_revision,
+                ProviderCommitErrorCode::TransactionFailed,
+                "提交过程意外中断。",
+            )
+        },
+    )
     .await
-    .expect("blocking command panicked")
 }
 
 pub fn commit_provider_detail_from_paths(
@@ -6592,5 +6620,53 @@ password = "generic-provider-password"
             sanitize_provider_model_ids(&profile, vec!["v1".to_string()]),
             vec!["v1"]
         );
+    }
+}
+
+#[cfg(test)]
+mod command_settlement_tests {
+    use super::*;
+
+    #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+    struct Payload {
+        detail: String,
+    }
+
+    #[test]
+    fn a_panicked_blocking_command_answers_the_caller_instead_of_dropping_the_reply() {
+        let result = tauri::async_runtime::block_on(async {
+            let task = tauri::async_runtime::spawn_blocking(|| -> CommandResult<Payload> {
+                panic!("the blocking body panicked");
+            });
+            settle_blocking(task, "提交中断。", || Payload {
+                detail: "interrupted".to_string(),
+            })
+            .await
+        });
+
+        assert_eq!(result.status, "failed");
+        assert_eq!(result.message, "提交中断。");
+        assert_eq!(result.payload.detail, "interrupted");
+    }
+
+    #[test]
+    fn a_completed_blocking_command_keeps_its_own_result() {
+        let result = tauri::async_runtime::block_on(async {
+            let task = tauri::async_runtime::spawn_blocking(|| {
+                ok(
+                    "done",
+                    Payload {
+                        detail: "committed".to_string(),
+                    },
+                )
+            });
+            settle_blocking(task, "提交中断。", || Payload {
+                detail: "interrupted".to_string(),
+            })
+            .await
+        });
+
+        assert_eq!(result.status, "ok");
+        assert_eq!(result.payload.detail, "committed");
     }
 }

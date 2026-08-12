@@ -1690,28 +1690,37 @@ fn verify_bundle_relationship(_app: &Path, _cli: &Path) -> anyhow::Result<()> {
 
 #[cfg(target_os = "macos")]
 fn verify_platform_publisher(app: &Path, cli: &Path) -> anyhow::Result<(bool, String)> {
-    let app_status = Command::new("/usr/bin/codesign")
-        .args(["--verify", "--deep", "--strict"])
-        .arg(app)
-        .status()?;
+    let app_status = crate::platform_command::status_bounded(
+        Command::new("/usr/bin/codesign")
+            .args(["--verify", "--deep", "--strict"])
+            .arg(app),
+        crate::platform_command::HELPER_TIMEOUT,
+        "the signature verifier",
+    )?;
     ensure!(
         app_status.success(),
         "codesign verification failed for {}",
         app.display()
     );
-    let cli_status = Command::new("/usr/bin/codesign")
-        .args(["--verify", "--strict"])
-        .arg(cli)
-        .status()?;
+    let cli_status = crate::platform_command::status_bounded(
+        Command::new("/usr/bin/codesign")
+            .args(["--verify", "--strict"])
+            .arg(cli),
+        crate::platform_command::HELPER_TIMEOUT,
+        "the signature verifier",
+    )?;
     ensure!(
         cli_status.success(),
         "codesign verification failed for {}",
         cli.display()
     );
-    let output = Command::new("/usr/bin/codesign")
-        .args(["-dv", "--verbose=4"])
-        .arg(cli)
-        .output()?;
+    let output = crate::platform_command::output_bounded(
+        Command::new("/usr/bin/codesign")
+            .args(["-dv", "--verbose=4"])
+            .arg(cli),
+        crate::platform_command::HELPER_TIMEOUT,
+        "the signature verifier",
+    )?;
     ensure!(output.status.success(), "cannot inspect CLI signature");
     let detail = String::from_utf8_lossy(&output.stderr);
     let team_id = detail
@@ -1735,16 +1744,18 @@ fn verify_platform_publisher(app: &Path, cli: &Path) -> anyhow::Result<(bool, St
         "$s=Get-AuthenticodeSignature -LiteralPath '{}'; Write-Output $s.Status; Write-Output $s.SignerCertificate.Subject",
         cli.to_string_lossy().replace('\'', "''")
     );
-    let output = crate::platform_command::captured_output_command("powershell")
-        .args([
+    let output = crate::platform_command::output_bounded(
+        crate::platform_command::captured_output_command("powershell").args([
             "-NoProfile",
             "-NonInteractive",
             "-WindowStyle",
             "Hidden",
             "-Command",
             &script,
-        ])
-        .output()?;
+        ]),
+        crate::platform_command::HELPER_TIMEOUT,
+        "the signature verifier",
+    )?;
     ensure!(output.status.success(), "Authenticode verification failed");
     let text = String::from_utf8_lossy(&output.stdout);
     ensure!(

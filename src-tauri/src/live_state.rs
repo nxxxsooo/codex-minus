@@ -95,10 +95,13 @@ struct JournalEntry {
 }
 
 pub fn lock() -> anyhow::Result<LiveStateGuard> {
+    // The mutex guards no data, so a panicking holder leaves nothing inconsistent behind: an
+    // interrupted generation is repaired from the transaction journal on the next write. Treating
+    // poison as fatal instead would make one panic reject every later save until the app restarts.
     let guard = LIVE_STATE_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .map_err(|_| anyhow::anyhow!("live-state coordinator lock is poisoned"))?;
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     ACTIVE_PERMISSION_CACHE.with(|cache| {
         *cache.borrow_mut() = Some(HashSet::new());
     });
@@ -672,19 +675,24 @@ fn apply_windows_acl(path: &Path, directory: bool) -> anyhow::Result<()> {
     } else {
         format!("{user}:F")
     };
-    let status = crate::platform_command::background_command("icacls")
-        .arg(path)
-        .args(["/inheritance:r", "/grant:r", &grant])
-        .status()?;
+    let status = crate::platform_command::status_bounded(
+        crate::platform_command::background_command("icacls")
+            .arg(path)
+            .args(["/inheritance:r", "/grant:r", &grant]),
+        crate::platform_command::HELPER_TIMEOUT,
+        "the permission helper",
+    )?;
     ensure!(status.success(), "icacls failed for {}", path.display());
     Ok(())
 }
 
 #[cfg(windows)]
 fn verify_windows_acl(path: &Path) -> anyhow::Result<()> {
-    let output = crate::platform_command::captured_output_command("icacls")
-        .arg(path)
-        .output()?;
+    let output = crate::platform_command::output_bounded(
+        crate::platform_command::captured_output_command("icacls").arg(path),
+        crate::platform_command::HELPER_TIMEOUT,
+        "the permission verifier",
+    )?;
     ensure!(
         output.status.success(),
         "cannot verify ACL for {}",
@@ -719,6 +727,24 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
+
+    #[test]
+    fn a_panic_under_the_coordinator_lock_does_not_reject_every_later_write() {
+        let panicked = std::thread::spawn(|| {
+            let _guard = lock().expect("the first holder should acquire the lock");
+            panic!("a transaction step panicked while holding the coordinator");
+        })
+        .join();
+        assert!(panicked.is_err(), "the holder must have panicked");
+
+        let recovered = lock();
+
+        assert!(
+            recovered.is_ok(),
+            "a later save still acquires the coordinator: {:?}",
+            recovered.err()
+        );
+    }
 
     #[test]
     fn atomic_write_repairs_owner_only_mode() {
