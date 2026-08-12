@@ -464,3 +464,51 @@ describe("provider-owned commit request", () => {
     }), /requires its source catalog draft/);
   });
 });
+
+describe("provider commit failure reporting", () => {
+  it("returns the backend message unchanged when no typed code is present", () => {
+    const failureMessage = commitModule?.providerCommitFailureMessage;
+    assert.ok(failureMessage);
+    assert.equal(failureMessage("提交失败。", null), "提交失败。");
+    assert.equal(failureMessage("提交失败。", "   "), "提交失败。");
+  });
+
+  it("appends the actionable hint and the stable typed code", () => {
+    const failureMessage = commitModule?.providerCommitFailureMessage;
+    assert.ok(failureMessage);
+    assert.equal(
+      failureMessage("提交失败。", "catalogScopeStale"),
+      "提交失败。官方模型目录与当前目标客户端或账号范围不一致，请先刷新官方模型目录后重试。（catalogScopeStale）",
+    );
+  });
+
+  it("still reports an unmapped code so support never loses the discriminator", () => {
+    const failureMessage = commitModule?.providerCommitFailureMessage;
+    assert.ok(failureMessage);
+    assert.equal(failureMessage("提交失败。", "somethingNew"), "提交失败。（somethingNew）");
+  });
+
+  it("translates the hint through the supplied translator without touching the code", () => {
+    const failureMessage = commitModule?.providerCommitFailureMessage;
+    assert.ok(failureMessage);
+    assert.equal(
+      failureMessage("Commit failed.", "transactionFailed", () => "Translated hint."),
+      "Commit failed.Translated hint.（transactionFailed）",
+    );
+  });
+
+  it("maps every typed backend failure code", () => {
+    const hints = commitModule?.PROVIDER_COMMIT_FAILURE_HINTS;
+    assert.ok(hints);
+    assert.deepEqual(Object.keys(hints).sort(), [
+      "catalogScopeStale",
+      "catalogUnavailable",
+      "inputUnavailable",
+      "invalidDraft",
+      "officialAuthRequired",
+      "stagingRejected",
+      "staleState",
+      "transactionFailed",
+    ]);
+  });
+});

@@ -5,6 +5,16 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "无法读取已保存的供应商设置。": "The saved provider settings could not be read.",
+  "需要当前有效的官方 ChatGPT 登录。": "A currently valid official ChatGPT sign-in is required.",
+  "官方模型目录与当前目标客户端或账号范围不一致，请先刷新官方模型目录后重试。":
+    "The official model catalog does not match the current target client or account scope; refresh the official model catalog and retry.",
+  "供应商设置在本次编辑期间被其他写入改变，请重新加载后再保存。":
+    "The provider settings changed under another write during this edit; reload before saving again.",
+  "本次草稿未通过校验。": "This draft did not pass validation.",
+  "模型目录状态不可用或无法生成。": "The model catalog state is unavailable or could not be generated.",
+  "预写入校验拒绝了本次提交。": "Pre-write validation rejected this commit.",
+  "写入事务失败，已回滚到上一代。": "The write transaction failed and rolled back to the previous generation.",
   "原生能力优先": "Native-capability priority",
   "能力所有权与证据边界": "Capability ownership and evidence boundaries",
   "配置只建立可路由资格；每项能力仍以独立证据为准。":

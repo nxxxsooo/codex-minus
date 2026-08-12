@@ -394,3 +394,28 @@ function implicitMixedCatalogDraft(profileId: string): ProfileCatalogDraft {
     overlay: { official: {}, custom: [] },
   };
 }
+
+/// Actionable hints for the backend's typed `ProviderCommitErrorCode`. The generic failure
+/// message alone cannot tell a user which gate rejected the commit, and the transaction writes
+/// no log entry on the failure path, so the discriminator has to reach the notice.
+export const PROVIDER_COMMIT_FAILURE_HINTS: Record<string, string> = {
+  inputUnavailable: "无法读取已保存的供应商设置。",
+  officialAuthRequired: "需要当前有效的官方 ChatGPT 登录。",
+  catalogScopeStale: "官方模型目录与当前目标客户端或账号范围不一致，请先刷新官方模型目录后重试。",
+  staleState: "供应商设置在本次编辑期间被其他写入改变，请重新加载后再保存。",
+  invalidDraft: "本次草稿未通过校验。",
+  catalogUnavailable: "模型目录状态不可用或无法生成。",
+  stagingRejected: "预写入校验拒绝了本次提交。",
+  transactionFailed: "写入事务失败，已回滚到上一代。",
+};
+
+export function providerCommitFailureMessage(
+  message: string,
+  errorCode: string | null | undefined,
+  translate: (text: string) => string = (text) => text,
+): string {
+  const code = (errorCode ?? "").trim();
+  if (!code) return message;
+  const hint = PROVIDER_COMMIT_FAILURE_HINTS[code];
+  return hint ? `${message}${translate(hint)}（${code}）` : `${message}（${code}）`;
+}

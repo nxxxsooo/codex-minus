@@ -84,6 +84,7 @@ import {
   catalogDraftAvailability,
   managedCatalogCapable,
   providerDeleteAvailable,
+  providerCommitFailureMessage,
   providerCommitFailureShouldReconcileForm,
   registerProviderCommit,
   settleProviderCommit,
@@ -1510,7 +1511,7 @@ export function App() {
     if (settled.disposition === "ignore") return false;
     if (settled.disposition === "report") {
       await reconcileTopologyFailure(settled.disposition);
-      showNotice(t("保存供应商"), result.message, result.status);
+      showNotice(t("保存供应商"), providerCommitFailureMessage(result.message, result.errorCode, t), result.status);
       return false;
     }
     if (!nextBaseline || !selectedSettings) return false;
