@@ -3750,3 +3750,71 @@ fn golden_active_commit_stages_the_exact_actor_authorized_contract() {
         );
     }
 }
+
+/// Golden: a legacy provider-ID alias belonging to another profile, exactly as authored.
+///
+/// The core storage normalizer rewrites this shape on sight — it renames the alias to its own
+/// `custom` identity, drops the table it replaces along with the actor header, and restores
+/// `requires_openai_auth = true`. A commit focused on a different profile must never apply that
+/// to a bystander: this profile's upgrade is the user's to authorize, one profile at a time.
+const GOLDEN_UNTOUCHED_BYSTANDER_ALIAS: &str = r#"model = "official-a"
+model_provider = "CodexPlusPlus"
+
+[model_providers.CodexPlusPlus]
+name = "OpenAI"
+base_url = "https://bystander.example/v1"
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = "bystander-key"
+http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
+"#;
+
+#[test]
+fn golden_commit_never_migrates_a_bystander_profile_contract() {
+    let mut bystander = canonical_profile(
+        "bystander",
+        "official-a",
+        "https://bystander.example/v1",
+        "bystander-key",
+    );
+    bystander.config_contents = GOLDEN_UNTOUCHED_BYSTANDER_ALIAS.to_string();
+    let persisted = settings_with(
+        vec![
+            canonical_profile(
+                "sub2api",
+                "official-a",
+                "https://relay.example/v1",
+                "provider-key",
+            ),
+            bystander,
+        ],
+        "sub2api",
+    );
+    let fixture = Fixture::new(&persisted, &state_with_official());
+    let persisted: BackendSettings =
+        serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+    assert_eq!(
+        raw_stored_profile_config(&fixture.paths.settings_path, "bystander"),
+        GOLDEN_UNTOUCHED_BYSTANDER_ALIAS
+    );
+
+    let mut next = persisted.clone();
+    next.relay_profiles[0] = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay-updated.example/v1",
+        "provider-key",
+    );
+
+    commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(&persisted, &next, "sub2api", ProviderCommitAction::Save, 21),
+    )
+    .expect("the focused profile commits");
+
+    assert_eq!(
+        raw_stored_profile_config(&fixture.paths.settings_path, "bystander"),
+        GOLDEN_UNTOUCHED_BYSTANDER_ALIAS,
+        "a commit migrated a profile the user never opened"
+    );
+}

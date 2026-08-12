@@ -1852,7 +1852,7 @@ fn sanitize_profile_after_core_normalize(profile: &mut RelayProfile) {
             .or_else(|| (!profile.api_key.trim().is_empty()).then(|| profile.api_key.clone()));
         if let Some(api_key) = api_key {
             if let Ok(config) =
-                set_provider_config_bearer(&profile.config_contents, &api_key, false)
+                set_provider_config_bearer(&profile.config_contents, &api_key, Some(false))
             {
                 profile.config_contents = config;
             }
@@ -1890,10 +1890,16 @@ fn provider_bearer_token_from_config_exact(config_contents: &str) -> Option<Stri
         .map(ToString::to_string)
 }
 
+/// Writes the provider bearer, and `requires_openai_auth` only when the caller owns that field.
+///
+/// `None` leaves the authored value exactly as it is, present or absent. The startup credential
+/// migration relocates a legacy key and is not the upgrade transform: deciding the official-auth
+/// requirement there would change what the client sends, automatically and without an explicit
+/// revisioned commit.
 fn set_provider_config_bearer(
     config_contents: &str,
     api_key: &str,
-    requires_openai_auth: bool,
+    requires_openai_auth: Option<bool>,
 ) -> anyhow::Result<String> {
     let mut doc: toml_edit::DocumentMut = if config_contents.trim().is_empty() {
         toml_edit::DocumentMut::new()
@@ -1910,8 +1916,10 @@ fn set_provider_config_bearer(
     doc["model_provider"] = toml_edit::value(provider_id.as_str());
     doc["model_providers"][provider_id.as_str()]["experimental_bearer_token"] =
         toml_edit::value(api_key.trim());
-    doc["model_providers"][provider_id.as_str()]["requires_openai_auth"] =
-        toml_edit::value(requires_openai_auth);
+    if let Some(requires_openai_auth) = requires_openai_auth {
+        doc["model_providers"][provider_id.as_str()]["requires_openai_auth"] =
+            toml_edit::value(requires_openai_auth);
+    }
     let mut result = doc.to_string();
     if !result.is_empty() && !result.ends_with('\n') {
         result.push('\n');
@@ -2433,7 +2441,20 @@ pub fn commit_provider_detail_from_paths_observed(
 
     // Validate the unmodified request first so compare-and-swap, structural catalog rules,
     // and authContents ownership are decided before normalization can change evidence.
-    validate_provider_commit_cas(&persisted_settings, &request)?;
+    let persisted_as_shown = serde_json::from_slice(&persisted_settings_bytes)
+        .map(sanitize_settings_for_output)
+        .map_err(|_| {
+            provider_commit_failure(
+                ProviderCommitErrorCode::InputUnavailable,
+                "provider settings are unavailable",
+            )
+        })?;
+    let mut request = request;
+    // Compare-and-swap is decided here and only here. Restating the accepted baseline keeps the
+    // later validators comparing against one agreed generation instead of re-deciding staleness
+    // against a form the editor was never shown.
+    request.expected_provider_fingerprint =
+        validate_provider_commit_cas(&persisted_settings, &persisted_as_shown, &request)?;
     validate_provider_commit_catalog_structure(&request)?;
     let focused_id = request.focused_profile_id.clone();
     if focused_id.is_some() {
@@ -2517,6 +2538,7 @@ pub fn commit_provider_detail_from_paths_observed(
     let normalized_settings = if let Some(focused_id) = focused_id.as_deref() {
         normalize_provider_detail_settings_fallible(
             request.topology.apply_to(&persisted_settings),
+            &persisted_as_shown,
             focused_id,
             focused_mode,
             request.confirm_context_cleanup,
@@ -2939,7 +2961,7 @@ fn migrate_persisted_legacy_api_key_auth(profile: &mut RelayProfile) -> anyhow::
     }
     profile.api_key = legacy_key.to_string();
     profile.config_contents =
-        set_provider_config_bearer(&profile.config_contents, legacy_key, false)?;
+        set_provider_config_bearer(&profile.config_contents, legacy_key, None)?;
     profile.auth_contents.clear();
     Ok(())
 }
@@ -3010,28 +3032,41 @@ fn sanitized_provider_normalization_error(error: &anyhow::Error) -> &'static str
     "provider draft normalization failed"
 }
 
+/// Decides compare-and-swap once, at the boundary, and returns the canonical baseline fingerprint.
+///
+/// Two persisted forms are equally legitimate evidence of "nothing changed underneath": the
+/// normalized baseline this transaction plans against, and the form the settings payload actually
+/// handed the editor, which is read without core storage normalization. They differ whenever a
+/// persisted profile is not already in core-canonical form — a legacy provider-ID alias, a table
+/// missing a default the normalizer supplies, a hand-edited file. Accepting only the normalized
+/// form strands such a profile: every save reports stale state, and reloading reads the same file
+/// and reports it again.
 fn validate_provider_commit_cas(
     persisted_settings: &BackendSettings,
+    persisted_as_shown: &BackendSettings,
     request: &crate::provider_commit::ProviderCommitRequest,
-) -> Result<(), ProviderCommitFailure> {
-    let expected = crate::provider_commit::provider_owned_fingerprint(
-        &crate::provider_commit::ProviderOwnedTopologyDraft::from_settings(persisted_settings),
-    )
-    .map_err(|_| {
-        provider_commit_failure(
-            ProviderCommitErrorCode::InvalidDraft,
-            "provider fingerprint validation failed",
+) -> Result<String, ProviderCommitFailure> {
+    let fingerprint = |settings: &BackendSettings| {
+        crate::provider_commit::provider_owned_fingerprint(
+            &crate::provider_commit::ProviderOwnedTopologyDraft::from_settings(settings),
         )
-    })?;
-    if request.expected_provider_fingerprint != expected
-        || request.previous_active_relay_id != persisted_settings.active_relay_id
-    {
+        .map_err(|_| {
+            provider_commit_failure(
+                ProviderCommitErrorCode::InvalidDraft,
+                "provider fingerprint validation failed",
+            )
+        })
+    };
+    let expected = fingerprint(persisted_settings)?;
+    let accepted = request.expected_provider_fingerprint == expected
+        || request.expected_provider_fingerprint == fingerprint(persisted_as_shown)?;
+    if !accepted || request.previous_active_relay_id != persisted_settings.active_relay_id {
         return Err(provider_commit_failure(
             ProviderCommitErrorCode::StaleState,
             "provider state changed; reload or merge before saving",
         ));
     }
-    Ok(())
+    Ok(expected)
 }
 
 fn validate_provider_commit_catalog_structure(
@@ -3254,6 +3289,7 @@ fn normalize_provider_topology_settings_fallible(
 
 fn normalize_provider_detail_settings_fallible(
     mut settings: BackendSettings,
+    persisted_as_shown: &BackendSettings,
     focused_id: &str,
     focused_mode: crate::model_catalog::CatalogMode,
     confirm_context_cleanup: bool,
@@ -3289,6 +3325,22 @@ fn normalize_provider_detail_settings_fallible(
             profile.auth_contents.is_empty(),
             "incoming authContents is prohibited"
         );
+        if profile.id != focused_id {
+            // A detail commit owns exactly one profile. Every other profile keeps the contract
+            // it was persisted with: core storage normalization rewrites a legacy provider-ID
+            // alias to its own identity, drops the actor header along with the table it
+            // replaces, and restores `requires_openai_auth = true`. Running it here would
+            // migrate profiles the user never opened, as a side effect of saving another one.
+            if let Some(prior) = persisted_as_shown
+                .relay_profiles
+                .iter()
+                .find(|prior| prior.id == profile.id)
+            {
+                *profile = prior.clone();
+                profile.auth_contents.clear();
+            }
+            continue;
+        }
         codex_plus_core::relay_config::normalize_relay_profile_for_storage(profile)
             .map_err(|_| anyhow::anyhow!("provider profile normalization failed"))?;
         sanitize_profile_after_core_normalize_fallible(profile)?;
@@ -3380,7 +3432,7 @@ fn sanitize_profile_after_core_normalize_fallible(
             .or_else(|| (!profile.api_key.trim().is_empty()).then(|| profile.api_key.clone()))
             .ok_or_else(|| anyhow::anyhow!("pure API provider key is missing"))?;
         profile.config_contents =
-            set_provider_config_bearer(&profile.config_contents, &api_key, false)
+            set_provider_config_bearer(&profile.config_contents, &api_key, Some(false))
                 .map_err(|_| anyhow::anyhow!("pure API provider projection failed"))?;
         profile.api_key = api_key;
     }
@@ -3725,7 +3777,7 @@ fn stage_active_relay_config_at(
                 projection.official_mix_api_key = true;
                 projection.api_key = api_key.clone();
                 projection.config_contents =
-                    set_provider_config_bearer(&projection.config_contents, &api_key, false)?;
+                    set_provider_config_bearer(&projection.config_contents, &api_key, Some(false))?;
             }
             codex_plus_core::relay_config::apply_relay_profile_config_to_home_with_context(
                 stage_home,
@@ -3741,7 +3793,7 @@ fn stage_active_relay_config_at(
         if profile.relay_mode == codex_plus_core::settings::RelayMode::PureApi {
             let api_key = provider_bearer_token_from_config(&config)
                 .context("纯 API staged 配置缺少 provider bearer token")?;
-            config = set_provider_config_bearer(&config, &api_key, false)?;
+            config = set_provider_config_bearer(&config, &api_key, Some(false))?;
         }
         Ok(config)
     })
@@ -5248,8 +5300,11 @@ fn migrate_legacy_profile_auth_locked_at(settings_path: &Path) -> anyhow::Result
             continue;
         }
         migrate_persisted_legacy_api_key_auth(profile)?;
-        codex_plus_core::relay_config::normalize_relay_profile_for_storage(profile)
-            .context("persisted provider profile is invalid")?;
+        // Startup relocates a credential; it does not normalize a provider contract. The core
+        // storage normalizer rewrites the whole provider table — it renames a legacy provider
+        // alias to its own `custom` shape, drops the table it replaces along with the actor
+        // header, and restores `requires_openai_auth = true` by default. Running it here would
+        // migrate a profile the user never opened, with no preview, no revision, and no consent.
         sanitize_profile_after_core_normalize_fallible(profile)?;
         profile.config_contents = retain_provider_owned_profile_config(&profile.config_contents)
             .context("persisted provider config ownership is invalid")?;
@@ -5852,6 +5907,168 @@ max_threads = 1000
         assert_eq!(std::fs::read(&settings_path).unwrap(), before);
     }
 
+    /// Golden: a legacy mixed contract, exactly as authored.
+    ///
+    /// `name = "custom"`, official auth still required, no actor header, no provider bearer
+    /// marker. Every one of those is a field the upgrade transform writes, which is precisely
+    /// why startup must not write them.
+    const GOLDEN_UNTOUCHED_LEGACY_MIXED: &str = r#"model = "gpt-5.5"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = "legacy-mixed-key"
+"#;
+
+    /// Golden: a legacy provider-ID alias, exactly as authored.
+    ///
+    /// The identifier requires an explicit rename that only the user can authorize; startup may
+    /// not rename it, and may not "finish" the surrounding contract on its behalf.
+    const GOLDEN_UNTOUCHED_LEGACY_ALIAS: &str = r#"model = "gpt-5.5"
+model_provider = "CodexPlusPlus"
+
+[model_providers.CodexPlusPlus]
+name = "OpenAI"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = "legacy-alias-key"
+http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
+"#;
+
+    /// Golden: a complete contract carrying unowned provider and header keys, exactly as authored.
+    ///
+    /// `custom_field` and `x-unrelated-header` belong to the user. A header-table form must also
+    /// survive as a table instead of being folded into the inline form.
+    const GOLDEN_UNTOUCHED_CUSTOM_HEADER: &str = r#"model = "gpt-5.5"
+model_provider = "CustomProvider"
+
+[model_providers.CustomProvider]
+name = "OpenAI"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = "custom-header-key"
+custom_field = "preserve-me"
+
+[model_providers.CustomProvider.http_headers]
+"x-openai-actor-authorization" = "local-image-extension"
+"x-unrelated-header" = "keep-me"
+"#;
+
+    #[test]
+    fn golden_startup_and_inspection_never_rewrite_an_existing_contract() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let catalog_state_path = temp.path().join("model-catalog-state.json");
+        let home = temp.path().join("codex-home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        let goldens = [
+            (
+                "legacy-mixed",
+                GOLDEN_UNTOUCHED_LEGACY_MIXED,
+                "legacy-mixed-key",
+                crate::provider_native_capability::NativeCapabilityState::UpgradeAvailable,
+            ),
+            (
+                "CodexPlusPlus-profile",
+                GOLDEN_UNTOUCHED_LEGACY_ALIAS,
+                "legacy-alias-key",
+                crate::provider_native_capability::NativeCapabilityState::UpgradeAvailable,
+            ),
+            (
+                "custom-header",
+                GOLDEN_UNTOUCHED_CUSTOM_HEADER,
+                "custom-header-key",
+                crate::provider_native_capability::NativeCapabilityState::NativePriority,
+            ),
+        ];
+        let settings = BackendSettings {
+            relay_profiles: goldens
+                .iter()
+                .map(|(id, config, key, _)| RelayProfile {
+                    id: (*id).to_string(),
+                    name: (*id).to_string(),
+                    model: "gpt-5.5".to_string(),
+                    base_url: "https://relay.example/v1".to_string(),
+                    upstream_base_url: "https://relay.example/v1".to_string(),
+                    api_key: (*key).to_string(),
+                    protocol: codex_plus_core::settings::RelayProtocol::Responses,
+                    relay_mode: codex_plus_core::settings::RelayMode::Official,
+                    official_mix_api_key: true,
+                    config_contents: (*config).to_string(),
+                    // A legacy API-key auth copy, so the startup migration engages its rewrite
+                    // path instead of returning early and proving nothing.
+                    auth_contents: json!({ "OPENAI_API_KEY": key }).to_string(),
+                    ..RelayProfile::default()
+                })
+                .collect(),
+            ..BackendSettings::default()
+        };
+        std::fs::write(
+            &settings_path,
+            serde_json::to_vec_pretty(&settings).unwrap(),
+        )
+        .unwrap();
+        let _guard = live_state::lock().unwrap();
+
+        assert_eq!(
+            migrate_legacy_profile_auth_locked_at(&settings_path).unwrap(),
+            goldens.len(),
+            "every profile must take the rewriting migration path"
+        );
+
+        let migrated: BackendSettings =
+            serde_json::from_slice(&std::fs::read(&settings_path).unwrap()).unwrap();
+        for (index, (id, config, _, _)) in goldens.iter().enumerate() {
+            let profile = &migrated.relay_profiles[index];
+            assert_eq!(
+                profile.id.as_str(),
+                *id,
+                "startup renamed or reordered a profile"
+            );
+            assert_eq!(
+                profile.config_contents.as_str(),
+                *config,
+                "startup rewrote the {id} contract"
+            );
+            assert!(profile.auth_contents.is_empty());
+        }
+
+        // The catalog startup path reads the same settings and may derive a mode; it may not
+        // write back into any profile contract.
+        let after_migration = std::fs::read(&settings_path).unwrap();
+        let state = crate::model_catalog::load_and_migrate_state_from_path(
+            &migrated,
+            &home,
+            &catalog_state_path,
+        )
+        .unwrap();
+        let modes =
+            crate::model_catalog::read_only_catalog_modes_from_state(&migrated, Some(&state));
+        assert_eq!(std::fs::read(&settings_path).unwrap(), after_migration);
+
+        for (id, config, _, expected_state) in goldens {
+            let profile = migrated
+                .relay_profiles
+                .iter()
+                .find(|profile| profile.id == id)
+                .unwrap();
+            let inspection = crate::provider_native_capability::inspect_profile(profile, modes[id]);
+            assert_eq!(inspection.state, expected_state, "{id}");
+            assert_eq!(
+                profile.config_contents.as_str(),
+                config,
+                "inspection rewrote the {id} contract"
+            );
+        }
+        assert_eq!(std::fs::read(&settings_path).unwrap(), after_migration);
+    }
+
     #[test]
     fn context_transaction_preserves_unrelated_root_settings() {
         let home = tempfile::tempdir().unwrap();
@@ -5908,7 +6125,7 @@ max_threads = 1000
             base_url: "https://example.test/v1".to_string(),
             upstream_base_url: "https://example.test/v1".to_string(),
             api_key: "sk-stage".to_string(),
-            config_contents: set_provider_config_bearer("", "sk-stage", false).unwrap(),
+            config_contents: set_provider_config_bearer("", "sk-stage", Some(false)).unwrap(),
             ..RelayProfile::default()
         }];
         let staged = stage_active_relay_config(home.path(), &settings).unwrap();
