@@ -2712,7 +2712,23 @@ pub fn commit_provider_detail_from_paths_observed(
             .profiles
             .entry(active_profile.id.clone())
             .or_default();
-        active_state.restart_required = true;
+        // The runtime fingerprint is computed after catalog planning so it carries the final
+        // catalog artifact identity, and it never reads the catalog generation counter that its
+        // own update would otherwise perturb. Only a changed fingerprint marks a restart, so two
+        // identical consecutive active saves stay idempotent.
+        let runtime_fingerprint =
+            crate::model_catalog::applied_runtime_fingerprint(&active_profile, active_state)
+                .map_err(|_| {
+                    provider_commit_failure(
+                        ProviderCommitErrorCode::StagingRejected,
+                        "provider runtime identity is incomplete",
+                    )
+                })?;
+        if active_state.applied_runtime_fingerprint.as_deref() != Some(runtime_fingerprint.as_str())
+        {
+            active_state.applied_runtime_fingerprint = Some(runtime_fingerprint);
+            active_state.restart_required = true;
+        }
         context_snapshot = Some(snapshot);
         mutations.push(FileMutation::text(
             paths.codex_home.join("config.toml"),

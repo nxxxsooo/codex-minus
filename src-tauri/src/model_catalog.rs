@@ -406,7 +406,6 @@ pub(crate) fn clear_catalog_readiness_action(profile_state: &mut ProfileCatalogS
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
 struct AppliedRuntimeFingerprintMaterial {
     selected_provider_id: String,
     selected_provider_name: String,
@@ -416,7 +415,6 @@ struct AppliedRuntimeFingerprintMaterial {
     catalog_runtime_identity: String,
 }
 
-#[allow(dead_code)]
 pub(crate) fn applied_runtime_fingerprint(
     profile: &RelayProfile,
     profile_state: &ProfileCatalogState,

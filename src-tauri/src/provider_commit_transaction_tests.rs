@@ -3233,3 +3233,174 @@ fn staged_native_contract_assertion_rejects_core_drift() {
         .is_err()
     );
 }
+
+#[test]
+fn active_commit_binds_restart_to_the_runtime_fingerprint_without_a_catalog_generation() {
+    let profile = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    let persisted = settings_with(vec![profile.clone()], "sub2api");
+    let fixture = Fixture::new(&persisted, &state_with_official());
+    let persisted = fixture.read_settings();
+
+    let first = commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(
+            &persisted,
+            &persisted,
+            "sub2api",
+            ProviderCommitAction::Save,
+            1,
+        ),
+    )
+    .unwrap();
+
+    assert!(first.restart_required);
+    let after_first = fixture.read_state();
+    let first_state = &after_first.profiles["sub2api"];
+    assert!(first_state.restart_required);
+    let first_fingerprint = first_state
+        .applied_runtime_fingerprint
+        .clone()
+        .expect("an active commit records the applied runtime fingerprint");
+    let first_generation = first_state.generation;
+    assert_eq!(
+        first_fingerprint,
+        crate::model_catalog::applied_runtime_fingerprint(
+            &fixture.read_settings().relay_profiles[0],
+            first_state,
+        )
+        .unwrap()
+    );
+
+    // Acknowledge the first restart so a second transition is observable rather than sticky.
+    let mut acknowledged = after_first.clone();
+    acknowledged
+        .profiles
+        .get_mut("sub2api")
+        .unwrap()
+        .restart_required = false;
+    fs::write(
+        &fixture.paths.catalog_state_path,
+        serde_json::to_vec_pretty(&acknowledged).unwrap(),
+    )
+    .unwrap();
+
+    let persisted = fixture.read_settings();
+    let second = commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(
+            &persisted,
+            &persisted,
+            "sub2api",
+            ProviderCommitAction::Save,
+            2,
+        ),
+    )
+    .unwrap();
+
+    assert!(
+        !second.restart_required,
+        "an identical consecutive active save must not re-fire the restart transition"
+    );
+    let after_second = fixture.read_state();
+    let second_state = &after_second.profiles["sub2api"];
+    assert!(!second_state.restart_required);
+    assert_eq!(
+        second_state.applied_runtime_fingerprint.as_deref(),
+        Some(first_fingerprint.as_str())
+    );
+    assert_eq!(
+        second_state.generation, first_generation,
+        "an identical consecutive active save must not open a new catalog generation"
+    );
+}
+
+#[test]
+fn active_commit_refires_restart_when_the_runtime_contract_changes_without_a_catalog_generation() {
+    let profile = canonical_profile(
+        "sub2api",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    let persisted = settings_with(vec![profile], "sub2api");
+    let fixture = Fixture::new(&persisted, &state_with_official());
+    let persisted = fixture.read_settings();
+    commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(
+            &persisted,
+            &persisted,
+            "sub2api",
+            ProviderCommitAction::Save,
+            1,
+        ),
+    )
+    .unwrap();
+
+    let baseline = fixture.read_state();
+    let baseline_state = &baseline.profiles["sub2api"];
+    let baseline_fingerprint = baseline_state.applied_runtime_fingerprint.clone().unwrap();
+    let baseline_generation = baseline_state.generation;
+    let mut acknowledged = baseline.clone();
+    acknowledged
+        .profiles
+        .get_mut("sub2api")
+        .unwrap()
+        .restart_required = false;
+    fs::write(
+        &fixture.paths.catalog_state_path,
+        serde_json::to_vec_pretty(&acknowledged).unwrap(),
+    )
+    .unwrap();
+
+    // Move the selected provider to another non-reserved identifier: a runtime identity change
+    // that leaves the effective catalog artifact byte-identical, so only the fingerprint may
+    // drive the restart signal.
+    let persisted = fixture.read_settings();
+    let mut renamed = persisted.clone();
+    let profile = &mut renamed.relay_profiles[0];
+    let mut document = profile
+        .config_contents
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap();
+    let provider_id = document["model_provider"].as_str().unwrap().to_string();
+    let table = document["model_providers"][&provider_id].clone();
+    document["model_providers"]
+        .as_table_like_mut()
+        .unwrap()
+        .remove(&provider_id);
+    document["model_providers"]["RelayTwo"] = table;
+    document["model_provider"] = toml_edit::value("RelayTwo");
+    profile.config_contents = document.to_string();
+
+    let second = commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(
+            &persisted,
+            &renamed,
+            "sub2api",
+            ProviderCommitAction::Save,
+            2,
+        ),
+    )
+    .unwrap();
+
+    assert!(second.restart_required);
+    let after = fixture.read_state();
+    let after_state = &after.profiles["sub2api"];
+    assert!(after_state.restart_required);
+    assert_ne!(
+        after_state.applied_runtime_fingerprint.as_deref(),
+        Some(baseline_fingerprint.as_str()),
+        "a changed runtime contract must update the applied fingerprint"
+    );
+    assert_eq!(
+        after_state.generation, baseline_generation,
+        "a runtime-only change must not open a new catalog generation"
+    );
+}
