@@ -2,6 +2,7 @@ import assert from "node:assert";
 import { describe, it } from "node:test";
 
 import {
+  NEW_PROVIDER_ID,
   OFFICIAL_AUTH_GUIDE_URL,
   PRO_MODEL_SLUGS,
   RETIRED_MODEL_SLUGS,
@@ -58,9 +59,9 @@ describe("provider onboarding", () => {
       status: "materialized",
       missingFields: [],
       configContents: `model = "gpt-5.5"
-model_provider = "custom"
+model_provider = "OpenAI"
 
-[model_providers.custom]
+[model_providers.OpenAI]
 name = "OpenAI"
 base_url = "https://relay.example/v1"
 wire_api = "responses"
@@ -69,6 +70,23 @@ experimental_bearer_token = "provider-key"
 http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
 `,
     });
+  });
+
+  it("names the new provider table without impersonating the built-in entry", () => {
+    // Codex reserves the lowercase `openai` identifier for its own provider and ignores a
+    // user-defined table of that name, which would silently drop the bearer and actor header.
+    assert.equal(NEW_PROVIDER_ID, "OpenAI");
+    assert.notEqual(NEW_PROVIDER_ID, "openai");
+    const materialized = materializeNewProviderConfig({
+      ...createNewRelayProfileDraft({ id: "relay-new", contextSelection: {} }),
+      model: "gpt-5.5",
+      baseUrl: "https://relay.example/v1",
+      upstreamBaseUrl: "https://relay.example/v1",
+      apiKey: "provider-key",
+    });
+    assert.match(materialized.configContents, /^model_provider = "OpenAI"$/m);
+    assert.match(materialized.configContents, /^\[model_providers\.OpenAI\]$/m);
+    assert.doesNotMatch(materialized.configContents, /model_providers\.openai\]/);
   });
 
   it("refuses to synchronously rewrite any existing provider TOML", () => {

@@ -4194,6 +4194,28 @@ fn pinned_core_semantics_for_the_staged_contract_are_unchanged() {
         "core now preserves the actor header across an alias rewrite; the rename rule can relax"
     );
 
+    // 5. `OpenAI` is a normal profile-scoped identifier: core's reserved list holds the built-in
+    //    lowercase `openai`, and the match is case-sensitive. New drafts default to `OpenAI` and
+    //    an upgrade preserves it, so a rewrite here would silently rename every shipped profile.
+    let mut mixed_case = canonical_profile(
+        "mixed-case",
+        "official-a",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    mixed_case.config_contents = mixed_case.config_contents.replace("RelayOne", "OpenAI");
+    let authored_mixed_case = mixed_case.config_contents.clone();
+    codex_plus_core::relay_config::normalize_relay_profile_for_storage(&mut mixed_case).unwrap();
+    assert_eq!(
+        provider_id(&mixed_case.config_contents),
+        "OpenAI",
+        "core now treats `OpenAI` as reserved or legacy; the default identifier must change"
+    );
+    assert_eq!(
+        mixed_case.config_contents, authored_mixed_case,
+        "core now rewrites a profile whose identifier is `OpenAI`"
+    );
+
     // 5. An absent official-auth requirement is still defaulted to true, which is why the
     //    startup credential migration must not decide that field.
     let mut absent = canonical_profile(

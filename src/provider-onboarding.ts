@@ -41,6 +41,13 @@ export const PRO_MODEL_SLUGS = [
 /// caught by a test rather than shipped to a user whose catalog can no longer represent it.
 export const RETIRED_MODEL_SLUGS = ["gpt-5.4", "gpt-5.4-mini"] as const;
 
+/// Provider table identifier a brand-new draft is created with.
+///
+/// Distinct from Codex's reserved built-in lowercase `openai`, which the pinned core rewrites and
+/// upstream Codex ignores in favour of its own entry. Sessions record this identifier, so an
+/// upgrade preserves whatever a profile already has instead of adopting this value.
+export const NEW_PROVIDER_ID = "OpenAI";
+
 export function createNewRelayProfileDraft<TContext>({
   id,
   contextSelection,
@@ -103,9 +110,9 @@ export function materializeNewProviderConfig(
     status: "materialized",
     missingFields: [],
     configContents: `model = "${model}"
-model_provider = "custom"
+model_provider = "${NEW_PROVIDER_ID}"
 
-[model_providers.custom]
+[model_providers.${NEW_PROVIDER_ID}]
 name = "OpenAI"
 base_url = "${baseUrl}"
 wire_api = "responses"

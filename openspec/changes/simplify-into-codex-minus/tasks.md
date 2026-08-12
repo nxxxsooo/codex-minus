@@ -10,9 +10,9 @@
 
 ## 2. Canonical identifier and single generator
 
-- [ ] 2.1 Add a pinned-core round-trip test proving identifier `OpenAI` survives normalization, storage sanitize, and staging unchanged, and that reserved lowercase `openai` remains rejected.
-- [ ] 2.2 Default new drafts to provider identifier `OpenAI`; assert upgrades never rewrite an existing non-reserved identifier (extend the golden and transform tests, including the fleet shape `[model_providers.OpenAI]` with `requires_openai_auth = true` upgrading in place).
-- [ ] 2.3 Retire `src/provider-config-draft.ts` and the four-target picker; one generator materializes the contract; update every import and test that referenced the retired path.
+- [x] 2.1 Add a pinned-core round-trip test proving identifier `OpenAI` survives normalization, storage sanitize, and staging unchanged, and that reserved lowercase `openai` remains rejected.
+- [x] 2.2 Default new drafts to provider identifier `OpenAI`; assert upgrades never rewrite an existing non-reserved identifier (extend the golden and transform tests, including the fleet shape `[model_providers.OpenAI]` with `requires_openai_auth = true` upgrading in place).
+- [ ] 2.3 (after 4.1, which makes the alternate targets unreachable for a new draft) Retire `src/provider-config-draft.ts` and the four-target picker; one generator materializes the contract; update every import and test that referenced the retired path.
 
 ## 3. Bundled official baseline
 
