@@ -885,7 +885,7 @@ const defaultSettings: BackendSettings = {
   activeRelayId: "default",
   aggregateRelayProfiles: [],
   activeAggregateRelayId: "",
-  relayTestModel: "gpt-5.4-mini",
+  relayTestModel: "gpt-5.6-luna",
 };
 
 export function App() {
@@ -1387,10 +1387,18 @@ export function App() {
 
   const transformProviderNativeCapability = async (
     invocation: ProviderDetailTransformInvocation<RelayProfile>,
-  ) => call<ProviderDetailTransformResponse<RelayProfile>>(
-    invocation.command,
-    { request: invocation.request },
-  );
+  ) => {
+    const response = await call<ProviderDetailTransformResponse<RelayProfile>>(
+      invocation.command,
+      { request: invocation.request },
+    );
+    // The wire format omits an empty string rather than sending `""`, so a profile whose model,
+    // Base URL, or Key lives only inside its TOML comes back missing those fields. The editor's
+    // type says they are present, and the next save read one of them straight into `.trim()`.
+    return response.draft?.profile
+      ? { ...response, draft: { ...response.draft, profile: normalizeRelayProfile(response.draft.profile) } }
+      : response;
+  };
 
   const fetchRelayProfileModels = async (profile: RelayProfile) => {
     const result = await run(() => call<RelayProfileModelsResult>("fetch_relay_profile_models", { profile }));
@@ -2073,7 +2081,7 @@ function RelayScreen({
                 value={form.relayTestModel}
                 onChange={(event) => onFormChange({ ...form, relayTestModel: event.currentTarget.value })}
                 onBlur={() => void saveRelaySettings(normalizeSettings(form), "testModel")}
-                placeholder={t("例如 gpt-5.4-mini")}
+                placeholder={t("例如 gpt-5.6-luna")}
               />
             </Field>
           </div>
@@ -4790,7 +4798,9 @@ function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
   const configModel = codexModelFromConfig(configContents);
   // 如果用户输入了带后缀的模型名，优先保留在界面的「配置模型」字段中；
   // config.toml 里实际写的是剥离后缀的 slug（由 applyRelayProfilePatchToFiles 处理）。
-  const model = /\[.+\]$/.test(profile.model.trim()) ? profile.model.trim() : configModel;
+  // An omitted field arrives as undefined, not "": read it the same way every other field here is.
+  const declaredModel = (profile.model || "").trim();
+  const model = /\[.+\]$/.test(declaredModel) ? declaredModel : configModel;
   return {
     ...profile,
     model,

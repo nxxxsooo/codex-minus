@@ -217,7 +217,7 @@ export const EN_PLAIN: Record<string, string> = {
   "例如 C:\\Program Files\\WindowsApps\\OpenAI.Codex...\\app": "e.g. C:\\Program Files\\WindowsApps\\OpenAI.Codex...\\app",
   "例如 context7": "e.g. context7",
   "例如 deepseek-v4-pro": "e.g. deepseek-v4-pro",
-  "例如 gpt-5.4-mini": "e.g. gpt-5.4-mini",
+  "例如 gpt-5.6-luna": "e.g. gpt-5.6-luna",
   "例如 主力聚合池": "e.g. Primary aggregate pool",
   "供": "P",
   "供应商": "Provider",

@@ -101,3 +101,24 @@ describe("the provider editor offers one contract and no switches", () => {
     assert.equal(NEW_PROVIDER_ID, "OpenAI");
   });
 });
+
+describe("a profile whose empty fields never reached the wire", () => {
+  it("normalizes a backend profile before the editor edits it", () => {
+    // serde omits an empty string instead of sending "", so a profile whose model, Base URL, or
+    // Key lives only inside its TOML comes back without those keys.
+    const transform = appSource.match(
+      /const transformProviderNativeCapability = async[\s\S]*?\n  \};/,
+    )?.[0] ?? "";
+    assert.ok(transform.length > 0, "the transform boundary was located");
+    assert.match(transform, /normalizeRelayProfile\(response\.draft\.profile\)/);
+  });
+
+  it("reads a possibly-absent model the way every other field here is read", () => {
+    const derive = appSource.match(
+      /function deriveRelayProfileFromFiles[\s\S]*?\n\}/,
+    )?.[0] ?? "";
+    assert.ok(derive.length > 0, "the derivation was located");
+    assert.doesNotMatch(derive, /profile\.model\.trim\(\)/);
+    assert.match(derive, /\(profile\.model \|\| ""\)\.trim\(\)/);
+  });
+});
