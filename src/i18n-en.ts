@@ -377,8 +377,14 @@ export const EN_PLAIN: Record<string, string> = {
   "对话居中宽度": "Centered conversation width",
   "导入 Codex++ 供应商": "Import Codex++ provider",
   "尚未刷新": "Not refreshed yet",
-  "改过上下文，所以保存会为这个供应商生成一份模型目录，之后需要完整退出并重开 Codex 才生效。":
-    "A context window was changed, so saving generates a model catalog for this provider. Fully quit and reopen Codex for it to take effect.",
+  "改过这份列表，所以保存会为这个供应商生成一份模型目录，之后需要完整退出并重开 Codex 才生效。":
+    "This list was changed, so saving generates a model catalog for this provider. Fully quit and reopen Codex for it to take effect.",
+  "这里就是 Codex 里能选到的模型；上下文留空表示用官方默认。":
+    "These are the models Codex will offer. Leave a context window empty to use the official default.",
+  "还原 Pro 列表": "Restore Pro list",
+  "模型列表不能为空，至少保留一个模型。": "The model list cannot be empty; keep at least one model.",
+  "还原为 Pro 列表会移除这些模型：\n\n{0}":
+    "Restoring the Pro list removes these models:\n\n{0}",
   "尚未读取到供应商设置，请点击右上角刷新后重试。":
     "Provider settings have not been read yet. Use the refresh button in the top right, then try again.",
   "刚刚才读到供应商设置，页面已更新为当前内容，请确认后重新保存。":

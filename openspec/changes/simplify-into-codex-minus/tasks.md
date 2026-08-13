@@ -23,6 +23,8 @@
 - [ ] 3.5 Re-anchor the "active default model disappears" continuity behavior to bundled-baseline updates with a regression test.
 - [ ] 3.6 Reconcile the in-flight `add-manager-network-policy` change before archive of this one (close or annotate its remaining task; its spec delta must not land a panel this change removes).
 - [x] 3.7 Promote a native profile to `official-plus-custom` when a per-model context override is supplied, generate the catalog, point live config at it, and state the restart before the save.
+- [x] 3.8 List only the models the profile's catalog makes selectable (the editor listed every baseline entry, including the ones Codex hides), give every row a removal that records a hidden override, offer removed and provider-reported slugs back without duplicating a row the list already carries, and refuse an empty list in the editor.
+- [x] 3.9 Add a one-action restore of the shipped Pro list that names what it would remove, keeps context overrides, and moves the startup model into the restored list.
 
 ## 3b. Save legibility (found in use)
 

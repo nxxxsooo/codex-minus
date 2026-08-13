@@ -27,6 +27,116 @@ export type CatalogOverlayDraft = {
   }>;
 };
 
+export type OfficialCatalogOverrideDraft = CatalogOverlayDraft["official"][string];
+
+export function emptyOfficialOverride(): OfficialCatalogOverrideDraft {
+  return {
+    displayName: null,
+    visible: null,
+    contextWindow: null,
+    effectiveContextWindowPercent: null,
+    order: null,
+    supportedReasoningLevels: null,
+    defaultReasoningLevel: null,
+    supportedTools: null,
+    toolCapabilities: null,
+  };
+}
+
+/// Whether a model reaches the Codex picker: the overlay's answer where it has one, the bundled
+/// baseline's otherwise.
+///
+/// The baseline already hides models Codex retired, so an editor that lists every official entry
+/// shows models the picker will not — two lists that disagree about the same profile.
+export function officialModelIsVisible(
+  overlay: CatalogOverlayDraft,
+  model: { slug: string; visible: boolean },
+): boolean {
+  return overlay.official[model.slug]?.visible ?? model.visible;
+}
+
+/// A visibility wish recorded as its difference from the baseline.
+///
+/// Storing `false` for a model the baseline already hides would leave a non-empty overlay that asks
+/// for nothing, which promotes a native profile to a generated catalog for no reason.
+export function officialVisibilityOverride(baselineVisible: boolean, wanted: boolean): boolean | null {
+  return wanted === baselineVisible ? null : wanted;
+}
+
+/// Slugs offered as one-click additions: everything known that the table is not already showing.
+///
+/// Hidden official models belong here — deleting one has to be undoable, and the row it came from
+/// is gone. Slugs the table already carries do not: offering one would add a second row with the
+/// same slug as an official model, which the generator reports as a collision.
+export function catalogCandidateSlugs(input: {
+  overlay: CatalogOverlayDraft;
+  officialModels: readonly { slug: string; visible: boolean }[];
+  providerCandidates: readonly string[];
+}): string[] {
+  const shown = new Set<string>();
+  const hidden: string[] = [];
+  for (const model of input.officialModels) {
+    if (officialModelIsVisible(input.overlay, model)) shown.add(model.slug);
+    else hidden.push(model.slug);
+  }
+  for (const custom of input.overlay.custom) {
+    const slug = custom.slug.trim();
+    if (slug) shown.add(slug);
+  }
+  return [...new Set([...hidden, ...input.providerCandidates])].filter((slug) => !shown.has(slug));
+}
+
+/// The overlay whose visible list is exactly `wanted`.
+///
+/// Context windows already typed survive: repairing which models appear is not a statement about
+/// how big they are.
+export function restoreCatalogList(input: {
+  overlay: CatalogOverlayDraft;
+  officialModels: readonly { slug: string; visible: boolean }[];
+  wanted: readonly string[];
+}): CatalogOverlayDraft {
+  const wanted = input.wanted.map((slug) => slug.trim()).filter(Boolean);
+  const wantedSlugs = new Set(wanted);
+  const official = Object.fromEntries(
+    Object.entries(input.overlay.official).map(([slug, override]) => [slug, { ...override }]),
+  );
+  for (const model of input.officialModels) {
+    const next = {
+      ...(official[model.slug] ?? emptyOfficialOverride()),
+      visible: officialVisibilityOverride(model.visible, wantedSlugs.has(model.slug)),
+    };
+    if (Object.values(next).every((field) => field === null)) delete official[model.slug];
+    else official[model.slug] = next;
+  }
+  const officialSlugs = new Set(input.officialModels.map((model) => model.slug));
+  let restored: CatalogOverlayDraft = {
+    official,
+    custom: input.overlay.custom.filter((item) => wantedSlugs.has(item.slug.trim())),
+  };
+  for (const slug of wanted) {
+    if (officialSlugs.has(slug)) continue;
+    restored = addCatalogCandidate(restored, slug);
+  }
+  return restored;
+}
+
+/// Rows the restore would take away, so the user is asked about them by name rather than after.
+export function catalogRestoreLosses(input: {
+  overlay: CatalogOverlayDraft;
+  officialModels: readonly { slug: string; visible: boolean }[];
+  wanted: readonly string[];
+}): string[] {
+  const wantedSlugs = new Set(input.wanted.map((slug) => slug.trim()).filter(Boolean));
+  const losses = input.officialModels
+    .filter((model) => officialModelIsVisible(input.overlay, model) && !wantedSlugs.has(model.slug))
+    .map((model) => model.slug);
+  for (const custom of input.overlay.custom) {
+    const slug = custom.slug.trim();
+    if (slug && !wantedSlugs.has(slug)) losses.push(slug);
+  }
+  return losses;
+}
+
 /// True when an overlay asks for nothing the official baseline does not already say.
 export function catalogOverlayIsEmpty(overlay: CatalogOverlayDraft): boolean {
   if (overlay.custom.length > 0) return false;
@@ -239,8 +349,15 @@ export function validateCatalogDraft(
     if (custom.defaultReasoningLevel && !efforts.includes(custom.defaultReasoningLevel)) return "invalid-reasoning-default";
     seen.add(slug);
   }
-  const effective = new Set(mode === "official-plus-custom" ? officialSlugs : []);
+  // A model the user deleted is not a model Codex can start on, even though the baseline still
+  // carries it.
+  const effective = new Set(mode === "official-plus-custom"
+    ? officialSlugs.filter((slug) => overlay.official[slug]?.visible !== false)
+    : []);
   overlay.custom.forEach((item) => effective.add(item.slug.trim()));
+  // The generator refuses a catalog with nothing in it. Saying so here names the list the user is
+  // looking at, rather than failing the whole transaction with a sentence about JSON.
+  if (!effective.size) return "empty-catalog";
   if (defaultModel.trim() && !effective.has(defaultModel.trim())) return "invalid-default-model";
   return null;
 }

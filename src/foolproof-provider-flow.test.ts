@@ -152,6 +152,33 @@ describe("one model table answers every model question", () => {
     assert.match(remove, /if \(removed && selectedModel === removed\) onProfileEdit\(\{ model: "" \}\)/);
   });
 
+  it("lists the models Codex lists, and lets any of them be deleted", () => {
+    // The bundled baseline hides the models Codex retired. Rendering every official entry put rows
+    // in the editor that the picker will never show, and gave the visible ones no way out.
+    assert.match(catalogEditor, /const shownOfficial = officialModels\.filter\(\(model\) => officialModelIsVisible\(overlay, model\)\)/);
+    assert.match(catalogEditor, /\{shownOfficial\.map\(\(model\) => \(/);
+    assert.match(catalogEditor, /onClick=\{\(\) => hideOfficial\(model\)\}/);
+    const hide = catalogEditor.match(/const hideOfficial = [\s\S]*?\n  \};/)?.[0] ?? "";
+    assert.ok(hide.length > 0, "the official delete was located");
+    assert.match(hide, /officialVisibilityOverride\(model\.visible, false\)/);
+    assert.match(hide, /if \(selectedModel === model\.slug\) onProfileEdit\(\{ model: "" \}\)/);
+  });
+
+  it("can put a deleted model back and repair the whole list at once", () => {
+    // A delete with no way back would be a one-way door through a mistyped click.
+    const add = catalogEditor.match(/const addCustom = \(slug = ""\) => \{[\s\S]*?\n  \};/)?.[0] ?? "";
+    assert.ok(add.length > 0, "the add path was located");
+    assert.match(add, /officialVisibilityOverride\(official\.visible, true\)/);
+    assert.match(catalogEditor, /const candidates = catalogCandidateSlugs\(\{/);
+    const restore = catalogEditor.match(/const restoreProList = [\s\S]*?\n  \};/)?.[0] ?? "";
+    assert.ok(restore.length > 0, "the Pro restore was located");
+    assert.match(restore, /catalogRestoreLosses\(\{ overlay, officialModels, wanted: proSlugs \}\)/);
+    assert.match(restore, /window\.confirm\(/, "a restore that removes rows says which ones");
+    assert.match(restore, /restoreCatalogList\(\{ overlay, officialModels, wanted: proSlugs \}\)/);
+    assert.match(restore, /if \(!proSlugs\.includes\(selectedModel\)\) onProfileEdit\(\{ model: proSlugs\[0\] \}\)/);
+    assert.match(catalogEditor, /onClick=\{restoreProList\}/);
+  });
+
   it("never selects a row that has no slug yet", () => {
     assert.match(catalogEditor, /const selectStartupModel = \(slug: string\) => \{\s*if \(slug\) onProfileEdit/);
     assert.match(catalogEditor, /disabled=\{!model\.slug\}/);

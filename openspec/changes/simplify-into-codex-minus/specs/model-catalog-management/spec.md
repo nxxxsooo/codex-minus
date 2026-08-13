@@ -43,6 +43,44 @@ Native official mode generates no managed catalog and points at none, so a per-m
 - **WHEN** every override on a promoted profile is cleared again
 - **THEN** the profile stays managed and no mode change happens without the user's action
 
+### Requirement: The model list is the list Codex offers
+
+The editor's model list SHALL show exactly the models the profile's catalog makes selectable in Codex: an official model the bundled baseline hides MUST NOT appear as a row, and an override the user supplies decides visibility where it exists. Every listed model SHALL be removable, and every removal SHALL be reversible from the same screen — removing an official model records a hidden override against the baseline entry rather than dropping it, and the model returns to the list of models that can be added. A removal that would leave nothing selectable SHALL be reported in the editor before the save is attempted. Removing the model the profile starts on SHALL clear that selection rather than leave the profile pointing at a model its catalog no longer offers.
+
+#### Scenario: A retired official model is not offered
+
+- **WHEN** the bundled baseline marks an official model hidden and the profile supplies no override for it
+- **THEN** the editor does not list that model as a row and offers it only as a model that can be added
+
+#### Scenario: An unwanted official model is removed and restored
+
+- **WHEN** the user removes an official model from the list and then adds it back
+- **THEN** the generated catalog hides it while removed, the baseline entry and its fields survive, and adding it back returns the row with its original metadata
+
+#### Scenario: A model already listed is not offered a second time
+
+- **WHEN** the provider reports a model slug the list already carries
+- **THEN** the slug is not offered as an addition, so no second row can collide with it in the generated catalog
+
+#### Scenario: An empty list is refused where it was typed
+
+- **WHEN** every model in a managed list has been removed
+- **THEN** the editor states that at least one model must remain and the save is not attempted
+
+### Requirement: A mangled model list can be repaired in one action
+
+The editor SHALL offer a single action that restores the shipped list of models a ChatGPT Pro account routes, so a list left wrong by an earlier version or by mistaken removals does not have to be rebuilt from memory. The action SHALL name every model it would remove and require confirmation before removing any. Context windows already supplied SHALL survive the repair, and the startup model SHALL be moved into the restored list if the repair would leave it outside.
+
+#### Scenario: The Pro list is restored without losing a context window
+
+- **WHEN** the user restores the Pro list on a profile carrying a per-model context override for a model the Pro list contains
+- **THEN** the list becomes exactly the Pro models and the override is still present
+
+#### Scenario: Removals are named before they happen
+
+- **WHEN** restoring the Pro list would remove models the list currently shows
+- **THEN** those models are named and the restore does not proceed without confirmation
+
 ### Requirement: Catalog status and provenance
 
 The system SHALL expose enough status to distinguish the bundled baseline's source version, custom-row state, provider-reporting evidence, effective catalog state, and runtime activation without exposing secret, identity, or prompt content. Status SHALL NOT present refresh controls or refresh freshness; the baseline's identity is the running application version plus its recorded source client version.

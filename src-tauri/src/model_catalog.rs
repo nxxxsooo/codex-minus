@@ -3230,6 +3230,83 @@ mod tests {
         assert_eq!(models[0]["effective_context_window_percent"], 95);
     }
 
+    /// Deleting a row in the editor is an official override, not a removal: the baseline entry stays
+    /// so the model can be added back, and the generated catalog is what hides it from the picker.
+    #[test]
+    fn an_official_model_the_user_deleted_is_generated_hidden_and_still_recoverable() {
+        let mut state = CatalogState::default();
+        state.official = Some(OfficialSnapshot {
+            raw_catalog: official_catalog(),
+            ..OfficialSnapshot::default()
+        });
+        let profile = RelayProfile {
+            id: "p".to_string(),
+            config_contents: "model = \"custom-c\"\n".to_string(),
+            ..RelayProfile::default()
+        };
+        let profile_state = ProfileCatalogState {
+            mode: CatalogMode::OfficialPlusCustom,
+            overlay: CatalogOverlay {
+                official: BTreeMap::from([(
+                    "official-a".to_string(),
+                    OfficialOverride {
+                        visible: Some(false),
+                        ..OfficialOverride::default()
+                    },
+                )]),
+                custom: vec![CustomModel {
+                    slug: "custom-c".to_string(),
+                    display_name: "Custom C".to_string(),
+                    visible: true,
+                    ..CustomModel::default()
+                }],
+            },
+            ..ProfileCatalogState::default()
+        };
+        let output = compose_profile_catalog(&state, &profile, &profile_state).unwrap();
+        let models = catalog_models(&output).unwrap();
+        let deleted = models
+            .iter()
+            .find(|model| model["slug"] == "official-a")
+            .expect("the baseline entry survives so the editor can offer it back");
+        assert_eq!(deleted["visibility"], "hide");
+        assert_eq!(deleted["base_instructions"], "keep exactly");
+        let (visible_count, total_count) = catalog_counts(&output).unwrap();
+        assert_eq!(total_count, 3);
+        assert_eq!(visible_count, 1, "only the model the user kept reaches the picker");
+    }
+
+    /// The generator refuses a catalog nothing can be started on, so the editor has to say so first.
+    #[test]
+    fn a_catalog_with_every_model_deleted_is_refused() {
+        let mut state = CatalogState::default();
+        state.official = Some(OfficialSnapshot {
+            raw_catalog: official_catalog(),
+            ..OfficialSnapshot::default()
+        });
+        let profile = RelayProfile {
+            id: "p".to_string(),
+            ..RelayProfile::default()
+        };
+        let profile_state = ProfileCatalogState {
+            mode: CatalogMode::OfficialPlusCustom,
+            overlay: CatalogOverlay {
+                official: BTreeMap::from([(
+                    "official-a".to_string(),
+                    OfficialOverride {
+                        visible: Some(false),
+                        ..OfficialOverride::default()
+                    },
+                )]),
+                custom: Vec::new(),
+            },
+            ..ProfileCatalogState::default()
+        };
+        let error = compose_profile_catalog(&state, &profile, &profile_state)
+            .expect_err("an empty picker is not a catalog");
+        assert!(error.to_string().contains("no visible models"), "{error}");
+    }
+
     #[test]
     fn server_side_composite_is_explicit_and_keeps_proxy_modes_blocked() {
         let profile = RelayProfile {

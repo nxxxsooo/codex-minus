@@ -35,6 +35,7 @@ import {
   Network,
   Plus,
   RefreshCw,
+  RotateCcw,
   Save,
   ShieldCheck,
   ShieldAlert,
@@ -56,9 +57,15 @@ import {
   addCatalogCandidate,
   adoptionPreviewSummary,
   appModelLabel,
+  catalogCandidateSlugs,
   catalogModeForOverlay,
   catalogModePresentation,
+  catalogRestoreLosses,
   defaultCatalogMode,
+  emptyOfficialOverride,
+  officialModelIsVisible,
+  officialVisibilityOverride,
+  restoreCatalogList,
   type CatalogOverlayDraft,
   externalVersionRequiresAcceptance,
   managedContextConflictKeys,
@@ -99,6 +106,7 @@ import {
 } from "./network-policy-ui";
 import {
   createNewRelayProfileDraft,
+  PRO_MODEL_SLUGS,
   validateNewProviderDraft,
   type NewProviderTransientTarget,
 } from "./provider-onboarding";
@@ -2274,11 +2282,13 @@ function CatalogProfileEditor({
     restartRequired: summary?.restartRequired ?? false,
     customModelCount: overlay.custom.length,
   });
+  // The rows this table shows, and the only official models the generated catalog will offer.
+  const shownOfficial = officialModels.filter((model) => officialModelIsVisible(overlay, model));
   const draftError = validateCatalogDraft(
     overlay,
     mode,
     codexModelFromConfig(profile.configContents) || profile.model,
-    officialModels.map((model) => model.slug),
+    shownOfficial.map((model) => model.slug),
   );
   // The model Codex starts on is one of these rows. It used to be a free-text field elsewhere in
   // the editor, which let a profile name a model its own catalog did not contain and gave the user
@@ -2297,18 +2307,7 @@ function CatalogProfileEditor({
       : { overlay: nextOverlay, mode: nextMode, modeExplicit: true }));
   };
   const setOfficialOverride = (slug: string, patch: Partial<OfficialCatalogOverride>) => {
-    const current = overlay.official[slug] ?? {
-      displayName: null,
-      visible: null,
-      contextWindow: null,
-      effectiveContextWindowPercent: null,
-      order: null,
-      supportedReasoningLevels: null,
-      defaultReasoningLevel: null,
-      supportedTools: null,
-      toolCapabilities: null,
-    };
-    const next = { ...current, ...patch };
+    const next = { ...(overlay.official[slug] ?? emptyOfficialOverride()), ...patch };
     const official = { ...overlay.official };
     if (Object.values(next).every((item) => item === null)) delete official[slug];
     else official[slug] = next;
@@ -2333,9 +2332,17 @@ function CatalogProfileEditor({
     applyOverlay({ ...overlay, custom: overlay.custom.filter((_, itemIndex) => itemIndex !== index) });
     if (removed && selectedModel === removed) onProfileEdit({ model: "" });
   };
+  // Deleting an official row is a visibility wish, not a deletion: the bundled baseline still
+  // carries the model, and the row has to be recoverable from the candidate strip below.
+  const hideOfficial = (model: OfficialModelSummary) => {
+    setOfficialOverride(model.slug, { visible: officialVisibilityOverride(model.visible, false) });
+    if (selectedModel === model.slug) onProfileEdit({ model: "" });
+  };
   const addCustom = (slug = "") => {
     if (slug) {
-      applyOverlay(addCatalogCandidate(overlay, slug));
+      const official = officialModels.find((model) => model.slug === slug);
+      if (official) setOfficialOverride(slug, { visible: officialVisibilityOverride(official.visible, true) });
+      else applyOverlay(addCatalogCandidate(overlay, slug));
       return;
     }
     applyOverlay({ ...overlay, custom: [...overlay.custom, {
@@ -2352,22 +2359,39 @@ function CatalogProfileEditor({
       templateProvenance: "user-created",
     }] });
   };
+  // A list an older version mangled is repaired in one action, rather than by remembering which
+  // models a Pro account routes and rebuilding them by hand.
+  const proSlugs: readonly string[] = PRO_MODEL_SLUGS;
+  const restoreProList = () => {
+    const losses = catalogRestoreLosses({ overlay, officialModels, wanted: proSlugs });
+    if (losses.length && !window.confirm(tf("还原为 Pro 列表会移除这些模型：\n\n{0}", [losses.join("\n")]))) return;
+    applyOverlay(restoreCatalogList({ overlay, officialModels, wanted: proSlugs }));
+    if (!proSlugs.includes(selectedModel)) onProfileEdit({ model: proSlugs[0] });
+  };
+  const candidates = catalogCandidateSlugs({
+    overlay,
+    officialModels,
+    providerCandidates: summary?.customCandidates ?? [],
+  });
   return (
     <section className="catalog-profile-editor">
       <div className="catalog-editor-head">
         <div>
           <strong>{t("模型")}</strong>
-          <span>{t("留空使用官方默认上下文；想用更大的上下文就直接改这一个数字。")}</span>
+          <span>{t("这里就是 Codex 里能选到的模型；上下文留空表示用官方默认。")}</span>
         </div>
         <div className="catalog-editor-actions">
           {presentation.restart ? <UiBadge variant="secondary">{t("需重启 Codex")}</UiBadge> : null}
+          <Button disabled={!editingAvailability.editable} onClick={restoreProList} size="sm" variant="outline">
+            <RotateCcw className="h-4 w-4" />{t("还原 Pro 列表")}
+          </Button>
         </div>
       </div>
       {summary?.actionRequired || draftError ? <div className="catalog-inline-error">{summary?.actionRequired || catalogDraftErrorLabel(draftError)}</div> : null}
       {summary?.mode === "native-official" && mode !== "native-official" ? (
         <div className="hint-line">
           <Info className="h-4 w-4" />
-          <span>{t("改过上下文，所以保存会为这个供应商生成一份模型目录，之后需要完整退出并重开 Codex 才生效。")}</span>
+          <span>{t("改过这份列表，所以保存会为这个供应商生成一份模型目录，之后需要完整退出并重开 Codex 才生效。")}</span>
         </div>
       ) : null}
       <fieldset className="catalog-editor-readonly" disabled={!editingAvailability.editable}>
@@ -2375,7 +2399,7 @@ function CatalogProfileEditor({
           <div className="catalog-model-row catalog-model-row-head">
             <span>{t("启动")}</span><span>{t("模型")}</span><span>{t("上下文")}</span><span />
           </div>
-          {officialModels.map((model) => (
+          {shownOfficial.map((model) => (
             <div className="catalog-model-row" key={model.slug}>
               <input
                 checked={selectedModel === model.slug}
@@ -2394,7 +2418,7 @@ function CatalogProfileEditor({
                 onChange={(event) => setOfficialOverride(model.slug, { contextWindow: positiveNumberOrNull(event.currentTarget.value) })}
                 placeholder={model.contextWindow ? String(model.contextWindow) : t("默认")}
               />
-              <span />
+              <Button onClick={() => hideOfficial(model)} size="icon" title={t("删除模型")} variant="ghost"><Trash2 className="h-4 w-4" /></Button>
             </div>
           ))}
           {overlay.custom.map((model, index) => (
@@ -2421,9 +2445,9 @@ function CatalogProfileEditor({
             </div>
           ))}
           <div className="catalog-list-foot">
-            {summary?.customCandidates.length ? (
+            {candidates.length ? (
               <div className="catalog-candidates">
-                {summary.customCandidates.map((slug) => (
+                {candidates.map((slug) => (
                   <button key={slug} onClick={() => addCustom(slug)} type="button"><Plus className="h-3 w-3" />{slug}</button>
                 ))}
               </div>
@@ -5282,6 +5306,7 @@ function catalogDraftErrorLabel(error: string | null): string {
   if (error === "invalid-reasoning-levels") return t("推理级别不能为空或重复。");
   if (error === "invalid-reasoning-default") return t("默认推理级别必须包含在支持列表中。");
   if (error === "invalid-default-model") return t("当前默认模型不在有效目录中，请先调整目录或默认模型。");
+  if (error === "empty-catalog") return t("模型列表不能为空，至少保留一个模型。");
   return "";
 }
 
