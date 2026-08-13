@@ -8,6 +8,14 @@
 
 ### 2026-08-13
 
+- **feat/model-catalogs**: made a context window typed against an official model promote its profile from native to managed, generate the catalog, point live `config.toml` at it, and say so before saving
+  - why: native mode generates no catalog and points at none, so the number was stored in the overlay and then ignored — on the reporting machine the active profile held `contextWindow: 372000` against gpt-5.6-sol while live config carried no catalog at all — and the mode control that would have explained this no longer exists in the editor
+  - verified: 175 Rust lib + 17 + 24 integration tests pass with the live OAuth test intentionally ignored, including a promoted save that generates the file, writes the pointer, and reports the restart; 159 frontend tests including the promotion rule and a guard that no overlay edit bypasses it; TypeScript, Vite build and `cargo fmt --check` pass
+  - refs: `src/model-catalog-ui.ts`, `src/App.tsx`, `src-tauri/src/provider_commit_transaction_tests.rs`
+- **fix/providers**: normalized a backend-returned profile where it enters the editor and stopped reading a possibly-absent model straight into `.trim()`
+  - why: serde omits an empty string rather than sending `""`, so a profile whose model, Base URL and Key live only inside its TOML came back without those keys while the editor's type claimed they were present — every save on such a profile died on `Cannot read properties of undefined (reading 'trim')`, reproduced on Windows where the only profile has exactly that shape
+  - verified: the field names missing from the Windows `settings.json` were read directly from the VM; 159 frontend tests including two regressions on the boundary and the read; TypeScript and Vite build pass
+  - refs: `src/App.tsx`, `src/foolproof-provider-flow.test.ts`
 - **fix/windows**: gave each bounded helper capture its own temp files, so two helpers started in the same clock tick stop deleting each other's output
   - why: the capture name was derived from `SystemTime::now` and the pid, and Windows advances that clock in ~15.6 ms steps while every thread shares the pid — colliding helpers made the first to finish delete the file the other was still reading, which surfaced as a bare `os error 2` with no context from the ACL verifier and failed `live_state` on the Windows x64 runner
   - verified: the naming and concurrent-capture regressions pass, 173 Rust lib + 17 + 24 integration tests pass with the live OAuth test intentionally ignored, and GitHub Actions macOS arm64 + Windows x64 + Windows arm64 pass
