@@ -136,197 +136,69 @@ import {
   providerTransitionDecisionForStructuredPatch,
 } from "./provider-native-capability-view";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
+import type {
+  AdoptionPreviewResult,
+  AggregateRelayProfile,
+  ArchiveMaintenanceResult,
+  ArchivePreviewResult,
+  BackendSettings,
+  CatalogMode,
+  CodexContextEntries,
+  CodexContextEntry,
+  CommandResult,
+  ContextKind,
+  CustomCatalogModel,
+  DeleteLocalSessionResult,
+  EnvConflictsResult,
+  ExtractRelayCommonConfigResult,
+  ImageOverlayFitMode,
+  LocalSession,
+  LocalSessionsResult,
+  ModelCatalogStatusResult,
+  OfficialCatalogOverride,
+  OfficialModelSummary,
+  ProfileCatalogSummary,
+  ProviderCommitResult,
+  ProviderCompatibilityResult,
+  ProviderDoctorResult,
+  ProviderNativeCapabilityInspectionResult,
+  ReasoningLevel,
+  RelayAggregateConfig,
+  RelayAggregateStrategy,
+  RelayContextSelection,
+  RelayFilesResult,
+  RelayMode,
+  RelayProfile,
+  RelayProfileModelsResult,
+  RelayProfileTestResult,
+  RelayProtocol,
+  RelayResult,
+  RemoveEnvConflictsResult,
+  Route,
+  SessionLifecycleOperationResult,
+  SessionLifecycleSettingsResult,
+  SettingsResult,
+  Status,
+  Theme,
+} from "./backend-types";
 
 
-type Status = "ok" | "failed" | "not_implemented" | "not_checked" | string;
 
-type CommandResult<T> = T & {
-  status: Status;
-  message: string;
-};
 
-type PathState = {
-  status: string;
-  path: string | null;
-};
 
-type LaunchStatus = {
-  status: string;
-  message: string;
-  started_at_ms: number;
-  debug_port: number | null;
-  helper_port: number | null;
-  codex_app: string | null;
-};
 
-type OverviewResult = CommandResult<{
-  codex_app: PathState;
-  codex_version: string | null;
-  silent_shortcut: PathState;
-  management_shortcut: PathState;
-  latest_launch: LaunchStatus | null;
-  current_version: string;
-  update_status: string;
-  settings_path: string;
-  logs_path: string;
-}>;
 
-type PluginMarketplaceRepairResult = CommandResult<{
-  codexHome: string;
-  marketplaceRoot?: string | null;
-  initialized: boolean;
-  configured: boolean;
-  needsRepair: boolean;
-}>;
 
-type PluginMarketplaceStatusResult = CommandResult<{
-  codexHome: string;
-  marketplaceRoot?: string | null;
-  configRegistered: boolean;
-  needsRepair: boolean;
-}>;
 
-type RemotePluginMarketplaceResult = CommandResult<{
-  codexHome: string;
-  marketplaceRoot?: string | null;
-  configRegistered: boolean;
-  needsRepair: boolean;
-  pluginCount: number;
-  skillCount: number;
-}>;
 
-type BackendSettings = {
-  codexAppPath: string;
-  codexExtraArgs: string[];
-  providerSyncEnabled: boolean;
-  providerSyncSavedProviders: string[];
-  providerSyncManualProviders: string[];
-  providerSyncLastSelectedProvider: string;
-  relayProfilesEnabled: boolean;
-  enhancementsEnabled: boolean;
-  computerUseGuardEnabled: boolean;
-  codexAppPluginMarketplaceUnlock: boolean;
-  codexAppPluginAutoExpand: boolean;
-  codexAppModelWhitelistUnlock: boolean;
-  codexAppSessionDelete: boolean;
-  codexAppMarkdownExport: boolean;
-  codexAppPasteFix: boolean;
-  codexAppForceChineseLocale: boolean;
-  codexAppFastStartup: boolean;
-  codexAppProjectMove: boolean;
-  codexAppThreadIdBadge: boolean;
-  codexAppConversationView: boolean;
-  codexAppThreadScrollRestore: boolean;
-  codexAppZedRemoteOpen: boolean;
-  zedRemoteOpenStrategy: ZedOpenStrategy;
-  zedRemoteProjectRegistryEnabled: boolean;
-  zedRemoteSyncToZedSettings: boolean;
-  codexAppUpstreamWorktreeCreate: boolean;
-  codexAppNativeMenuPlacement: boolean;
-  codexAppNativeMenuLocalization: boolean;
-  codexAppServiceTierControls: boolean;
-  codexAppPetRealMouseLook: boolean;
-  codexAppStepwiseEnabled: boolean;
-  codexAppStepwiseDirectSend: boolean;
-  codexAppStepwiseBaseUrl: string;
-  codexAppStepwiseApiKey: string;
-  codexAppStepwiseApiKeyEnv: string;
-  codexAppStepwiseModel: string;
-  codexAppStepwiseMaxItems: number;
-  codexAppStepwiseMaxInputChars: number;
-  codexAppStepwiseMaxOutputTokens: number;
-  codexAppStepwiseTimeoutMs: number;
-  codexAppImageOverlayEnabled: boolean;
-  codexAppImageOverlayPath: string;
-  codexAppImageOverlayOpacity: number;
-  codexAppImageOverlayFitMode: ImageOverlayFitMode;
-  codexGoalsEnabled: boolean;
-  launchMode: LaunchMode;
-  relayBaseUrl: string;
-  relayApiKey: string;
-  relayProfiles: RelayProfile[];
-  aggregateRelayProfiles: AggregateRelayProfile[];
-  activeAggregateRelayId: string;
-  relayCommonConfigContents: string;
-  relayContextConfigContents: string;
-  activeRelayId: string;
-  relayTestModel: string;
-};
 
-type ZedOpenStrategy = "addToFocusedWorkspace" | "reuseWindow" | "newWindow" | "default";
-type LaunchMode = "patch" | "relay";
-type ImageOverlayFitMode = "fill" | "fit" | "stretch" | "tile" | "center";
 
-export type RelayProfile = {
-  id: string;
-  name: string;
-  model: string;
-  baseUrl: string;
-  upstreamBaseUrl: string;
-  apiKey: string;
-  protocol: RelayProtocol;
-  relayMode: RelayMode;
-  officialMixApiKey: boolean;
-  testModel: string;
-  configContents: string;
-  authContents: string;
-  useCommonConfig: boolean;
-  contextSelection: RelayContextSelection;
-  contextSelectionInitialized: boolean;
-  contextWindow: string;
-  autoCompactLimit: string;
-  modelList: string;
-  modelWindows: string;
-  userAgent: string;
-  transientTarget?: NewProviderTransientTarget;
-  aggregate?: RelayAggregateConfig | null;
-};
 
-type RelayAggregateStrategy = "failover" | "conversationRoundRobin" | "requestRoundRobin" | "weightedRoundRobin";
-type RelayAggregateMember = {
-  profileId: string;
-  weight: number;
-};
-type RelayAggregateConfig = {
-  strategy: RelayAggregateStrategy;
-  members: RelayAggregateMember[];
-};
-type AggregateRelayMember = {
-  relayId: string;
-  weight: number;
-};
-type AggregateRelayProfile = {
-  id: string;
-  name: string;
-  strategy: RelayAggregateStrategy;
-  members: AggregateRelayMember[];
-};
 
-type RelayContextSelection = {
-  mcpServers: string[];
-  skills: string[];
-  plugins: string[];
-};
 
-type ContextKind = "mcp" | "skill" | "plugin";
 
-type CodexContextEntry = {
-  id: string;
-  kind: ContextKind;
-  title: string;
-  summary: string;
-  tomlBody: string;
-  enabled: boolean;
-};
 
-type CodexContextEntries = {
-  mcpServers: CodexContextEntry[];
-  skills: CodexContextEntry[];
-  plugins: CodexContextEntry[];
-};
 
-type RelayProtocol = "responses" | "chatCompletions";
-type RelayMode = "official" | "mixedApi" | "pureApi" | "aggregate";
 const PROTOCOL_PROXY_BASE_URL = "http://127.0.0.1:57321/v1";
 const CHAT_UPSTREAM_BASE_URL_KEY = "codex_plus_chat_base_url";
 
@@ -336,453 +208,53 @@ const emptyContextSelection = (): RelayContextSelection => ({
   plugins: [],
 });
 
-type UserScriptInventory = {
-  enabled?: boolean;
-  scripts?: Array<{
-    key: string;
-    name: string;
-    source: string;
-    enabled: boolean;
-    status: string;
-    error: string;
-    market_id?: string;
-    version?: string;
-    installed?: boolean;
-    source_url?: string;
-    homepage?: string;
-  }>;
-};
-
-type SettingsResult = CommandResult<{
-  settings: BackendSettings;
-  settings_path: string;
-  user_scripts: UserScriptInventory;
-  provider_fingerprint: string;
-}>;
-
-type ProviderCommitResult = CommandResult<{
-  settings: BackendSettings | null;
-  draftRevision: number;
-  providerFingerprint: string;
-  restartRequired: boolean;
-  errorCode: string | null;
-  reason: string | null;
-}>;
-
-type ProviderNativeCapabilityInspectionResult = CommandResult<{
-  inspections: ProviderDetailInspectionMetadata[];
-}>;
-
-type RelayResult = CommandResult<{
-  authenticated: boolean;
-  authSource: string;
-  accountLabel: string | null;
-  configPath: string;
-  configured: boolean;
-  requiresOpenaiAuth: boolean;
-  hasBearerToken: boolean;
-  backupPath: string | null;
-}>;
-
-type RelayFilesResult = CommandResult<{
-  configPath: string;
-  authPath: string;
-  configContents: string;
-  authStatus: {
-    authenticated: boolean;
-    source: string;
-    accountLabel: string | null;
-    actionRequired: string | null;
-  };
-}>;
-
-type LocalSession = {
-  id: string;
-  title: string;
-  cwd: string;
-  modelProvider: string;
-  archived: boolean;
-  updatedAtMs: number | null;
-  rolloutPath: string;
-  dbPath: string;
-};
-
-type LocalSessionsResult = CommandResult<{
-  dbPath: string;
-  dbPaths: string[];
-  sessions: LocalSession[];
-  activeCount: number;
-  archivedCount: number;
-  archived: boolean;
-  nextCursor: string | null;
-  pageSize: number;
-  elapsedMs: number;
-}>;
-
-type SessionLifecycleSettingsResult = CommandResult<{
-  archiveEnabled: boolean;
-  firstRunReviewed: boolean;
-  retentionDays: number;
-  lastCompletedAtMs: number | null;
-}>;
-
-type ArchivePreviewResult = CommandResult<{
-  retentionDays: number;
-  cutoffAtMs: number;
-  candidateCount: number;
-  missingTimestampCount: number;
-  destination: string;
-  capability: {
-    available: boolean;
-    cliPath: string | null;
-    message: string;
-  };
-}>;
-
-type ArchiveMaintenanceResult = CommandResult<{
-  due: boolean;
-  deferred: boolean;
-  cutoffAtMs: number;
-  candidateCount: number;
-  archivedCount: number;
-  skippedCount: number;
-  failedCount: number;
-  elapsedMs: number;
-  lastCompletedAtMs: number | null;
-}>;
-
-type SessionLifecycleOperationResult = CommandResult<{
-  sessionId: string;
-  archived: boolean;
-  currentProvider: string;
-  sessionProvider: string;
-  providerMismatch: boolean;
-}>;
-
-type ProviderCompatibilityResult = CommandResult<{
-  currentProvider: string;
-  activeCount: number;
-  mismatchCount: number;
-  missingProviderCount: number;
-  scanGeneration: string;
-  encryptedContentWarning: string | null;
-  adaptationAvailable: boolean;
-  adaptationMessage: string;
-  scanElapsedMs: number;
-  archivedRolloutsTraversed: number;
-}>;
-
-type ZedRemoteProject = {
-  id: string;
-  label: string;
-  hostId: string;
-  ssh: {
-    user: string;
-    host: string;
-    port: number | null;
-  };
-  path: string;
-  url: string;
-  source: "currentThread" | "codexRemoteProject" | "threadWorkspaceHint" | "sqliteThreadCwd" | "recent" | string;
-  lastOpenedAtMs: number | null;
-  isCurrent: boolean;
-};
-
-type ZedRemoteProjectsResult = CommandResult<{
-  projects: ZedRemoteProject[];
-}>;
-
-type ZedRemoteOpenResult = CommandResult<{
-  url: string;
-  strategy: ZedOpenStrategy;
-}>;
-
-type DeleteLocalSessionResult = CommandResult<{
-  status: string;
-  session_id: string;
-  message: string;
-  undo_token: string | null;
-  backup_path: string | null;
-}>;
-
-type ContextEntriesResult = CommandResult<{
-  settings: BackendSettings;
-  entries: CodexContextEntries;
-}>;
-
-type LiveContextEntriesResult = CommandResult<{
-  entries: CodexContextEntries;
-}>;
-
-type ExtractRelayCommonConfigResult = CommandResult<{
-  commonConfigContents: string;
-  profileConfigContents: string;
-}>;
-
-type RelayProfileTestResult = CommandResult<{
-  httpStatus: number;
-  endpoint: string;
-  responsePreview: string;
-  compatibilityFallbackUsed: boolean;
-  initialHttpStatus: number | null;
-}>;
-
-type StepwiseTestResult = CommandResult<{
-  itemCount: number;
-  error: string;
-}>;
-
-type RelayProfileModelsResult = CommandResult<{
-  models: string[];
-  endpoint: string;
-}>;
-
-type CatalogMode = "native-official" | "official-plus-custom" | "custom-only" | "external";
-type UpstreamTopology = "direct" | "server-side-composite";
-type ReasoningLevel = { effort: string; description: string };
-type OfficialCatalogOverride = {
-  displayName: string | null;
-  visible: boolean | null;
-  contextWindow: number | null;
-  effectiveContextWindowPercent: number | null;
-  order: number | null;
-  supportedReasoningLevels: ReasoningLevel[] | null;
-  defaultReasoningLevel: string | null;
-  supportedTools: string[] | null;
-  toolCapabilities: Record<string, unknown> | null;
-};
-type CustomCatalogModel = {
-  slug: string;
-  displayName: string;
-  contextWindow: number;
-  effectiveContextWindowPercent: number;
-  visible: boolean;
-  order: number;
-  supportedReasoningLevels: ReasoningLevel[];
-  defaultReasoningLevel: string | null;
-  supportedTools: string[];
-  toolCapabilities: Record<string, unknown> | null;
-  templateProvenance: string;
-};
-type CatalogOverlay = {
-  official: Record<string, OfficialCatalogOverride>;
-  custom: CustomCatalogModel[];
-};
-type OfficialModelSummary = {
-  slug: string;
-  displayName: string;
-  visible: boolean;
-  contextWindow: number | null;
-};
-type ProfileCatalogSummary = {
-  profileId: string;
-  mode: CatalogMode;
-  modeExplicit: boolean;
-  upstreamTopology: UpstreamTopology;
-  managedAvailable: boolean;
-  contextConflicts: string[];
-  externalPointer: string | null;
-  generatedPath: string | null;
-  effectiveHash: string | null;
-  restartRequired: boolean;
-  actionRequired: string | null;
-  officialOverrideCount: number;
-  customCount: number;
-  providerEvidenceAtMs: number | null;
-  providerReportedCount: number;
-  customCandidates: string[];
-  providerReportedSlugs: string[];
-  overlay: CatalogOverlay;
-};
-type ModelCatalogStatusResult = CommandResult<{
-  statePath: string;
-  source: string;
-  targetClientVersion: string | null;
-  targetCliPath: string | null;
-  targetTrusted: boolean;
-  refreshAvailable: boolean;
-  lastSuccessfulRefreshAtMs: number | null;
-  visibleCount: number;
-  totalCount: number;
-  freshness: "missing" | "current" | "stale" | "scope-stale" | string;
-  credentialAction: string | null;
-  diff: {
-    added: string[];
-    updated: string[];
-    removed: string[];
-    collisions: string[];
-  };
-  officialModels: OfficialModelSummary[];
-  profiles: ProfileCatalogSummary[];
-}>;
-
-type AdoptionPreviewResult = CommandResult<{
-  profileId: string;
-  sourcePath: string;
-  officialOverrideCount: number;
-  customModels: CustomCatalogModel[];
-  collisions: string[];
-  sourceHash: string;
-  catalogClientVersion: string | null;
-  targetClientVersion: string;
-  versionStatus: "match" | "mismatch" | "unknown" | string;
-  committed: boolean;
-}>;
-
-type ProviderDoctorCheck = {
-  id: string;
-  title: string;
-  status: Status;
-  detail: string;
-};
-
-type ProviderDoctorResult = CommandResult<{
-  profileName: string;
-  model: string;
-  summary: string;
-  recommendation: string;
-  checks: ProviderDoctorCheck[];
-  compatibilityFallbackUsed: boolean;
-  initialHttpStatus: number | null;
-  requestHttpStatus: number | null;
-}>;
 
 
-type CcsProviderImport = {
-  sourceId: string;
-  name: string;
-  baseUrl: string;
-  apiKey: string;
-  protocol: RelayProtocol;
-  configContents: string;
-  authContents: string;
-};
-
-type CcsProvidersResult = CommandResult<{
-  dbPath: string;
-  providers: CcsProviderImport[];
-}>;
-
-type ProviderImportRequest = {
-  name: string;
-  baseUrl: string;
-  apiKey: string;
-  wireApi: string;
-  relayMode: string;
-  configContents: string;
-  authContents: string;
-};
-
-type PendingProviderImportResult = CommandResult<{
-  pending: ProviderImportRequest | null;
-}>;
-
-type EnvConflict = {
-  name: string;
-  source: "process" | "user" | string;
-  valuePresent: boolean;
-};
-
-type EnvConflictsResult = CommandResult<{
-  conflicts: EnvConflict[];
-}>;
-
-type RemoveEnvConflictsResult = CommandResult<{
-  removed: Array<{
-    name: string;
-    removedProcess: boolean;
-    removedUser: boolean;
-  }>;
-  backupPath: string | null;
-  remaining: EnvConflict[];
-}>;
-
-type TaskProgress = {
-  active: boolean;
-  percent: number;
-  message: string;
-};
-
-type LogsResult = CommandResult<{
-  path: string;
-  text: string;
-  lines: number;
-}>;
-
-type DiagnosticsResult = CommandResult<{
-  report: string;
-}>;
-
-type WatcherResult = CommandResult<{
-  enabled: boolean;
-  disabled_flag: string;
-}>;
-
-type InstallResult = CommandResult<{
-  silent_shortcut: { installed: boolean; path: string | null };
-  management_shortcut: { installed: boolean; path: string | null };
-}>;
-
-type UpdateResult = CommandResult<{
-  currentVersion: string;
-  latestVersion?: string | null;
-  releaseSummary?: string;
-  assetName?: string | null;
-  assetUrl?: string | null;
-  updateAvailable?: boolean;
-  installedPath?: string;
-  progress?: number;
-}>;
-
-type AdItem = {
-  id?: string;
-  type: "sponsor" | "normal" | string;
-  title: string;
-  description: string;
-  url: string;
-  image?: string;
-  highlights?: string[];
-  expires_at?: string;
-};
-
-type AdsResult = CommandResult<{
-  version: number;
-  ads: AdItem[];
-}>;
-
-type ScriptMarketItem = {
-  id: string;
-  name: string;
-  description: string;
-  version: string;
-  author: string;
-  tags: string[];
-  homepage: string;
-  script_url: string;
-  sha256: string;
-  installed: boolean;
-  installedVersion: string;
-  updateAvailable: boolean;
-};
-
-type ScriptMarketResult = CommandResult<{
-  market: {
-    status: string;
-    message: string;
-    indexUrl: string;
-    updatedAt: string;
-    scripts: ScriptMarketItem[];
-  };
-  user_scripts: UserScriptInventory;
-}>;
 
 
-type StartupResult = CommandResult<{
-  showUpdate: boolean;
-}>;
 
-type Route = "relay" | "sessions";
-type Theme = "dark" | "light";
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string }> = [
   { id: "relay", label: t("供应商配置"), icon: KeyRound },
