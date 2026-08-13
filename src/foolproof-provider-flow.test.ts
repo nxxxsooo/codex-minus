@@ -71,6 +71,27 @@ describe("the provider editor offers one contract and no switches", () => {
     assert.doesNotMatch(detail, /升级为原生能力优先|处理旧供应商 ID|替换自定义 Actor 标记/);
   });
 
+  it("offers one context-window field per model and nothing else to configure", () => {
+    const catalogEditor = appSource.match(
+      /function CatalogProfileEditor\([\s\S]*?(?=\nfunction EnvConflictNotice)/,
+    )?.[0] ?? "";
+    assert.ok(catalogEditor.includes("catalog-official-list"), "the catalog editor was located");
+    // Raising Sol from 272k to 372k must be one number, not a hunt through a wide table.
+    assert.match(catalogEditor, /contextWindow: positiveNumberOrNull\(event\.currentTarget\.value\)/);
+    assert.match(catalogEditor, /placeholder=\{model\.contextWindow \? String\(model\.contextWindow\) : t\("默认"\)\}/);
+    for (const [gone, why] of [
+      ["CatalogModeControls", "the mode is not a user choice in this flow"],
+      ["上游拓扑", "topology is derived, not chosen"],
+      ["预览并采用", "external adoption is not part of the simple flow"],
+      ["刷新供应商证据", "provider evidence is not a user-facing surface"],
+      ["effectiveContextWindowPercent: boundedPercentOrNull", "percent is not a knob"],
+      ["supportedReasoningLevels: parseReasoningLevels", "reasoning levels come from the baseline"],
+      ["清除覆盖", "one field needs no per-row reset control"],
+    ] as const) {
+      assert.ok(!catalogEditor.includes(gone), `${gone} is back — ${why}`);
+    }
+  });
+
   it("prefills a new draft so only an endpoint and a key remain", () => {
     const draft = createNewRelayProfileDraft({ id: "relay-new", contextSelection: {} });
     assert.equal(draft.model, PRO_MODEL_SLUGS[0]);

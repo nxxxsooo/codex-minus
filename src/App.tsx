@@ -71,7 +71,6 @@ import {
   providerEvidenceState,
   validateCatalogDraft,
 } from "./model-catalog-ui";
-import { CatalogModeControls } from "./catalog-mode-controls";
 import {
   catalogEditingAvailability,
   catalogProfileDraft,
@@ -2319,7 +2318,6 @@ function CatalogProfileEditor({
   }
 
   const officialModels = catalog?.officialModels ?? [];
-  const reported = new Set(summary?.providerReportedSlugs ?? []);
   const presentation = catalogModePresentation({
     selectedMode: mode,
     persistedMode: summary?.mode ?? null,
@@ -2377,199 +2375,43 @@ function CatalogProfileEditor({
       templateProvenance: "user-created",
     }] } }));
   };
-  const adopt = async () => {
-    const preview = await actions.adoptExternalModelCatalog(profile.id, false);
-    if (!preview || !isSuccessStatus(preview.status)) return;
-    const adoption = adoptionPreviewSummary(preview);
-    if (!adoption.adoptable) {
-      await actions.showMessage(t("采用外部目录"), t("外部目录包含重复或冲突模型，需先修复后再采用。"), "failed");
-      return;
-    }
-    const confirmed = window.confirm(
-      tf("采用外部目录 {0}？\n\n官方覆盖：{1}\n自定义模型：{2}\n冲突：{3}", [
-        preview.sourcePath,
-        preview.officialOverrideCount,
-        preview.customModels.length,
-        preview.collisions.length,
-      ]),
-    );
-    if (confirmed) {
-      const acceptMismatch = !externalVersionRequiresAcceptance(preview.versionStatus) || window.confirm(
-        tf("外部目录声明版本 {0}，当前目标为 {1}。离线验证已通过，仍要采用吗？", [preview.catalogClientVersion || t("未知"), preview.targetClientVersion]),
-      );
-      const adoptionConflicts = managedContextConflictKeys(profile.configContents);
-      const confirmContextCleanup = !adoptionConflicts.length || window.confirm(
-        tf("采用托管目录将移除这些全局上下文设置：\n\n{0}", [adoptionConflicts.join("\n")]),
-      );
-      if (acceptMismatch && confirmContextCleanup) {
-        await actions.adoptExternalModelCatalog(profile.id, true, preview, preview.versionStatus === "mismatch", adoptionConflicts.length > 0);
-      }
-    }
-  };
-
   return (
     <section className="catalog-profile-editor">
       <div className="catalog-editor-head">
         <div>
-          <strong>{t("模型目录")}</strong>
-          <span>{presentation.source === "native"
-            ? t("使用 Codex 原生动态目录")
-            : presentation.source === "unsaved"
-              ? t(presentation.pendingSource === "native"
-                ? "目录模式尚未保存；保存后使用 Codex 原生动态目录"
-                : presentation.pendingSource === "external"
-                  ? "目录模式尚未保存；保存后使用外部目录"
-                  : "目录模式尚未保存；保存后使用托管目录")
-              : presentation.path ?? t(presentation.pathUnavailable === "external" ? "未识别外部目录指针" : "托管目录路径不可用")}</span>
+          <strong>{t("模型")}</strong>
+          <span>{t("留空使用官方默认上下文；想用更大的上下文就直接改这一个数字。")}</span>
         </div>
         <div className="catalog-editor-actions">
           {presentation.restart ? <UiBadge variant="secondary">{t("需重启 Codex")}</UiBadge> : null}
-          <UiBadge variant="outline">{t(editingAvailability.label)}</UiBadge>
         </div>
       </div>
-      {presentation.restart ? (
-        <ul className="catalog-restart-guidance">
-          {catalogRestartGuidance(true).map((line) => <li key={line}>{t(line)}</li>)}
-        </ul>
-      ) : null}
-      <CatalogModeControls
-        confirmDiscard={(decision) => window.confirm(decision === "confirm-discard-external"
-          ? t("切换到原生目录模式将停止管理外部目录。当前目录会在保存成功前继续生效。是否继续？")
-          : t("切换到原生目录模式将不再使用自定义模型。当前目录会在保存成功前继续生效。是否继续？"))}
-        currentMode={mode}
-        customModelCount={overlay.custom.length}
-        dormantCustomCount={presentation.dormantCustomCount}
-        dormantMessage={tf("原生目录模式下有 {0} 个自定义模型暂不生效。", [presentation.dormantCustomCount])}
-        disabled={!editingAvailability.editable}
-        externalPointer={summary?.externalPointer ?? null}
-        modeOptions={[
-          { value: "native-official", label: t("官方原生") },
-          { value: "official-plus-custom", label: t("官方 + 自定义") },
-          { value: "custom-only", label: t("仅自定义") },
-          ...(summary?.externalPointer || summary?.mode === "external"
-            ? [{ value: "external" as CatalogMode, label: t("外部目录") }]
-            : []),
-        ]}
-        pendingDormantCustomCount={presentation.pendingDormantCustomCount}
-        pendingMessage={tf("保存后，{0} 个自定义模型将暂不生效。", [presentation.pendingDormantCustomCount])}
-        restoreLabel={t("恢复官方＋自定义")}
-        updateDraftMode={(nextMode) => {
-          onDraftChange(updateCatalogProfileDraft(draft, { mode: nextMode, modeExplicit: true }));
-        }}
-      />
-      {profile.relayMode === "pureApi" && profile.protocol === "responses" ? (
-        <div className="catalog-topology-control">
-          <span>{t("上游拓扑")}</span>
-          <div className="segmented">
-            <button className={upstreamTopology === "direct" ? "active" : ""} disabled={!editingAvailability.editable} onClick={() => {
-              onDraftChange(updateCatalogProfileDraft(draft, {
-                upstreamTopology: "direct",
-                ...(!modeExplicit ? { mode: "custom-only" as CatalogMode } : {}),
-              }));
-            }} type="button">{t("直连 API")}</button>
-            <button className={upstreamTopology === "server-side-composite" ? "active" : ""} disabled={!editingAvailability.editable} onClick={() => {
-              onDraftChange(updateCatalogProfileDraft(draft, {
-                upstreamTopology: "server-side-composite",
-                ...(!modeExplicit ? { mode: "official-plus-custom" as CatalogMode } : {}),
-              }));
-            }} type="button">{t("服务端复合")}</button>
-          </div>
-          <small>{upstreamTopology === "server-side-composite" ? t("一个 Responses Base URL 和 Key；模型聚合由上游完成。") : t("一个直接 API 上游。")}</small>
-        </div>
-      ) : null}
       {summary?.actionRequired || draftError ? <div className="catalog-inline-error">{summary?.actionRequired || catalogDraftErrorLabel(draftError)}</div> : null}
-      {mode === "external" ? (
-        <div className="catalog-external-row">
-          <span>{summary?.externalPointer || t("未识别外部目录指针")}</span>
-          <Button disabled={!summary?.externalPointer} onClick={() => void adopt()} size="sm" variant="secondary">
-            <Download className="h-4 w-4" />
-            {t("预览并采用")}
-          </Button>
-        </div>
-      ) : null}
-      {mode === "official-plus-custom" ? (
-        <fieldset className="catalog-editor-readonly" disabled={!editingAvailability.editable}>
+      <fieldset className="catalog-editor-readonly" disabled={!editingAvailability.editable}>
         <div className="catalog-official-list">
-          <div className="catalog-list-head">
-            <strong>{t("官方清单")}</strong>
-            <span>{tf("{0} 个完整官方条目", [officialModels.length])}</span>
-          </div>
           <div className="catalog-model-row catalog-model-row-head">
-            <span>{t("模型")}</span><span>{t("显示名")}</span><span>{t("供应商证据")}</span><span>{t("可见")}</span><span>{t("上下文")}</span><span>%</span><span>{t("推理级别")}</span><span>{t("默认推理")}</span><span>{t("工具")}</span><span>{t("顺序")}</span><span />
+            <span>{t("模型")}</span><span>{t("上下文")}</span>
           </div>
-          {officialModels.map((model, index) => {
+          {officialModels.map((model) => {
             const value = overlay.official[model.slug];
             return (
               <div className="catalog-model-row" key={model.slug}>
                 <span className="catalog-model-name"><strong>{model.displayName}</strong><small>{model.slug}</small></span>
-                <Input
-                  value={value?.displayName ?? ""}
-                  onChange={(event) => setOfficialOverride(model.slug, { displayName: event.currentTarget.value.trim() ? event.currentTarget.value : null })}
-                  placeholder={model.displayName}
-                />
-                <UiBadge variant={reported.has(model.slug) ? "secondary" : "outline"}>{providerEvidenceState(model.slug, [...reported]) === "reported" ? t("已报告") : t("未报告")}</UiBadge>
-                <input
-                  checked={value?.visible ?? model.visible}
-                  onChange={(event) => setOfficialOverride(model.slug, { visible: event.currentTarget.checked === model.visible ? null : event.currentTarget.checked })}
-                  type="checkbox"
-                />
                 <Input
                   inputMode="numeric"
                   value={value?.contextWindow ?? ""}
                   onChange={(event) => setOfficialOverride(model.slug, { contextWindow: positiveNumberOrNull(event.currentTarget.value) })}
                   placeholder={model.contextWindow ? String(model.contextWindow) : t("默认")}
                 />
-                <Input
-                  inputMode="numeric"
-                  value={value?.effectiveContextWindowPercent ?? ""}
-                  onChange={(event) => setOfficialOverride(model.slug, { effectiveContextWindowPercent: boundedPercentOrNull(event.currentTarget.value) })}
-                  placeholder="95"
-                />
-                <Input
-                  value={reasoningEffortsText(value?.supportedReasoningLevels ?? [])}
-                  onChange={(event) => setOfficialOverride(model.slug, { supportedReasoningLevels: parseReasoningLevels(event.currentTarget.value) })}
-                  placeholder="low,medium,high"
-                />
-                <Input
-                  value={value?.defaultReasoningLevel ?? ""}
-                  onChange={(event) => setOfficialOverride(model.slug, { defaultReasoningLevel: event.currentTarget.value.trim() || null })}
-                  placeholder={t("默认")}
-                />
-                <Input
-                  value={(value?.supportedTools ?? []).join(",")}
-                  onChange={(event) => setOfficialOverride(model.slug, { supportedTools: parseCommaListOrNull(event.currentTarget.value) })}
-                  placeholder="web_search"
-                />
-                <Input
-                  inputMode="numeric"
-                  value={value?.order ?? ""}
-                  onChange={(event) => setOfficialOverride(model.slug, { order: integerOrNull(event.currentTarget.value) })}
-                  placeholder={String(index)}
-                />
-                <Button
-                  disabled={!value}
-                  onClick={() => {
-                    const official = { ...overlay.official };
-                    delete official[model.slug];
-                    onDraftChange(updateCatalogProfileDraft(draft, { overlay: { ...overlay, official } }));
-                  }}
-                  size="icon"
-                  title={t("清除覆盖")}
-                  variant="ghost"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
               </div>
             );
           })}
         </div>
-        </fieldset>
-      ) : null}
-      {mode === "official-plus-custom" || mode === "custom-only" ? (
-        <fieldset className="catalog-editor-readonly" disabled={!editingAvailability.editable}>
+      </fieldset>
+      <fieldset className="catalog-editor-readonly" disabled={!editingAvailability.editable}>
         <div className="catalog-custom-list">
           <div className="catalog-list-head">
-            <div><strong>{t("自定义模型")}</strong><span>{t("使用保守模板，不声明官方后端专属能力")}</span></div>
+            <div><strong>{t("自定义模型")}</strong><span>{t("供应商支持但官方清单没有的模型")}</span></div>
             <Button onClick={() => addCustom()} size="sm" variant="secondary"><Plus className="h-4 w-4" />{t("添加")}</Button>
           </div>
           {summary?.customCandidates.length ? (
@@ -2580,28 +2422,14 @@ function CatalogProfileEditor({
             </div>
           ) : null}
           {overlay.custom.map((model, index) => (
-            <div className="catalog-custom-row" key={`${model.slug}-${index}`}>
-              <Input value={model.slug} onChange={(event) => updateCustom(index, { slug: event.currentTarget.value })} placeholder="model-id" />
-              <Input value={model.displayName} onChange={(event) => updateCustom(index, { displayName: event.currentTarget.value })} placeholder={t("显示名")} />
+            <div className="catalog-model-row" key={`${model.slug}-${index}`}>
+              <Input value={model.slug} onChange={(event) => updateCustom(index, { slug: event.currentTarget.value, displayName: event.currentTarget.value })} placeholder="model-id" />
               <Input inputMode="numeric" value={model.contextWindow} onChange={(event) => updateCustom(index, { contextWindow: positiveNumberOrDefault(event.currentTarget.value, 272000) })} />
-              <Input inputMode="numeric" value={model.effectiveContextWindowPercent} onChange={(event) => updateCustom(index, { effectiveContextWindowPercent: boundedPercentOrDefault(event.currentTarget.value, 100) })} title={t("有效上下文百分比")} />
-              <Input value={reasoningEffortsText(model.supportedReasoningLevels)} onChange={(event) => updateCustom(index, { supportedReasoningLevels: parseReasoningLevels(event.currentTarget.value) ?? [] })} placeholder="low,medium,high" title={t("推理级别")} />
-              <Input value={model.defaultReasoningLevel ?? ""} onChange={(event) => updateCustom(index, { defaultReasoningLevel: event.currentTarget.value.trim() || null })} placeholder={t("默认推理")} />
-              <Input value={model.supportedTools.join(",")} onChange={(event) => updateCustom(index, { supportedTools: parseCommaListOrNull(event.currentTarget.value) ?? [] })} placeholder="web_search" title={t("工具")} />
-              <label className="catalog-visible-toggle"><input checked={model.visible} onChange={(event) => updateCustom(index, { visible: event.currentTarget.checked })} type="checkbox" /><span>{t("可见")}</span></label>
-              <Input inputMode="numeric" value={model.order} onChange={(event) => updateCustom(index, { order: integerOrDefault(event.currentTarget.value, index) })} />
               <Button onClick={() => onDraftChange(updateCatalogProfileDraft(draft, { overlay: { ...overlay, custom: overlay.custom.filter((_, itemIndex) => itemIndex !== index) } }))} size="icon" title={t("删除模型")} variant="ghost"><Trash2 className="h-4 w-4" /></Button>
             </div>
           ))}
         </div>
-        </fieldset>
-      ) : null}
-      {profile.relayMode !== "official" || profile.officialMixApiKey ? (
-        <div className="catalog-evidence-row">
-          <span>{summary?.providerEvidenceAtMs ? tf("供应商证据更新于 {0}", [formatTime(summary.providerEvidenceAtMs)]) : t("尚未获取供应商模型证据")}</span>
-          <Button onClick={() => void actions.fetchRelayProfileModels(profile)} size="sm" variant="secondary"><RefreshCw className="h-4 w-4" />{t("刷新供应商证据")}</Button>
-        </div>
-      ) : null}
+      </fieldset>
     </section>
   );
 }
