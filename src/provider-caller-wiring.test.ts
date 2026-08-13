@@ -5,12 +5,13 @@ import { describe, it } from "node:test";
 const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
 
 describe("provider caller wiring", () => {
-  it("routes list, detail, set-current, copy, and test-model writes through ProviderCommit", () => {
+  it("routes list, detail, set-current, and copy writes through ProviderCommit", () => {
     assert.match(source, /buildProviderMutationInvocation/);
     assert.match(source, /commitProviderTopology/);
     assert.match(source, /commitProviderDetail/);
     assert.match(source, /saveRelaySettings\(next, "enablement"\)/);
-    assert.match(source, /saveRelaySettings\(normalizeSettings\(form\), "testModel"\)/);
+    // A provider is tested with the model it starts on, so there is no test-model write left.
+    assert.doesNotMatch(source, /saveRelaySettings\(normalizeSettings\(form\), "testModel"\)/);
     assert.match(source, /onFormChange\(next, "reorder"\)/);
     assert.match(source, /"copy",\s*profile\.id/);
     assert.match(source, /removeRelayProfile\(form, profile\.id\), "delete"/);

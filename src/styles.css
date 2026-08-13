@@ -1216,22 +1216,20 @@ body {
   color: hsl(var(--muted-foreground));
 }
 
-.catalog-official-list,
-.catalog-custom-list {
+.catalog-model-list {
   display: grid;
   gap: 8px;
   padding-top: 12px;
   border-top: 1px solid hsl(var(--border));
-  overflow-x: auto;
 }
 
+/* Startup choice, model, context, row action. Nothing wider than the answer it holds. */
 .catalog-model-row {
   display: grid;
-  grid-template-columns: 160px 120px 84px 48px 110px 64px 130px 100px 110px 68px 32px;
-  gap: 8px;
+  grid-template-columns: 28px minmax(0, 1fr) 120px 36px;
+  gap: 10px;
   align-items: center;
   min-height: 40px;
-  min-width: 1150px;
 }
 
 .catalog-model-row-head {
@@ -1241,12 +1239,19 @@ body {
   font-weight: 650;
 }
 
-.catalog-custom-row {
-  display: grid;
-  grid-template-columns: 130px 120px 100px 64px 130px 100px 110px 76px 68px 32px;
+.catalog-model-row input[type="radio"] {
+  justify-self: center;
+  width: 15px;
+  height: 15px;
+  accent-color: hsl(var(--primary));
+}
+
+.catalog-list-foot {
+  display: flex;
   gap: 8px;
   align-items: center;
-  min-width: 1050px;
+  justify-content: space-between;
+  padding-top: 4px;
 }
 
 .catalog-visible-toggle {
@@ -1339,11 +1344,14 @@ body {
     grid-template-columns: 1fr;
   }
 
-  .catalog-mode-control,
-  .catalog-model-row,
-  .catalog-custom-row {
+  .catalog-mode-control {
     grid-template-columns: 1fr;
     min-width: 0;
+  }
+
+  .catalog-model-row {
+    grid-template-columns: 28px minmax(0, 1fr) 96px 32px;
+    gap: 6px;
   }
 
   .catalog-model-row-head {

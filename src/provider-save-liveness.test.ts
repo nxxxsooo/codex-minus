@@ -29,7 +29,7 @@ describe("a provider save always settles", () => {
   it("keeps every step of the save inside the guard that clears the pending state", () => {
     const guarded = saveDraft.slice(saveDraft.indexOf("try {"));
     for (const step of [
-      "draftWithModelRows(detailStateRef.current.profile)",
+      "detailStateRef.current.profile",
       "deriveRelayProfileFromFiles",
       "addRelayProfile",
       "updateRelayProfile",
