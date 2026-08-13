@@ -2,20 +2,27 @@ import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
-const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+// The provider mutators moved out of the shell; the wiring they must keep did not.
+const source = readFileSync(new URL("./relay-settings.ts", import.meta.url), "utf8");
+const shell = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
 
-function functionSource(name: string, nextName: string): string {
+/// One function's own text.
+///
+/// Read to its closing brace rather than to whatever function happens to follow, so moving a
+/// neighbour out of the shell cannot make this test read the wrong body or fail to find one.
+function functionSource(name: string): string {
   const start = source.indexOf(`function ${name}(`);
-  const end = source.indexOf(`function ${nextName}(`, start + 1);
-  assert.ok(start >= 0 && end > start, `${name} must remain statically auditable`);
+  assert.ok(start >= 0, `${name} must remain statically auditable`);
+  const end = source.indexOf("\n}\n", start);
+  assert.ok(end > start, `${name} must end at a top-level brace`);
   return source.slice(start, end);
 }
 
 describe("provider config draft wiring", () => {
   it("keeps create blank and passes one explicit target through generation and patching", () => {
-    const create = functionSource("createRelayProfile", "createAggregateRelayProfile");
-    const generate = functionSource("withGeneratedRelayFiles", "providerConfigTargetContract");
-    const patch = functionSource("applyRelayProfilePatchToFiles", "codexModelFromConfig");
+    const create = functionSource("createRelayProfile");
+    const generate = functionSource("withGeneratedRelayFiles");
+    const patch = functionSource("applyRelayProfilePatchToFiles");
 
     assert.match(create, /return createNewRelayProfileDraft\(\{ id, contextSelection \}\)/);
     assert.doesNotMatch(create, /withGeneratedRelayFiles/);
@@ -26,11 +33,11 @@ describe("provider config draft wiring", () => {
       patch,
       /options\.target\.source === "existing"[\s\S]*?providerConfigPatchRequiresBackendTransform\(patch\)[\s\S]*?return \{ \.\.\.profile, authContents: "" \}/,
     );
-    assert.doesNotMatch(source, /ensureCodexProviderDefaults/);
+    assert.doesNotMatch(source + shell, /ensureCodexProviderDefaults/);
   });
 
   it("uses preserveExisting for every saved profile edit", () => {
-    const target = functionSource("providerConfigTargetContract", "deriveRelayProfileFromFiles");
+    const target = functionSource("providerConfigTargetContract");
     assert.match(target, /if \(!brandNew\) return \{ target: "preserveExisting", source: "existing" \}/);
     assert.match(target, /target: "nativePriority", source: "brand-new-empty"/);
   });
