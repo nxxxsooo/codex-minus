@@ -1,6 +1,6 @@
 [package]
 name = "codex-minus"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 license = "AGPL-3.0-only"
 repository = "https://github.com/nxxxsooo/codex-minus"
@@ -22,12 +22,14 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 codex-plus-core = { git = "https://github.com/BigPizzaV3/CodexPlusPlus", rev = "59a2f90364525cd929444690fe536b9896de455d", package = "codex-plus-core" }
 codex-plus-data = { git = "https://github.com/BigPizzaV3/CodexPlusPlus", rev = "59a2f90364525cd929444690fe536b9896de455d", package = "codex-plus-data" }
 directories = "6"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "socks"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 semver = "1"
 sha2 = "0.10"
 tauri = { version = "2", features = ["custom-protocol", "tray-icon"] }
 tauri-plugin-dialog = "2"
+tokio = { version = "1", features = ["time"] }
 toml_edit = "0.22"
 
 [build-dependencies]

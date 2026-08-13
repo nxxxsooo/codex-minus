@@ -1,0 +1,162 @@
+export type NewProviderFieldErrors = Partial<
+  Record<"baseUrl" | "apiKey" | "model", "required">
+>;
+
+export type NewProviderTransientTarget = "nativePriority";
+export type NewProviderRequiredField = "baseUrl" | "apiKey" | "model";
+export type NewProviderMaterializationStatus =
+  | "incomplete"
+  | "materialized"
+  | "backend-transform-required";
+
+export type NewProviderMaterialization = {
+  target: NewProviderTransientTarget;
+  status: NewProviderMaterializationStatus;
+  missingFields: NewProviderRequiredField[];
+  configContents: string;
+};
+
+type NewProviderMaterializationInput = {
+  transientTarget: NewProviderTransientTarget;
+  model: string;
+  baseUrl: string;
+  apiKey: string;
+  configContents: string;
+};
+
+/// Models a ChatGPT Pro account can route through a native-priority provider.
+///
+/// Shipped in the app rather than discovered, so a brand-new provider is usable before any
+/// upstream call. The first entry is the prefilled default and must be a slug the official
+/// bundled catalog carries: a default the catalog cannot represent fails the first save.
+export const PRO_MODEL_SLUGS = [
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-5.6-sol",
+  "gpt-5.5",
+  "gpt-5.3-codex-spark",
+] as const;
+
+/// Slugs the official bundled catalog hides. Kept beside the shipped list so a retired model is
+/// caught by a test rather than shipped to a user whose catalog can no longer represent it.
+export const RETIRED_MODEL_SLUGS = ["gpt-5.4", "gpt-5.4-mini"] as const;
+
+/// Provider table identifier a brand-new draft is created with.
+///
+/// Distinct from Codex's reserved built-in lowercase `openai`, which the pinned core rewrites and
+/// upstream Codex ignores in favour of its own entry. Sessions record this identifier, so an
+/// upgrade preserves whatever a profile already has instead of adopting this value.
+export const NEW_PROVIDER_ID = "OpenAI";
+
+export function createNewRelayProfileDraft<TContext>({
+  id,
+  contextSelection,
+}: {
+  id: string;
+  contextSelection: TContext;
+}) {
+  return {
+    id,
+    name: "" as const,
+    model: PRO_MODEL_SLUGS[0] as string,
+    baseUrl: "" as const,
+    upstreamBaseUrl: "" as const,
+    apiKey: "" as const,
+    protocol: "responses" as const,
+    relayMode: "official" as const,
+    officialMixApiKey: true as const,
+    transientTarget: "nativePriority" as const,
+    testModel: "" as const,
+    configContents: "" as const,
+    authContents: "" as const,
+    useCommonConfig: true as const,
+    contextSelection,
+    contextSelectionInitialized: true as const,
+    contextWindow: "" as const,
+    autoCompactLimit: "" as const,
+    modelList: PRO_MODEL_SLUGS.join("\n"),
+    modelWindows: "" as const,
+    userAgent: "" as const,
+    aggregate: null,
+  };
+}
+
+export function materializeNewProviderConfig(
+  profile: NewProviderMaterializationInput,
+): NewProviderMaterialization {
+  const missingFields = requiredNewProviderFields(profile);
+  if (profile.configContents.trim()) {
+    return {
+      target: profile.transientTarget,
+      status: "backend-transform-required",
+      missingFields,
+      configContents: profile.configContents,
+    };
+  }
+  if (missingFields.length) {
+    return {
+      target: profile.transientTarget,
+      status: "incomplete",
+      missingFields,
+      configContents: "",
+    };
+  }
+
+  const model = tomlString(profile.model.trim());
+  const baseUrl = tomlString(profile.baseUrl.trim());
+  const apiKey = tomlString(profile.apiKey.trim());
+  return {
+    target: profile.transientTarget,
+    status: "materialized",
+    missingFields: [],
+    configContents: `model = "${model}"
+model_provider = "${NEW_PROVIDER_ID}"
+
+[model_providers.${NEW_PROVIDER_ID}]
+name = "OpenAI"
+base_url = "${baseUrl}"
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = "${apiKey}"
+http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
+`,
+  };
+}
+
+function requiredNewProviderFields(profile: {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+}): NewProviderRequiredField[] {
+  const missing: NewProviderRequiredField[] = [];
+  if (!profile.baseUrl.trim()) missing.push("baseUrl");
+  if (!profile.apiKey.trim()) missing.push("apiKey");
+  if (!profile.model.trim()) missing.push("model");
+  return missing;
+}
+
+function tomlString(value: string): string {
+  return JSON.stringify(value).slice(1, -1);
+}
+
+export function validateNewProviderDraft(profile: {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+}): NewProviderFieldErrors {
+  const errors: NewProviderFieldErrors = {};
+  for (const field of requiredNewProviderFields(profile)) errors[field] = "required";
+  return errors;
+}
+
+export const OFFICIAL_AUTH_GUIDE_URL = "https://developers.openai.com/codex/auth";
+
+export function officialLoginGuide(input: {
+  isNew: boolean;
+  authenticated: boolean;
+}): { visible: boolean; url: string } {
+  return {
+    visible: input.isNew && !input.authenticated,
+    url: OFFICIAL_AUTH_GUIDE_URL,
+  };
+}

@@ -1,0 +1,8 @@
+model = "gpt-5"
+model_provider = "MyRelay"
+
+[model_providers.MyRelay]
+name = "MyRelay"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = true

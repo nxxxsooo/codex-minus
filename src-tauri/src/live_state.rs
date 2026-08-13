@@ -1,5 +1,8 @@
+use std::cell::RefCell;
 use std::collections::HashSet;
-use std::fs::{self, File, OpenOptions};
+#[cfg(unix)]
+use std::fs::File;
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -13,6 +16,26 @@ const JOURNAL_FILE: &str = "live-state-transaction.json";
 const TRANSACTION_ROOT: &str = "live-state-transactions";
 
 static LIVE_STATE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+thread_local! {
+    static ACTIVE_PERMISSION_CACHE: RefCell<Option<HashSet<PermissionTarget>>> = const { RefCell::new(None) };
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum PermissionTarget {
+    Directory(PathBuf),
+    File(PathBuf),
+}
+
+pub struct LiveStateGuard {
+    _guard: MutexGuard<'static, ()>,
+}
+
+impl Drop for LiveStateGuard {
+    fn drop(&mut self) {
+        ACTIVE_PERMISSION_CACHE.with(|cache| *cache.borrow_mut() = None);
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct FileMutation {
@@ -71,21 +94,39 @@ struct JournalEntry {
     prior_hash: Option<String>,
 }
 
-pub fn lock() -> anyhow::Result<MutexGuard<'static, ()>> {
-    LIVE_STATE_LOCK
+pub fn lock() -> anyhow::Result<LiveStateGuard> {
+    // The mutex guards no data, so a panicking holder leaves nothing inconsistent behind: an
+    // interrupted generation is repaired from the transaction journal on the next write. Treating
+    // poison as fatal instead would make one panic reject every later save until the app restarts.
+    let guard = LIVE_STATE_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .map_err(|_| anyhow::anyhow!("live-state coordinator lock is poisoned"))
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    ACTIVE_PERMISSION_CACHE.with(|cache| {
+        *cache.borrow_mut() = Some(HashSet::new());
+    });
+    Ok(LiveStateGuard { _guard: guard })
 }
 
 pub fn prepare_secret_paths(codex_home: &Path) -> anyhow::Result<()> {
     let app_state = codex_plus_core::paths::default_app_state_dir();
+    prepare_secret_paths_at(
+        &app_state,
+        &codex_plus_core::paths::default_settings_path(),
+        codex_home,
+    )
+}
+
+pub(crate) fn prepare_secret_paths_at(
+    app_state: &Path,
+    settings_path: &Path,
+    codex_home: &Path,
+) -> anyhow::Result<()> {
     ensure_owner_only_dir(&app_state)?;
     cleanup_interrupted_atomic_temps(&app_state)?;
     cleanup_private_workspaces(&app_state)?;
-    let settings_path = codex_plus_core::paths::default_settings_path();
     if settings_path.exists() {
-        ensure_owner_only_file(&settings_path)?;
+        ensure_owner_only_file(settings_path)?;
     }
     ensure_owner_only_dir(codex_home)?;
     cleanup_interrupted_atomic_temps(codex_home)?;
@@ -144,8 +185,14 @@ fn cleanup_private_workspaces(app_state: &Path) -> anyhow::Result<()> {
 pub fn ensure_owner_only_dir(path: &Path) -> anyhow::Result<()> {
     fs::create_dir_all(path)
         .with_context(|| format!("failed to create private directory {}", path.display()))?;
+    let target = PermissionTarget::Directory(path.to_path_buf());
+    if permission_is_cached(&target) {
+        return Ok(());
+    }
     apply_owner_only_dir(path)?;
-    verify_owner_only_dir(path)
+    verify_owner_only_dir(path)?;
+    remember_permission(target);
+    Ok(())
 }
 
 pub fn ensure_owner_only_file(path: &Path) -> anyhow::Result<()> {
@@ -154,8 +201,31 @@ pub fn ensure_owner_only_file(path: &Path) -> anyhow::Result<()> {
         "private file is missing: {}",
         path.display()
     );
+    let target = PermissionTarget::File(path.to_path_buf());
+    if permission_is_cached(&target) {
+        return Ok(());
+    }
     apply_owner_only_file(path)?;
-    verify_owner_only_file(path)
+    verify_owner_only_file(path)?;
+    remember_permission(target);
+    Ok(())
+}
+
+fn permission_is_cached(target: &PermissionTarget) -> bool {
+    ACTIVE_PERMISSION_CACHE.with(|cache| {
+        cache
+            .borrow()
+            .as_ref()
+            .is_some_and(|secured| secured.contains(target))
+    })
+}
+
+fn remember_permission(target: PermissionTarget) {
+    ACTIVE_PERMISSION_CACHE.with(|cache| {
+        if let Some(secured) = cache.borrow_mut().as_mut() {
+            secured.insert(target);
+        }
+    });
 }
 
 pub fn atomic_write_owner_only(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
@@ -203,16 +273,39 @@ pub fn commit_locked_verified(
     mutations: &[FileMutation],
     verify: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-    recover_locked()?;
+    commit_locked_verified_at(
+        &codex_plus_core::paths::default_app_state_dir(),
+        mutations,
+        verify,
+    )
+}
+
+pub(crate) fn commit_locked_verified_at(
+    app_state: &Path,
+    mutations: &[FileMutation],
+    verify: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    commit_locked_verified_at_observed(app_state, mutations, |_| Ok(()), verify, || Ok(()))
+}
+
+pub(crate) fn commit_locked_verified_at_observed(
+    app_state: &Path,
+    mutations: &[FileMutation],
+    mut after_apply: impl FnMut(&Path) -> anyhow::Result<()>,
+    verify: impl FnOnce() -> anyhow::Result<()>,
+    after_post_commit_verification: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    recover_locked_at(app_state)?;
     validate_mutations(mutations)?;
     if mutations.is_empty() {
         return Ok(());
     }
 
-    let app_state = codex_plus_core::paths::default_app_state_dir();
     ensure_owner_only_dir(&app_state)?;
     let transaction_id = transaction_id();
-    let transaction_dir = app_state.join(TRANSACTION_ROOT).join(&transaction_id);
+    let transaction_root = app_state.join(TRANSACTION_ROOT);
+    ensure_owner_only_dir(&transaction_root)?;
+    let transaction_dir = transaction_root.join(&transaction_id);
     ensure_owner_only_dir(&transaction_dir)?;
 
     let entries = (|| -> anyhow::Result<Vec<JournalEntry>> {
@@ -268,31 +361,35 @@ pub fn commit_locked_verified(
         applied_count: 0,
         entries,
     };
-    if let Err(error) = persist_journal(&journal) {
+    if let Err(error) = persist_journal(app_state, &journal) {
         let _ = fs::remove_dir_all(&transaction_dir);
         return Err(error);
     }
 
     let result = (|| -> anyhow::Result<()> {
         journal.phase = TransactionPhase::Applying;
-        persist_journal(&journal)?;
+        persist_journal(app_state, &journal)?;
         for index in 0..journal.entries.len() {
             apply_entry_target(&journal.entries[index])?;
             verify_entry_target(&journal.entries[index])?;
+            after_apply(&journal.entries[index].target_path)
+                .context("live-state mutation observation failed")?;
             journal.applied_count = index + 1;
-            persist_journal(&journal)?;
+            persist_journal(app_state, &journal)?;
         }
         verify().context("live-state post-commit verification failed")?;
         journal.phase = TransactionPhase::Committed;
-        persist_journal(&journal)?;
+        persist_journal(app_state, &journal)?;
         for entry in &journal.entries {
             verify_entry_target(entry)?;
         }
-        cleanup_journal(&journal)
+        after_post_commit_verification()
+            .context("live-state final verification observation failed")?;
+        cleanup_journal(app_state, &journal)
     })();
 
     if let Err(error) = result {
-        let rollback_error = rollback_journal(&journal).err();
+        let rollback_error = rollback_journal(app_state, &journal).err();
         return match rollback_error {
             Some(rollback_error) => Err(anyhow::anyhow!(
                 "transaction failed: {error}; rollback failed: {rollback_error}"
@@ -304,7 +401,11 @@ pub fn commit_locked_verified(
 }
 
 pub fn recover_locked() -> anyhow::Result<RecoveryOutcome> {
-    let journal_path = journal_path();
+    recover_locked_at(&codex_plus_core::paths::default_app_state_dir())
+}
+
+pub(crate) fn recover_locked_at(app_state: &Path) -> anyhow::Result<RecoveryOutcome> {
+    let journal_path = journal_path(app_state);
     let bytes = match fs::read(&journal_path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -315,18 +416,18 @@ pub fn recover_locked() -> anyhow::Result<RecoveryOutcome> {
     ensure_owner_only_file(&journal_path)?;
     let journal: TransactionJournal =
         serde_json::from_slice(&bytes).context("live-state transaction journal is invalid")?;
-    validate_journal(&journal)?;
+    validate_journal(app_state, &journal)?;
 
     if journal
         .entries
         .iter()
         .all(|entry| verify_entry_target(entry).is_ok())
     {
-        cleanup_journal(&journal)?;
+        cleanup_journal(app_state, &journal)?;
         return Ok(RecoveryOutcome::RolledForward);
     }
 
-    rollback_journal(&journal)?;
+    rollback_journal(app_state, &journal)?;
     Ok(RecoveryOutcome::RolledBack)
 }
 
@@ -349,7 +450,7 @@ fn validate_mutations(mutations: &[FileMutation]) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn validate_journal(journal: &TransactionJournal) -> anyhow::Result<()> {
+fn validate_journal(app_state: &Path, journal: &TransactionJournal) -> anyhow::Result<()> {
     ensure!(
         journal.version == 1,
         "unsupported transaction journal version"
@@ -358,7 +459,6 @@ fn validate_journal(journal: &TransactionJournal) -> anyhow::Result<()> {
         !journal.transaction_id.trim().is_empty(),
         "missing transaction id"
     );
-    let app_state = codex_plus_core::paths::default_app_state_dir();
     let expected_dir = app_state
         .join(TRANSACTION_ROOT)
         .join(&journal.transaction_id);
@@ -432,7 +532,7 @@ fn verify_path_hash(path: &Path, expected: Option<&str>) -> anyhow::Result<()> {
     }
 }
 
-fn rollback_journal(journal: &TransactionJournal) -> anyhow::Result<()> {
+fn rollback_journal(app_state: &Path, journal: &TransactionJournal) -> anyhow::Result<()> {
     let mut failures = Vec::new();
     for entry in journal.entries.iter().rev() {
         if let Err(error) = apply_entry_prior(entry).and_then(|_| verify_entry_prior(entry)) {
@@ -440,20 +540,20 @@ fn rollback_journal(journal: &TransactionJournal) -> anyhow::Result<()> {
         }
     }
     ensure!(failures.is_empty(), "{}", failures.join("; "));
-    cleanup_journal(journal)
+    cleanup_journal(app_state, journal)
 }
 
-fn persist_journal(journal: &TransactionJournal) -> anyhow::Result<()> {
+fn persist_journal(app_state: &Path, journal: &TransactionJournal) -> anyhow::Result<()> {
     let bytes = serde_json::to_vec_pretty(journal)?;
-    atomic_write_owner_only(&journal_path(), &bytes)
+    atomic_write_owner_only(&journal_path(app_state), &bytes)
 }
 
-fn cleanup_journal(journal: &TransactionJournal) -> anyhow::Result<()> {
-    let path = journal_path();
+fn cleanup_journal(app_state: &Path, journal: &TransactionJournal) -> anyhow::Result<()> {
+    let path = journal_path(app_state);
     if path.exists() {
         fs::remove_file(&path)?;
     }
-    let transaction_dir = codex_plus_core::paths::default_app_state_dir()
+    let transaction_dir = app_state
         .join(TRANSACTION_ROOT)
         .join(&journal.transaction_id);
     if transaction_dir.exists() {
@@ -465,8 +565,8 @@ fn cleanup_journal(journal: &TransactionJournal) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn journal_path() -> PathBuf {
-    codex_plus_core::paths::default_app_state_dir().join(JOURNAL_FILE)
+fn journal_path(app_state: &Path) -> PathBuf {
+    app_state.join(JOURNAL_FILE)
 }
 
 fn remove_exact_file(path: &Path) -> anyhow::Result<()> {
@@ -569,25 +669,30 @@ fn verify_owner_only_file(path: &Path) -> anyhow::Result<()> {
 
 #[cfg(windows)]
 fn apply_windows_acl(path: &Path, directory: bool) -> anyhow::Result<()> {
-    use std::process::Command;
     let user = std::env::var("USERNAME").context("USERNAME is unavailable")?;
     let grant = if directory {
         format!("{user}:(OI)(CI)F")
     } else {
         format!("{user}:F")
     };
-    let status = Command::new("icacls")
-        .arg(path)
-        .args(["/inheritance:r", "/grant:r", &grant])
-        .status()?;
+    let status = crate::platform_command::status_bounded(
+        crate::platform_command::background_command("icacls")
+            .arg(path)
+            .args(["/inheritance:r", "/grant:r", &grant]),
+        crate::platform_command::HELPER_TIMEOUT,
+        "the permission helper",
+    )?;
     ensure!(status.success(), "icacls failed for {}", path.display());
     Ok(())
 }
 
 #[cfg(windows)]
 fn verify_windows_acl(path: &Path) -> anyhow::Result<()> {
-    use std::process::Command;
-    let output = Command::new("icacls").arg(path).output()?;
+    let output = crate::platform_command::output_bounded(
+        crate::platform_command::captured_output_command("icacls").arg(path),
+        crate::platform_command::HELPER_TIMEOUT,
+        "the permission verifier",
+    )?;
     ensure!(
         output.status.success(),
         "cannot verify ACL for {}",
@@ -622,6 +727,24 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
+
+    #[test]
+    fn a_panic_under_the_coordinator_lock_does_not_reject_every_later_write() {
+        let panicked = std::thread::spawn(|| {
+            let _guard = lock().expect("the first holder should acquire the lock");
+            panic!("a transaction step panicked while holding the coordinator");
+        })
+        .join();
+        assert!(panicked.is_err(), "the holder must have panicked");
+
+        let recovered = lock();
+
+        assert!(
+            recovered.is_ok(),
+            "a later save still acquires the coordinator: {:?}",
+            recovered.err()
+        );
+    }
 
     #[test]
     fn atomic_write_repairs_owner_only_mode() {
@@ -726,6 +849,18 @@ mod tests {
             thread.join().unwrap();
         }
         assert_eq!(peak.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn permission_cache_is_scoped_to_one_coordinator_guard() {
+        let target = PermissionTarget::Directory(PathBuf::from("permission-cache-test"));
+        assert!(!permission_is_cached(&target));
+        {
+            let _guard = lock().unwrap();
+            remember_permission(target.clone());
+            assert!(permission_is_cached(&target));
+        }
+        assert!(!permission_is_cached(&target));
     }
 
     #[test]

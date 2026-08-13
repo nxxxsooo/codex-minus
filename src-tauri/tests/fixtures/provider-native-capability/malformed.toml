@@ -1,0 +1,6 @@
+model = "gpt-5"
+model_provider = "CustomProvider"
+secret_parser_line = "must-never-escape"
+
+[model_providers.CustomProvider
+experimental_bearer_token = "secret-malformed"

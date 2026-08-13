@@ -1,6 +1,7 @@
+use std::collections::HashSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -13,6 +14,7 @@ use codex_plus_core::status::LaunchStatus;
 use codex_plus_core::zed_remote::{ZedOpenStrategy, ZedRemoteProject};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::live_state::{self, FileMutation};
 
@@ -56,6 +58,7 @@ pub struct SettingsPayload {
     pub settings: BackendSettings,
     pub settings_path: String,
     pub user_scripts: Value,
+    pub provider_fingerprint: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -351,6 +354,7 @@ pub struct ProviderDoctorPayload {
     pub checks: Vec<ProviderDoctorCheck>,
     pub compatibility_fallback_used: bool,
     pub initial_http_status: Option<u16>,
+    pub request_http_status: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -503,30 +507,320 @@ pub async fn save_settings(settings: BackendSettings) -> CommandResult<SettingsP
 }
 
 fn save_settings_blocking(settings: BackendSettings) -> CommandResult<SettingsPayload> {
-    let settings = normalize_settings_before_save(settings);
-    let home = codex_plus_core::relay_config::default_codex_home_dir();
-    let result = (|| -> anyhow::Result<()> {
-        let _guard = live_state::lock()?;
-        live_state::prepare_secret_paths(&home)?;
-        let bytes = serialize_settings_without_profile_auth(&settings)?;
-        live_state::commit_locked(&[FileMutation::bytes(
-            codex_plus_core::paths::default_settings_path(),
-            bytes,
-        )])
-    })();
+    let result = save_settings_with_provider_guard_at(&ProviderCommitPaths::defaults(), settings);
     match result {
         Ok(()) => settings_payload("设置已保存。", "设置保存后重新读取失败"),
-        Err(error) => failed(
-            &format!("保存设置失败：{error}"),
-            SettingsPayload {
-                settings,
-                settings_path: codex_plus_core::paths::default_settings_path()
-                    .to_string_lossy()
-                    .to_string(),
-                user_scripts: user_script_inventory(),
-            },
-        ),
+        Err(error) => match settings_payload_value() {
+            Ok(payload) => failed(error.user_message(), payload),
+            Err((_, payload)) => failed(error.user_message(), payload),
+        },
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GenericSettingsSaveError {
+    ProviderOwnedDifference,
+    ProviderAuthProhibited,
+    PersistedSettingsInvalid,
+    PersistedSettingsChanged,
+    SecureStorageFailed,
+}
+
+impl GenericSettingsSaveError {
+    fn user_message(self) -> &'static str {
+        match self {
+            Self::ProviderOwnedDifference => "保存设置失败；供应商相关改动必须使用统一供应商保存。",
+            Self::ProviderAuthProhibited => "保存设置失败；供应商认证内容不能通过通用设置保存。",
+            Self::PersistedSettingsInvalid => "保存设置失败；本地设置文件无效，请先修复设置文件。",
+            Self::PersistedSettingsChanged => "保存设置失败；本地设置已更新，请重新加载后再试。",
+            Self::SecureStorageFailed => "保存设置失败；安全存储事务未能完成。",
+        }
+    }
+}
+
+impl std::fmt::Display for GenericSettingsSaveError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::ProviderOwnedDifference => "provider-owned settings differ from persisted state",
+            Self::ProviderAuthProhibited => "provider-owned authContents is prohibited",
+            Self::PersistedSettingsInvalid => "persisted settings are invalid",
+            Self::PersistedSettingsChanged => "persisted settings generation changed",
+            Self::SecureStorageFailed => "secure settings transaction failed",
+        })
+    }
+}
+
+impl std::error::Error for GenericSettingsSaveError {}
+
+pub(crate) fn settings_snapshot_for_ui_projection(
+    mut settings: BackendSettings,
+) -> Result<BackendSettings, GenericSettingsSaveError> {
+    let (common_without_context, extracted_context) =
+        split_relay_context_config_sections(&settings.relay_common_config_contents);
+    settings.relay_common_config_contents =
+        codex_plus_core::relay_config::sanitize_common_config_contents(&common_without_context);
+    settings.relay_context_config_contents =
+        relay_join_config_sections(&[&settings.relay_context_config_contents, &extracted_context]);
+    settings.relay_context_config_contents =
+        codex_plus_core::relay_config::sanitize_common_config_contents(
+            &settings.relay_context_config_contents,
+        );
+    for profile in &mut settings.relay_profiles {
+        codex_plus_core::relay_config::normalize_relay_profile_for_storage(profile)
+            .map_err(|_| GenericSettingsSaveError::PersistedSettingsInvalid)?;
+    }
+    Ok(settings)
+}
+
+fn serialize_settings_with_raw_provider_snapshot(
+    settings: &BackendSettings,
+    persisted_value: Option<&Value>,
+) -> Result<Vec<u8>, GenericSettingsSaveError> {
+    let bytes = serialize_settings_without_profile_auth(settings)
+        .map_err(|_| GenericSettingsSaveError::SecureStorageFailed)?;
+    let Some(persisted) = persisted_value.and_then(Value::as_object) else {
+        return Ok(bytes);
+    };
+    let mut next: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| GenericSettingsSaveError::SecureStorageFailed)?;
+    let next = next
+        .as_object_mut()
+        .ok_or(GenericSettingsSaveError::SecureStorageFailed)?;
+    for key in [
+        "relayProfilesEnabled",
+        "relayProfiles",
+        "aggregateRelayProfiles",
+        "activeRelayId",
+        "activeAggregateRelayId",
+        "relayBaseUrl",
+        "relayApiKey",
+        "relayCommonConfigContents",
+        "relayContextConfigContents",
+        "relayTestModel",
+    ] {
+        match persisted.get(key) {
+            Some(value) => {
+                next.insert(key.to_string(), value.clone());
+            }
+            None => {
+                next.remove(key);
+            }
+        }
+    }
+    serde_json::to_vec_pretty(&next).map_err(|_| GenericSettingsSaveError::SecureStorageFailed)
+}
+
+pub(crate) fn ui_provider_topology_projection(
+    mut settings: BackendSettings,
+) -> Result<crate::provider_commit::ProviderOwnedTopologyDraft, GenericSettingsSaveError> {
+    let all_context = codex_plus_core::relay_config::list_context_entries_from_common_config(
+        &settings.relay_context_config_contents,
+    )
+    .map_err(|_| GenericSettingsSaveError::PersistedSettingsInvalid)?;
+    let all_context = RelayContextSelection {
+        mcp_servers: all_context
+            .mcp_servers
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect(),
+        skills: all_context
+            .skills
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect(),
+        plugins: all_context
+            .plugins
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect(),
+    };
+    for profile in &mut settings.relay_profiles {
+        sanitize_profile_after_core_normalize(profile);
+        if profile.relay_mode == codex_plus_core::settings::RelayMode::MixedApi {
+            profile.relay_mode = codex_plus_core::settings::RelayMode::Official;
+            profile.official_mix_api_key = true;
+        }
+        if profile.relay_mode == codex_plus_core::settings::RelayMode::Official
+            && !profile.official_mix_api_key
+        {
+            profile.model.clear();
+            profile.base_url.clear();
+            profile.upstream_base_url.clear();
+            profile.api_key.clear();
+            profile.config_contents.clear();
+        }
+        if profile.relay_mode == codex_plus_core::settings::RelayMode::Aggregate {
+            profile.base_url.clear();
+            profile.upstream_base_url.clear();
+            profile.api_key.clear();
+            profile.protocol = codex_plus_core::settings::RelayProtocol::Responses;
+            profile.official_mix_api_key = false;
+            profile.config_contents.clear();
+            profile.context_window.clear();
+            profile.auto_compact_limit.clear();
+            profile.model_list.clear();
+            profile.model_windows.clear();
+        }
+        if !profile.context_selection_initialized {
+            profile.context_selection = all_context.clone();
+            profile.context_selection_initialized = true;
+        }
+    }
+    if !settings
+        .relay_profiles
+        .iter()
+        .any(|profile| profile.id == settings.active_relay_id)
+    {
+        settings.active_relay_id = settings
+            .relay_profiles
+            .first()
+            .map(|profile| profile.id.clone())
+            .unwrap_or_else(|| "default".to_string());
+    }
+    let api_profile_ids = settings
+        .relay_profiles
+        .iter()
+        .filter(|profile| {
+            profile.relay_mode != codex_plus_core::settings::RelayMode::Aggregate
+                && !profile.base_url.trim().is_empty()
+                && !profile.api_key.trim().is_empty()
+        })
+        .map(|profile| profile.id.clone())
+        .collect::<HashSet<_>>();
+    settings.aggregate_relay_profiles = settings
+        .relay_profiles
+        .iter()
+        .filter(|profile| profile.relay_mode == codex_plus_core::settings::RelayMode::Aggregate)
+        .map(|profile| {
+            let mut aggregate = settings
+                .aggregate_relay_profiles
+                .iter()
+                .find(|aggregate| aggregate.id == profile.id)
+                .cloned()
+                .unwrap_or_else(|| codex_plus_core::settings::AggregateRelayProfile {
+                    id: profile.id.clone(),
+                    name: profile.name.clone(),
+                    strategy: Default::default(),
+                    members: Vec::new(),
+                });
+            aggregate.name = if profile.name.is_empty() {
+                aggregate.name
+            } else {
+                profile.name.clone()
+            };
+            let mut member_ids = HashSet::new();
+            aggregate.members.retain(|member| {
+                !member.relay_id.is_empty()
+                    && member_ids.insert(member.relay_id.clone())
+                    && (api_profile_ids.is_empty() || api_profile_ids.contains(&member.relay_id))
+            });
+            for member in &mut aggregate.members {
+                member.weight = member.weight.clamp(1, 999);
+            }
+            aggregate
+        })
+        .collect();
+    if let Some(active) = settings
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == settings.active_relay_id)
+    {
+        let is_aggregate = active.relay_mode == codex_plus_core::settings::RelayMode::Aggregate;
+        settings.relay_base_url = if is_aggregate {
+            "http://127.0.0.1:57321/v1".to_string()
+        } else {
+            active.base_url.clone()
+        };
+        settings.relay_api_key = active.api_key.clone();
+        settings.active_aggregate_relay_id = if is_aggregate {
+            active.id.clone()
+        } else {
+            String::new()
+        };
+    }
+    Ok(crate::provider_commit::ProviderOwnedTopologyDraft::from_settings(&settings))
+}
+
+pub(crate) fn save_settings_with_provider_guard_at(
+    paths: &ProviderCommitPaths,
+    incoming: BackendSettings,
+) -> Result<(), GenericSettingsSaveError> {
+    save_settings_with_provider_guard_at_observed(paths, incoming, || Ok(()))
+}
+
+pub(crate) fn save_settings_with_provider_guard_at_observed(
+    paths: &ProviderCommitPaths,
+    incoming: BackendSettings,
+    after_snapshot: impl FnOnce() -> anyhow::Result<()>,
+) -> Result<(), GenericSettingsSaveError> {
+    use crate::provider_commit::ProviderOwnedTopologyDraft;
+
+    let _guard = live_state::lock().map_err(|_| GenericSettingsSaveError::SecureStorageFailed)?;
+    live_state::prepare_secret_paths_at(&paths.app_state, &paths.settings_path, &paths.codex_home)
+        .map_err(|_| GenericSettingsSaveError::SecureStorageFailed)?;
+    live_state::recover_locked_at(&paths.app_state)
+        .map_err(|_| GenericSettingsSaveError::SecureStorageFailed)?;
+    let persisted_bytes = match std::fs::read(&paths.settings_path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return Err(GenericSettingsSaveError::SecureStorageFailed),
+    };
+    after_snapshot().map_err(|_| GenericSettingsSaveError::SecureStorageFailed)?;
+    let (persisted, persisted_value) = match persisted_bytes.as_ref() {
+        Some(persisted_bytes) => {
+            let value: Value = serde_json::from_slice(persisted_bytes)
+                .map_err(|_| GenericSettingsSaveError::PersistedSettingsInvalid)?;
+            let settings = serde_json::from_value(value.clone())
+                .map_err(|_| GenericSettingsSaveError::PersistedSettingsInvalid)?;
+            (settings, Some(value))
+        }
+        None => (BackendSettings::default(), None),
+    };
+    if persisted
+        .relay_profiles
+        .iter()
+        .any(|profile| !profile.auth_contents.is_empty())
+        || incoming
+            .relay_profiles
+            .iter()
+            .any(|profile| !profile.auth_contents.is_empty())
+    {
+        return Err(GenericSettingsSaveError::ProviderAuthProhibited);
+    }
+    let persisted_topology = ProviderOwnedTopologyDraft::from_settings(&persisted);
+    let incoming_topology = ProviderOwnedTopologyDraft::from_settings(&incoming);
+    let persisted_ui_topology =
+        ui_provider_topology_projection(settings_snapshot_for_ui_projection(persisted.clone())?)?;
+    let incoming_bytes = serde_json::to_vec(&incoming_topology)
+        .map_err(|_| GenericSettingsSaveError::SecureStorageFailed)?;
+    let matches_raw = serde_json::to_vec(&persisted_topology)
+        .map_err(|_| GenericSettingsSaveError::SecureStorageFailed)?
+        == incoming_bytes;
+    let matches_ui = serde_json::to_vec(&persisted_ui_topology)
+        .map_err(|_| GenericSettingsSaveError::SecureStorageFailed)?
+        == incoming_bytes;
+    if !matches_raw && !matches_ui {
+        return Err(GenericSettingsSaveError::ProviderOwnedDifference);
+    }
+
+    let normalized_unrelated = normalize_settings_before_save(incoming);
+    let merged = persisted_topology.apply_to(&normalized_unrelated);
+    let bytes = serialize_settings_with_raw_provider_snapshot(&merged, persisted_value.as_ref())?;
+    let generation_matches = match persisted_bytes.as_ref() {
+        Some(expected) => std::fs::read(&paths.settings_path)
+            .map(|current| current == *expected)
+            .unwrap_or(false),
+        None => !paths.settings_path.exists(),
+    };
+    if !generation_matches {
+        return Err(GenericSettingsSaveError::PersistedSettingsChanged);
+    }
+    live_state::commit_locked_verified_at(
+        &paths.app_state,
+        &[FileMutation::bytes(paths.settings_path.clone(), bytes)],
+        || Ok(()),
+    )
+    .map_err(|_| GenericSettingsSaveError::SecureStorageFailed)
 }
 
 #[tauri::command]
@@ -656,6 +950,13 @@ fn list_local_sessions_blocking(
 }
 
 const ARCHIVE_CHECK_INTERVAL_MS: i64 = 24 * 60 * 60 * 1_000;
+/// Upper bound for one provider-facing probe.
+///
+/// The pinned core builds these HTTP clients without a timeout of their own, so an upstream that
+/// accepts a connection and then stalls would otherwise keep the request — and, for the model
+/// probe, the coordinator lock its result needs — outstanding for the life of the process.
+const PROVIDER_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+
 const ARCHIVE_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 const ARCHIVE_CAPABILITY_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -763,7 +1064,7 @@ fn codex_cli_from_app_dir(app_dir: &Path) -> PathBuf {
     }
     #[cfg(windows)]
     {
-        return app_dir.join("codex.exe");
+        return windows_codex_cli_from_app_dir(app_dir);
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
@@ -775,9 +1076,58 @@ fn codex_cli_from_app_dir(app_dir: &Path) -> PathBuf {
     }
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_codex_cli_from_app_dir(app_dir: &Path) -> PathBuf {
+    let direct = app_dir.join("codex.exe");
+    if direct.is_file() {
+        return direct;
+    }
+
+    std::fs::read_dir(app_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join("codex.exe"))
+        .filter(|candidate| candidate.is_file())
+        .max_by_key(|candidate| {
+            candidate
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .ok()
+        })
+        .unwrap_or(direct)
+}
+
+/// Standalone Codex installs keep the CLI in a content-addressed subdirectory, e.g.
+/// `%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe`. Shared app-directory resolution only
+/// probes the fixed roots, and on a machine that also carries the MS Store package it resolves
+/// to `WindowsApps\...\app`, whose binaries cannot be spawned by path. The standalone CLI is
+/// therefore the only usable target whenever it exists.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_standalone_codex_cli_in(local_app_data: &Path) -> Option<PathBuf> {
+    [
+        local_app_data.join("OpenAI").join("Codex").join("bin"),
+        local_app_data.join("OpenAI").join("Codex"),
+        local_app_data.join("Programs").join("OpenAI").join("Codex"),
+    ]
+    .into_iter()
+    .map(|root| windows_codex_cli_from_app_dir(&root))
+    .find(|candidate| candidate.is_file())
+}
+
 pub(crate) fn discover_target_codex_cli() -> anyhow::Result<PathBuf> {
     let settings = SettingsStore::default().load().unwrap_or_default();
     let saved = settings.codex_app_path.trim();
+    #[cfg(windows)]
+    if saved.is_empty()
+        && let Some(cli) = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .as_deref()
+            .and_then(windows_standalone_codex_cli_in)
+    {
+        return Ok(cli);
+    }
     let app_dir = codex_plus_core::app_paths::resolve_codex_app_dir_with_saved(
         None,
         (!saved.is_empty()).then_some(saved),
@@ -791,7 +1141,7 @@ pub(crate) fn discover_target_codex_cli() -> anyhow::Result<PathBuf> {
 }
 
 fn command_succeeds(cli: &Path, home: &Path, args: &[&str]) -> bool {
-    let Ok(mut child) = Command::new(cli)
+    let Ok(mut child) = crate::platform_command::background_command(cli)
         .args(args)
         .env("CODEX_HOME", home)
         .stdin(Stdio::null())
@@ -851,7 +1201,7 @@ fn run_native_session_operation(
     if !matches!(operation, "archive" | "unarchive") || !is_uuid(session_id) {
         anyhow::bail!("原生会话操作仅接受 UUID 和 archive/unarchive");
     }
-    let mut child = Command::new(cli)
+    let mut child = crate::platform_command::background_command(cli)
         .arg(operation)
         .arg(session_id)
         .env("CODEX_HOME", home)
@@ -1139,13 +1489,11 @@ fn target_client_running() -> Option<bool> {
     #[cfg(target_os = "macos")]
     {
         for name in ["ChatGPT", "Codex", "codex"] {
-            match Command::new("/usr/bin/pgrep")
-                .args(["-x", name])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-            {
+            match crate::platform_command::status_bounded(
+                std::process::Command::new("/usr/bin/pgrep").args(["-x", name]),
+                crate::platform_command::HELPER_TIMEOUT,
+                "the process probe",
+            ) {
                 Ok(status) if status.success() => return Some(true),
                 Ok(_) => {}
                 Err(_) => return None,
@@ -1447,6 +1795,17 @@ fn normalize_settings_before_save(mut settings: BackendSettings) -> BackendSetti
             );
         }
         sanitize_profile_after_core_normalize(profile);
+        match retain_provider_owned_profile_config(&profile.config_contents) {
+            Ok(config) => profile.config_contents = config,
+            Err(error) => log_manager_event(
+                "manager.retain_provider_owned_profile_config.failed",
+                json!({
+                    "profileId": profile.id,
+                    "profileName": profile.name,
+                    "error": error.to_string()
+                }),
+            ),
+        }
     }
     let common_config = relay_combined_common_config(&settings);
     if !common_config.trim().is_empty() {
@@ -1477,7 +1836,7 @@ fn normalize_settings_before_save(mut settings: BackendSettings) -> BackendSetti
         .provider_sync_last_selected_provider
         .trim()
         .to_string();
-    scrub_managed_context_state(&mut settings);
+    scrub_legacy_managed_config_state(&mut settings);
     settings
 }
 
@@ -1498,7 +1857,7 @@ fn sanitize_profile_after_core_normalize(profile: &mut RelayProfile) {
             .or_else(|| (!profile.api_key.trim().is_empty()).then(|| profile.api_key.clone()));
         if let Some(api_key) = api_key {
             if let Ok(config) =
-                set_provider_config_bearer(&profile.config_contents, &api_key, false)
+                set_provider_config_bearer(&profile.config_contents, &api_key, Some(false))
             {
                 profile.config_contents = config;
             }
@@ -1519,6 +1878,12 @@ fn profile_api_key_from_auth(auth_contents: &str) -> Option<String> {
 }
 
 fn provider_bearer_token_from_config(config_contents: &str) -> Option<String> {
+    provider_bearer_token_from_config_exact(config_contents)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn provider_bearer_token_from_config_exact(config_contents: &str) -> Option<String> {
     let doc: toml_edit::DocumentMut = config_contents.parse().ok()?;
     let provider_id = doc.get("model_provider")?.as_str()?.trim();
     doc.get("model_providers")?
@@ -1527,15 +1892,19 @@ fn provider_bearer_token_from_config(config_contents: &str) -> Option<String> {
         .as_table()?
         .get("experimental_bearer_token")?
         .as_str()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
         .map(ToString::to_string)
 }
 
+/// Writes the provider bearer, and `requires_openai_auth` only when the caller owns that field.
+///
+/// `None` leaves the authored value exactly as it is, present or absent. The startup credential
+/// migration relocates a legacy key and is not the upgrade transform: deciding the official-auth
+/// requirement there would change what the client sends, automatically and without an explicit
+/// revisioned commit.
 fn set_provider_config_bearer(
     config_contents: &str,
     api_key: &str,
-    requires_openai_auth: bool,
+    requires_openai_auth: Option<bool>,
 ) -> anyhow::Result<String> {
     let mut doc: toml_edit::DocumentMut = if config_contents.trim().is_empty() {
         toml_edit::DocumentMut::new()
@@ -1552,8 +1921,10 @@ fn set_provider_config_bearer(
     doc["model_provider"] = toml_edit::value(provider_id.as_str());
     doc["model_providers"][provider_id.as_str()]["experimental_bearer_token"] =
         toml_edit::value(api_key.trim());
-    doc["model_providers"][provider_id.as_str()]["requires_openai_auth"] =
-        toml_edit::value(requires_openai_auth);
+    if let Some(requires_openai_auth) = requires_openai_auth {
+        doc["model_providers"][provider_id.as_str()]["requires_openai_auth"] =
+            toml_edit::value(requires_openai_auth);
+    }
     let mut result = doc.to_string();
     if !result.is_empty() && !result.ends_with('\n') {
         result.push('\n');
@@ -1778,8 +2149,8 @@ fn read_relay_files_blocking() -> CommandResult<RelayFilesPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     match relay_files_payload_from_home(&home) {
         Ok(payload) => ok("配置文件内容已读取。", payload),
-        Err(error) => failed(
-            &format!("读取配置文件失败：{error}"),
+        Err(_) => failed(
+            "读取配置文件失败；未返回底层文件或解析错误。",
             RelayFilesPayload {
                 config_path: home.join("config.toml").to_string_lossy().to_string(),
                 auth_path: home.join("auth.json").to_string_lossy().to_string(),
@@ -1846,6 +2217,7 @@ fn save_relay_file_blocking(request: SaveRelayFileRequest) -> CommandResult<Rela
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let result = (|| -> anyhow::Result<RelayFilesPayload> {
         validate_relay_file_save_kind(&request.kind)?;
+        crate::model_catalog::ensure_active_config_context_compatible(&request.contents)?;
         let _guard = live_state::lock()?;
         live_state::prepare_secret_paths(&home)?;
         let (protected, context_snapshot) = context_protected_config(&home, &request.contents)?;
@@ -1857,8 +2229,8 @@ fn save_relay_file_blocking(request: SaveRelayFileRequest) -> CommandResult<Rela
     })();
     match result {
         Ok(payload) => ok("配置文件已保存。", payload),
-        Err(error) => failed(
-            &format!("保存配置文件失败：{error}"),
+        Err(_) => failed(
+            "保存配置文件失败；配置无效或事务未完成。",
             relay_files_payload_from_home(&home).unwrap_or_else(|_| RelayFilesPayload {
                 config_path: home.join("config.toml").to_string_lossy().to_string(),
                 auth_path: home.join("auth.json").to_string_lossy().to_string(),
@@ -1872,7 +2244,7 @@ fn save_relay_file_blocking(request: SaveRelayFileRequest) -> CommandResult<Rela
 fn validate_relay_file_save_kind(kind: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         kind == "config",
-        "auth.json 由官方客户端管理，Codex-- 不接受认证文件写入"
+        "auth.json 由官方客户端管理，Codex Minus 不接受认证文件写入"
     );
     Ok(())
 }
@@ -1883,6 +2255,1341 @@ pub struct RelayProfileSwitchRequest {
     pub settings: BackendSettings,
     #[serde(default)]
     pub previous_active_relay_id: String,
+    #[serde(default)]
+    pub confirm_context_cleanup: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderCommitPaths {
+    pub app_state: PathBuf,
+    pub codex_home: PathBuf,
+    pub settings_path: PathBuf,
+    pub catalog_state_path: PathBuf,
+    #[cfg(test)]
+    pub(crate) current_target: Option<crate::model_catalog::VerifiedTargetIdentity>,
+}
+
+impl ProviderCommitPaths {
+    fn defaults() -> Self {
+        Self {
+            app_state: codex_plus_core::paths::default_app_state_dir(),
+            codex_home: codex_plus_core::relay_config::default_codex_home_dir(),
+            settings_path: codex_plus_core::paths::default_settings_path(),
+            catalog_state_path: crate::model_catalog::catalog_state_path(),
+            #[cfg(test)]
+            current_target: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderCommitPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<BackendSettings>,
+    pub draft_revision: u64,
+    pub provider_fingerprint: String,
+    pub restart_required: bool,
+    pub error_code: Option<ProviderCommitErrorCode>,
+    /// Static rejecting rule. Every value is a literal chosen at the failing call site, so the
+    /// discriminator can reach the user without a redaction pass over dynamic content.
+    pub reason: Option<&'static str>,
+}
+
+impl ProviderCommitPayload {
+    pub fn failure(
+        draft_revision: u64,
+        error_code: ProviderCommitErrorCode,
+        reason: &'static str,
+    ) -> Self {
+        Self {
+            settings: None,
+            draft_revision,
+            provider_fingerprint: String::new(),
+            restart_required: false,
+            error_code: Some(error_code),
+            reason: Some(reason),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProviderCommitErrorCode {
+    InputUnavailable,
+    OfficialAuthRequired,
+    CatalogScopeStale,
+    StaleState,
+    InvalidDraft,
+    CatalogUnavailable,
+    StagingRejected,
+    TransactionFailed,
+}
+
+#[derive(Debug)]
+pub struct ProviderCommitFailure {
+    code: ProviderCommitErrorCode,
+    message: &'static str,
+}
+
+/// Transaction checkpoints exposed only so isolated regression fixtures can inject failures
+/// without replacing the production journal or storage implementation.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderCommitCheckpoint {
+    Normalization,
+    ActivationScopeVerification,
+    CatalogMaterialization,
+    /// Immediately before the active profile is staged into a private home.
+    ///
+    /// Staging failure is the only source of `StagingRejected`, and no input reachable through
+    /// the public commit API produces one: common configuration is sanitized before it gets here.
+    /// The checkpoint exists so that code can be exercised the same way catalog materialization
+    /// already is, rather than being asserted only in theory.
+    Staging,
+    SettingsPersistence,
+    LiveConfigCommit,
+    ContextVerification,
+    AuthGenerationVerification,
+    PostCommitVerification,
+}
+
+impl ProviderCommitFailure {
+    fn new(code: ProviderCommitErrorCode, message: &'static str) -> Self {
+        Self { code, message }
+    }
+
+    pub fn code(&self) -> ProviderCommitErrorCode {
+        self.code
+    }
+
+    pub fn reason(&self) -> &'static str {
+        self.message
+    }
+}
+
+impl std::fmt::Display for ProviderCommitFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.message)
+    }
+}
+
+impl std::error::Error for ProviderCommitFailure {}
+
+fn provider_commit_failure(
+    code: ProviderCommitErrorCode,
+    message: &'static str,
+) -> ProviderCommitFailure {
+    ProviderCommitFailure::new(code, message)
+}
+
+/// Awaits a blocking command, reporting a panic instead of dropping the reply.
+///
+/// Re-panicking inside a Tauri command drops its IPC responder without answering, so the caller's
+/// promise never settles and the editor keeps a pending state with nothing to show.
+pub(crate) async fn settle_blocking<T, F>(
+    task: tauri::async_runtime::JoinHandle<CommandResult<T>>,
+    message: &str,
+    on_panic: F,
+) -> CommandResult<T>
+where
+    T: Serialize,
+    F: FnOnce() -> T,
+{
+    match task.await {
+        Ok(result) => result,
+        Err(_) => failed(message, on_panic()),
+    }
+}
+
+#[tauri::command]
+pub async fn commit_provider_detail(
+    request: crate::provider_commit::ProviderCommitRequest,
+) -> CommandResult<ProviderCommitPayload> {
+    let draft_revision = request.draft_revision;
+    let task =
+        tauri::async_runtime::spawn_blocking(move || {
+            match commit_provider_detail_from_paths(&ProviderCommitPaths::defaults(), request) {
+                Ok(payload) => ok("供应商与模型目录已作为同一代提交。", payload),
+                Err(error) => failed(
+                    "供应商提交失败；已保留原有设置与 live 配置。",
+                    ProviderCommitPayload::failure(draft_revision, error.code(), error.reason()),
+                ),
+            }
+        });
+    settle_blocking(
+        task,
+        "供应商提交中断；已保留原有设置与 live 配置。",
+        move || {
+            ProviderCommitPayload::failure(
+                draft_revision,
+                ProviderCommitErrorCode::TransactionFailed,
+                "提交过程意外中断。",
+            )
+        },
+    )
+    .await
+}
+
+pub fn commit_provider_detail_from_paths(
+    paths: &ProviderCommitPaths,
+    request: crate::provider_commit::ProviderCommitRequest,
+) -> Result<ProviderCommitPayload, ProviderCommitFailure> {
+    commit_provider_detail_from_paths_observed(paths, request, |_| Ok(()))
+}
+
+#[doc(hidden)]
+pub fn commit_provider_detail_from_paths_observed(
+    paths: &ProviderCommitPaths,
+    request: crate::provider_commit::ProviderCommitRequest,
+    mut observe: impl FnMut(ProviderCommitCheckpoint) -> anyhow::Result<()>,
+) -> Result<ProviderCommitPayload, ProviderCommitFailure> {
+    use crate::model_catalog::CatalogMode;
+    use crate::provider_commit::{
+        CatalogReadinessInput, ProviderOwnedTopologyDraft,
+        plan_provider_detail_commit_with_readiness, plan_provider_topology_commit_with_readiness,
+        validate_provider_topology_request,
+    };
+
+    let transaction_failure = |_| {
+        provider_commit_failure(
+            ProviderCommitErrorCode::TransactionFailed,
+            "provider transaction failed",
+        )
+    };
+    let _guard = live_state::lock().map_err(transaction_failure)?;
+    live_state::prepare_secret_paths_at(&paths.app_state, &paths.settings_path, &paths.codex_home)
+        .map_err(transaction_failure)?;
+    live_state::recover_locked_at(&paths.app_state).map_err(transaction_failure)?;
+
+    let (persisted_settings_bytes, persisted_settings) =
+        load_provider_commit_settings(&paths.settings_path).map_err(|_| {
+            provider_commit_failure(
+                ProviderCommitErrorCode::InputUnavailable,
+                "provider settings are unavailable",
+            )
+        })?;
+    let persisted_state = crate::model_catalog::load_and_migrate_state_from_path(
+        &persisted_settings,
+        &paths.codex_home,
+        &paths.catalog_state_path,
+    )
+    .map_err(|_| {
+        provider_commit_failure(
+            ProviderCommitErrorCode::CatalogUnavailable,
+            "provider catalog state is unavailable",
+        )
+    })?;
+
+    // Validate the unmodified request first so compare-and-swap, structural catalog rules,
+    // and authContents ownership are decided before normalization can change evidence.
+    let persisted_as_shown = serde_json::from_slice(&persisted_settings_bytes)
+        .map(sanitize_settings_for_output)
+        .map_err(|_| {
+            provider_commit_failure(
+                ProviderCommitErrorCode::InputUnavailable,
+                "provider settings are unavailable",
+            )
+        })?;
+    let mut request = request;
+    // Compare-and-swap is decided here and only here. Restating the accepted baseline keeps the
+    // later validators comparing against one agreed generation instead of re-deciding staleness
+    // against a form the editor was never shown.
+    request.expected_provider_fingerprint =
+        validate_provider_commit_cas(&persisted_settings, &persisted_as_shown, &request)?;
+    validate_provider_commit_catalog_structure(&request)?;
+    let focused_id = request.focused_profile_id.clone();
+    if focused_id.is_some() {
+        crate::provider_commit::validate_provider_detail_request(
+            &persisted_settings,
+            &persisted_state,
+            &request,
+        )
+        .map_err(|_| {
+            provider_commit_failure(
+                ProviderCommitErrorCode::InvalidDraft,
+                "provider draft validation failed",
+            )
+        })?;
+    } else {
+        validate_provider_topology_mutation_scope(&persisted_settings, &persisted_state, &request)?;
+        validate_provider_topology_request(&persisted_settings, &persisted_state, &request)
+            .map_err(|_| {
+                provider_commit_failure(
+                    ProviderCommitErrorCode::InvalidDraft,
+                    "provider topology validation failed",
+                )
+            })?;
+    }
+    let focused_mode = focused_id
+        .as_deref()
+        .and_then(|focused_id| {
+            request
+                .catalog_drafts
+                .iter()
+                .find(|draft| draft.profile_id == focused_id)
+                .map(|draft| draft.mode)
+        })
+        .unwrap_or(CatalogMode::NativeOfficial);
+    if let Some(focused_id) = focused_id.as_deref()
+        && crate::model_catalog::managed_mode(focused_mode)
+    {
+        let focused = request
+            .topology
+            .relay_profiles
+            .iter()
+            .find(|profile| profile.id == focused_id)
+            .ok_or_else(|| {
+                provider_commit_failure(
+                    ProviderCommitErrorCode::InvalidDraft,
+                    "focused provider profile is missing",
+                )
+            })?;
+        let saved_conflict = !focused.context_window.trim().is_empty()
+            || !focused.auto_compact_limit.trim().is_empty()
+            || !crate::model_catalog::global_context_conflicts(&focused.config_contents).is_empty();
+        let live_conflict = if request.topology.active_relay_id == focused_id {
+            let live = read_optional_bytes(&paths.codex_home.join("config.toml"))
+                .map_err(transaction_failure)?
+                .map(|bytes| String::from_utf8(bytes).map_err(|_| ()))
+                .transpose()
+                .map_err(|_| {
+                    provider_commit_failure(
+                        ProviderCommitErrorCode::InvalidDraft,
+                        "live provider config is invalid",
+                    )
+                })?
+                .unwrap_or_default();
+            !crate::model_catalog::global_context_conflicts(&live).is_empty()
+        } else {
+            false
+        };
+        if (saved_conflict || live_conflict) && !request.confirm_context_cleanup {
+            return Err(provider_commit_failure(
+                ProviderCommitErrorCode::InvalidDraft,
+                "managed catalog context cleanup confirmation is required",
+            ));
+        }
+    }
+    observe(ProviderCommitCheckpoint::Normalization).map_err(|_| {
+        provider_commit_failure(
+            ProviderCommitErrorCode::InvalidDraft,
+            "provider draft normalization failed",
+        )
+    })?;
+    let normalized_settings = if let Some(focused_id) = focused_id.as_deref() {
+        normalize_provider_detail_settings_fallible(
+            request.topology.apply_to(&persisted_settings),
+            &persisted_as_shown,
+            focused_id,
+            focused_mode,
+            request.confirm_context_cleanup,
+        )
+    } else {
+        normalize_provider_topology_settings_fallible(
+            request.topology.apply_to(&persisted_settings),
+            &request,
+            &persisted_state,
+        )
+    }
+    .map_err(|error| {
+        provider_commit_failure(
+            ProviderCommitErrorCode::InvalidDraft,
+            sanitized_provider_normalization_error(&error),
+        )
+    })?;
+
+    let auth_path = paths.codex_home.join("auth.json");
+    let auth_before = read_optional_bytes(&auth_path).map_err(transaction_failure)?;
+    let catalog_scope_current = match focused_id.as_deref() {
+        Some(focused_id) => managed_provider_catalog_scope_current(
+            paths,
+            &persisted_state,
+            &normalized_settings,
+            focused_id,
+            focused_mode,
+        )?,
+        None => None,
+    };
+    let activation_scope_verified = focused_id.as_deref().is_some_and(|focused_id| {
+        normalized_settings.active_relay_id == focused_id && catalog_scope_current == Some(true)
+    });
+    if activation_scope_verified {
+        observe(ProviderCommitCheckpoint::ActivationScopeVerification)
+            .map_err(transaction_failure)?;
+    }
+
+    // Re-plan from the normalized projection. The CAS still binds to persisted state; only
+    // provider-owned normalized fields are allowed to differ from the submitted draft.
+    let mut normalized_request = request.clone();
+    normalized_request.topology = ProviderOwnedTopologyDraft::from_settings(&normalized_settings);
+    let mut catalog_readiness = CatalogReadinessInput::default();
+    if let (Some(focused_id), Some(scope_current)) = (focused_id.as_deref(), catalog_scope_current)
+    {
+        catalog_readiness
+            .scope_current_by_profile
+            .insert(focused_id.to_string(), scope_current);
+    }
+    if focused_id.is_none() {
+        let managed_profile_ids = normalized_request
+            .catalog_drafts
+            .iter()
+            .filter(|draft| draft.mode == CatalogMode::OfficialPlusCustom)
+            .map(|draft| draft.profile_id.clone())
+            .collect::<Vec<_>>();
+        if !managed_profile_ids.is_empty() {
+            let scope_current = current_official_catalog_scope(paths, &persisted_state, false)?;
+            for profile_id in managed_profile_ids {
+                catalog_readiness
+                    .scope_current_by_profile
+                    .insert(profile_id, scope_current);
+            }
+        }
+    }
+    let mut plan = if focused_id.is_some() {
+        crate::provider_commit::validate_provider_detail_request(
+            &persisted_settings,
+            &persisted_state,
+            &normalized_request,
+        )
+        .map_err(|_| {
+            provider_commit_failure(
+                ProviderCommitErrorCode::InvalidDraft,
+                "normalized provider draft is invalid",
+            )
+        })?;
+        plan_provider_detail_commit_with_readiness(
+            &persisted_settings,
+            &persisted_state,
+            &normalized_request,
+            &catalog_readiness,
+        )
+        .map_err(|_| {
+            provider_commit_failure(
+                ProviderCommitErrorCode::CatalogUnavailable,
+                "normalized provider catalog planning failed",
+            )
+        })?
+    } else {
+        plan_provider_topology_commit_with_readiness(
+            &persisted_settings,
+            &persisted_state,
+            &normalized_request,
+            &catalog_readiness,
+        )
+        .map_err(|_| {
+            provider_commit_failure(
+                ProviderCommitErrorCode::CatalogUnavailable,
+                "normalized provider topology planning failed",
+            )
+        })?
+    };
+
+    // The master switch governs live writes, not whether a draft can be saved: the page states
+    // that a disabled switch still saves configuration and simply does not write Codex's live
+    // file, so a disabled switch commits as an inactive draft rather than refusing the save.
+    let active_commit = plan.settings.relay_profiles_enabled
+        && focused_id
+            .as_deref()
+            .is_some_and(|focused_id| plan.settings.active_relay_id == focused_id);
+    let mut mutations = materialize_provider_commit_catalogs(paths, &normalized_request, &plan)
+        .map_err(|_| {
+            provider_commit_failure(
+                ProviderCommitErrorCode::CatalogUnavailable,
+                "provider catalog materialization failed",
+            )
+        })?;
+    observe(ProviderCommitCheckpoint::CatalogMaterialization).map_err(|_| {
+        provider_commit_failure(
+            ProviderCommitErrorCode::CatalogUnavailable,
+            "provider catalog materialization failed",
+        )
+    })?;
+    let mut context_snapshot = None;
+
+    if active_commit {
+        let staged = observe(ProviderCommitCheckpoint::Staging)
+            .and_then(|()| {
+                stage_active_relay_config_at(&paths.codex_home, &paths.app_state, &plan.settings)
+            })
+            .map_err(|_| {
+                provider_commit_failure(
+                    ProviderCommitErrorCode::StagingRejected,
+                    "provider staging failed",
+                )
+            })?;
+        let active_profile = plan.settings.active_relay_profile();
+        let active_state = plan
+            .catalog_state
+            .profiles
+            .get(&active_profile.id)
+            .cloned()
+            .unwrap_or_default();
+        let inspection =
+            crate::provider_native_capability::inspect_profile(&active_profile, active_state.mode);
+        if inspection.state
+            == crate::provider_native_capability::NativeCapabilityState::NativePriority
+        {
+            assert_staged_native_provider_contract(&active_profile, &staged, active_state.mode)
+                .map_err(|_| {
+                    provider_commit_failure(
+                        ProviderCommitErrorCode::StagingRejected,
+                        "staged provider contract was rejected",
+                    )
+                })?;
+        }
+
+        let staged = match active_state.mode {
+            CatalogMode::NativeOfficial => {
+                crate::model_catalog::set_root_catalog_pointer(&staged, None).map_err(|_| {
+                    provider_commit_failure(
+                        ProviderCommitErrorCode::CatalogUnavailable,
+                        "provider catalog pointer is invalid",
+                    )
+                })?
+            }
+            CatalogMode::External => crate::model_catalog::set_root_catalog_pointer(
+                &staged,
+                active_state.external_pointer.as_deref(),
+            )
+            .map_err(|_| {
+                provider_commit_failure(
+                    ProviderCommitErrorCode::CatalogUnavailable,
+                    "external catalog pointer is invalid",
+                )
+            })?,
+            CatalogMode::OfficialPlusCustom | CatalogMode::CustomOnly => {
+                if active_state.action_required.is_some() || plan.active_catalog.is_none() {
+                    return Err(provider_commit_failure(
+                        ProviderCommitErrorCode::CatalogUnavailable,
+                        "active provider catalog is not ready",
+                    ));
+                }
+                let pointer = active_state.generated_path.as_deref().ok_or_else(|| {
+                    provider_commit_failure(
+                        ProviderCommitErrorCode::CatalogUnavailable,
+                        "active provider catalog pointer is missing",
+                    )
+                })?;
+                crate::model_catalog::set_root_catalog_pointer(&staged, Some(pointer)).map_err(
+                    |_| {
+                        provider_commit_failure(
+                            ProviderCommitErrorCode::CatalogUnavailable,
+                            "active provider catalog pointer is invalid",
+                        )
+                    },
+                )?
+            }
+        };
+        let (protected, snapshot) =
+            context_protected_config(&paths.codex_home, &staged).map_err(transaction_failure)?;
+        let active_state = plan
+            .catalog_state
+            .profiles
+            .entry(active_profile.id.clone())
+            .or_default();
+        // The runtime fingerprint is computed after catalog planning so it carries the final
+        // catalog artifact identity, and it never reads the catalog generation counter that its
+        // own update would otherwise perturb. Only a changed fingerprint marks a restart, so two
+        // identical consecutive active saves stay idempotent.
+        let runtime_fingerprint =
+            crate::model_catalog::applied_runtime_fingerprint(&active_profile, active_state)
+                .map_err(|_| {
+                    provider_commit_failure(
+                        ProviderCommitErrorCode::StagingRejected,
+                        "provider runtime identity is incomplete",
+                    )
+                })?;
+        if active_state.applied_runtime_fingerprint.as_deref() != Some(runtime_fingerprint.as_str())
+        {
+            active_state.applied_runtime_fingerprint = Some(runtime_fingerprint);
+            active_state.restart_required = true;
+        }
+        context_snapshot = Some(snapshot);
+        mutations.push(FileMutation::text(
+            paths.codex_home.join("config.toml"),
+            protected,
+        ));
+    }
+
+    mutations.push(FileMutation::bytes(
+        paths.settings_path.clone(),
+        serialize_settings_without_profile_auth(&plan.settings).map_err(transaction_failure)?,
+    ));
+    mutations.push(
+        crate::model_catalog::state_mutation_at(&plan.catalog_state, &paths.catalog_state_path)
+            .map_err(transaction_failure)?,
+    );
+
+    let settings_generation_matches = read_optional_bytes(&paths.settings_path)
+        .map_err(transaction_failure)?
+        .is_some_and(|current| current == persisted_settings_bytes);
+    if !settings_generation_matches {
+        return Err(provider_commit_failure(
+            ProviderCommitErrorCode::StaleState,
+            "provider settings changed during commit; reload or merge before saving",
+        ));
+    }
+
+    let live_config_path = paths.codex_home.join("config.toml");
+    let observe = std::cell::RefCell::new(&mut observe);
+    live_state::commit_locked_verified_at_observed(
+        &paths.app_state,
+        &mutations,
+        |path| {
+            if path == paths.settings_path {
+                observe.borrow_mut()(ProviderCommitCheckpoint::SettingsPersistence)?;
+            } else if path == live_config_path {
+                observe.borrow_mut()(ProviderCommitCheckpoint::LiveConfigCommit)?;
+            }
+            Ok(())
+        },
+        || {
+            if let Some(snapshot) = context_snapshot.as_ref() {
+                verify_context_tables(&paths.codex_home, snapshot)?;
+                observe.borrow_mut()(ProviderCommitCheckpoint::ContextVerification)?;
+            }
+            observe.borrow_mut()(ProviderCommitCheckpoint::AuthGenerationVerification)?;
+            anyhow::ensure!(
+                read_optional_bytes(&auth_path)? == auth_before,
+                "live auth changed concurrently"
+            );
+            Ok(())
+        },
+        || {
+            observe.borrow_mut()(ProviderCommitCheckpoint::PostCommitVerification)?;
+            Ok(())
+        },
+    )
+    .map_err(transaction_failure)?;
+
+    let restart_required = focused_id.as_deref().is_some_and(|focused_id| {
+        plan.catalog_state
+            .profiles
+            .get(focused_id)
+            .is_some_and(|state| state.restart_required)
+    });
+    let provider_fingerprint = crate::provider_commit::provider_owned_fingerprint(
+        &ProviderOwnedTopologyDraft::from_settings(&plan.settings),
+    )
+    .map_err(|_| {
+        provider_commit_failure(
+            ProviderCommitErrorCode::InvalidDraft,
+            "provider fingerprint generation failed",
+        )
+    })?;
+    Ok(ProviderCommitPayload {
+        settings: Some(sanitize_settings_for_output(plan.settings)),
+        draft_revision: plan.draft_revision,
+        provider_fingerprint,
+        restart_required,
+        error_code: None,
+        reason: None,
+    })
+}
+
+fn managed_provider_catalog_scope_current(
+    paths: &ProviderCommitPaths,
+    persisted_state: &crate::model_catalog::CatalogState,
+    normalized_settings: &BackendSettings,
+    focused_id: &str,
+    focused_mode: crate::model_catalog::CatalogMode,
+) -> Result<Option<bool>, ProviderCommitFailure> {
+    let active = normalized_settings.active_relay_id == focused_id;
+    if focused_mode != crate::model_catalog::CatalogMode::OfficialPlusCustom {
+        return Ok(None);
+    }
+
+    current_official_catalog_scope(paths, persisted_state, active).map(Some)
+}
+
+fn current_official_catalog_scope(
+    paths: &ProviderCommitPaths,
+    persisted_state: &crate::model_catalog::CatalogState,
+    active: bool,
+) -> Result<bool, ProviderCommitFailure> {
+    // The baseline ships with the application, so it is neither account-scoped nor tied to an
+    // installed CLI. What remains is the requirement the mixed contract actually has: the official
+    // client must be signed in, because inference still travels under that session.
+    let auth_path = paths.codex_home.join("auth.json");
+    match crate::model_catalog::current_activation_scope_hash_at(persisted_state, &auth_path) {
+        Ok(_) => Ok(true),
+        Err(_) if active => Err(provider_commit_failure(
+            ProviderCommitErrorCode::OfficialAuthRequired,
+            "official ChatGPT authentication is required",
+        )),
+        Err(_) => Ok(false),
+    }
+}
+
+fn load_provider_commit_settings(path: &Path) -> anyhow::Result<(Vec<u8>, BackendSettings)> {
+    let bytes =
+        std::fs::read(path).map_err(|_| anyhow::anyhow!("provider settings unavailable"))?;
+    let mut settings: BackendSettings = serde_json::from_slice(&bytes)
+        .map_err(|_| anyhow::anyhow!("provider settings are invalid"))?;
+    for profile in &mut settings.relay_profiles {
+        migrate_persisted_legacy_api_key_auth(profile)?;
+        codex_plus_core::relay_config::normalize_relay_profile_for_storage(profile)
+            .map_err(|_| anyhow::anyhow!("persisted provider profile is invalid"))?;
+        sanitize_profile_after_core_normalize_fallible(profile)?;
+    }
+    Ok((bytes, settings))
+}
+
+fn migrate_persisted_legacy_api_key_auth(profile: &mut RelayProfile) -> anyhow::Result<()> {
+    if profile.auth_contents.is_empty() {
+        return Ok(());
+    }
+    let value: serde_json::Value = serde_json::from_str(&profile.auth_contents)
+        .map_err(|_| anyhow::anyhow!("persisted provider auth copy is invalid"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("persisted provider auth copy is invalid"))?;
+    anyhow::ensure!(
+        object.len() == 1 && object.contains_key("OPENAI_API_KEY"),
+        "persisted provider auth copy is not API-key-only"
+    );
+    let legacy_key = object
+        .get("OPENAI_API_KEY")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("persisted provider API key is missing"))?;
+    anyhow::ensure!(
+        profile.relay_mode == codex_plus_core::settings::RelayMode::PureApi
+            || (profile.relay_mode == codex_plus_core::settings::RelayMode::Official
+                && profile.official_mix_api_key),
+        "persisted provider auth copy has no provider-key owner"
+    );
+    if !profile.api_key.trim().is_empty() {
+        anyhow::ensure!(
+            profile.api_key.as_bytes() == legacy_key.as_bytes(),
+            "persisted provider key conflict"
+        );
+    }
+    if let Some(bearer) = provider_bearer_token_from_config_exact(&profile.config_contents) {
+        anyhow::ensure!(
+            bearer.as_bytes() == legacy_key.as_bytes(),
+            "persisted provider bearer conflict"
+        );
+    }
+    profile.api_key = legacy_key.to_string();
+    profile.config_contents =
+        set_provider_config_bearer(&profile.config_contents, legacy_key, None)?;
+    profile.auth_contents.clear();
+    Ok(())
+}
+
+fn sanitized_provider_normalization_error(error: &anyhow::Error) -> &'static str {
+    let message = error.to_string();
+    for (needle, safe) in [
+        // The bail carries the contract reason variant name, so the specific gap is matched
+        // before the family fallback and the user learns which field to fix.
+        ("MissingModel", "provider model is required"),
+        ("MalformedModel", "provider model is malformed"),
+        ("MissingBaseUrl", "provider base URL is required"),
+        ("MalformedBaseUrl", "provider base URL is malformed"),
+        ("MissingProviderName", "provider name is required"),
+        ("ProviderNameMismatch", "provider name mismatch"),
+        ("MalformedProviderName", "provider name is malformed"),
+        ("MissingProviderBearer", "provider key is required"),
+        ("MalformedProviderBearer", "provider key is malformed"),
+        ("StructuredKeyBearerConflict", "provider key conflict"),
+        ("MissingWireApi", "provider wire API is required"),
+        ("WireApiMismatch", "provider wire API mismatch"),
+        (
+            "OpenAiAuthRequired",
+            "provider must not require official auth",
+        ),
+        ("MissingActorHeader", "provider actor header is required"),
+        (
+            "ActorHeaderNameMismatch",
+            "provider actor header name mismatch",
+        ),
+        (
+            "ActorHeaderValueConflict",
+            "provider actor header value conflict",
+        ),
+        (
+            "DuplicateActorHeader",
+            "provider actor header is duplicated",
+        ),
+        ("CatalogModeMismatch", "provider catalog mode mismatch"),
+        ("ReservedProviderId", "provider id is reserved"),
+        (
+            "LegacyProviderIdRequiresRename",
+            "legacy provider id requires rename",
+        ),
+        (
+            "SelectedProviderTableMissing",
+            "selected provider table is missing",
+        ),
+        (
+            "MalformedProviderTable",
+            "selected provider table is malformed",
+        ),
+        ("MissingProviderSelection", "provider selection is required"),
+        (
+            "native provider contract is invalid",
+            "provider native contract is incomplete",
+        ),
+        ("base URL conflict", "provider base URL conflict"),
+        ("model conflict", "provider model conflict"),
+        ("key conflict", "provider key conflict"),
+        ("TOML", "provider config TOML is invalid"),
+        ("authContents", "incoming authContents is prohibited"),
+    ] {
+        if message.contains(needle) {
+            return safe;
+        }
+    }
+    "provider draft normalization failed"
+}
+
+/// Decides compare-and-swap once, at the boundary, and returns the canonical baseline fingerprint.
+///
+/// Two persisted forms are equally legitimate evidence of "nothing changed underneath": the
+/// normalized baseline this transaction plans against, and the form the settings payload actually
+/// handed the editor, which is read without core storage normalization. They differ whenever a
+/// persisted profile is not already in core-canonical form — a legacy provider-ID alias, a table
+/// missing a default the normalizer supplies, a hand-edited file. Accepting only the normalized
+/// form strands such a profile: every save reports stale state, and reloading reads the same file
+/// and reports it again.
+fn validate_provider_commit_cas(
+    persisted_settings: &BackendSettings,
+    persisted_as_shown: &BackendSettings,
+    request: &crate::provider_commit::ProviderCommitRequest,
+) -> Result<String, ProviderCommitFailure> {
+    let fingerprint = |settings: &BackendSettings| {
+        crate::provider_commit::provider_owned_fingerprint(
+            &crate::provider_commit::ProviderOwnedTopologyDraft::from_settings(settings),
+        )
+        .map_err(|_| {
+            provider_commit_failure(
+                ProviderCommitErrorCode::InvalidDraft,
+                "provider fingerprint validation failed",
+            )
+        })
+    };
+    let expected = fingerprint(persisted_settings)?;
+    let accepted = request.expected_provider_fingerprint == expected
+        || request.expected_provider_fingerprint == fingerprint(persisted_as_shown)?;
+    if !accepted || request.previous_active_relay_id != persisted_settings.active_relay_id {
+        return Err(provider_commit_failure(
+            ProviderCommitErrorCode::StaleState,
+            "provider state changed; reload or merge before saving",
+        ));
+    }
+    Ok(expected)
+}
+
+fn validate_provider_commit_catalog_structure(
+    request: &crate::provider_commit::ProviderCommitRequest,
+) -> Result<(), ProviderCommitFailure> {
+    for draft in &request.catalog_drafts {
+        crate::model_catalog::validate_overlay(&draft.overlay).map_err(|_| {
+            provider_commit_failure(
+                ProviderCommitErrorCode::CatalogUnavailable,
+                "provider catalog structure is invalid",
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn validate_provider_topology_mutation_scope(
+    persisted_settings: &BackendSettings,
+    persisted_state: &crate::model_catalog::CatalogState,
+    request: &crate::provider_commit::ProviderCommitRequest,
+) -> Result<(), ProviderCommitFailure> {
+    use crate::provider_commit::ProviderOwnedTopologyDraft;
+
+    let invalid = || {
+        provider_commit_failure(
+            ProviderCommitErrorCode::InvalidDraft,
+            "provider topology contains detail-owned changes",
+        )
+    };
+    let persisted_raw = ProviderOwnedTopologyDraft::from_settings(persisted_settings);
+    let persisted_ui = ui_provider_topology_projection(
+        settings_snapshot_for_ui_projection(persisted_settings.clone()).map_err(|_| invalid())?,
+    )
+    .map_err(|_| invalid())?;
+    let profile_copy_signature = |profile: &crate::provider_commit::ProviderRelayProfileDraft| {
+        let mut profile = profile.clone();
+        profile.id.clear();
+        profile.name.clear();
+        serde_json::to_vec(&profile).map_err(|_| invalid())
+    };
+    let catalog_draft_matches_source = |draft: &crate::provider_commit::ProfileCatalogDraft,
+                                        source_id: &str| {
+        let prior = persisted_state
+            .profiles
+            .get(source_id)
+            .cloned()
+            .unwrap_or_default();
+        draft.mode == prior.mode
+            && draft.mode_explicit == prior.mode_explicit
+            && draft.upstream_topology == prior.upstream_topology
+            && draft.external_pointer == prior.external_pointer
+            && draft.overlay == prior.overlay
+    };
+    let validate_against = |persisted: &ProviderOwnedTopologyDraft| {
+        if request.topology.active_relay_id != persisted.active_relay_id
+            || request.topology.active_aggregate_relay_id != persisted.active_aggregate_relay_id
+            || request.topology.relay_base_url != persisted.relay_base_url
+            || request.topology.relay_api_key != persisted.relay_api_key
+            || request.topology.relay_common_config_contents
+                != persisted.relay_common_config_contents
+            || request.topology.relay_context_config_contents
+                != persisted.relay_context_config_contents
+        {
+            return Err(invalid());
+        }
+
+        let mut copied_from = std::collections::HashMap::<String, String>::new();
+        for profile in &request.topology.relay_profiles {
+            let prior = persisted
+                .relay_profiles
+                .iter()
+                .find(|prior| prior.id == profile.id);
+            match prior {
+                Some(prior) => {
+                    let prior = serde_json::to_vec(prior).map_err(|_| invalid())?;
+                    let incoming = serde_json::to_vec(profile).map_err(|_| invalid())?;
+                    if incoming != prior {
+                        return Err(invalid());
+                    }
+                }
+                None => {
+                    let signature = profile_copy_signature(profile)?;
+                    let copy_draft = request
+                        .catalog_drafts
+                        .iter()
+                        .find(|draft| draft.profile_id == profile.id);
+                    let source = persisted
+                        .relay_profiles
+                        .iter()
+                        .find(|prior| {
+                            profile_copy_signature(prior)
+                                .map(|prior| prior == signature)
+                                .unwrap_or(false)
+                                && copy_draft.is_none_or(|draft| {
+                                    catalog_draft_matches_source(draft, &prior.id)
+                                })
+                        })
+                        .ok_or_else(invalid)?;
+                    copied_from.insert(profile.id.clone(), source.id.clone());
+                }
+            }
+        }
+
+        let retained_profile_ids = request
+            .topology
+            .relay_profiles
+            .iter()
+            .map(|profile| profile.id.as_str())
+            .collect::<HashSet<_>>();
+        for aggregate in &request.topology.aggregate_relay_profiles {
+            let prior = persisted
+                .aggregate_relay_profiles
+                .iter()
+                .find(|prior| prior.id == aggregate.id);
+            match prior {
+                Some(prior) => {
+                    let expected_members = prior
+                        .members
+                        .iter()
+                        .filter(|member| retained_profile_ids.contains(member.relay_id.as_str()))
+                        .collect::<Vec<_>>();
+                    if aggregate.name != prior.name
+                        || aggregate.strategy != prior.strategy
+                        || serde_json::to_vec(&aggregate.members).map_err(|_| invalid())?
+                            != serde_json::to_vec(&expected_members).map_err(|_| invalid())?
+                    {
+                        return Err(invalid());
+                    }
+                }
+                None => {
+                    let source_id = copied_from.get(&aggregate.id).ok_or_else(invalid)?;
+                    let source = persisted
+                        .aggregate_relay_profiles
+                        .iter()
+                        .find(|prior| prior.id == *source_id)
+                        .ok_or_else(invalid)?;
+                    if aggregate.strategy != source.strategy
+                        || serde_json::to_vec(&aggregate.members).map_err(|_| invalid())?
+                            != serde_json::to_vec(&source.members).map_err(|_| invalid())?
+                    {
+                        return Err(invalid());
+                    }
+                }
+            }
+        }
+
+        for draft in &request.catalog_drafts {
+            if !persisted
+                .relay_profiles
+                .iter()
+                .any(|profile| profile.id == draft.profile_id)
+            {
+                let source_id = copied_from.get(&draft.profile_id).ok_or_else(invalid)?;
+                if !catalog_draft_matches_source(draft, source_id) {
+                    return Err(invalid());
+                }
+                continue;
+            }
+            let prior = persisted_state
+                .profiles
+                .get(&draft.profile_id)
+                .cloned()
+                .unwrap_or_default();
+            if draft.mode != prior.mode
+                || draft.mode_explicit != prior.mode_explicit
+                || draft.upstream_topology != prior.upstream_topology
+                || draft.external_pointer != prior.external_pointer
+                || draft.overlay != prior.overlay
+            {
+                return Err(invalid());
+            }
+        }
+        Ok(())
+    };
+
+    validate_against(&persisted_raw).or_else(|_| validate_against(&persisted_ui))
+}
+
+fn normalize_provider_topology_settings_fallible(
+    mut settings: BackendSettings,
+    request: &crate::provider_commit::ProviderCommitRequest,
+    persisted_state: &crate::model_catalog::CatalogState,
+) -> anyhow::Result<BackendSettings> {
+    use crate::model_catalog::CatalogMode;
+
+    settings.relay_common_config_contents.clear();
+    settings.relay_context_config_contents.clear();
+    for profile in &mut settings.relay_profiles {
+        anyhow::ensure!(
+            profile.auth_contents.is_empty(),
+            "incoming authContents is prohibited"
+        );
+        let mode = request
+            .catalog_drafts
+            .iter()
+            .find(|draft| draft.profile_id == profile.id)
+            .map(|draft| draft.mode)
+            .or_else(|| {
+                persisted_state
+                    .profiles
+                    .get(&profile.id)
+                    .map(|state| state.mode)
+            })
+            .unwrap_or(CatalogMode::NativeOfficial);
+        if profile.relay_mode != codex_plus_core::settings::RelayMode::Aggregate {
+            reconcile_provider_detail_raw_fields(profile)?;
+            validate_provider_detail_contract(profile, mode)?;
+        }
+        codex_plus_core::relay_config::normalize_relay_profile_for_storage(profile)
+            .map_err(|_| anyhow::anyhow!("provider profile normalization failed"))?;
+        sanitize_profile_after_core_normalize_fallible(profile)?;
+        profile.config_contents = retain_provider_owned_profile_config(&profile.config_contents)
+            .map_err(|_| anyhow::anyhow!("provider config ownership normalization failed"))?;
+        if profile.relay_mode != codex_plus_core::settings::RelayMode::Aggregate {
+            validate_provider_detail_contract(profile, mode)?;
+        }
+    }
+    Ok(settings)
+}
+
+fn normalize_provider_detail_settings_fallible(
+    mut settings: BackendSettings,
+    persisted_as_shown: &BackendSettings,
+    focused_id: &str,
+    focused_mode: crate::model_catalog::CatalogMode,
+    confirm_context_cleanup: bool,
+) -> anyhow::Result<BackendSettings> {
+    let focused = settings
+        .relay_profiles
+        .iter_mut()
+        .find(|profile| profile.id == focused_id)
+        .ok_or_else(|| anyhow::anyhow!("focused provider profile is missing"))?;
+    reconcile_provider_detail_raw_fields(focused)?;
+    validate_provider_detail_contract(focused, focused_mode)?;
+    if crate::model_catalog::managed_mode(focused_mode) {
+        let conflicts = crate::model_catalog::global_context_conflicts(&focused.config_contents);
+        let structured_conflict = !focused.context_window.trim().is_empty()
+            || !focused.auto_compact_limit.trim().is_empty();
+        if structured_conflict || !conflicts.is_empty() {
+            anyhow::ensure!(
+                confirm_context_cleanup,
+                "managed catalog context cleanup confirmation is required"
+            );
+            focused.config_contents =
+                crate::model_catalog::remove_global_context_keys(&focused.config_contents)?;
+            focused.context_window.clear();
+            focused.auto_compact_limit.clear();
+        }
+    }
+
+    // Provider-detail commits do not own a stored copy of live common/context configuration.
+    settings.relay_common_config_contents.clear();
+    settings.relay_context_config_contents.clear();
+    for profile in &mut settings.relay_profiles {
+        anyhow::ensure!(
+            profile.auth_contents.is_empty(),
+            "incoming authContents is prohibited"
+        );
+        if profile.id != focused_id {
+            // A detail commit owns exactly one profile. Every other profile keeps the contract
+            // it was persisted with: core storage normalization rewrites a legacy provider-ID
+            // alias to its own identity, drops the actor header along with the table it
+            // replaces, and restores `requires_openai_auth = true`. Running it here would
+            // migrate profiles the user never opened, as a side effect of saving another one.
+            if let Some(prior) = persisted_as_shown
+                .relay_profiles
+                .iter()
+                .find(|prior| prior.id == profile.id)
+            {
+                *profile = prior.clone();
+                profile.auth_contents.clear();
+            }
+            continue;
+        }
+        codex_plus_core::relay_config::normalize_relay_profile_for_storage(profile)
+            .map_err(|_| anyhow::anyhow!("provider profile normalization failed"))?;
+        sanitize_profile_after_core_normalize_fallible(profile)?;
+        profile.config_contents = retain_provider_owned_profile_config(&profile.config_contents)
+            .map_err(|_| anyhow::anyhow!("provider config ownership normalization failed"))?;
+    }
+    let focused = settings
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == focused_id)
+        .ok_or_else(|| anyhow::anyhow!("focused provider profile is missing"))?;
+    validate_provider_detail_contract(focused, focused_mode)?;
+    Ok(settings)
+}
+
+fn reconcile_provider_detail_raw_fields(profile: &mut RelayProfile) -> anyhow::Result<()> {
+    let document = profile
+        .config_contents
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|_| anyhow::anyhow!("provider config TOML is invalid"))?;
+
+    if let Some(raw_model) = document.get("model") {
+        let raw_model = raw_model
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("provider model is malformed"))?;
+        reconcile_provider_string(&mut profile.model, raw_model, "provider model conflict")?;
+    }
+
+    let Some(provider_id_item) = document.get("model_provider") else {
+        return Ok(());
+    };
+    let provider_id = provider_id_item
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("provider selection is invalid"))?;
+    anyhow::ensure!(
+        provider_id != "openai",
+        "reserved provider selection is invalid"
+    );
+    let provider = document
+        .get("model_providers")
+        .and_then(toml_edit::Item::as_table_like)
+        .and_then(|providers| providers.get(provider_id))
+        .and_then(toml_edit::Item::as_table_like)
+        .ok_or_else(|| anyhow::anyhow!("selected provider table is invalid"))?;
+
+    if let Some(raw_base_url) = provider.get("base_url") {
+        let raw_base_url = raw_base_url
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("provider base URL is malformed"))?;
+        reconcile_provider_string(
+            &mut profile.base_url,
+            raw_base_url,
+            "provider base URL conflict",
+        )?;
+        if profile.upstream_base_url.trim().is_empty() {
+            profile.upstream_base_url = profile.base_url.clone();
+        }
+    }
+    if let Some(raw_key) = provider.get("experimental_bearer_token") {
+        let raw_key = raw_key
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("provider bearer is malformed"))?;
+        reconcile_provider_string(&mut profile.api_key, raw_key, "provider key conflict")?;
+    }
+    Ok(())
+}
+
+fn reconcile_provider_string(
+    structured: &mut String,
+    raw: &str,
+    conflict: &'static str,
+) -> anyhow::Result<()> {
+    if structured.trim().is_empty() {
+        *structured = raw.to_string();
+    } else {
+        anyhow::ensure!(structured.as_bytes() == raw.as_bytes(), conflict);
+    }
+    Ok(())
+}
+
+fn sanitize_profile_after_core_normalize_fallible(
+    profile: &mut RelayProfile,
+) -> anyhow::Result<()> {
+    if profile.relay_mode == codex_plus_core::settings::RelayMode::PureApi {
+        let api_key = profile_api_key_from_auth(&profile.auth_contents)
+            .or_else(|| provider_bearer_token_from_config(&profile.config_contents))
+            .or_else(|| (!profile.api_key.trim().is_empty()).then(|| profile.api_key.clone()))
+            .ok_or_else(|| anyhow::anyhow!("pure API provider key is missing"))?;
+        profile.config_contents =
+            set_provider_config_bearer(&profile.config_contents, &api_key, Some(false))
+                .map_err(|_| anyhow::anyhow!("pure API provider projection failed"))?;
+        profile.api_key = api_key;
+    }
+    profile.auth_contents.clear();
+    Ok(())
+}
+
+fn validate_provider_detail_contract(
+    profile: &RelayProfile,
+    catalog_mode: crate::model_catalog::CatalogMode,
+) -> anyhow::Result<()> {
+    use crate::provider_native_capability::NativeCapabilityState;
+
+    let inspection = crate::provider_native_capability::inspect_profile(profile, catalog_mode);
+    // A degraded contract is refused only for gaps that make the draft unusable. A provider is
+    // edited toward the target contract in steps, so a half-repaired draft must stay savable;
+    // refusing it strands the profile, because the fields that complete the contract can only be
+    // persisted by a save.
+    if let Some(blocking) = inspection
+        .fields
+        .iter()
+        .filter(|field| {
+            field.outcome != crate::provider_native_capability::NativeCapabilityOutcome::Satisfied
+        })
+        .map(|field| field.reason)
+        .find(|reason| crate::provider_native_capability::reason_blocks_save(*reason))
+    {
+        anyhow::bail!("native provider contract is invalid: {blocking:?}");
+    }
+    if inspection.state != NativeCapabilityState::NativePriority {
+        return Ok(());
+    }
+    let document = profile
+        .config_contents
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|_| anyhow::anyhow!("provider config TOML is invalid"))?;
+    let provider_id = document
+        .get("model_provider")
+        .and_then(toml_edit::Item::as_str)
+        .ok_or_else(|| anyhow::anyhow!("provider selection is invalid"))?;
+    let provider = document
+        .get("model_providers")
+        .and_then(toml_edit::Item::as_table_like)
+        .and_then(|providers| providers.get(provider_id))
+        .and_then(toml_edit::Item::as_table_like)
+        .ok_or_else(|| anyhow::anyhow!("selected provider table is invalid"))?;
+    let raw_base_url = provider
+        .get("base_url")
+        .and_then(toml_edit::Item::as_str)
+        .ok_or_else(|| anyhow::anyhow!("provider base URL is missing"))?;
+    anyhow::ensure!(
+        profile.base_url.trim() == raw_base_url.trim(),
+        "provider base URL conflict"
+    );
+    let raw_model = document
+        .get("model")
+        .and_then(toml_edit::Item::as_str)
+        .ok_or_else(|| anyhow::anyhow!("provider model is missing"))?;
+    anyhow::ensure!(
+        profile.model.trim() == raw_model.trim(),
+        "provider model conflict"
+    );
+    let raw_key = provider
+        .get("experimental_bearer_token")
+        .and_then(toml_edit::Item::as_str)
+        .ok_or_else(|| anyhow::anyhow!("provider bearer is missing"))?;
+    anyhow::ensure!(
+        profile.api_key.trim() == raw_key.trim(),
+        "provider key conflict"
+    );
+    Ok(())
+}
+
+pub fn assert_staged_native_provider_contract(
+    profile: &RelayProfile,
+    staged_config: &str,
+    catalog_mode: crate::model_catalog::CatalogMode,
+) -> anyhow::Result<()> {
+    let mut staged_profile = profile.clone();
+    staged_profile.config_contents = staged_config.to_string();
+    let inspection =
+        crate::provider_native_capability::inspect_profile(&staged_profile, catalog_mode);
+    anyhow::ensure!(
+        inspection.state
+            == crate::provider_native_capability::NativeCapabilityState::NativePriority,
+        "staged native provider contract failed canonical assertion"
+    );
+    validate_provider_detail_contract(&staged_profile, catalog_mode)
+        .context("staged provider validation failed")
+}
+
+fn materialize_provider_commit_catalogs(
+    paths: &ProviderCommitPaths,
+    request: &crate::provider_commit::ProviderCommitRequest,
+    plan: &crate::provider_commit::ProviderCommitPlan,
+) -> anyhow::Result<Vec<FileMutation>> {
+    use crate::model_catalog::CatalogMode;
+
+    let mut mutations = Vec::new();
+    for draft in &request.catalog_drafts {
+        if !matches!(
+            draft.mode,
+            CatalogMode::OfficialPlusCustom | CatalogMode::CustomOnly
+        ) {
+            continue;
+        }
+        let profile_state = plan
+            .catalog_state
+            .profiles
+            .get(&draft.profile_id)
+            .ok_or_else(|| anyhow::anyhow!("planned catalog state is missing"))?;
+        if profile_state.action_required.is_some() {
+            continue;
+        }
+        let profile = plan
+            .settings
+            .relay_profiles
+            .iter()
+            .find(|profile| profile.id == draft.profile_id)
+            .ok_or_else(|| anyhow::anyhow!("planned catalog profile is missing"))?;
+        let catalog = crate::model_catalog::compose_profile_catalog(
+            &plan.catalog_state,
+            profile,
+            profile_state,
+        )
+        .map_err(|_| anyhow::anyhow!("provider catalog composition failed"))?;
+        crate::model_catalog::validate_catalog_structure(&catalog)
+            .map_err(|_| anyhow::anyhow!("provider catalog structure is invalid"))?;
+        let bytes = serde_json::to_vec_pretty(&catalog)?;
+        let expected_hash = format!("{:x}", Sha256::digest(&bytes));
+        anyhow::ensure!(
+            profile_state.generated_hash.as_deref() == Some(expected_hash.as_str()),
+            "planned provider catalog hash is inconsistent"
+        );
+        let relative = profile_state
+            .generated_path
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("planned provider catalog path is missing"))?;
+        let path = paths.codex_home.join(relative);
+        if read_optional_bytes(&path)?.as_deref() != Some(bytes.as_slice()) {
+            mutations.push(FileMutation::bytes(path, bytes));
+        }
+    }
+    Ok(mutations)
 }
 
 #[tauri::command]
@@ -1909,6 +3616,7 @@ fn switch_relay_profile_blocking(
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let previous_provider = current_effective_provider_from_home(&home);
     let previous_active_relay_id = request.previous_active_relay_id;
+    let confirm_context_cleanup = request.confirm_context_cleanup;
     let target_relay_id = request.settings.active_relay_id.clone();
     log_manager_event(
         "manager.switch_relay_profile.start",
@@ -1917,7 +3625,11 @@ fn switch_relay_profile_blocking(
             "targetRelayId": target_relay_id
         }),
     );
-    match commit_relay_profile_transaction(request.settings, &previous_active_relay_id) {
+    match commit_relay_profile_transaction(
+        request.settings,
+        &previous_active_relay_id,
+        confirm_context_cleanup,
+    ) {
         Ok(settings) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
             let current_provider = current_effective_provider_from_home(&home);
@@ -1964,6 +3676,7 @@ fn switch_relay_profile_blocking(
 fn commit_relay_profile_transaction(
     mut settings: BackendSettings,
     previous_active_relay_id: &str,
+    confirm_context_cleanup: bool,
 ) -> anyhow::Result<BackendSettings> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let _guard = live_state::lock()?;
@@ -1979,13 +3692,22 @@ fn commit_relay_profile_transaction(
         backfill_profile_config_only(&home, &mut settings, previous_active_relay_id)?;
     }
     settings = normalize_settings_before_save(settings);
+    crate::model_catalog::prepare_active_profile_context_settings(
+        &mut settings,
+        confirm_context_cleanup,
+    )?;
     anyhow::ensure!(
         settings.relay_profiles_enabled,
         "供应商配置总开关已关闭，未写入 live 配置"
     );
 
     let candidate = stage_active_relay_config(&home, &settings)?;
-    let catalog_plan = crate::model_catalog::plan_active_profile(&home, &settings, &candidate)?;
+    let catalog_plan = crate::model_catalog::plan_active_profile(
+        &home,
+        &settings,
+        &candidate,
+        confirm_context_cleanup,
+    )?;
     let (protected_config, context_snapshot) =
         context_protected_config(&home, &catalog_plan.config_contents)?;
     let settings_bytes = serialize_settings_without_profile_auth(&settings)?;
@@ -2028,12 +3750,39 @@ fn backfill_profile_config_only(
 }
 
 fn stage_active_relay_config(home: &Path, settings: &BackendSettings) -> anyhow::Result<String> {
+    stage_active_relay_config_at(
+        home,
+        &codex_plus_core::paths::default_app_state_dir(),
+        settings,
+    )
+}
+
+fn stage_active_relay_config_at(
+    home: &Path,
+    app_state: &Path,
+    settings: &BackendSettings,
+) -> anyhow::Result<String> {
     let profile = settings.active_relay_profile();
     anyhow::ensure!(
         profile.relay_mode != codex_plus_core::settings::RelayMode::Aggregate,
         "聚合供应商依赖已移除的本地代理，不能写入 live 配置"
     );
-    with_private_staging_home("provider", |stage_home| {
+    // The provider Codex is currently pointed at. Exiting to pure OAuth deletes that provider, and
+    // the core clear only knows to delete its own relay identifiers — a provider staged under any
+    // other id would keep its whole table, `experimental_bearer_token` included, in the live file
+    // the user was told it had been removed from.
+    let live_provider_id = read_optional_bytes(&home.join("config.toml"))?
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .and_then(|config| config.parse::<toml_edit::DocumentMut>().ok())
+        .and_then(|document| {
+            document
+                .get("model_provider")
+                .and_then(toml_edit::Item::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        });
+    with_private_staging_home_at(app_state, "provider", |stage_home| {
         seed_staging_config(home, stage_home)?;
         if profile.relay_mode == codex_plus_core::settings::RelayMode::Official
             && !profile.official_mix_api_key
@@ -2056,7 +3805,7 @@ fn stage_active_relay_config(home: &Path, settings: &BackendSettings) -> anyhow:
                 projection.official_mix_api_key = true;
                 projection.api_key = api_key.clone();
                 projection.config_contents =
-                    set_provider_config_bearer(&projection.config_contents, &api_key, false)?;
+                    set_provider_config_bearer(&projection.config_contents, &api_key, Some(false))?;
             }
             codex_plus_core::relay_config::apply_relay_profile_config_to_home_with_context(
                 stage_home,
@@ -2072,10 +3821,35 @@ fn stage_active_relay_config(home: &Path, settings: &BackendSettings) -> anyhow:
         if profile.relay_mode == codex_plus_core::settings::RelayMode::PureApi {
             let api_key = provider_bearer_token_from_config(&config)
                 .context("纯 API staged 配置缺少 provider bearer token")?;
-            config = set_provider_config_bearer(&config, &api_key, false)?;
+            config = set_provider_config_bearer(&config, &api_key, Some(false))?;
+        }
+        if profile.relay_mode == codex_plus_core::settings::RelayMode::Official
+            && !profile.official_mix_api_key
+            && let Some(removed) = live_provider_id.as_deref()
+        {
+            config = remove_live_provider_table(&config, removed)?;
         }
         Ok(config)
     })
+}
+
+/// Removes one provider table from a staged live configuration, leaving everything else intact.
+///
+/// Used only where the user explicitly confirmed deleting that provider. An empty
+/// `model_providers` container is removed with it so the exit does not leave a husk behind.
+fn remove_live_provider_table(config: &str, provider_id: &str) -> anyhow::Result<String> {
+    let mut document: toml_edit::DocumentMut = config.parse()?;
+    let Some(providers) = document
+        .get_mut("model_providers")
+        .and_then(toml_edit::Item::as_table_like_mut)
+    else {
+        return Ok(config.to_string());
+    };
+    providers.remove(provider_id);
+    if providers.is_empty() {
+        document.as_table_mut().remove("model_providers");
+    }
+    Ok(document.to_string())
 }
 
 fn seed_staging_config(live_home: &Path, stage_home: &Path) -> anyhow::Result<()> {
@@ -2090,11 +3864,19 @@ fn with_private_staging_home<T>(
     label: &str,
     run: impl FnOnce(&Path) -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
+    with_private_staging_home_at(&codex_plus_core::paths::default_app_state_dir(), label, run)
+}
+
+fn with_private_staging_home_at<T>(
+    app_state: &Path,
+    label: &str,
+    run: impl FnOnce(&Path) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let root = codex_plus_core::paths::default_app_state_dir().join("private-staging");
+    let root = app_state.join("private-staging");
     live_state::ensure_owner_only_dir(&root)?;
     let stage_home = root.join(format!("{label}-{}-{nonce}", std::process::id()));
     live_state::ensure_owner_only_dir(&stage_home)?;
@@ -2117,8 +3899,13 @@ fn read_optional_bytes(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
 
 #[tauri::command]
 pub fn write_diagnostic_event(event: String, detail: Value) -> CommandResult<Value> {
-    let event = sanitize_manager_event(&event);
-    match codex_plus_core::diagnostic_log::append_diagnostic_log(&event, detail) {
+    let event = sanitize_ui_manager_event(&event);
+    let detail = if event == "manager.ui.event" {
+        json!({})
+    } else {
+        detail
+    };
+    match append_manager_diagnostic(&event, detail) {
         Ok(()) => ok("诊断日志已写入。", json!({})),
         Err(error) => failed(&format!("写入诊断日志失败：{error}"), json!({})),
     }
@@ -2214,11 +4001,29 @@ struct RelayProfileCompatibilityTestResult {
     initial_http_status: Option<u16>,
 }
 
+/// Awaits a provider-facing request, failing instead of waiting on a stalled upstream forever.
+async fn bounded_probe<T>(
+    task: impl std::future::Future<Output = anyhow::Result<T>>,
+    what: &str,
+) -> anyhow::Result<T> {
+    match tokio::time::timeout(PROVIDER_PROBE_TIMEOUT, task).await {
+        Ok(result) => result,
+        Err(_) => anyhow::bail!(
+            "{what}超时（{} 秒内没有响应）",
+            PROVIDER_PROBE_TIMEOUT.as_secs()
+        ),
+    }
+}
+
 async fn test_relay_profile_with_compatibility(
     profile: &RelayProfile,
     model: &str,
 ) -> anyhow::Result<RelayProfileCompatibilityTestResult> {
-    let initial = codex_plus_core::relay_config::test_relay_profile(profile, model).await?;
+    let initial = bounded_probe(
+        codex_plus_core::relay_config::test_relay_profile(profile, model),
+        "供应商测试请求",
+    )
+    .await?;
     if !responses_output_limit_fallback_allowed(
         profile.protocol,
         initial.http_status,
@@ -2245,6 +4050,7 @@ async fn test_relay_profile_with_compatibility(
         .bearer_auth(api_key.trim())
         .header("content-type", "application/json")
         .body(payload.to_string())
+        .timeout(PROVIDER_PROBE_TIMEOUT)
         .send()
         .await?;
     let http_status = response.status().as_u16();
@@ -2309,12 +4115,129 @@ fn compatibility_fallback_note(used: bool) -> &'static str {
     }
 }
 
+fn collect_sensitive_json_strings(value: &Value, values: &mut Vec<String>) {
+    match value {
+        Value::String(value) if !value.trim().is_empty() => values.push(value.clone()),
+        Value::Array(items) => {
+            for item in items {
+                collect_sensitive_json_strings(item, values);
+            }
+        }
+        Value::Object(object) => {
+            for value in object.values() {
+                collect_sensitive_json_strings(value, values);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn provider_sensitive_values(profile: &RelayProfile) -> Vec<String> {
+    let mut values = [
+        codex_plus_core::relay_config::relay_profile_api_key(profile),
+        codex_plus_core::relay_config::relay_profile_base_url(profile),
+        profile.upstream_base_url.clone(),
+        provider_bearer_token_from_config(&profile.config_contents).unwrap_or_default(),
+        profile.auth_contents.clone(),
+    ]
+    .into_iter()
+    .filter(|value| !value.trim().is_empty())
+    .collect::<Vec<_>>();
+    if let Ok(auth) = serde_json::from_str::<Value>(&profile.auth_contents) {
+        collect_sensitive_json_strings(&auth, &mut values);
+    }
+    values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+    values.dedup();
+    values
+}
+
+fn redact_provider_surface_text(profile: &RelayProfile, text: &str) -> String {
+    provider_sensitive_values(profile)
+        .into_iter()
+        .fold(text.to_string(), |redacted, secret| {
+            redacted.replace(&secret, "[REDACTED]")
+        })
+}
+
+fn sanitize_provider_test_result(
+    profile: &RelayProfile,
+    mut result: CommandResult<RelayProfileTestPayload>,
+) -> CommandResult<RelayProfileTestPayload> {
+    result.message = format!(
+        "供应商测试完成，HTTP {}。{}",
+        result.payload.http_status,
+        compatibility_fallback_note(result.payload.compatibility_fallback_used)
+    );
+    result.payload.endpoint = redact_provider_surface_text(profile, &result.payload.endpoint);
+    result.payload.response_preview.clear();
+    result
+}
+
+fn sanitize_provider_models_result(
+    profile: &RelayProfile,
+    mut result: CommandResult<RelayProfileModelsPayload>,
+) -> CommandResult<RelayProfileModelsPayload> {
+    result.message = redact_provider_surface_text(profile, &result.message);
+    result.payload.endpoint = redact_provider_surface_text(profile, &result.payload.endpoint);
+    result.payload.models = sanitize_provider_model_ids(profile, result.payload.models);
+    result
+}
+
+fn sanitize_provider_model_ids(profile: &RelayProfile, models: Vec<String>) -> Vec<String> {
+    let sensitive = provider_sensitive_values(profile);
+    models
+        .into_iter()
+        .filter(|model| {
+            let model = model.trim();
+            !model.is_empty()
+                && model.len() <= 200
+                && model.is_ascii()
+                && !model.contains('@')
+                && !model.contains('\\')
+                && !model.to_ascii_lowercase().starts_with("http://")
+                && !model.to_ascii_lowercase().starts_with("https://")
+                && model.chars().all(|ch| {
+                    ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/' | ':')
+                })
+                && !sensitive
+                    .iter()
+                    .any(|secret| !secret.trim().is_empty() && model.contains(secret))
+        })
+        .collect()
+}
+
+pub(crate) fn sanitize_provider_doctor_result(
+    profile: &RelayProfile,
+    mut result: CommandResult<ProviderDoctorPayload>,
+) -> CommandResult<ProviderDoctorPayload> {
+    result.message = redact_provider_surface_text(profile, &result.message);
+    result.payload.profile_name =
+        redact_provider_surface_text(profile, &result.payload.profile_name);
+    result.payload.model = redact_provider_surface_text(profile, &result.payload.model);
+    result.payload.summary = redact_provider_surface_text(profile, &result.payload.summary);
+    result.payload.recommendation =
+        redact_provider_surface_text(profile, &result.payload.recommendation);
+    for check in &mut result.payload.checks {
+        check.title = redact_provider_surface_text(profile, &check.title);
+        check.detail = if check.id == "request" {
+            format!(
+                "上游请求状态：{}。{}",
+                check.status,
+                compatibility_fallback_note(result.payload.compatibility_fallback_used)
+            )
+        } else {
+            redact_provider_surface_text(profile, &check.detail)
+        };
+    }
+    result
+}
+
 #[tauri::command]
 pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayProfileTestPayload> {
     let profile_name = if profile.name.trim().is_empty() {
-        "未命名供应商"
+        "未命名供应商".to_string()
     } else {
-        profile.name.trim()
+        profile.name.trim().to_string()
     };
     let settings = SettingsStore::default().load().unwrap_or_default();
     let test_model: String = if !profile.test_model.trim().is_empty() {
@@ -2330,7 +4253,7 @@ pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayPro
             from_profile
         }
     };
-    match test_relay_profile_with_compatibility(&profile, &test_model).await {
+    let result = match test_relay_profile_with_compatibility(&profile, &test_model).await {
         Ok(result) => {
             let status = if result.http_status < 400 {
                 "ok"
@@ -2369,7 +4292,8 @@ pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayPro
                 initial_http_status: None,
             },
         ),
-    }
+    };
+    sanitize_provider_test_result(&profile, result)
 }
 
 #[tauri::command]
@@ -2377,24 +4301,40 @@ pub async fn fetch_relay_profile_models(
     profile: RelayProfile,
 ) -> CommandResult<RelayProfileModelsPayload> {
     let profile_name = if profile.name.trim().is_empty() {
-        "未命名供应商"
+        "未命名供应商".to_string()
     } else {
-        profile.name.trim()
+        profile.name.trim().to_string()
     };
-    match codex_plus_core::model_catalog::fetch_relay_profile_model_ids(&profile).await {
+    let result = match bounded_probe(
+        codex_plus_core::model_catalog::fetch_relay_profile_model_ids(&profile),
+        "获取模型列表",
+    )
+    .await
+    {
         Ok((models, endpoint)) => {
-            if let Err(error) =
-                crate::model_catalog::record_provider_evidence(&profile.id, &endpoint, &models)
-            {
-                return failed(
-                    &format!("模型已获取，但供应商证据保存失败：{error}"),
+            let models = sanitize_provider_model_ids(&profile, models);
+            // Recording evidence takes the coordinator lock and writes owner-only files. Running
+            // that on an async worker blocks the whole runtime thread, so a later save waits on a
+            // lock held by a task that cannot yield.
+            let recorded = {
+                let profile_id = profile.id.clone();
+                let endpoint = endpoint.clone();
+                let models = models.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    crate::model_catalog::record_provider_evidence(&profile_id, &endpoint, &models)
+                })
+                .await
+            };
+            match recorded {
+                Ok(Ok(())) => ok(
+                    &format!("已从「{profile_name}」获取 {} 个模型。", models.len()),
                     RelayProfileModelsPayload { models, endpoint },
-                );
+                ),
+                Ok(Err(_)) | Err(_) => failed(
+                    "模型已获取，但供应商证据保存失败。",
+                    RelayProfileModelsPayload { models, endpoint },
+                ),
             }
-            ok(
-                &format!("已从「{profile_name}」获取 {} 个模型。", models.len()),
-                RelayProfileModelsPayload { models, endpoint },
-            )
         }
         Err(error) => failed(
             &format!("从「{profile_name}」获取模型失败：{error}"),
@@ -2403,7 +4343,8 @@ pub async fn fetch_relay_profile_models(
                 endpoint: String::new(),
             },
         ),
-    }
+    };
+    sanitize_provider_models_result(&profile, result)
 }
 
 #[tauri::command]
@@ -2443,8 +4384,12 @@ pub async fn diagnose_relay_profile(profile: RelayProfile) -> CommandResult<Prov
             checks,
             compatibility_fallback_used: false,
             initial_http_status: None,
+            request_http_status: None,
         };
-        return ok("Provider Doctor：官方登录供应商无需 API 诊断。", payload);
+        return sanitize_provider_doctor_result(
+            &profile,
+            ok("Provider Doctor：官方登录供应商无需 API 诊断。", payload),
+        );
     }
 
     if codex_plus_core::relay_config::relay_profile_base_url(&profile)
@@ -2469,8 +4414,12 @@ pub async fn diagnose_relay_profile(profile: RelayProfile) -> CommandResult<Prov
             checks,
             compatibility_fallback_used: false,
             initial_http_status: None,
+            request_http_status: None,
         };
-        return failed("Provider Doctor：配置不完整。", payload);
+        return sanitize_provider_doctor_result(
+            &profile,
+            failed("Provider Doctor：配置不完整。", payload),
+        );
     }
 
     checks.push(ProviderDoctorCheck {
@@ -2487,7 +4436,12 @@ pub async fn diagnose_relay_profile(profile: RelayProfile) -> CommandResult<Prov
         ),
     });
 
-    match codex_plus_core::model_catalog::fetch_relay_profile_model_ids(&profile).await {
+    match bounded_probe(
+        codex_plus_core::model_catalog::fetch_relay_profile_model_ids(&profile),
+        "获取模型列表",
+    )
+    .await
+    {
         Ok((models, endpoint)) => {
             let contains_model = !test_model.trim().is_empty()
                 && models.iter().any(|model| model == test_model.trim());
@@ -2526,10 +4480,12 @@ pub async fn diagnose_relay_profile(profile: RelayProfile) -> CommandResult<Prov
 
     let mut compatibility_fallback_used = false;
     let mut initial_http_status = None;
+    let mut request_http_status = None;
     match test_relay_profile_with_compatibility(&profile, &test_model).await {
         Ok(result) => {
             compatibility_fallback_used = result.compatibility_fallback_used;
             initial_http_status = result.initial_http_status;
+            request_http_status = Some(result.http_status);
             let status = if result.http_status < 400 {
                 "ok"
             } else {
@@ -2590,19 +4546,23 @@ pub async fn diagnose_relay_profile(profile: RelayProfile) -> CommandResult<Prov
     };
     let recommendation = provider_doctor_recommendation(&checks);
     let message = format!("Provider Doctor：{summary}");
-    CommandResult {
-        status: status.to_string(),
-        message,
-        payload: ProviderDoctorPayload {
-            profile_name,
-            model: test_model,
-            summary,
-            recommendation,
-            checks,
-            compatibility_fallback_used,
-            initial_http_status,
+    sanitize_provider_doctor_result(
+        &profile,
+        CommandResult {
+            status: status.to_string(),
+            message,
+            payload: ProviderDoctorPayload {
+                profile_name,
+                model: test_model,
+                summary,
+                recommendation,
+                checks,
+                compatibility_fallback_used,
+                initial_http_status,
+                request_http_status,
+            },
         },
-    }
+    )
 }
 
 fn provider_doctor_recommendation(checks: &[ProviderDoctorCheck]) -> String {
@@ -2652,7 +4612,7 @@ fn apply_active_relay_profile_blocking(label: &str) -> CommandResult<RelayPayloa
         .map(sanitize_settings_for_output)
         .unwrap_or_default();
     let active_id = settings.active_relay_id.clone();
-    match commit_relay_profile_transaction(settings, &active_id) {
+    match commit_relay_profile_transaction(settings, &active_id, false) {
         Ok(_) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
             ok(
@@ -2741,7 +4701,178 @@ fn clear_relay_injection_blocking() -> CommandResult<RelayPayload> {
 }
 
 fn log_manager_event(event: &str, detail: Value) {
-    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(event, detail);
+    let _ = append_manager_diagnostic(event, detail);
+}
+
+fn sanitize_diagnostic_detail(detail: Value) -> Value {
+    fn sanitize(value: Value, key: Option<&str>) -> Option<Value> {
+        const ALLOWED_KEYS: &[&str] = &[
+            "version",
+            "had_visible_windows",
+            "requested_guard_port",
+            "guard_port",
+            "configured",
+            "currentRelayId",
+            "targetRelayId",
+            "targetRelayName",
+            "targetRelayMode",
+            "activeRelayId",
+            "previousActiveRelayId",
+            "command",
+            "status",
+            "launchMode",
+            "previousProvider",
+            "currentProvider",
+            "providerChanged",
+            "attempt",
+            "retry",
+            "activeCount",
+            "mismatchCount",
+            "archivedCount",
+            "archivedRolloutsTraversed",
+            "candidateCount",
+            "elapsedMs",
+            "failedCount",
+            "profileCount",
+            "sessionScansScheduled",
+            "skippedCount",
+            "profileId",
+            "profileName",
+            "error",
+            "message",
+            "payload",
+            "location",
+            "file",
+            "line",
+            "column",
+            "socket_path",
+            "fallback_lock_path",
+        ];
+        match value {
+            Value::Object(object) => Some(Value::Object(
+                object
+                    .into_iter()
+                    .filter(|(key, _)| ALLOWED_KEYS.contains(&key.as_str()))
+                    .filter_map(|(key, value)| {
+                        sanitize(value, Some(&key)).map(|value| (key, value))
+                    })
+                    .collect(),
+            )),
+            Value::Array(values) => Some(Value::Array(
+                values
+                    .into_iter()
+                    .filter_map(|value| sanitize(value, key))
+                    .collect(),
+            )),
+            Value::String(value) => {
+                let key = key.unwrap_or_default();
+                let safe_enum = match key {
+                    "version" => semver::Version::parse(&value).is_ok(),
+                    "status" => matches!(
+                        value.as_str(),
+                        "ok" | "failed" | "not_implemented" | "stale" | "partial"
+                    ),
+                    "targetRelayMode" => matches!(
+                        value.as_str(),
+                        "official" | "mixedApi" | "pureApi" | "aggregate"
+                    ),
+                    "launchMode" => matches!(value.as_str(), "patch" | "relay"),
+                    "command" => matches!(
+                        value.as_str(),
+                        "clear_relay_injection"
+                            | "apply_relay_injection"
+                            | "apply_pure_api_injection"
+                    ),
+                    _ => false,
+                };
+                if safe_enum {
+                    Some(Value::String(value))
+                } else if matches!(
+                    key,
+                    "currentRelayId"
+                        | "targetRelayId"
+                        | "activeRelayId"
+                        | "previousActiveRelayId"
+                        | "previousProvider"
+                        | "currentProvider"
+                        | "profileId"
+                ) {
+                    let identity_hash = format!("{:x}", Sha256::digest(value.as_bytes()));
+                    Some(Value::String(format!("sha256:{}", &identity_hash[..16])))
+                } else {
+                    Some(Value::String("[REDACTED]".to_string()))
+                }
+            }
+            value @ (Value::Bool(_) | Value::Number(_) | Value::Null) => Some(value),
+        }
+    }
+    sanitize(detail, None).unwrap_or_else(|| json!({}))
+}
+
+pub(crate) fn sanitize_diagnostic_detail_for_event(event: &str, detail: Value) -> Value {
+    let allowed_ui_fields: Option<&[&str]> = match event {
+        "manager.ui.switchRelayProfile.start" => Some(&[
+            "currentRelayId",
+            "targetRelayId",
+            "targetRelayName",
+            "targetRelayMode",
+        ]),
+        "manager.ui.switchRelayProfile.validation_failed" => {
+            Some(&["targetRelayId", "targetRelayName", "error"])
+        }
+        "manager.ui.switchRelayProfile.apply_start" => Some(&[
+            "targetRelayId",
+            "targetRelayName",
+            "previousActiveRelayId",
+            "command",
+        ]),
+        "manager.ui.switchRelayProfile.apply_no_result" => Some(&["targetRelayId"]),
+        "manager.ui.switchRelayProfile.apply_failed" => {
+            Some(&["targetRelayId", "status", "message", "activeRelayId"])
+        }
+        "manager.ui.switchRelayProfile.ok" => Some(&[
+            "targetRelayId",
+            "launchMode",
+            "status",
+            "previousProvider",
+            "currentProvider",
+            "providerChanged",
+        ]),
+        "manager.ui.event" => Some(&[]),
+        _ => None,
+    };
+    let detail = match (allowed_ui_fields, detail) {
+        (Some(allowed), Value::Object(object)) => Value::Object(
+            object
+                .into_iter()
+                .filter(|(key, _)| allowed.contains(&key.as_str()))
+                .collect(),
+        ),
+        (Some(_), _) => json!({}),
+        (None, detail) => detail,
+    };
+    sanitize_diagnostic_detail(detail)
+}
+
+pub(crate) fn append_manager_diagnostic(event: &str, detail: Value) -> anyhow::Result<()> {
+    let event = sanitize_manager_event(event);
+    codex_plus_core::diagnostic_log::append_diagnostic_log(
+        &event,
+        sanitize_diagnostic_detail_for_event(&event, detail),
+    )?;
+    Ok(())
+}
+
+fn sanitize_ui_manager_event(event: &str) -> String {
+    match event.trim() {
+        "switchRelayProfile.start"
+        | "switchRelayProfile.validation_failed"
+        | "switchRelayProfile.apply_start"
+        | "switchRelayProfile.apply_no_result"
+        | "switchRelayProfile.apply_failed"
+        | "switchRelayProfile.ok" => sanitize_manager_event(event),
+        _ => "manager.ui.event".to_string(),
+    }
 }
 
 fn sanitize_manager_event(event: &str) -> String {
@@ -2770,16 +4901,80 @@ fn relay_payload(
     status: codex_plus_core::relay_config::RelayStatus,
     backup_path: Option<String>,
 ) -> RelayPayload {
+    let account_label = redacted_account_label(status.authenticated, status.account_label);
     RelayPayload {
         authenticated: status.authenticated,
         auth_source: status.auth_source,
-        account_label: status.account_label,
+        account_label,
         config_path: status.config_path,
         configured: status.configured,
         requires_openai_auth: status.requires_openai_auth,
         has_bearer_token: status.has_bearer_token,
         backup_path,
     }
+}
+
+fn normalized_secret_key(key: &str) -> String {
+    key.chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn redact_toml_diagnostic_value(value: &mut Value, inside_headers: bool) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                redact_toml_diagnostic_value(item, inside_headers);
+            }
+        }
+        Value::Object(object) => {
+            for (key, value) in object {
+                let normalized = normalized_secret_key(key);
+                let actor_marker = normalized == "xopenaiactorauthorization"
+                    && value.as_str() == Some("local-image-extension");
+                let header_container = matches!(normalized.as_str(), "headers" | "httpheaders");
+                let credential_key = matches!(
+                    normalized.as_str(),
+                    "baseurl"
+                        | "upstreambaseurl"
+                        | "token"
+                        | "bearertoken"
+                        | "clientsecret"
+                        | "secret"
+                        | "password"
+                        | "openaiapikey"
+                        | "apikey"
+                        | "experimentalbearertoken"
+                        | "authorization"
+                        | "proxyauthorization"
+                        | "xapikey"
+                        | "xopenaiapikey"
+                        | "cookie"
+                        | "setcookie"
+                        | "accesstoken"
+                        | "refreshtoken"
+                        | "idtoken"
+                        | "authcontents"
+                );
+                if credential_key || (inside_headers && !actor_marker) {
+                    *value = Value::String("[REDACTED]".to_string());
+                } else {
+                    redact_toml_diagnostic_value(value, inside_headers || header_container);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn redact_live_config_for_output(config: &str) -> String {
+    let Ok(mut value) = toml_edit::de::from_str::<Value>(config) else {
+        return "# 配置包含无法安全解析的内容；已停止在诊断界面显示。\n".to_string();
+    };
+    redact_toml_diagnostic_value(&mut value, false);
+    toml_edit::ser::to_string_pretty(&value)
+        .unwrap_or_else(|_| "# 配置无法安全序列化；已停止在诊断界面显示。\n".to_string())
 }
 
 fn relay_switch_payload(
@@ -2803,7 +4998,7 @@ fn relay_switch_payload(
     }
 }
 
-/// Codex-- 核心保证：供应商切换/注入永远不改动 config.toml 里不属于供应商的
+/// Codex Minus 核心保证：供应商切换/注入永远不改动 config.toml 里不属于供应商的
 /// mcp_servers / skills / plugins 三张表。上游 core 的写入流程会用 settings 里的
 /// managed 副本对这些表做合并与选择过滤（正是历史上吞掉 `[mcp_servers.memory]`
 /// 的根源），所以这里在写入前快照、写入后原样回植。
@@ -2959,6 +5154,24 @@ fn is_provider_owned_root_item(name: &str) -> bool {
     )
 }
 
+fn retain_provider_owned_profile_config(config: &str) -> anyhow::Result<String> {
+    if config.trim().is_empty() {
+        return Ok(String::new());
+    }
+    let mut doc: toml_edit::DocumentMut = config.parse()?;
+    let keys = doc
+        .as_table()
+        .iter()
+        .map(|(name, _)| name.to_string())
+        .collect::<Vec<_>>();
+    for name in keys {
+        if !is_provider_owned_root_item(&name) {
+            doc.as_table_mut().remove(&name);
+        }
+    }
+    Ok(doc.to_string())
+}
+
 fn render_toml_item(name: &str, item: Option<&toml_edit::Item>) -> String {
     match item {
         Some(item) => {
@@ -2970,15 +5183,34 @@ fn render_toml_item(name: &str, item: Option<&toml_edit::Item>) -> String {
     }
 }
 
-/// 销毁 settings 存储中的 managed context 副本：残缺的 `[mcp_servers.*]` 拷贝
-/// 曾经就存在这里，切换时会被回填、下次再被合并/过滤写回 config.toml。
-fn scrub_managed_context_state(settings: &mut BackendSettings) -> bool {
+/// 销毁 settings 中旧版 Manager 保存的全局 config 副本。
+/// live config.toml 是唯一事实源；供应商档案只保留供应商拥有的字段。
+fn scrub_legacy_managed_config_state(settings: &mut BackendSettings) -> bool {
     let mut dirty = false;
+    if !settings.relay_common_config_contents.is_empty() {
+        settings.relay_common_config_contents = String::new();
+        dirty = true;
+    }
     if !settings.relay_context_config_contents.is_empty() {
         settings.relay_context_config_contents = String::new();
         dirty = true;
     }
     for profile in &mut settings.relay_profiles {
+        match retain_provider_owned_profile_config(&profile.config_contents) {
+            Ok(config) if config != profile.config_contents => {
+                profile.config_contents = config;
+                dirty = true;
+            }
+            Ok(_) => {}
+            Err(error) => log_manager_event(
+                "manager.retain_provider_owned_profile_config.failed",
+                json!({
+                    "profileId": profile.id,
+                    "profileName": profile.name,
+                    "error": error.to_string()
+                }),
+            ),
+        }
         if profile.context_selection_initialized
             || profile.context_selection != RelayContextSelection::default()
         {
@@ -2990,7 +5222,7 @@ fn scrub_managed_context_state(settings: &mut BackendSettings) -> bool {
     dirty
 }
 
-pub fn scrub_managed_context_store() {
+pub fn scrub_legacy_managed_config_store() {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let result = (|| -> anyhow::Result<bool> {
         let _guard = live_state::lock()?;
@@ -2998,7 +5230,7 @@ pub fn scrub_managed_context_store() {
         live_state::recover_locked()?;
         migrate_legacy_profile_auth_locked()?;
         let mut settings = SettingsStore::default().load()?;
-        let dirty = scrub_managed_context_state(&mut settings);
+        let dirty = scrub_legacy_managed_config_state(&mut settings);
         settings = normalize_settings_before_save(settings);
         if dirty {
             live_state::commit_locked(&[FileMutation::bytes(
@@ -3009,10 +5241,10 @@ pub fn scrub_managed_context_store() {
         Ok(dirty)
     })();
     match result {
-        Ok(true) => log_manager_event("manager.context_guard.store_scrubbed", json!({})),
+        Ok(true) => log_manager_event("manager.live_config.store_scrubbed", json!({})),
         Ok(false) => {}
         Err(error) => log_manager_event(
-            "manager.context_guard.store_scrub_failed",
+            "manager.live_config.store_scrub_failed",
             json!({ "error": error.to_string() }),
         ),
     }
@@ -3024,7 +5256,7 @@ fn relay_files_payload_from_home(home: &std::path::Path) -> anyhow::Result<Relay
     Ok(RelayFilesPayload {
         config_path: config_path.to_string_lossy().to_string(),
         auth_path: auth_path.to_string_lossy().to_string(),
-        config_contents: read_optional_text_file(&config_path)?,
+        config_contents: redact_live_config_for_output(&read_optional_text_file(&config_path)?),
         auth_status: live_auth_status_payload(home),
     })
 }
@@ -3034,10 +5266,14 @@ fn live_auth_status_payload(home: &Path) -> LiveAuthStatusPayload {
     LiveAuthStatusPayload {
         authenticated: status.authenticated,
         source: status.source,
-        account_label: status.account_label,
+        account_label: redacted_account_label(status.authenticated, status.account_label),
         action_required: (!status.authenticated)
             .then(|| "请在官方 Codex/ChatGPT 客户端中登录。".to_string()),
     }
+}
+
+fn redacted_account_label(authenticated: bool, account_label: Option<String>) -> Option<String> {
+    (authenticated && account_label.is_some()).then(|| "ChatGPT account".to_string())
 }
 
 fn read_optional_text_file(path: &std::path::Path) -> anyhow::Result<String> {
@@ -3076,17 +5312,26 @@ fn settings_payload_value() -> Result<SettingsPayload, (anyhow::Error, SettingsP
         .to_string_lossy()
         .to_string();
     match store.load() {
-        Ok(settings) => Ok(SettingsPayload {
-            settings: sanitize_settings_for_output(settings),
-            settings_path,
-            user_scripts: user_script_inventory(),
-        }),
+        Ok(settings) => {
+            let settings = sanitize_settings_for_output(settings);
+            let provider_fingerprint = crate::provider_commit::provider_owned_fingerprint(
+                &crate::provider_commit::ProviderOwnedTopologyDraft::from_settings(&settings),
+            )
+            .unwrap_or_default();
+            Ok(SettingsPayload {
+                settings,
+                settings_path,
+                user_scripts: user_script_inventory(),
+                provider_fingerprint,
+            })
+        }
         Err(error) => Err((
             error,
             SettingsPayload {
                 settings: BackendSettings::default(),
                 settings_path,
                 user_scripts: user_script_inventory(),
+                provider_fingerprint: String::new(),
             },
         )),
     }
@@ -3099,6 +5344,7 @@ fn fallback_settings_payload() -> SettingsPayload {
             .to_string_lossy()
             .to_string(),
         user_scripts: user_script_inventory(),
+        provider_fingerprint: String::new(),
     }
 }
 
@@ -3123,39 +5369,49 @@ fn serialize_settings_without_profile_auth(settings: &BackendSettings) -> anyhow
 
 fn migrate_legacy_profile_auth_locked() -> anyhow::Result<()> {
     let settings_path = codex_plus_core::paths::default_settings_path();
+    let migrated = migrate_legacy_profile_auth_locked_at(&settings_path)?;
+    if migrated > 0 {
+        log_manager_event(
+            "manager.profile_auth_migration.completed",
+            json!({ "profileCount": migrated }),
+        );
+    }
+    Ok(())
+}
+
+fn migrate_legacy_profile_auth_locked_at(settings_path: &Path) -> anyhow::Result<usize> {
     if !settings_path.exists() {
-        return Ok(());
+        return Ok(0);
     }
     live_state::ensure_owner_only_file(&settings_path)?;
-    let raw = std::fs::read_to_string(&settings_path)?;
-    let contains_profile_auth = serde_json::from_str::<Value>(&raw)
-        .ok()
-        .and_then(|value| value.get("relayProfiles").cloned())
-        .and_then(|value| value.as_array().cloned())
-        .is_some_and(|profiles| {
-            profiles.iter().any(|profile| {
-                profile
-                    .get("authContents")
-                    .and_then(Value::as_str)
-                    .is_some_and(|value| !value.trim().is_empty())
-            })
-        });
-    if !contains_profile_auth {
-        return Ok(());
+    let raw = std::fs::read(&settings_path)?;
+    let mut settings: BackendSettings =
+        serde_json::from_slice(&raw).context("persisted provider settings are invalid")?;
+    let mut migrated = 0;
+    for profile in &mut settings.relay_profiles {
+        if profile.auth_contents.is_empty() {
+            continue;
+        }
+        migrate_persisted_legacy_api_key_auth(profile)?;
+        // Startup relocates a credential; it does not normalize a provider contract. The core
+        // storage normalizer rewrites the whole provider table — it renames a legacy provider
+        // alias to its own `custom` shape, drops the table it replaces along with the actor
+        // header, and restores `requires_openai_auth = true` by default. Running it here would
+        // migrate a profile the user never opened, with no preview, no revision, and no consent.
+        sanitize_profile_after_core_normalize_fallible(profile)?;
+        profile.config_contents = retain_provider_owned_profile_config(&profile.config_contents)
+            .context("persisted provider config ownership is invalid")?;
+        migrated += 1;
     }
-
-    let settings = SettingsStore::default().load()?;
-    let settings = normalize_settings_before_save(settings);
+    if migrated == 0 {
+        return Ok(0);
+    }
     let bytes = serialize_settings_without_profile_auth(&settings)?;
     // Credential migration intentionally has no prior-file backup. The old file is
     // secured first and then atomically replaced so OAuth copies cannot survive in
     // a recovery artifact.
     live_state::atomic_write_owner_only(&settings_path, &bytes)?;
-    log_manager_event(
-        "manager.profile_auth_migration.completed",
-        json!({ "profileCount": settings.relay_profiles.len() }),
-    );
-    Ok(())
+    Ok(migrated)
 }
 
 fn user_script_inventory() -> Value {
@@ -3267,7 +5523,7 @@ pub async fn adapt_active_sessions_to_current_provider(
         let message = if scan_generation != payload.scan_generation {
             "兼容性检查结果已过期，请重新检查。"
         } else {
-            "当前上游 provider-sync 不能限定为活动会话；Codex-- 已阻止全历史回退，升级上游接口后才会开放适配。"
+            "当前上游 provider-sync 不能限定为活动会话；Codex Minus 已阻止全历史回退，升级上游接口后才会开放适配。"
         };
         CommandResult {
             status: "not_implemented".to_string(),
@@ -3466,6 +5722,46 @@ mod session_lifecycle_tests {
             app.join("Contents/Resources/codex")
         );
     }
+
+    #[test]
+    fn windows_cli_path_accepts_versioned_standalone_bin_layout() {
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("bin");
+        let versioned = bin.join("a61afac3bb4ee395");
+        std::fs::create_dir_all(&versioned).unwrap();
+        std::fs::write(versioned.join("codex.exe"), b"test cli").unwrap();
+
+        assert_eq!(
+            windows_codex_cli_from_app_dir(&bin),
+            versioned.join("codex.exe")
+        );
+    }
+
+    #[test]
+    fn windows_standalone_cli_is_found_under_versioned_local_appdata_bin() {
+        let temp = tempfile::tempdir().unwrap();
+        let versioned = temp
+            .path()
+            .join("OpenAI")
+            .join("Codex")
+            .join("bin")
+            .join("a61afac3bb4ee395");
+        std::fs::create_dir_all(&versioned).unwrap();
+        std::fs::write(versioned.join("codex.exe"), b"test cli").unwrap();
+
+        assert_eq!(
+            windows_standalone_codex_cli_in(temp.path()),
+            Some(versioned.join("codex.exe"))
+        );
+    }
+
+    #[test]
+    fn windows_standalone_cli_is_absent_without_a_codex_binary() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("OpenAI").join("Codex").join("bin")).unwrap();
+
+        assert_eq!(windows_standalone_codex_cli_in(temp.path()), None);
+    }
 }
 
 #[cfg(test)]
@@ -3554,8 +5850,9 @@ enabled = true
     }
 
     #[test]
-    fn scrub_clears_managed_copy_and_selections() {
+    fn scrub_clears_legacy_global_copies_and_selections() {
         let mut settings = BackendSettings::default();
+        settings.relay_common_config_contents = "[agents]\nmax_threads = 1000\n".to_string();
         settings.relay_context_config_contents =
             "[mcp_servers.memory]\nenabled = true\n".to_string();
         let mut profile = RelayProfile::default();
@@ -3563,7 +5860,8 @@ enabled = true
         profile.context_selection_initialized = true;
         settings.relay_profiles.push(profile);
 
-        assert!(scrub_managed_context_state(&mut settings));
+        assert!(scrub_legacy_managed_config_state(&mut settings));
+        assert!(settings.relay_common_config_contents.is_empty());
         assert!(settings.relay_context_config_contents.is_empty());
         assert!(!settings.relay_profiles[0].context_selection_initialized);
         assert!(
@@ -3573,7 +5871,69 @@ enabled = true
                 .is_empty()
         );
         // 二次执行应为 no-op
-        assert!(!scrub_managed_context_state(&mut settings));
+        assert!(!scrub_legacy_managed_config_state(&mut settings));
+    }
+
+    #[test]
+    fn scrub_removes_global_profile_config_without_a_common_copy() {
+        let mut settings = BackendSettings::default();
+        settings.relay_profiles = vec![RelayProfile {
+            id: "api".to_string(),
+            config_contents: r#"model_provider = "custom"
+
+[model_providers.custom]
+base_url = "https://example.test/v1"
+
+[agents]
+max_threads = 1000
+"#
+            .to_string(),
+            ..RelayProfile::default()
+        }];
+
+        assert!(scrub_legacy_managed_config_state(&mut settings));
+        let config = &settings.relay_profiles[0].config_contents;
+        assert!(config.contains("[model_providers.custom]"));
+        assert!(!config.contains("[agents]"));
+        assert!(!config.contains("max_threads"));
+        assert!(!scrub_legacy_managed_config_state(&mut settings));
+    }
+
+    #[test]
+    fn normalization_keeps_only_provider_owned_profile_config() {
+        let mut settings = BackendSettings::default();
+        settings.relay_profiles = vec![RelayProfile {
+            id: "mixed".to_string(),
+            relay_mode: codex_plus_core::settings::RelayMode::Official,
+            official_mix_api_key: true,
+            config_contents: r#"model = "gpt-5.5"
+model_provider = "custom"
+model_catalog_json = "model-catalogs/mixed.json"
+approval_policy = "never"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://example.test/v1"
+experimental_bearer_token = "sk-test"
+
+[agents]
+max_threads = 1000
+"#
+            .to_string(),
+            ..RelayProfile::default()
+        }];
+
+        let normalized = normalize_settings_before_save(settings);
+        let config = &normalized.relay_profiles[0].config_contents;
+        assert!(config.contains(r#"model = "gpt-5.5""#));
+        assert!(config.contains(r#"model_provider = "custom""#));
+        assert!(config.contains(r#"model_catalog_json = "model-catalogs/mixed.json""#));
+        assert!(config.contains("[model_providers.custom]"));
+        assert!(!config.contains("approval_policy"));
+        assert!(!config.contains("[agents]"));
+        assert!(!config.contains("max_threads"));
     }
 
     #[test]
@@ -3583,19 +5943,14 @@ enabled = true
     }
 
     #[test]
-    fn normalization_removes_oauth_copies_and_projects_pure_api_key_to_config() {
+    fn normalization_projects_api_key_only_legacy_copy_to_provider_config() {
         let mut settings = BackendSettings::default();
         settings.relay_profiles = vec![RelayProfile {
             id: "pure".to_string(),
             relay_mode: codex_plus_core::settings::RelayMode::PureApi,
             base_url: "https://example.test/v1".to_string(),
             upstream_base_url: "https://example.test/v1".to_string(),
-            auth_contents: r#"{
-                "OPENAI_API_KEY": "sk-test",
-                "auth_mode": "chatgpt",
-                "tokens": {"access_token": "oauth", "refresh_token": "refresh"}
-            }"#
-            .to_string(),
+            auth_contents: r#"{"OPENAI_API_KEY":"sk-test"}"#.to_string(),
             ..RelayProfile::default()
         }];
         let settings = normalize_settings_before_save(settings);
@@ -3613,9 +5968,198 @@ enabled = true
         );
         let persisted =
             String::from_utf8(serialize_settings_without_profile_auth(&settings).unwrap()).unwrap();
-        assert!(!persisted.contains("oauth"));
-        assert!(!persisted.contains("refresh"));
         assert!(!persisted.contains("authContents"));
+    }
+
+    #[test]
+    fn load_time_legacy_migration_rejects_mixed_oauth_payload_without_writing() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let mut settings = BackendSettings::default();
+        settings.relay_profiles = vec![RelayProfile {
+            id: "pure".to_string(),
+            relay_mode: codex_plus_core::settings::RelayMode::PureApi,
+            base_url: "https://example.test/v1".to_string(),
+            upstream_base_url: "https://example.test/v1".to_string(),
+            auth_contents: r#"{
+                "OPENAI_API_KEY": "provider-key-sentinel",
+                "auth_mode": "chatgpt",
+                "tokens": {"access_token": "oauth-access-sentinel"}
+            }"#
+            .to_string(),
+            ..RelayProfile::default()
+        }];
+        let before = serde_json::to_vec_pretty(&settings).unwrap();
+        std::fs::write(&settings_path, &before).unwrap();
+        let _guard = live_state::lock().unwrap();
+
+        let error = migrate_legacy_profile_auth_locked_at(&settings_path).unwrap_err();
+
+        assert!(!error.to_string().contains("provider-key-sentinel"));
+        assert!(!error.to_string().contains("oauth-access-sentinel"));
+        assert_eq!(std::fs::read(&settings_path).unwrap(), before);
+    }
+
+    /// Golden: a legacy mixed contract, exactly as authored.
+    ///
+    /// `name = "custom"`, official auth still required, no actor header, no provider bearer
+    /// marker. Every one of those is a field the upgrade transform writes, which is precisely
+    /// why startup must not write them.
+    const GOLDEN_UNTOUCHED_LEGACY_MIXED: &str = r#"model = "gpt-5.5"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = "legacy-mixed-key"
+"#;
+
+    /// Golden: a legacy provider-ID alias, exactly as authored.
+    ///
+    /// The identifier requires an explicit rename that only the user can authorize; startup may
+    /// not rename it, and may not "finish" the surrounding contract on its behalf.
+    const GOLDEN_UNTOUCHED_LEGACY_ALIAS: &str = r#"model = "gpt-5.5"
+model_provider = "CodexPlusPlus"
+
+[model_providers.CodexPlusPlus]
+name = "OpenAI"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = "legacy-alias-key"
+http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
+"#;
+
+    /// Golden: a complete contract carrying unowned provider and header keys, exactly as authored.
+    ///
+    /// `custom_field` and `x-unrelated-header` belong to the user. A header-table form must also
+    /// survive as a table instead of being folded into the inline form.
+    const GOLDEN_UNTOUCHED_CUSTOM_HEADER: &str = r#"model = "gpt-5.5"
+model_provider = "CustomProvider"
+
+[model_providers.CustomProvider]
+name = "OpenAI"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = "custom-header-key"
+custom_field = "preserve-me"
+
+[model_providers.CustomProvider.http_headers]
+"x-openai-actor-authorization" = "local-image-extension"
+"x-unrelated-header" = "keep-me"
+"#;
+
+    #[test]
+    fn golden_startup_and_inspection_never_rewrite_an_existing_contract() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let catalog_state_path = temp.path().join("model-catalog-state.json");
+        let home = temp.path().join("codex-home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        let goldens = [
+            (
+                "legacy-mixed",
+                GOLDEN_UNTOUCHED_LEGACY_MIXED,
+                "legacy-mixed-key",
+                crate::provider_native_capability::NativeCapabilityState::UpgradeAvailable,
+            ),
+            (
+                "CodexPlusPlus-profile",
+                GOLDEN_UNTOUCHED_LEGACY_ALIAS,
+                "legacy-alias-key",
+                crate::provider_native_capability::NativeCapabilityState::UpgradeAvailable,
+            ),
+            (
+                "custom-header",
+                GOLDEN_UNTOUCHED_CUSTOM_HEADER,
+                "custom-header-key",
+                crate::provider_native_capability::NativeCapabilityState::NativePriority,
+            ),
+        ];
+        let settings = BackendSettings {
+            relay_profiles: goldens
+                .iter()
+                .map(|(id, config, key, _)| RelayProfile {
+                    id: (*id).to_string(),
+                    name: (*id).to_string(),
+                    model: "gpt-5.5".to_string(),
+                    base_url: "https://relay.example/v1".to_string(),
+                    upstream_base_url: "https://relay.example/v1".to_string(),
+                    api_key: (*key).to_string(),
+                    protocol: codex_plus_core::settings::RelayProtocol::Responses,
+                    relay_mode: codex_plus_core::settings::RelayMode::Official,
+                    official_mix_api_key: true,
+                    config_contents: (*config).to_string(),
+                    // A legacy API-key auth copy, so the startup migration engages its rewrite
+                    // path instead of returning early and proving nothing.
+                    auth_contents: json!({ "OPENAI_API_KEY": key }).to_string(),
+                    ..RelayProfile::default()
+                })
+                .collect(),
+            ..BackendSettings::default()
+        };
+        std::fs::write(
+            &settings_path,
+            serde_json::to_vec_pretty(&settings).unwrap(),
+        )
+        .unwrap();
+        let _guard = live_state::lock().unwrap();
+
+        assert_eq!(
+            migrate_legacy_profile_auth_locked_at(&settings_path).unwrap(),
+            goldens.len(),
+            "every profile must take the rewriting migration path"
+        );
+
+        let migrated: BackendSettings =
+            serde_json::from_slice(&std::fs::read(&settings_path).unwrap()).unwrap();
+        for (index, (id, config, _, _)) in goldens.iter().enumerate() {
+            let profile = &migrated.relay_profiles[index];
+            assert_eq!(
+                profile.id.as_str(),
+                *id,
+                "startup renamed or reordered a profile"
+            );
+            assert_eq!(
+                profile.config_contents.as_str(),
+                *config,
+                "startup rewrote the {id} contract"
+            );
+            assert!(profile.auth_contents.is_empty());
+        }
+
+        // The catalog startup path reads the same settings and may derive a mode; it may not
+        // write back into any profile contract.
+        let after_migration = std::fs::read(&settings_path).unwrap();
+        let state = crate::model_catalog::load_and_migrate_state_from_path(
+            &migrated,
+            &home,
+            &catalog_state_path,
+        )
+        .unwrap();
+        let modes =
+            crate::model_catalog::read_only_catalog_modes_from_state(&migrated, Some(&state));
+        assert_eq!(std::fs::read(&settings_path).unwrap(), after_migration);
+
+        for (id, config, _, expected_state) in goldens {
+            let profile = migrated
+                .relay_profiles
+                .iter()
+                .find(|profile| profile.id == id)
+                .unwrap();
+            let inspection = crate::provider_native_capability::inspect_profile(profile, modes[id]);
+            assert_eq!(inspection.state, expected_state, "{id}");
+            assert_eq!(
+                profile.config_contents.as_str(),
+                config,
+                "inspection rewrote the {id} contract"
+            );
+        }
+        assert_eq!(std::fs::read(&settings_path).unwrap(), after_migration);
     }
 
     #[test]
@@ -3623,7 +6167,7 @@ enabled = true
         let home = tempfile::tempdir().unwrap();
         std::fs::write(
             home.path().join("config.toml"),
-            format!("{LIVE_CONFIG}\napproval_policy = \"never\"\n[profiles.work]\nmodel = \"x\"\n"),
+            format!("{LIVE_CONFIG}\napproval_policy = \"never\"\n[profiles.work]\nmodel = \"x\"\n\n[agents]\nmax_concurrent_threads_per_session = 8\n"),
         )
         .unwrap();
         let candidate = r#"model_provider = "Other"
@@ -3632,11 +6176,16 @@ model = "other"
 [model_providers.Other]
 name = "Other"
 base_url = "https://other.test"
+
+[agents]
+max_threads = 1000
 "#;
         let (protected, snapshot) = context_protected_config(home.path(), candidate).unwrap();
         assert!(protected.contains("approval_policy = \"never\""));
         assert!(protected.contains("[profiles.work]"));
         assert!(protected.contains("[mcp_servers.memory]"));
+        assert!(protected.contains("max_concurrent_threads_per_session = 8"));
+        assert!(!protected.contains("max_threads = 1000"));
         live_state::atomic_write_owner_only(&home.path().join("config.toml"), protected.as_bytes())
             .unwrap();
         verify_context_tables(home.path(), &snapshot).unwrap();
@@ -3669,7 +6218,7 @@ base_url = "https://other.test"
             base_url: "https://example.test/v1".to_string(),
             upstream_base_url: "https://example.test/v1".to_string(),
             api_key: "sk-stage".to_string(),
-            config_contents: set_provider_config_bearer("", "sk-stage", false).unwrap(),
+            config_contents: set_provider_config_bearer("", "sk-stage", Some(false)).unwrap(),
             ..RelayProfile::default()
         }];
         let staged = stage_active_relay_config(home.path(), &settings).unwrap();
@@ -3891,6 +6440,7 @@ mod provider_test_compatibility_tests {
         assert_eq!(result.status, "ok");
         assert!(result.payload.compatibility_fallback_used);
         assert_eq!(result.payload.initial_http_status, Some(400));
+        assert_eq!(result.payload.request_http_status, Some(200));
         let bodies = server.join().unwrap();
         let request_check = result
             .payload
@@ -3904,5 +6454,235 @@ mod provider_test_compatibility_tests {
         assert!(bodies[2].get("max_output_tokens").is_none());
         assert_eq!(request_check.status, "ok");
         assert!(request_check.detail.contains("兼容重试"));
+    }
+
+    #[test]
+    fn provider_doctor_output_redacts_provider_oauth_identity_and_endpoint_sentinels() {
+        let api_key = "sk-provider-doctor-secret";
+        let oauth_token = "oauth-provider-doctor-token";
+        let account_email = "provider-doctor@example.test";
+        let (base_url, server) = spawn_provider_test_server(vec![
+            (200, r#"{"data":[{"id":"gpt-test"}]}"#.to_string()),
+            (
+                200,
+                format!(
+                    r#"{{"apiKey":"{api_key}","accessToken":"{oauth_token}","account":"{account_email}"}}"#
+                ),
+            ),
+        ]);
+        let mut profile = provider_test_profile(base_url.clone(), api_key);
+        profile.name = "Doctor Secret Audit".to_string();
+        profile.test_model = "gpt-test".to_string();
+        profile.auth_contents = format!(
+            r#"{{"auth_mode":"chatgpt","tokens":{{"access_token":"{oauth_token}","account_email":"{account_email}"}}}}"#
+        );
+
+        let result = tauri::async_runtime::block_on(super::diagnose_relay_profile(profile));
+        let serialized = serde_json::to_string(&result).unwrap();
+        server.join().unwrap();
+
+        assert!(!serialized.contains(api_key));
+        assert!(!serialized.contains(oauth_token));
+        assert!(!serialized.contains(account_email));
+        assert!(!serialized.contains(&base_url));
+    }
+
+    #[test]
+    fn diagnostic_and_auth_status_surfaces_discard_dynamic_secret_and_identity_strings() {
+        let detail = json!({
+            "apiKey": "sk-diagnostic-secret",
+            "nested": {
+                "accessToken": "oauth-diagnostic-token",
+                "account": "diagnostic@example.test",
+                "baseUrl": "https://private.example.test/v1"
+            },
+            "attempt": 2,
+            "retry": true
+        });
+        let sanitized = sanitize_diagnostic_detail(detail);
+        let serialized = serde_json::to_string(&sanitized).unwrap();
+
+        assert!(!serialized.contains("sk-diagnostic-secret"));
+        assert!(!serialized.contains("oauth-diagnostic-token"));
+        assert!(!serialized.contains("diagnostic@example.test"));
+        assert!(!serialized.contains("https://private.example.test/v1"));
+        assert_eq!(sanitized["attempt"], 2);
+        assert_eq!(sanitized["retry"], true);
+        assert_eq!(
+            sanitize_ui_manager_event("sk-secret-event"),
+            "manager.ui.event"
+        );
+        assert_eq!(
+            redacted_account_label(true, Some("diagnostic-account@example.test".to_string())),
+            Some("ChatGPT account".to_string())
+        );
+
+        let visible_config = redact_live_config_for_output(
+            r#"model = "gpt-test"
+model_provider = "Relay"
+
+[model_providers.Relay]
+name = "OpenAI"
+base_url = "https://private.example.test/v1"
+experimental_bearer_token = "sk-config-output-secret"
+http_headers = { Authorization = "Bearer oauth-config-output-token", "x-keep" = "yes" }
+"#,
+        );
+        assert!(visible_config.contains("model = \"gpt-test\""));
+        assert!(visible_config.contains("x-keep"));
+        assert!(!visible_config.contains("https://private.example.test/v1"));
+        assert!(!visible_config.contains("sk-config-output-secret"));
+        assert!(!visible_config.contains("oauth-config-output-token"));
+
+        let escaped_config = redact_live_config_for_output(
+            r#"model_provider = "Relay"
+[model_providers.Relay]
+base_url = "https:\u002f\u002fescaped.example.test\u002fv1"
+experimental_bearer_token = "sk\u002descaped-secret"
+http_headers = { "x-openai-api-key" = "sk-header-secret", Cookie = "oauth-cookie-secret", "x-openai-actor-authorization" = "local-image-extension" }
+token = "oauth-generic-token"
+bearer_token = "sk-generic-bearer"
+client_secret = "generic-client-secret"
+password = "generic-provider-password"
+"#,
+        );
+        assert!(!escaped_config.contains("escaped.example.test"));
+        assert!(!escaped_config.contains("sk\\u002descaped-secret"));
+        assert!(!escaped_config.contains("sk-header-secret"));
+        assert!(!escaped_config.contains("oauth-cookie-secret"));
+        assert!(!escaped_config.contains("oauth-generic-token"));
+        assert!(!escaped_config.contains("sk-generic-bearer"));
+        assert!(!escaped_config.contains("generic-client-secret"));
+        assert!(!escaped_config.contains("generic-provider-password"));
+        assert!(escaped_config.contains("local-image-extension"));
+
+        let unknown_key = sanitize_diagnostic_detail(json!({
+            "sk-secret-in-key": true,
+            "status": "ok",
+            "targetRelayId": "provider-a"
+        }));
+        let unknown_key_text = serde_json::to_string(&unknown_key).unwrap();
+        assert!(!unknown_key_text.contains("sk-secret-in-key"));
+        assert!(unknown_key_text.contains("ok"));
+        assert!(!unknown_key_text.contains("provider-a"));
+        for key in [
+            "status",
+            "command",
+            "targetRelayMode",
+            "launchMode",
+            "version",
+        ] {
+            let injected = sanitize_diagnostic_detail_for_event(
+                "manager.ui.switchRelayProfile.ok",
+                Value::Object(
+                    [(
+                        key.to_string(),
+                        Value::String("sk-safe-field-secret".to_string()),
+                    )]
+                    .into_iter()
+                    .collect(),
+                ),
+            );
+            assert!(
+                !serde_json::to_string(&injected)
+                    .unwrap()
+                    .contains("sk-safe-field-secret")
+            );
+        }
+        let panic_detail = sanitize_diagnostic_detail(json!({
+            "payload": "sk-panic-secret",
+            "location": { "file": "/private/oauth-panic-token.rs", "line": 42 }
+        }));
+        assert!(
+            !serde_json::to_string(&panic_detail)
+                .unwrap()
+                .contains("sk-panic-secret")
+        );
+        assert!(!include_str!("lib.rs").contains("diagnostic_log::append_diagnostic_log"));
+
+        let profile = provider_test_profile(
+            "https://private.example.test/v1".to_string(),
+            "sk-boundary-secret",
+        );
+        let leaked_prefix = "sk-boundary-se";
+        let sanitized_probe = sanitize_provider_test_result(
+            &profile,
+            CommandResult {
+                status: "failed".to_string(),
+                message: format!("HTTP 401: {leaked_prefix}"),
+                payload: RelayProfileTestPayload {
+                    http_status: 401,
+                    endpoint: "https://private.example.test/v1/responses".to_string(),
+                    response_preview: leaked_prefix.to_string(),
+                    compatibility_fallback_used: false,
+                    initial_http_status: None,
+                },
+            },
+        );
+        let sanitized_probe_text = serde_json::to_string(&sanitized_probe).unwrap();
+        assert!(!sanitized_probe_text.contains(leaked_prefix));
+
+        let safe_models = sanitize_provider_model_ids(
+            &profile,
+            vec![
+                "gpt-safe".to_string(),
+                "sk-boundary-secret".to_string(),
+                "oauth-model-token@example.test".to_string(),
+                "https://private.example.test/v1".to_string(),
+            ],
+        );
+        assert_eq!(safe_models, vec!["gpt-safe"]);
+        assert_eq!(
+            sanitize_provider_model_ids(&profile, vec!["v1".to_string()]),
+            vec!["v1"]
+        );
+    }
+}
+
+#[cfg(test)]
+mod command_settlement_tests {
+    use super::*;
+
+    #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+    struct Payload {
+        detail: String,
+    }
+
+    #[test]
+    fn a_panicked_blocking_command_answers_the_caller_instead_of_dropping_the_reply() {
+        let result = tauri::async_runtime::block_on(async {
+            let task = tauri::async_runtime::spawn_blocking(|| -> CommandResult<Payload> {
+                panic!("the blocking body panicked");
+            });
+            settle_blocking(task, "提交中断。", || Payload {
+                detail: "interrupted".to_string(),
+            })
+            .await
+        });
+
+        assert_eq!(result.status, "failed");
+        assert_eq!(result.message, "提交中断。");
+        assert_eq!(result.payload.detail, "interrupted");
+    }
+
+    #[test]
+    fn a_completed_blocking_command_keeps_its_own_result() {
+        let result = tauri::async_runtime::block_on(async {
+            let task = tauri::async_runtime::spawn_blocking(|| {
+                ok(
+                    "done",
+                    Payload {
+                        detail: "committed".to_string(),
+                    },
+                )
+            });
+            settle_blocking(task, "提交中断。", || Payload {
+                detail: "interrupted".to_string(),
+            })
+            .await
+        });
+
+        assert_eq!(result.status, "ok");
+        assert_eq!(result.payload.detail, "committed");
     }
 }

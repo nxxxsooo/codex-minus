@@ -1,0 +1,10 @@
+model = "gpt-5"
+model_provider = "CustomProvider"
+
+[model_providers.CustomProvider]
+name = "OpenAI"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = "secret-canonical-inline"
+http_headers = { "x-openai-actor-authorization" = "local-image-extension", "x-unrelated-header" = "keep-me" }

@@ -32,10 +32,10 @@ import {
   Languages,
   MessageCircle,
   Moon,
+  Network,
   Plus,
   RefreshCw,
   Save,
-  Settings,
   ShieldCheck,
   ShieldAlert,
   Stethoscope,
@@ -44,8 +44,6 @@ import {
   Trash2,
   type LucideIcon,
 } from "lucide-react";
-import { ProviderPresetSelector } from "@/components/ProviderPresetSelector";
-import type { PresetPatch } from "@/components/ProviderPresetSelector";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 import { Badge as UiBadge } from "@/components/ui/badge";
@@ -62,13 +60,87 @@ import {
 import {
   addCatalogCandidate,
   adoptionPreviewSummary,
-  catalogDiffSummary,
-  catalogRefreshGate,
+  appModelLabel,
+  catalogModePresentation,
   defaultCatalogMode,
-  profileCatalogFlags,
+  externalVersionRequiresAcceptance,
+  managedContextConflictKeys,
+  catalogRestartGuidance,
+  providerManagedContextConflictKeys,
   providerEvidenceState,
   validateCatalogDraft,
 } from "./model-catalog-ui";
+import {
+  catalogEditingAvailability,
+  catalogProfileDraft,
+  updateCatalogProfileDraft,
+} from "./catalog-profile-draft";
+import {
+  buildProviderMutationInvocation,
+  catalogDraftAvailability,
+  managedCatalogCapable,
+  providerDeleteAvailable,
+  providerCommitFailureMessage,
+  providerCommitFailureShouldReconcileForm,
+  registerProviderCommit,
+  settleProviderCommit,
+  type ProviderCommitResponseDisposition,
+  type ProfileCatalogDraft,
+  type ProviderCommitUiState,
+  type ProviderMutationKind,
+} from "./provider-commit";
+import { providerConfigDraft, RelayConfigPanels } from "./relay-config-panels";
+import {
+  networkPolicyDirty,
+  networkPolicyDraft,
+  networkPolicyPresentation,
+  networkTestCategoryLabel,
+  validateNetworkPolicyDraft,
+  type NetworkPolicyDraft,
+  type NetworkPolicyModeValue,
+  type NetworkPolicyStatusView,
+} from "./network-policy-ui";
+import {
+  createNewRelayProfileDraft,
+  validateNewProviderDraft,
+  type NewProviderTransientTarget,
+} from "./provider-onboarding";
+import {
+  applyProviderConfigPatch,
+  withGeneratedRelayConfig,
+  type ProviderConfigTargetContract,
+} from "./provider-config-draft";
+import {
+  applyProviderDetailInspection,
+  beginProviderDetailEdit,
+  beginProviderDetailInspection,
+  beginProviderDetailLegacyIdUpgrade,
+  beginProviderDetailNativePriorityUpgrade,
+  beginProviderDetailRawConfigEdit,
+  cancelProviderDetailLegacyProviderIdResolution,
+  cancelProviderDetailTransition,
+  confirmProviderDetailTransition,
+  createProviderDetailDraftState,
+  endProviderDetailSession,
+  refreshProviderDetailCatalogDraftState,
+  replaceProviderDetailCatalogDraft,
+  replaceProviderDetailProfile,
+  resolveProviderDetailLegacyProviderId,
+  settleProviderDetailTransform,
+  settleProviderDetailTransformError,
+  type ProviderDetailDraftState,
+  type ProviderDetailInspectionMetadata,
+  type ProviderDetailStep,
+  type ProviderDetailTransformInvocation,
+  type ProviderDetailTransformResponse,
+} from "./provider-detail-draft-state";
+import {
+  providerConfigPatchRequiresBackendTransform,
+} from "./provider-config-transform-router";
+import {
+  deriveProviderNativeCapabilityView,
+  providerTransitionDecisionForStructuredPatch,
+} from "./provider-native-capability-view";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 
 
@@ -212,6 +284,7 @@ export type RelayProfile = {
   modelList: string;
   modelWindows: string;
   userAgent: string;
+  transientTarget?: NewProviderTransientTarget;
   aggregate?: RelayAggregateConfig | null;
 };
 
@@ -290,6 +363,20 @@ type SettingsResult = CommandResult<{
   settings: BackendSettings;
   settings_path: string;
   user_scripts: UserScriptInventory;
+  provider_fingerprint: string;
+}>;
+
+type ProviderCommitResult = CommandResult<{
+  settings: BackendSettings | null;
+  draftRevision: number;
+  providerFingerprint: string;
+  restartRequired: boolean;
+  errorCode: string | null;
+  reason: string | null;
+}>;
+
+type ProviderNativeCapabilityInspectionResult = CommandResult<{
+  inspections: ProviderDetailInspectionMetadata[];
 }>;
 
 type RelayResult = CommandResult<{
@@ -302,8 +389,6 @@ type RelayResult = CommandResult<{
   hasBearerToken: boolean;
   backupPath: string | null;
 }>;
-
-type RelayPayload = Omit<RelayResult, "status" | "message">;
 
 type RelayFilesResult = CommandResult<{
   configPath: string;
@@ -440,16 +525,6 @@ type ExtractRelayCommonConfigResult = CommandResult<{
   profileConfigContents: string;
 }>;
 
-type RelaySwitchResult = CommandResult<{
-  settings: BackendSettings;
-  settingsPath: string;
-  userScripts: unknown;
-  relay: RelayPayload;
-  previousProvider: string;
-  currentProvider: string;
-  providerChanged: boolean;
-}>;
-
 type RelayProfileTestResult = CommandResult<{
   httpStatus: number;
   endpoint: string;
@@ -469,17 +544,30 @@ type RelayProfileModelsResult = CommandResult<{
 }>;
 
 type CatalogMode = "native-official" | "official-plus-custom" | "custom-only" | "external";
+type UpstreamTopology = "direct" | "server-side-composite";
+type ReasoningLevel = { effort: string; description: string };
 type OfficialCatalogOverride = {
+  displayName: string | null;
   visible: boolean | null;
   contextWindow: number | null;
+  effectiveContextWindowPercent: number | null;
   order: number | null;
+  supportedReasoningLevels: ReasoningLevel[] | null;
+  defaultReasoningLevel: string | null;
+  supportedTools: string[] | null;
+  toolCapabilities: Record<string, unknown> | null;
 };
 type CustomCatalogModel = {
   slug: string;
   displayName: string;
   contextWindow: number;
+  effectiveContextWindowPercent: number;
   visible: boolean;
   order: number;
+  supportedReasoningLevels: ReasoningLevel[];
+  defaultReasoningLevel: string | null;
+  supportedTools: string[];
+  toolCapabilities: Record<string, unknown> | null;
   templateProvenance: string;
 };
 type CatalogOverlay = {
@@ -495,7 +583,10 @@ type OfficialModelSummary = {
 type ProfileCatalogSummary = {
   profileId: string;
   mode: CatalogMode;
+  modeExplicit: boolean;
+  upstreamTopology: UpstreamTopology;
   managedAvailable: boolean;
+  contextConflicts: string[];
   externalPointer: string | null;
   generatedPath: string | null;
   effectiveHash: string | null;
@@ -537,6 +628,10 @@ type AdoptionPreviewResult = CommandResult<{
   officialOverrideCount: number;
   customModels: CustomCatalogModel[];
   collisions: string[];
+  sourceHash: string;
+  catalogClientVersion: string | null;
+  targetClientVersion: string;
+  versionStatus: "match" | "mismatch" | "unknown" | string;
   committed: boolean;
 }>;
 
@@ -555,7 +650,9 @@ type ProviderDoctorResult = CommandResult<{
   checks: ProviderDoctorCheck[];
   compatibilityFallbackUsed: boolean;
   initialHttpStatus: number | null;
+  requestHttpStatus: number | null;
 }>;
+
 
 type CcsProviderImport = {
   sourceId: string;
@@ -596,21 +693,16 @@ type EnvConflictsResult = CommandResult<{
   conflicts: EnvConflict[];
 }>;
 
-type RelayEnvironmentResult = CommandResult<{
-  clashVergeTun: {
-    enabled: boolean;
-    configPath: string | null;
-  };
-  proxyEnvironment: {
-    variables: Array<{
-      name: string;
-      source: "process" | "user" | "system" | string;
-    }>;
-  };
-  codexEnvFile: {
-    exists: boolean;
-    path: string;
-  };
+type NetworkPolicyStatusResult = CommandResult<NetworkPolicyStatusView>;
+
+type NetworkPolicyTestResult = CommandResult<{
+  source: string;
+  endpoint: string | null;
+  bypassCount: number;
+  supported: boolean;
+  category: string;
+  durationMs: number;
+  actionRequired: string | null;
 }>;
 
 type RemoveEnvConflictsResult = CommandResult<{
@@ -812,6 +904,9 @@ export function App() {
   const [relayFiles, setRelayFiles] = useState<RelayFilesResult | null>(null);
   const [modelCatalog, setModelCatalog] = useState<ModelCatalogStatusResult | null>(null);
   const [modelCatalogLoading, setModelCatalogLoading] = useState(false);
+  const [networkPolicy, setNetworkPolicy] = useState<NetworkPolicyStatusResult | null>(null);
+  const [networkPolicyTest, setNetworkPolicyTest] = useState<NetworkPolicyTestResult | null>(null);
+  const [networkPolicyLoading, setNetworkPolicyLoading] = useState(false);
   const [envConflicts, setEnvConflicts] = useState<EnvConflictsResult | null>(null);
   const [localSessions, setLocalSessions] = useState<LocalSessionsResult | null>(null);
   const [sessionArchiveView, setSessionArchiveView] = useState(false);
@@ -823,6 +918,10 @@ export function App() {
   const [providerCompatibilityLoading, setProviderCompatibilityLoading] = useState(false);
   const [settingsForm, setSettingsForm] = useState<BackendSettings>({ ...defaultSettings });
   const [relaySwitching, setRelaySwitching] = useState(false);
+  const providerCommitState = useRef<ProviderCommitUiState<SettingsResult>>({
+    latestRevision: 0,
+    baseline: null,
+  });
 
   const call = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
 
@@ -842,8 +941,10 @@ export function App() {
   const refreshSettings = async (silent = false) => {
     const result = await run(() => call<SettingsResult>("load_settings"));
     if (result) {
-      setSettings(result);
       const normalized = normalizeSettings(result.settings);
+      const baseline = { ...result, settings: normalized };
+      providerCommitState.current = { ...providerCommitState.current, baseline };
+      setSettings(baseline);
       setSettingsForm(normalized);
       if (!silent) showResultNotice(t("设置已加载"), result, { silentSuccess: true });
       return normalized;
@@ -883,38 +984,68 @@ export function App() {
     }
   };
 
-  const refreshOfficialModelCatalog = async () => {
-    if (modelCatalogLoading) return null;
-    setModelCatalogLoading(true);
+  const refreshManagerNetworkPolicy = async (silent = false) => {
+    const result = await run(() => call<NetworkPolicyStatusResult>("manager_network_policy_status"));
+    if (result) {
+      setNetworkPolicy(result);
+      if (!silent && !isSuccessStatus(result.status)) showNotice(t("Manager 网络"), result.message, result.status);
+    }
+    return result;
+  };
+
+  const saveManagerNetworkPolicy = async (draft: NetworkPolicyDraft) => {
+    if (networkPolicyLoading) return null;
+    setNetworkPolicyLoading(true);
     try {
-      const result = await run(() => call<ModelCatalogStatusResult>("refresh_official_model_catalog"));
+      const result = await run(() =>
+        call<NetworkPolicyStatusResult>("save_manager_network_policy", { request: draft }),
+      );
       if (result) {
-        setModelCatalog(result);
-        showNotice(t("官方模型目录"), result.message, result.status);
+        if (isSuccessStatus(result.status)) {
+          setNetworkPolicy(result);
+          setNetworkPolicyTest(null);
+        }
+        showNotice(t("Manager 网络"), result.message, result.status);
       }
       return result;
     } finally {
-      setModelCatalogLoading(false);
+      setNetworkPolicyLoading(false);
     }
   };
 
-  const saveProfileCatalog = async (profileId: string, mode: CatalogMode, overlay: CatalogOverlay) => {
-    const result = await run(() =>
-      call<ModelCatalogStatusResult>("save_profile_catalog", {
-        request: { profileId, mode, overlay },
-      }),
-    );
-    if (result) {
-      setModelCatalog(result);
-      if (!isSuccessStatus(result.status)) showNotice(t("模型目录"), result.message, result.status);
+  const testManagerNetworkPolicy = async () => {
+    if (networkPolicyLoading) return null;
+    setNetworkPolicyLoading(true);
+    try {
+      const result = await run(() => call<NetworkPolicyTestResult>("test_manager_network_policy"));
+      if (result) {
+        setNetworkPolicyTest(result);
+        showNotice(t("Manager 网络测试"), result.message, result.status);
+      }
+      return result;
+    } finally {
+      setNetworkPolicyLoading(false);
     }
-    return !!result && isSuccessStatus(result.status);
   };
 
-  const adoptExternalModelCatalog = async (profileId: string, commit = false) => {
+  const adoptExternalModelCatalog = async (
+    profileId: string,
+    commit = false,
+    preview?: AdoptionPreviewResult,
+    acceptVersionMismatch = false,
+    confirmContextCleanup = false,
+  ) => {
     const result = await run(() =>
       call<AdoptionPreviewResult>("adopt_external_model_catalog", {
-        request: { profileId, commit },
+        request: {
+          profileId,
+          commit,
+          expectedSourceHash: preview?.sourceHash ?? null,
+          expectedTargetClientVersion: preview?.targetClientVersion ?? null,
+          expectedVersionStatus: preview?.versionStatus ?? null,
+          acceptVersionMismatch,
+          confirmContextCleanup,
+        },
       }),
     );
     if (result && commit && isSuccessStatus(result.status)) await refreshModelCatalog(true);
@@ -1172,6 +1303,7 @@ export function App() {
         refreshRelayFiles(true),
         refreshEnvConflicts(true),
         refreshModelCatalog(true),
+        refreshManagerNetworkPolicy(true),
       ]);
     }
     if (next === "sessions") {
@@ -1189,8 +1321,11 @@ export function App() {
     const next = normalizeSettings(settingsForm);
     const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
     if (result) {
-      setSettings(result);
-      setSettingsForm(normalizeSettings(result.settings));
+      const normalized = normalizeSettings(result.settings);
+      const baseline = { ...result, settings: normalized };
+      providerCommitState.current = { ...providerCommitState.current, baseline };
+      setSettings(baseline);
+      setSettingsForm(normalized);
       showNotice(t("设置保存"), result.message, result.status);
     }
   };
@@ -1200,64 +1335,16 @@ export function App() {
     setSettingsForm(normalized);
     const result = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
     if (result) {
-      setSettings(result);
-      setSettingsForm(normalizeSettings(result.settings));
+      const normalized = normalizeSettings(result.settings);
+      const baseline = { ...result, settings: normalized };
+      providerCommitState.current = { ...providerCommitState.current, baseline };
+      setSettings(baseline);
+      setSettingsForm(normalized);
       if (!silent || !isSuccessStatus(result.status)) showNotice(t("设置保存"), result.message, result.status);
     }
+    return !!result && isSuccessStatus(result.status);
   };
 
-
-  const applyRelayInjection = async (silent = false) => {
-    const settingsResult = await run(() => call<SettingsResult>("save_settings", { settings: settingsForm }));
-    if (settingsResult) {
-      setSettings(settingsResult);
-      setSettingsForm(normalizeSettings(settingsResult.settings));
-      if (!isSuccessStatus(settingsResult.status)) {
-        showNotice(t("设置保存"), settingsResult.message, settingsResult.status);
-        return false;
-      }
-    } else {
-      return false;
-    }
-    const result = await run(() => call<RelayResult>("apply_relay_injection"));
-    if (result) {
-      setRelay(result);
-      await Promise.all([refreshRelayFiles(true), refreshModelCatalog(true)]);
-      if (!silent || !isSuccessStatus(result.status)) showNotice(t("官方混入 API Key"), result.message, result.status);
-    }
-    return !!result && isSuccessStatus(result.status) && result.configured;
-  };
-
-  const applyPureApiInjection = async (silent = false) => {
-    const settingsResult = await run(() => call<SettingsResult>("save_settings", { settings: settingsForm }));
-    if (settingsResult) {
-      setSettings(settingsResult);
-      setSettingsForm(normalizeSettings(settingsResult.settings));
-      if (!isSuccessStatus(settingsResult.status)) {
-        showNotice(t("设置保存"), settingsResult.message, settingsResult.status);
-        return false;
-      }
-    } else {
-      return false;
-    }
-    const result = await run(() => call<RelayResult>("apply_pure_api_injection"));
-    if (result) {
-      setRelay(result);
-      await Promise.all([refreshRelayFiles(true), refreshModelCatalog(true)]);
-      if (!silent || !isSuccessStatus(result.status)) showNotice(t("纯 API 模式"), result.message, result.status);
-    }
-    return !!result && isSuccessStatus(result.status) && result.configured;
-  };
-
-  const clearRelayInjection = async (silent = false) => {
-    const result = await run(() => call<RelayResult>("clear_relay_injection"));
-    if (result) {
-      setRelay(result);
-      await Promise.all([refreshRelayFiles(true), refreshModelCatalog(true)]);
-      if (!silent || !isSuccessStatus(result.status)) showNotice(t("官方登录模式"), result.message, result.status);
-    }
-    return !!result && isSuccessStatus(result.status) && !result.configured;
-  };
 
   const extractRelayCommonConfig = async (configContents: string) => {
     const result = await run(() =>
@@ -1280,6 +1367,26 @@ export function App() {
     return result ?? null;
   };
 
+  const inspectProviderNativeCapabilities = async (profileId: string) => {
+    try {
+      const result = await call<ProviderNativeCapabilityInspectionResult>(
+        "inspect_provider_native_capabilities",
+        { request: { profileId } },
+      );
+      if (!isSuccessStatus(result.status)) return null;
+      return result.inspections.find((inspection) => inspection.profileId === profileId) ?? null;
+    } catch {
+      return null;
+    }
+  };
+
+  const transformProviderNativeCapability = async (
+    invocation: ProviderDetailTransformInvocation<RelayProfile>,
+  ) => call<ProviderDetailTransformResponse<RelayProfile>>(
+    invocation.command,
+    { request: invocation.request },
+  );
+
   const fetchRelayProfileModels = async (profile: RelayProfile) => {
     const result = await run(() => call<RelayProfileModelsResult>("fetch_relay_profile_models", { profile }));
     if (result) showNotice(t("模型列表"), result.message, result.status);
@@ -1287,12 +1394,159 @@ export function App() {
     return result && isSuccessStatus(result.status) ? result.models : null;
   };
 
-  const switchRelayProfile = async (next: BackendSettings, previousActiveRelayId = settingsForm.activeRelayId) => {
+  const catalogDraftForProfile = (profile: RelayProfile): ProfileCatalogDraft | null => {
+    const summary = modelCatalog?.profiles.find((item) => item.profileId === profile.id) ?? null;
+    if (!summary) return null;
+    return catalogProfileDraft({
+      profileId: profile.id,
+      fallbackMode: defaultCatalogMode(profile.relayMode, profile.officialMixApiKey) as CatalogMode,
+      summary,
+    });
+  };
+
+  const persistedCatalogDrafts = () =>
+    (modelCatalog?.profiles ?? []).map((summary) => catalogProfileDraft({
+      profileId: summary.profileId,
+      fallbackMode: summary.mode,
+      summary,
+    }));
+
+  // Reads the committed generation back without extending the caller's pending state: the
+  // transaction has already landed, so awaiting a slow status read would leave a save that
+  // succeeded looking unfinished. Each refresh reports its own failure through `run`.
+  const refreshAfterCommit = () => {
+    void refreshRelay(true);
+    void refreshRelayFiles(true);
+    void refreshModelCatalog(true);
+  };
+
+  const submitProviderCommit = async (invocation: ReturnType<typeof buildProviderMutationInvocation>) => {
+    const revision = invocation.request.draftRevision;
+    providerCommitState.current = registerProviderCommit(providerCommitState.current, revision);
+    const reconcileTopologyFailure = async (disposition: ProviderCommitResponseDisposition) => {
+      if (!providerCommitFailureShouldReconcileForm(invocation.request.focusedProfileId, disposition)) return;
+      const baseline = providerCommitState.current.baseline;
+      if (baseline) {
+        setSettings(baseline);
+        setSettingsForm(normalizeSettings(baseline.settings));
+      } else {
+        await refreshSettings(true);
+      }
+    };
+    let result: ProviderCommitResult;
+    try {
+      result = await call<ProviderCommitResult>(invocation.command, { request: invocation.request });
+    } catch (error) {
+      const settled = settleProviderCommit(providerCommitState.current, revision, false, null);
+      providerCommitState.current = settled.state;
+      if (settled.disposition === "report") {
+        await reconcileTopologyFailure(settled.disposition);
+        showNotice(t("调用失败"), stringifyError(error), "failed");
+      }
+      return false;
+    }
+    const succeeded = isSuccessStatus(result.status) && !!result.settings;
+    const selectedSettings = result.settings ? normalizeSettings(result.settings) : null;
+    const priorBaseline = providerCommitState.current.baseline ?? settings;
+    const nextBaseline = succeeded && selectedSettings
+      ? {
+          status: result.status,
+          message: result.message,
+          settings: selectedSettings,
+          settings_path: priorBaseline?.settings_path ?? "",
+          user_scripts: priorBaseline?.user_scripts ?? {},
+          provider_fingerprint: result.providerFingerprint,
+        }
+      : null;
+    const settled = settleProviderCommit(
+      providerCommitState.current,
+      result.draftRevision,
+      succeeded,
+      nextBaseline,
+    );
+    providerCommitState.current = settled.state;
+    if (settled.disposition === "ignore") return false;
+    if (settled.disposition === "report") {
+      await reconcileTopologyFailure(settled.disposition);
+      showNotice(t("保存供应商"), providerCommitFailureMessage(result.message, result.errorCode, t, result.reason), result.status);
+      return false;
+    }
+    if (!nextBaseline || !selectedSettings) return false;
+    setSettings(nextBaseline);
+    if (settled.disposition === "adopt-baseline") {
+      refreshAfterCommit();
+      return false;
+    }
+    setSettingsForm(selectedSettings);
+    refreshAfterCommit();
+    return true;
+  };
+
+  const providerCommitCommon = (next: BackendSettings, confirmContextCleanup = false) => {
+    const baseline = providerCommitState.current.baseline ?? settings;
+    if (!baseline?.provider_fingerprint) throw new Error("provider settings fingerprint is unavailable");
+    return {
+      settings: normalizeSettings(next),
+      persistedSettings: normalizeSettings(baseline.settings),
+      catalogDrafts: persistedCatalogDrafts(),
+      previousActiveRelayId: baseline.settings.activeRelayId,
+      confirmContextCleanup,
+      draftRevision: providerCommitState.current.latestRevision + 1,
+      expectedProviderFingerprint: baseline.provider_fingerprint,
+    };
+  };
+
+  const commitProviderTopology = async (
+    next: BackendSettings,
+    kind: Exclude<ProviderMutationKind, "detailSave" | "setCurrent">,
+    copySourceProfileId?: string,
+  ) => {
+    try {
+      const common = providerCommitCommon(next);
+      const invocation = kind === "copy"
+        ? buildProviderMutationInvocation({ ...common, kind, copySourceProfileId: copySourceProfileId ?? "" })
+        : buildProviderMutationInvocation({ ...common, kind });
+      return await submitProviderCommit(invocation);
+    } catch (error) {
+      showNotice(t("保存供应商"), stringifyError(error), "failed");
+      return false;
+    }
+  };
+
+  const commitProviderDetail = async (
+    next: BackendSettings,
+    focusedProfileId: string,
+    catalogDraft: ProfileCatalogDraft | null,
+    focusedProfileWasPersisted: boolean,
+    kind: "detailSave" | "setCurrent",
+    confirmContextCleanup = false,
+  ) => {
+    try {
+      const common = providerCommitCommon(next, confirmContextCleanup);
+      const invocation = buildProviderMutationInvocation({
+        ...common,
+        kind,
+        focusedProfileId,
+        focusedProfileWasPersisted,
+        catalogDrafts: catalogDraft ? [catalogDraft] : [],
+      });
+      return await submitProviderCommit(invocation);
+    } catch (error) {
+      showNotice(t("保存供应商"), stringifyError(error), "failed");
+      return false;
+    }
+  };
+
+  const switchRelayProfile = async (
+    next: BackendSettings,
+    previousActiveRelayId = settingsForm.activeRelayId,
+    catalogDraftOverride?: ProfileCatalogDraft,
+  ) => {
     if (relaySwitching) {
       showNotice(t("供应商切换中"), t("上一次切换还没有完成，请稍后再试。"), "failed");
       return;
     }
-    let switchSettings = normalizeSettings(next);
+    const switchSettings = normalizeSettings(next);
     if (!switchSettings.relayProfilesEnabled) {
       showNotice(t("供应商配置已关闭"), t("当前不会写入 Codex live 配置。打开供应商配置总开关后再切换。"), "failed");
       return;
@@ -1316,93 +1570,56 @@ export function App() {
       return;
     }
     const selectedAfterSave = activeRelayProfile(switchSettings);
-    const command = relayProfileSwitchCommand(selectedAfterSave);
+    const selectedCatalog = modelCatalog?.profiles.find((item) => item.profileId === selectedAfterSave.id);
+    const selectedCatalogMode = catalogDraftOverride?.mode ?? selectedCatalog?.mode;
+    const contextConflicts = selectedCatalogMode && managedCatalogMode(selectedCatalogMode)
+      ? providerManagedContextConflictKeys(selectedAfterSave, relayFiles?.configContents ?? "")
+      : [];
+    const confirmContextCleanup = contextConflicts.length
+      ? window.confirm(tf("切换到托管目录将移除这些全局上下文设置：\n\n{0}", [contextConflicts.join("\n")]))
+      : false;
+    if (contextConflicts.length && !confirmContextCleanup) return;
 
     logDiagnostic("switchRelayProfile.apply_start", {
       targetRelayId: selectedAfterSave.id,
       targetRelayName: selectedAfterSave.name,
       previousActiveRelayId,
-      command,
     });
     setRelaySwitching(true);
     try {
-      const result = await run(() =>
-        call<RelaySwitchResult>("switch_relay_profile", {
-          request: { settings: switchSettings, previousActiveRelayId },
-        }),
+      const selectedCatalogDraft = isAggregateRelayProfile(selectedAfterSave)
+        || selectedAfterSave.protocol === "chatCompletions"
+        ? null
+        : catalogDraftOverride ?? catalogDraftForProfile(selectedAfterSave);
+      if (!isAggregateRelayProfile(selectedAfterSave)
+        && selectedAfterSave.protocol !== "chatCompletions"
+        && !selectedCatalogDraft) {
+        showNotice(t("模型目录不可用"), t("当前供应商的完整模型目录状态尚未加载，请刷新后重试。"), "failed");
+        return;
+      }
+      const committed = await commitProviderDetail(
+        switchSettings,
+        selectedAfterSave.id,
+        selectedCatalogDraft,
+        true,
+        "setCurrent",
+        confirmContextCleanup,
       );
-      if (!result) {
+      if (!committed) {
         logDiagnostic("switchRelayProfile.apply_no_result", {
           targetRelayId: selectedAfterSave.id,
         });
         return;
       }
-      const selectedSettings = normalizeSettings(result.settings);
-      setSettings({
-        status: result.status,
-        message: result.message,
-        settings: selectedSettings,
-        settings_path: result.settingsPath,
-        user_scripts: result.userScripts as UserScriptInventory,
-      });
-      setSettingsForm(selectedSettings);
-      setRelay({
-        status: result.status,
-        message: result.message,
-        ...result.relay,
-      });
-      await Promise.all([refreshRelayFiles(true), refreshModelCatalog(true)]);
-      if (!isSuccessStatus(result.status)) {
-        logDiagnostic("switchRelayProfile.apply_failed", {
-          targetRelayId: selectedAfterSave.id,
-          status: result.status,
-          message: result.message,
-          activeRelayId: selectedSettings.activeRelayId,
-        });
-        showNotice(t("供应商切换"), result.message, result.status);
-        return;
-      }
-      const currentSelected = activeRelayProfile(selectedSettings);
       logDiagnostic("switchRelayProfile.ok", {
-        targetRelayId: currentSelected.id,
-        launchMode: selectedSettings.launchMode,
-        status: result.status,
-        previousProvider: result.previousProvider,
-        currentProvider: result.currentProvider,
-        providerChanged: result.providerChanged,
+        targetRelayId: selectedAfterSave.id,
+        launchMode: switchSettings.launchMode,
+        status: "ok",
       });
-      if (result.providerChanged) await refreshProviderCompatibility(true);
+      await refreshProviderCompatibility(true);
     } finally {
       setRelaySwitching(false);
     }
-  };
-
-  const saveActiveRelayProfile = async (next: BackendSettings) => {
-    const normalized = normalizeSettings(next);
-    const result = await run(() =>
-      call<RelaySwitchResult>("save_active_relay_profile", {
-        request: {
-          settings: normalized,
-          previousActiveRelayId: normalized.activeRelayId,
-        },
-      }),
-    );
-    if (!result) return false;
-    const selectedSettings = normalizeSettings(result.settings);
-    setSettings({
-      status: result.status,
-      message: result.message,
-      settings: selectedSettings,
-      settings_path: result.settingsPath,
-      user_scripts: result.userScripts as UserScriptInventory,
-    });
-    setSettingsForm(selectedSettings);
-    setRelay({ status: result.status, message: result.message, ...result.relay });
-    await Promise.all([refreshRelayFiles(true), refreshModelCatalog(true)]);
-    if (!isSuccessStatus(result.status)) {
-      showNotice(t("保存供应商"), result.message, result.status);
-    }
-    return isSuccessStatus(result.status);
   };
 
 
@@ -1434,6 +1651,7 @@ export function App() {
       refreshRelayFiles(true),
       refreshEnvConflicts(true),
       refreshModelCatalog(true),
+      refreshManagerNetworkPolicy(true),
     ]);
     const scheduleMaintenance = () => {
       void refreshSessionLifecycle(true).then((result) => {
@@ -1453,7 +1671,7 @@ export function App() {
       void invoke("update_tray_labels", {
         showLabel: "Show window",
         quitLabel: "Quit",
-        windowTitle: "Codex-- Manager",
+        windowTitle: "Codex Minus",
       });
     }
   }, []);
@@ -1473,8 +1691,9 @@ export function App() {
       refreshRelay,
       refreshRelayFiles,
       refreshModelCatalog,
-      refreshOfficialModelCatalog,
-      saveProfileCatalog,
+      refreshManagerNetworkPolicy,
+      saveManagerNetworkPolicy,
+      testManagerNetworkPolicy,
       adoptExternalModelCatalog,
       refreshEnvConflicts,
       removeEnvConflicts,
@@ -1490,15 +1709,15 @@ export function App() {
       refreshProviderCompatibility,
       adaptActiveSessions,
       openExternalUrl,
-      applyRelayInjection,
-      applyPureApiInjection,
-      clearRelayInjection,
       extractRelayCommonConfig,
       testRelayProfile,
       diagnoseRelayProfile,
+      inspectProviderNativeCapabilities,
+      transformProviderNativeCapability,
       fetchRelayProfileModels,
+      commitProviderTopology,
+      commitProviderDetail,
       switchRelayProfile,
-      saveActiveRelayProfile,
       relaySwitching,
       showMessage: async (title: string, message: string, status?: Status) => showNotice(title, message, status),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
@@ -1512,6 +1731,7 @@ export function App() {
       localSessions,
       envConflicts,
       modelCatalogLoading,
+      networkPolicyLoading,
       relaySwitching,
       sessionArchiveView,
       sessionLifecycle,
@@ -1527,7 +1747,7 @@ export function App() {
         <div className="brand">
           <div className="brand-copy">
             <div className="brand-title-row">
-              <div className="brand-title">Codex--</div>
+              <div className="brand-title">Codex Minus</div>
             </div>
             <div className="brand-subtitle">{t("管理控制台")}</div>
           </div>
@@ -1588,6 +1808,9 @@ export function App() {
               relayFiles={relayFiles}
               modelCatalog={modelCatalog}
               modelCatalogLoading={modelCatalogLoading}
+              networkPolicy={networkPolicy}
+              networkPolicyTest={networkPolicyTest}
+              networkPolicyLoading={networkPolicyLoading}
               envConflicts={envConflicts}
               form={settingsForm}
               onFormChange={setSettingsForm}
@@ -1636,14 +1859,15 @@ export function App() {
 type Actions = {
   refreshCurrent: () => Promise<void>;
   saveSettings: () => Promise<void>;
-  saveSettingsValue: (settings: BackendSettings, silent?: boolean) => Promise<void>;
+  saveSettingsValue: (settings: BackendSettings, silent?: boolean) => Promise<boolean>;
   refreshSettings: (silent?: boolean) => Promise<BackendSettings | null>;
   refreshRelay: () => Promise<void>;
   refreshRelayFiles: () => Promise<RelayFilesResult | null>;
   refreshModelCatalog: (silent?: boolean) => Promise<ModelCatalogStatusResult | null>;
-  refreshOfficialModelCatalog: () => Promise<ModelCatalogStatusResult | null>;
-  saveProfileCatalog: (profileId: string, mode: CatalogMode, overlay: CatalogOverlay) => Promise<boolean>;
-  adoptExternalModelCatalog: (profileId: string, commit?: boolean) => Promise<AdoptionPreviewResult | null>;
+  refreshManagerNetworkPolicy: (silent?: boolean) => Promise<NetworkPolicyStatusResult | null>;
+  saveManagerNetworkPolicy: (draft: NetworkPolicyDraft) => Promise<NetworkPolicyStatusResult | null>;
+  testManagerNetworkPolicy: () => Promise<NetworkPolicyTestResult | null>;
+  adoptExternalModelCatalog: (profileId: string, commit?: boolean, preview?: AdoptionPreviewResult, acceptVersionMismatch?: boolean, confirmContextCleanup?: boolean) => Promise<AdoptionPreviewResult | null>;
   refreshEnvConflicts: (silent?: boolean) => Promise<EnvConflictsResult | null>;
   removeEnvConflicts: (names: string[]) => Promise<void>;
   refreshLocalSessions: (silent?: boolean, archived?: boolean, cursor?: string) => Promise<LocalSessionsResult | null>;
@@ -1658,15 +1882,15 @@ type Actions = {
   deleteLocalSession: (session: LocalSession) => Promise<void>;
   deleteLocalSessions: (sessions: LocalSession[]) => Promise<void>;
   openExternalUrl: (url: string) => Promise<void>;
-  applyRelayInjection: () => Promise<boolean>;
-  applyPureApiInjection: () => Promise<boolean>;
-  clearRelayInjection: () => Promise<boolean>;
   extractRelayCommonConfig: (configContents: string) => Promise<ExtractRelayCommonConfigResult | null>;
   testRelayProfile: (profile: RelayProfile) => Promise<void>;
   diagnoseRelayProfile: (profile: RelayProfile) => Promise<ProviderDoctorResult | null>;
+  inspectProviderNativeCapabilities: (profileId: string) => Promise<ProviderDetailInspectionMetadata | null>;
+  transformProviderNativeCapability: (invocation: ProviderDetailTransformInvocation<RelayProfile>) => Promise<ProviderDetailTransformResponse<RelayProfile>>;
   fetchRelayProfileModels: (profile: RelayProfile) => Promise<string[] | null>;
-  switchRelayProfile: (settings: BackendSettings, previousActiveRelayId?: string) => Promise<void>;
-  saveActiveRelayProfile: (settings: BackendSettings) => Promise<boolean>;
+  commitProviderTopology: (settings: BackendSettings, kind: Exclude<ProviderMutationKind, "detailSave" | "setCurrent">, copySourceProfileId?: string) => Promise<boolean>;
+  commitProviderDetail: (settings: BackendSettings, focusedProfileId: string, catalogDraft: ProfileCatalogDraft | null, focusedProfileWasPersisted: boolean, kind: "detailSave" | "setCurrent", confirmContextCleanup?: boolean) => Promise<boolean>;
+  switchRelayProfile: (settings: BackendSettings, previousActiveRelayId?: string, catalogDraftOverride?: ProfileCatalogDraft) => Promise<void>;
   relaySwitching: boolean;
   showMessage: (title: string, message: string, status?: Status) => Promise<void>;
   toggleTheme: () => void;
@@ -1678,6 +1902,9 @@ function RelayScreen({
   relayFiles,
   modelCatalog,
   modelCatalogLoading,
+  networkPolicy,
+  networkPolicyTest,
+  networkPolicyLoading,
   envConflicts,
   form,
   onFormChange,
@@ -1687,6 +1914,9 @@ function RelayScreen({
   relayFiles: RelayFilesResult | null;
   modelCatalog: ModelCatalogStatusResult | null;
   modelCatalogLoading: boolean;
+  networkPolicy: NetworkPolicyStatusResult | null;
+  networkPolicyTest: NetworkPolicyTestResult | null;
+  networkPolicyLoading: boolean;
   envConflicts: EnvConflictsResult | null;
   form: BackendSettings;
   onFormChange: (value: BackendSettings) => void;
@@ -1702,9 +1932,12 @@ function RelayScreen({
   const catalogProfile = detailProfile
     ? modelCatalog?.profiles.find((item) => item.profileId === detailProfile.id) ?? null
     : null;
-  const saveRelaySettings = async (next: BackendSettings) => {
-    onFormChange(next);
-    await actions.saveSettingsValue(next, true);
+  const saveRelaySettings = async (
+    next: BackendSettings,
+    kind: Exclude<ProviderMutationKind, "detailSave" | "setCurrent">,
+    copySourceProfileId?: string,
+  ) => {
+    return actions.commitProviderTopology(next, kind, copySourceProfileId);
   };
   const createNewAggregateProfile = () => {
     const draft = createAggregateRelayProfile(normalized);
@@ -1739,7 +1972,7 @@ function RelayScreen({
     return (
       <RelayProfileDetail
         profile={detailProfile}
-        relayFiles={!isNewProfile && detailProfile.id === normalized.activeRelayId ? relayFiles : null}
+        relayFiles={relayFiles}
         modelCatalog={modelCatalog}
         catalogProfile={catalogProfile}
         form={normalized}
@@ -1748,7 +1981,6 @@ function RelayScreen({
           setNewProfileDraft(null);
           setDetailProfileId(null);
         }}
-        onFormChange={saveRelaySettings}
         onSaved={() => {
           setNewProfileDraft(null);
           setDetailProfileId(null);
@@ -1760,10 +1992,12 @@ function RelayScreen({
 
   return (
     <>
-      <OfficialCatalogStatusBand
-        loading={modelCatalogLoading}
-        status={modelCatalog}
-        onRefresh={() => void actions.refreshOfficialModelCatalog()}
+      <ManagerNetworkPanel
+        loading={networkPolicyLoading}
+        status={networkPolicy}
+        testResult={networkPolicyTest}
+        onSave={(draft) => void actions.saveManagerNetworkPolicy(draft)}
+        onTest={() => void actions.testManagerNetworkPolicy()}
       />
       <Panel>
         <CardHead title={t("供应商列表")} detail={tf("{0} 个供应商配置；可拖动排序，点编辑进入详情", [normalized.relayProfiles.length])} />
@@ -1774,7 +2008,7 @@ function RelayScreen({
               checked={normalized.relayProfilesEnabled}
               onChange={(event) => {
                 const next = { ...normalized, relayProfilesEnabled: event.currentTarget.checked };
-                void saveRelaySettings(next);
+                void saveRelaySettings(next, "enablement");
               }}
               type="checkbox"
             />
@@ -1808,7 +2042,7 @@ function RelayScreen({
               <Input
                 value={form.relayTestModel}
                 onChange={(event) => onFormChange({ ...form, relayTestModel: event.currentTarget.value })}
-                onBlur={() => void actions.saveSettingsValue(normalizeSettings(form), true)}
+                onBlur={() => void saveRelaySettings(normalizeSettings(form), "testModel")}
                 placeholder={t("例如 gpt-5.4-mini")}
               />
             </Field>
@@ -1826,83 +2060,171 @@ function RelayScreen({
   );
 }
 
-function OfficialCatalogStatusBand({
+function ManagerNetworkPanel({
   status,
+  testResult,
   loading,
-  onRefresh,
+  onSave,
+  onTest,
 }: {
-  status: ModelCatalogStatusResult | null;
+  status: NetworkPolicyStatusResult | null;
+  testResult: NetworkPolicyTestResult | null;
   loading: boolean;
-  onRefresh: () => void;
+  onSave: (draft: NetworkPolicyDraft) => void;
+  onTest: () => void;
 }) {
-  const refreshGate = catalogRefreshGate({
-    refreshAvailable: status?.refreshAvailable ?? false,
-    credentialAction: status?.credentialAction ?? null,
-    loading,
-  });
-  const freshnessLabel = status
-    ? ({
-        current: t("当前"),
-        stale: t("待刷新"),
-        "scope-stale": t("范围已变化"),
-        missing: t("尚未建立"),
-      }[status.freshness] ?? status.freshness)
-    : t("加载中");
+  const [draft, setDraft] = useState<NetworkPolicyDraft>(() => networkPolicyDraft(status));
+  useEffect(() => {
+    setDraft(networkPolicyDraft(status));
+  }, [status?.mode, status?.customProxyUrl, status?.customNoProxy]);
+  const presentation = networkPolicyPresentation(status);
+  const validationError = validateNetworkPolicyDraft(draft);
+  const dirty = networkPolicyDirty(draft, status);
+  const modeOptions: Array<{ value: NetworkPolicyModeValue; label: string }> = [
+    { value: "auto", label: t("自动") },
+    { value: "direct", label: t("直连") },
+    { value: "custom", label: t("自定义") },
+  ];
+
   return (
-    <section className="catalog-status-band" aria-busy={loading}>
-      <div className="catalog-status-main">
-        <span className={`catalog-status-icon ${status?.freshness === "current" ? "good" : "warn"}`}>
-          {status?.freshness === "current" ? <ShieldCheck className="h-4 w-4" /> : <ShieldAlert className="h-4 w-4" />}
-        </span>
+    <section className={`manager-network-panel ${presentation.state}`} aria-busy={loading}>
+      <div className="manager-network-head">
+        <span className="manager-network-icon"><Network className="h-4 w-4" /></span>
         <div>
-          <strong>{t("官方模型目录")}</strong>
-          <span>
-            {status?.targetClientVersion || t("未找到目标版本")} · {freshnessLabel} · {status?.visibleCount ?? 0}/{status?.totalCount ?? 0}
-          </span>
+          <strong>{t("Manager 网络")}</strong>
+          <span>{t("仅用于 Manager 连接测试和隔离的官方目录刷新；不会修改系统代理或 Codex 对话路由。")}</span>
         </div>
+        <UiBadge variant={status?.supported === false ? "outline" : "secondary"}>
+          {status ? (status.supported ? t("已解析") : t("需要处理")) : t("读取中")}
+        </UiBadge>
       </div>
-      <div className="catalog-status-meta">
-        <span>{status?.lastSuccessfulRefreshAtMs ? formatTime(status.lastSuccessfulRefreshAtMs) : t("暂无成功刷新")}</span>
-        {status?.credentialAction ? <span className="catalog-action-required">{status.credentialAction}</span> : null}
-        {status && (status.diff.added.length || status.diff.updated.length || status.diff.removed.length) ? (
-          <span title={catalogDiffSummary(status.diff)}>{tf("新增 {0} · 更新 {1} · 移除 {2}", [status.diff.added.length, status.diff.updated.length, status.diff.removed.length])}</span>
+      <div className="manager-network-body">
+        <div className="segmented manager-network-modes" role="group" aria-label={t("Manager 网络模式")}>
+          {modeOptions.map((option) => (
+            <button
+              className={draft.mode === option.value ? "active" : ""}
+              key={option.value}
+              onClick={() => setDraft({ ...draft, mode: option.value })}
+              type="button"
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+        {draft.mode === "custom" ? (
+          <div className="manager-network-custom">
+            <label>
+              <span>{t("代理地址")}</span>
+              <Input
+                onChange={(event) => setDraft({ ...draft, customProxyUrl: event.currentTarget.value })}
+                placeholder="http://127.0.0.1:7890"
+                value={draft.customProxyUrl}
+              />
+            </label>
+            <label>
+              <span>NO_PROXY</span>
+              <Input
+                onChange={(event) => setDraft({ ...draft, customNoProxy: event.currentTarget.value })}
+                placeholder="localhost,127.0.0.1,.local"
+                value={draft.customNoProxy}
+              />
+            </label>
+          </div>
+        ) : null}
+        <div className="manager-network-resolution">
+          <span>{t("来源")}：<strong>{networkPolicySourceLabel(presentation.source)}</strong></span>
+          <span>{t("端点")}：<strong>{presentation.endpoint || t("无")}</strong></span>
+          <span>{t("绕过条目")}：<strong>{status?.bypassCount ?? 0}</strong></span>
+        </div>
+        {validationError ? <div className="manager-network-error">{networkPolicyDraftErrorLabel(validationError)}</div> : null}
+        {!validationError && status?.actionRequired ? <div className="manager-network-error">{t(status.actionRequired)}</div> : null}
+        {testResult ? (
+          <div className={`manager-network-test ${isSuccessStatus(testResult.status) ? "ok" : "failed"}`}>
+            <strong>{networkTestCategoryText(networkTestCategoryLabel(testResult.category))}</strong>
+            <span>{t(testResult.message)} · {testResult.durationMs} ms</span>
+          </div>
         ) : null}
       </div>
-      <Button
-        disabled={refreshGate.disabled}
-        onClick={onRefresh}
-        size="sm"
-        title={status?.credentialAction || (!status?.refreshAvailable ? t("目标 CLI 未通过能力或信任校验") : t("刷新官方目录"))}
-        variant="secondary"
-      >
-        <RefreshCw className={`h-4 w-4 ${loading ? "spin" : ""}`} />
-        {loading ? t("刷新中") : t("刷新")}
-      </Button>
+      <div className="manager-network-actions">
+        <Button
+          disabled={loading || !dirty || !!validationError}
+          onClick={() => onSave(draft)}
+          size="sm"
+          title={validationError ? networkPolicyDraftErrorLabel(validationError) : t("保存 Manager 网络策略")}
+          variant="secondary"
+        >
+          <Save className="h-4 w-4" />
+          {loading ? t("处理中") : t("保存")}
+        </Button>
+        <Button
+          disabled={loading || dirty || !!validationError || !status}
+          onClick={onTest}
+          size="sm"
+          title={dirty ? t("请先保存网络策略") : t("测试 Manager 网络")}
+          variant="secondary"
+        >
+          <TestTube className="h-4 w-4" />
+          {t("测试连接")}
+        </Button>
+      </div>
     </section>
   );
 }
 
+function networkPolicySourceLabel(source: string): string {
+  return ({
+    "process-environment": t("进程环境"),
+    "macos-system": t("macOS 系统代理"),
+    "windows-system": t("Windows 系统代理"),
+    custom: t("自定义代理"),
+    direct: t("直连"),
+    "direct-fallback": t("自动直连"),
+  } as Record<string, string>)[source] ?? (source || t("读取中"));
+}
+
+function networkPolicyDraftErrorLabel(error: string): string {
+  if (error === "custom-proxy-required") return t("自定义模式必须填写代理地址。")
+  if (error === "custom-proxy-scheme") return t("代理地址仅支持 HTTP、HTTPS、SOCKS5 或 SOCKS5H。")
+  if (error === "custom-proxy-credentials") return t("v1 不支持在代理地址中保存用户名、密码或令牌。")
+  if (error === "custom-bypass-invalid") return t("NO_PROXY 条目过多或过长。")
+  return t("代理地址无效；请只填写协议、主机和端口。")
+}
+
+function networkTestCategoryText(category: string): string {
+  return ({
+    ok: t("连接成功"),
+    dns: t("DNS 失败"),
+    "proxy-connect": t("代理连接失败"),
+    "proxy-auth-unsupported": t("代理认证不受支持"),
+    tls: t("TLS 失败"),
+    timeout: t("连接超时"),
+    "unsupported-policy": t("策略不受支持"),
+    "bundled-fallback": t("已回退 bundled 模型"),
+    other: t("连接失败"),
+  } as Record<string, string>)[category] ?? t("连接失败");
+}
+
 function CatalogProfileEditor({
   catalog,
+  draft,
+  onDraftChange,
   profile,
   summary,
+  isNew = false,
   actions,
 }: {
   catalog: ModelCatalogStatusResult | null;
+  draft: ProfileCatalogDraft;
+  onDraftChange: (draft: ProfileCatalogDraft) => void;
   profile: RelayProfile;
   summary: ProfileCatalogSummary | null;
+  isNew?: boolean;
   actions: Actions;
 }) {
-  const fallbackMode = defaultCatalogMode(profile.relayMode, profile.officialMixApiKey) as CatalogMode;
-  const [mode, setMode] = useState<CatalogMode>(summary?.mode ?? fallbackMode);
-  const [overlay, setOverlay] = useState<CatalogOverlay>(summary?.overlay ?? { official: {}, custom: [] });
-  const [saving, setSaving] = useState(false);
-  useEffect(() => {
-    setMode(summary?.mode ?? fallbackMode);
-    setOverlay(summary?.overlay ?? { official: {}, custom: [] });
-  }, [summary, fallbackMode]);
+  const { mode, modeExplicit, upstreamTopology, overlay } = draft;
+  const editingAvailability = catalogEditingAvailability(isNew || !!summary?.managedAvailable);
 
-  if (!summary?.managedAvailable) {
+  if (!isNew && !summary?.managedAvailable) {
     return (
       <section className="catalog-profile-editor unavailable">
         <div className="catalog-editor-head">
@@ -1917,8 +2239,14 @@ function CatalogProfileEditor({
   }
 
   const officialModels = catalog?.officialModels ?? [];
-  const reported = new Set(summary?.providerReportedSlugs ?? []);
-  const catalogFlags = profileCatalogFlags(summary ?? { restartRequired: false, actionRequired: null });
+  const presentation = catalogModePresentation({
+    selectedMode: mode,
+    persistedMode: summary?.mode ?? null,
+    generatedPath: summary?.generatedPath ?? null,
+    externalPointer: summary?.externalPointer ?? null,
+    restartRequired: summary?.restartRequired ?? false,
+    customModelCount: overlay.custom.length,
+  });
   const draftError = validateCatalogDraft(
     overlay,
     mode,
@@ -1926,144 +2254,85 @@ function CatalogProfileEditor({
     officialModels.map((model) => model.slug),
   );
   const setOfficialOverride = (slug: string, patch: Partial<OfficialCatalogOverride>) => {
-    const current = overlay.official[slug] ?? { visible: null, contextWindow: null, order: null };
+    const current = overlay.official[slug] ?? {
+      displayName: null,
+      visible: null,
+      contextWindow: null,
+      effectiveContextWindowPercent: null,
+      order: null,
+      supportedReasoningLevels: null,
+      defaultReasoningLevel: null,
+      supportedTools: null,
+      toolCapabilities: null,
+    };
     const next = { ...current, ...patch };
     const official = { ...overlay.official };
-    if (next.visible === null && next.contextWindow === null && next.order === null) delete official[slug];
+    if (Object.values(next).every((item) => item === null)) delete official[slug];
     else official[slug] = next;
-    setOverlay({ ...overlay, official });
+    onDraftChange(updateCatalogProfileDraft(draft, { overlay: { ...overlay, official } }));
   };
   const updateCustom = (index: number, patch: Partial<CustomCatalogModel>) => {
-    setOverlay({
+    onDraftChange(updateCatalogProfileDraft(draft, { overlay: {
       ...overlay,
       custom: overlay.custom.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item)),
-    });
+    } }));
   };
   const addCustom = (slug = "") => {
     if (slug) {
-      setOverlay(addCatalogCandidate(overlay, slug));
+      onDraftChange(updateCatalogProfileDraft(draft, { overlay: addCatalogCandidate(overlay, slug) }));
       return;
     }
-    setOverlay({ ...overlay, custom: [...overlay.custom, { slug: "", displayName: "", contextWindow: 272000, visible: true, order: overlay.custom.length, templateProvenance: "user-created" }] });
+    onDraftChange(updateCatalogProfileDraft(draft, { overlay: { ...overlay, custom: [...overlay.custom, {
+      slug: "",
+      displayName: "",
+      contextWindow: 272000,
+      effectiveContextWindowPercent: 100,
+      visible: true,
+      order: overlay.custom.length,
+      supportedReasoningLevels: [],
+      defaultReasoningLevel: null,
+      supportedTools: [],
+      toolCapabilities: null,
+      templateProvenance: "user-created",
+    }] } }));
   };
-  const save = async () => {
-    setSaving(true);
-    try {
-      await actions.saveProfileCatalog(profile.id, mode, overlay);
-    } finally {
-      setSaving(false);
-    }
-  };
-  const adopt = async () => {
-    const preview = await actions.adoptExternalModelCatalog(profile.id, false);
-    if (!preview || !isSuccessStatus(preview.status)) return;
-    const adoption = adoptionPreviewSummary(preview);
-    if (!adoption.adoptable) {
-      await actions.showMessage(t("采用外部目录"), t("外部目录包含重复或冲突模型，需先修复后再采用。"), "failed");
-      return;
-    }
-    const confirmed = window.confirm(
-      tf("采用外部目录 {0}？\n\n官方覆盖：{1}\n自定义模型：{2}\n冲突：{3}", [
-        preview.sourcePath,
-        preview.officialOverrideCount,
-        preview.customModels.length,
-        preview.collisions.length,
-      ]),
-    );
-    if (confirmed) await actions.adoptExternalModelCatalog(profile.id, true);
-  };
-
   return (
     <section className="catalog-profile-editor">
       <div className="catalog-editor-head">
         <div>
-          <strong>{t("模型目录")}</strong>
-          <span>{summary?.generatedPath || summary?.externalPointer || t("使用 Codex 原生动态目录")}</span>
+          <strong>{t("模型")}</strong>
+          <span>{t("留空使用官方默认上下文；想用更大的上下文就直接改这一个数字。")}</span>
         </div>
         <div className="catalog-editor-actions">
-          {catalogFlags.restart ? <UiBadge variant="secondary">{t("需重启 Codex")}</UiBadge> : null}
-          <Button disabled={saving || !!draftError} onClick={() => void save()} size="sm" title={draftError || undefined}>
-            <Save className="h-4 w-4" />
-            {saving ? t("保存中") : t("保存目录")}
-          </Button>
+          {presentation.restart ? <UiBadge variant="secondary">{t("需重启 Codex")}</UiBadge> : null}
         </div>
       </div>
-      <div className="segmented catalog-mode-control">
-        {([
-          ["native-official", t("官方原生")],
-          ["official-plus-custom", t("官方 + 自定义")],
-          ["custom-only", t("仅自定义")],
-          ...(summary?.externalPointer || summary?.mode === "external" ? [["external", t("外部目录")]] : []),
-        ] as Array<[CatalogMode, string]>).map(([value, label]) => (
-          <button className={mode === value ? "active" : ""} key={value} onClick={() => setMode(value)} type="button">
-            {label}
-          </button>
-        ))}
-      </div>
-      {catalogFlags.partialFailure || draftError ? <div className="catalog-inline-error">{summary?.actionRequired || catalogDraftErrorLabel(draftError)}</div> : null}
-      {mode === "external" ? (
-        <div className="catalog-external-row">
-          <span>{summary?.externalPointer || t("未识别外部目录指针")}</span>
-          <Button disabled={!summary?.externalPointer} onClick={() => void adopt()} size="sm" variant="secondary">
-            <Download className="h-4 w-4" />
-            {t("预览并采用")}
-          </Button>
-        </div>
-      ) : null}
-      {mode === "official-plus-custom" ? (
+      {summary?.actionRequired || draftError ? <div className="catalog-inline-error">{summary?.actionRequired || catalogDraftErrorLabel(draftError)}</div> : null}
+      <fieldset className="catalog-editor-readonly" disabled={!editingAvailability.editable}>
         <div className="catalog-official-list">
-          <div className="catalog-list-head">
-            <strong>{t("官方清单")}</strong>
-            <span>{tf("{0} 个完整官方条目", [officialModels.length])}</span>
-          </div>
           <div className="catalog-model-row catalog-model-row-head">
-            <span>{t("模型")}</span><span>{t("供应商证据")}</span><span>{t("可见")}</span><span>{t("上下文")}</span><span>{t("顺序")}</span><span />
+            <span>{t("模型")}</span><span>{t("上下文")}</span>
           </div>
-          {officialModels.map((model, index) => {
+          {officialModels.map((model) => {
             const value = overlay.official[model.slug];
             return (
               <div className="catalog-model-row" key={model.slug}>
-                <span className="catalog-model-name"><strong>{model.displayName}</strong><small>{model.slug}</small></span>
-                <UiBadge variant={reported.has(model.slug) ? "secondary" : "outline"}>{providerEvidenceState(model.slug, [...reported]) === "reported" ? t("已报告") : t("未报告")}</UiBadge>
-                <input
-                  checked={value?.visible ?? model.visible}
-                  onChange={(event) => setOfficialOverride(model.slug, { visible: event.currentTarget.checked === model.visible ? null : event.currentTarget.checked })}
-                  type="checkbox"
-                />
+                <span className="catalog-model-name"><strong>{appModelLabel(model.displayName)}</strong><small>{model.slug}</small></span>
                 <Input
                   inputMode="numeric"
                   value={value?.contextWindow ?? ""}
                   onChange={(event) => setOfficialOverride(model.slug, { contextWindow: positiveNumberOrNull(event.currentTarget.value) })}
                   placeholder={model.contextWindow ? String(model.contextWindow) : t("默认")}
                 />
-                <Input
-                  inputMode="numeric"
-                  value={value?.order ?? ""}
-                  onChange={(event) => setOfficialOverride(model.slug, { order: integerOrNull(event.currentTarget.value) })}
-                  placeholder={String(index)}
-                />
-                <Button
-                  disabled={!value}
-                  onClick={() => {
-                    const official = { ...overlay.official };
-                    delete official[model.slug];
-                    setOverlay({ ...overlay, official });
-                  }}
-                  size="icon"
-                  title={t("清除覆盖")}
-                  variant="ghost"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
               </div>
             );
           })}
         </div>
-      ) : null}
-      {mode === "official-plus-custom" || mode === "custom-only" ? (
+      </fieldset>
+      <fieldset className="catalog-editor-readonly" disabled={!editingAvailability.editable}>
         <div className="catalog-custom-list">
           <div className="catalog-list-head">
-            <div><strong>{t("自定义模型")}</strong><span>{t("使用保守模板，不声明官方后端专属能力")}</span></div>
+            <div><strong>{t("自定义模型")}</strong><span>{t("供应商支持但官方清单没有的模型")}</span></div>
             <Button onClick={() => addCustom()} size="sm" variant="secondary"><Plus className="h-4 w-4" />{t("添加")}</Button>
           </div>
           {summary?.customCandidates.length ? (
@@ -2074,23 +2343,14 @@ function CatalogProfileEditor({
             </div>
           ) : null}
           {overlay.custom.map((model, index) => (
-            <div className="catalog-custom-row" key={`${model.slug}-${index}`}>
-              <Input value={model.slug} onChange={(event) => updateCustom(index, { slug: event.currentTarget.value })} placeholder="model-id" />
-              <Input value={model.displayName} onChange={(event) => updateCustom(index, { displayName: event.currentTarget.value })} placeholder={t("显示名")} />
+            <div className="catalog-model-row" key={`${model.slug}-${index}`}>
+              <Input value={model.slug} onChange={(event) => updateCustom(index, { slug: event.currentTarget.value, displayName: event.currentTarget.value })} placeholder="model-id" />
               <Input inputMode="numeric" value={model.contextWindow} onChange={(event) => updateCustom(index, { contextWindow: positiveNumberOrDefault(event.currentTarget.value, 272000) })} />
-              <label className="catalog-visible-toggle"><input checked={model.visible} onChange={(event) => updateCustom(index, { visible: event.currentTarget.checked })} type="checkbox" /><span>{t("可见")}</span></label>
-              <Input inputMode="numeric" value={model.order} onChange={(event) => updateCustom(index, { order: integerOrDefault(event.currentTarget.value, index) })} />
-              <Button onClick={() => setOverlay({ ...overlay, custom: overlay.custom.filter((_, itemIndex) => itemIndex !== index) })} size="icon" title={t("删除模型")} variant="ghost"><Trash2 className="h-4 w-4" /></Button>
+              <Button onClick={() => onDraftChange(updateCatalogProfileDraft(draft, { overlay: { ...overlay, custom: overlay.custom.filter((_, itemIndex) => itemIndex !== index) } }))} size="icon" title={t("删除模型")} variant="ghost"><Trash2 className="h-4 w-4" /></Button>
             </div>
           ))}
         </div>
-      ) : null}
-      {profile.relayMode !== "official" || profile.officialMixApiKey ? (
-        <div className="catalog-evidence-row">
-          <span>{summary?.providerEvidenceAtMs ? tf("供应商证据更新于 {0}", [formatTime(summary.providerEvidenceAtMs)]) : t("尚未获取供应商模型证据")}</span>
-          <Button onClick={() => void actions.fetchRelayProfileModels(profile)} size="sm" variant="secondary"><RefreshCw className="h-4 w-4" />{t("刷新供应商证据")}</Button>
-        </div>
-      ) : null}
+      </fieldset>
     </section>
   );
 }
@@ -2443,7 +2703,7 @@ function RelayProfileList({
   actions,
 }: {
   form: BackendSettings;
-  onFormChange: (value: BackendSettings) => void;
+  onFormChange: (value: BackendSettings, kind: "reorder" | "copy" | "delete" | "aggregateCleanup", copySourceProfileId?: string) => void;
   onEdit: (id: string) => void;
   disabled?: boolean;
   actions: Actions;
@@ -2460,7 +2720,7 @@ function RelayProfileList({
     const { active, over } = event;
     if (!over || active.id === over.id) return;
     const next = reorderRelayProfiles(form, String(active.id), String(over.id));
-    if (next !== form) onFormChange(next);
+    if (next !== form) onFormChange(next, "reorder");
   };
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
@@ -2496,13 +2756,14 @@ function SortableRelayProfileCard({
   form: BackendSettings;
   profile: RelayProfile;
   index: number;
-  onFormChange: (value: BackendSettings) => void;
+  onFormChange: (value: BackendSettings, kind: "reorder" | "copy" | "delete" | "aggregateCleanup", copySourceProfileId?: string) => void;
   onEdit: (id: string) => void;
   disabled?: boolean;
   actions: Actions;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: profile.id });
   const active = profile.id === form.activeRelayId;
+  const deleteAvailable = providerDeleteAvailable(profile.id, form.activeRelayId, form.relayProfiles.length);
   const style: CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -2583,7 +2844,7 @@ function SortableRelayProfileCard({
           <Button
             onClick={(event) => {
               event.stopPropagation();
-              onFormChange(duplicateRelayProfile(form, profile.id));
+              onFormChange(duplicateRelayProfile(form, profile.id), "copy", profile.id);
             }}
             size="icon"
             title={t("复制")}
@@ -2592,13 +2853,13 @@ function SortableRelayProfileCard({
             <Copy className="h-4 w-4" />
           </Button>
           <Button
-            disabled={form.relayProfiles.length <= 1}
+            disabled={!deleteAvailable}
             onClick={(event) => {
               event.stopPropagation();
-              onFormChange(removeRelayProfile(form, profile.id));
+              onFormChange(removeRelayProfile(form, profile.id), "delete");
             }}
             size="icon"
-            title={t("删除供应商")}
+            title={active ? t("当前供应商不能直接删除，请先切换到其他供应商。") : t("删除供应商")}
             variant="ghost"
           >
             <Trash2 className="h-4 w-4" />
@@ -2617,7 +2878,6 @@ function RelayProfileDetail({
   form,
   isNew = false,
   onBack,
-  onFormChange,
   onSaved,
   actions,
 }: {
@@ -2628,53 +2888,416 @@ function RelayProfileDetail({
   form: BackendSettings;
   isNew?: boolean;
   onBack: () => void;
-  onFormChange: (value: BackendSettings) => void | Promise<void>;
   onSaved?: () => void;
   actions: Actions;
 }) {
-  const [draft, setDraft] = useState<RelayProfile>(profile);
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+  const [legacyReplacementProviderId, setLegacyReplacementProviderId] = useState("");
   const [modelWindowRows, setModelWindowRows] = useState<ModelWindowRow[]>(
     modelWindowRowsFromProfile(profile.modelList, profile.modelWindows || ""),
   );
+  const fallbackCatalogMode = defaultCatalogMode(
+    profile.relayMode,
+    profile.officialMixApiKey,
+  ) as CatalogMode;
+  const initialCatalogDraft = isNew || catalogProfile
+    ? catalogProfileDraft({
+        profileId: profile.id,
+        fallbackMode: fallbackCatalogMode,
+        summary: catalogProfile,
+      })
+    : null;
+  const [detailState, setDetailState] = useState<ProviderDetailDraftState<RelayProfile>>(() =>
+    createProviderDetailDraftState({ profile, catalogDraft: initialCatalogDraft }),
+  );
+  const detailStateRef = useRef(detailState);
+  const authoritativeCapabilityProfile = isAggregateRelayProfile(profile)
+    ? normalizeAggregateRelayProfile(profile, form)
+    : deriveRelayProfileFromFiles({
+        ...profile,
+        configContents: providerConfigDraft(
+          profile.configContents,
+          relayFiles?.configContents ?? "",
+        ),
+        authContents: "",
+      });
+  const authoritativeCapabilityProfileRevision = JSON.stringify(
+    authoritativeCapabilityProfile,
+  );
+  const catalogSummaryFingerprint = JSON.stringify({
+    profileId: catalogProfile?.profileId ?? null,
+    mode: catalogProfile?.mode ?? null,
+    modeExplicit: catalogProfile?.modeExplicit ?? null,
+    effectiveHash: catalogProfile?.effectiveHash ?? null,
+    restartRequired: catalogProfile?.restartRequired ?? null,
+    actionRequired: catalogProfile?.actionRequired ?? null,
+  });
+  const authoritativeCapabilityCatalogDraft = isNew || catalogProfile
+    ? catalogProfileDraft({
+        profileId: profile.id,
+        fallbackMode: fallbackCatalogMode,
+        summary: catalogProfile,
+      })
+    : null;
+  const updateDetailState = (next: ProviderDetailDraftState<RelayProfile>) => {
+    const current = detailStateRef.current;
+    if (
+      next.sessionToken !== current.sessionToken
+      || next.latestTransformRevision !== current.latestTransformRevision
+      || JSON.stringify(next.profile) !== JSON.stringify(current.profile)
+      || JSON.stringify(next.catalogDraft) !== JSON.stringify(current.catalogDraft)
+    ) {
+    }
+    detailStateRef.current = next;
+    setDetailState(next);
+  };
+  const draft = detailState.profile;
+  const catalogDraft = detailState.catalogDraft;
   const isActive = !isNew && profile.id === form.activeRelayId;
-  const profileUsesLiveFiles = relayProfileUsesLiveFiles(profile);
+  const nativeCapabilityView = deriveProviderNativeCapabilityView({
+    inspection: detailState.inspection,
+    officialAuth: {
+      authenticated: relayFiles?.authStatus.authenticated ?? null,
+      localPlan: "unknown",
+    },
+  });
   useEffect(() => {
     const nextDraft = isAggregateRelayProfile(profile)
       ? normalizeAggregateRelayProfile(profile, form)
-      : deriveRelayProfileFromFiles(
-          isActive && profileUsesLiveFiles && relayFiles
-            ? {
-              ...profile,
-              configContents: relayFiles.configContents,
-              authContents: "",
-            }
-            : profile,
-        );
-    setDraft(nextDraft);
+      : deriveRelayProfileFromFiles({
+          ...profile,
+          configContents: providerConfigDraft(profile.configContents, relayFiles?.configContents ?? ""),
+          authContents: "",
+        });
+    const nextCatalogDraft = isNew || catalogProfile
+      ? catalogProfileDraft({
+          profileId: profile.id,
+          fallbackMode: defaultCatalogMode(profile.relayMode, profile.officialMixApiKey) as CatalogMode,
+          summary: catalogProfile,
+        })
+      : null;
+    const nextState = createProviderDetailDraftState({
+      profile: nextDraft,
+      catalogDraft: nextCatalogDraft,
+    });
+    updateDetailState(nextState);
+    setLegacyReplacementProviderId("");
     setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || ""));
-  }, [profile.id, profile.modelList, profile.modelWindows, profileUsesLiveFiles, isActive, isNew, relayFiles?.configContents]);
-  const validationError = isAggregateRelayProfile(draft) ? aggregateRelayProfileValidation(draft) : null;
-  const draftWithModelRows = () => {
+    let cancelled = false;
+    if (!isNew && !isAggregateRelayProfile(nextDraft)) {
+      const inspectionCorrelation = beginProviderDetailInspection(nextState);
+      void actions.inspectProviderNativeCapabilities(profile.id).then((inspection) => {
+        if (cancelled || !inspection) return;
+        const applied = applyProviderDetailInspection(
+          detailStateRef.current,
+          inspectionCorrelation,
+          inspection,
+        );
+        if (applied.disposition === "applied") updateDetailState(applied.state);
+      });
+    }
+    return () => {
+      cancelled = true;
+      if (detailStateRef.current.sessionToken === nextState.sessionToken) {
+        detailStateRef.current = endProviderDetailSession(detailStateRef.current, "close").state;
+      }
+    };
+  }, [profile.id, authoritativeCapabilityProfileRevision]);
+  useEffect(() => {
+    let cancelled = false;
+    const nextCatalogDraft = isNew || catalogProfile
+      ? catalogProfileDraft({
+          profileId: profile.id,
+          fallbackMode: defaultCatalogMode(profile.relayMode, profile.officialMixApiKey) as CatalogMode,
+          summary: catalogProfile,
+        })
+      : null;
+    if (
+      detailStateRef.current.lifecycle === "active"
+      && detailStateRef.current.profile.id === profile.id
+      && JSON.stringify(detailStateRef.current.catalogDraft) !== JSON.stringify(nextCatalogDraft)
+    ) {
+      const refreshed = refreshProviderDetailCatalogDraftState(
+        detailStateRef.current,
+        nextCatalogDraft,
+        isAggregateRelayProfile(profile)
+          ? normalizeAggregateRelayProfile(profile, form)
+          : deriveRelayProfileFromFiles({
+              ...profile,
+              configContents: providerConfigDraft(
+                profile.configContents,
+                relayFiles?.configContents ?? "",
+              ),
+              authContents: "",
+            }),
+      );
+      updateDetailState(refreshed.state);
+      const inspectionCorrelation = refreshed.inspectionCorrelation;
+      if (
+        inspectionCorrelation
+        && !isNew
+        && !isAggregateRelayProfile(refreshed.state.profile)
+      ) {
+        void actions.inspectProviderNativeCapabilities(profile.id).then((inspection) => {
+          if (cancelled || !inspection) return;
+          const applied = applyProviderDetailInspection(
+            detailStateRef.current,
+            inspectionCorrelation,
+            inspection,
+          );
+          if (applied.disposition === "applied") updateDetailState(applied.state);
+        });
+      }
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    profile.id,
+    isNew,
+    authoritativeCapabilityProfileRevision,
+    catalogSummaryFingerprint,
+  ]);
+  const replaceDraft = (next: RelayProfile) => {
+    updateDetailState(replaceProviderDetailProfile(detailStateRef.current, next));
+  };
+  const dispatchProviderDetailStep = (step: ProviderDetailStep<RelayProfile>): Promise<boolean> => {
+    updateDetailState(step.state);
+    const effect = step.effects.find((candidate) => candidate.kind === "transform");
+    if (!effect || effect.kind !== "transform") return Promise.resolve(true);
+    return actions.transformProviderNativeCapability(effect.invocation).then((response) => {
+      const settled = settleProviderDetailTransform(
+        detailStateRef.current,
+        effect.correlation,
+        response,
+      );
+      if (settled.disposition === "stale") return false;
+      updateDetailState(settled.state);
+      if (settled.disposition === "notApplied") {
+        if (settled.state.pendingLegacyProviderIdResolution) return false;
+        if (
+          response.status === "confirmationRequired"
+          && settled.state.pendingConfirmation
+        ) {
+          const accepted = window.confirm(providerTransitionConfirmationMessage(settled.state));
+          return dispatchProviderDetailStep(
+            accepted
+              ? confirmProviderDetailTransition(settled.state)
+              : cancelProviderDetailTransition(settled.state),
+          );
+        }
+        void actions.showMessage(
+          t("供应商配置转换"),
+          response.blockers.join("、") || t("当前供应商配置不能完成该转换。"),
+          "failed",
+        );
+        return false;
+      }
+      return true;
+    }).catch((error) => {
+      const settled = settleProviderDetailTransformError(
+        detailStateRef.current,
+        effect.correlation,
+      );
+      if (settled.report) {
+        updateDetailState(settled.state);
+        void actions.showMessage(t("供应商配置转换"), stringifyError(error), "failed");
+      }
+      return false;
+    });
+  };
+  const editDraft = (patch: Partial<RelayProfile>) => {
+    let current = detailStateRef.current;
+    const target = providerConfigTargetContract(
+      { ...current.profile, ...patch },
+      isNew && !current.profile.configContents.trim(),
+    );
+    let step;
+    try {
+      const hasTransitionFields = "relayMode" in patch
+        || "officialMixApiKey" in patch
+        || "protocol" in patch;
+      const decision = target.source === "existing" && hasTransitionFields
+        ? providerTransitionDecisionForStructuredPatch(current.profile, patch)
+        : null;
+      if (decision?.kind === "requiresExplicitUpgrade") {
+        void actions.showMessage(
+          t("原生能力优先"),
+          t("此变更必须通过明确的升级预览操作完成。"),
+          "failed",
+        );
+        return;
+      }
+      const transition = decision?.kind === "transition" ? decision.transition : undefined;
+      let routedPatch = patch;
+      if (decision) {
+        const {
+          relayMode,
+          officialMixApiKey,
+          protocol,
+          ...ordinaryPatch
+        } = patch;
+        if (Object.keys(ordinaryPatch).length) {
+          const ordinary = beginProviderDetailEdit(current, {
+            patch: ordinaryPatch,
+            target,
+          });
+          current = ordinary.state;
+        }
+        routedPatch = transition
+          ? {
+              ...(relayMode === undefined ? {} : { relayMode }),
+              ...(officialMixApiKey === undefined ? {} : { officialMixApiKey }),
+              ...(protocol === undefined ? {} : { protocol }),
+            }
+          : ordinaryPatch;
+        if (!Object.keys(routedPatch).length) return;
+      }
+      step = beginProviderDetailEdit(current, {
+        patch: routedPatch,
+        target,
+        transition,
+      });
+    } catch (error) {
+      void actions.showMessage(t("供应商配置转换"), stringifyError(error), "failed");
+      return;
+    }
+    void dispatchProviderDetailStep(step);
+  };
+  const retryLegacyProviderIdDraft = () => {
+    try {
+      dispatchProviderDetailStep(
+        resolveProviderDetailLegacyProviderId(
+          detailStateRef.current,
+          legacyReplacementProviderId,
+        ),
+      );
+    } catch (error) {
+      void actions.showMessage(t("旧供应商 ID"), stringifyError(error), "failed");
+    }
+  };
+  const cancelLegacyProviderIdDraft = () => {
+    updateDetailState(
+      cancelProviderDetailLegacyProviderIdResolution(detailStateRef.current).state,
+    );
+    setLegacyReplacementProviderId("");
+  };
+  const editProviderConfigDraft = (configContents: string) => {
+    const current = detailStateRef.current;
+    const step = beginProviderDetailRawConfigEdit(current, {
+      configContents,
+      catalogMode: current.catalogDraft?.mode
+        ?? defaultCatalogMode(current.profile.relayMode, current.profile.officialMixApiKey),
+    });
+    void dispatchProviderDetailStep(step);
+  };
+  const newProviderFieldErrors = isNew && !isAggregateRelayProfile(draft)
+    ? validateNewProviderDraft(draft)
+    : {};
+  const validationError = isAggregateRelayProfile(draft)
+    ? aggregateRelayProfileValidation(draft)
+    : Object.keys(newProviderFieldErrors).length
+      ? t("请填写所有必填字段。")
+      : detailState.pendingTransformRevision !== null
+        ? t("供应商配置转换中。")
+        : detailState.rawConfigContents !== null
+          ? t("供应商配置尚未通过后端验证。")
+          : detailState.pendingConfirmation !== null
+            ? t("请先确认或取消供应商兼容模式转换。")
+            : detailState.pendingLegacyProviderIdResolution !== null
+              ? t("请先完成或取消旧供应商 ID 重命名。")
+            : detailState.blockers.length
+              ? t("供应商草稿被后端验证阻止，请处理提示后重试。")
+              : null;
+  const draftWithModelRows = (source: RelayProfile = draft) => {
     const serializedRows = serializeModelWindowRows(modelWindowRows);
-    return { ...draft, modelList: serializedRows.modelList, modelWindows: serializedRows.modelWindows };
+    return { ...source, modelList: serializedRows.modelList, modelWindows: serializedRows.modelWindows };
   };
   const saveDraft = async () => {
-    if (validationError) return;
-    const draftWithWindows = draftWithModelRows();
-    const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
-    const next = isNew
-      ? addRelayProfile(form, normalizedDraft)
-      : updateRelayProfile(form, profile.id, normalizedDraft);
-    if (isActive) {
-      const saved = await actions.saveActiveRelayProfile(next);
+    if (validationError || savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      // Opening a profile that predates this contract and pressing save upgrades it in place: the
+      // save is the explicit action, so there is no separate upgrade control to find. A legacy
+      // alias still needs a name from the user, so that one only opens its prompt.
+      const upgradeAction = isNew ? null : nativeCapabilityView.upgradeAction;
+      if (upgradeAction === "upgrade" || upgradeAction === "replaceActorHeader") {
+        const upgraded = await dispatchProviderDetailStep(
+          beginProviderDetailNativePriorityUpgrade(detailStateRef.current),
+        );
+        if (!upgraded) return;
+      } else if (upgradeAction === "resolveLegacyProviderId") {
+        await dispatchProviderDetailStep(
+          beginProviderDetailLegacyIdUpgrade(detailStateRef.current),
+        );
+        return;
+      }
+      // Deriving the draft inside the guard keeps the `finally` reset reachable: a throw before it
+      // would leave the button pending forever, and its click handler discards the rejection.
+      const draftWithWindows = draftWithModelRows(detailStateRef.current.profile);
+      const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
+      const next = isNew
+        ? addRelayProfile(form, normalizedDraft)
+        : updateRelayProfile(form, profile.id, normalizedDraft);
+      const catalogCapable = !isAggregateRelayProfile(normalizedDraft)
+        && normalizedDraft.protocol !== "chatCompletions";
+      const catalogAvailability = catalogDraftAvailability(!isNew, catalogCapable, !!catalogProfile);
+      if (catalogAvailability === "unavailable" || (catalogCapable && !catalogDraft)) {
+        await actions.showMessage(
+          t("模型目录不可用"),
+          t("当前供应商的完整模型目录状态尚未加载，请刷新后重试。"),
+          "failed",
+        );
+        return;
+      }
+      const managedCatalog = !isAggregateRelayProfile(normalizedDraft)
+        && normalizedDraft.protocol !== "chatCompletions"
+        && !!catalogDraft
+        && managedCatalogMode(catalogDraft.mode);
+      const contextConflicts = managedCatalog
+        ? providerManagedContextConflictKeys(
+            normalizedDraft,
+            isActive ? relayFiles?.configContents ?? "" : "",
+          )
+        : [];
+      const confirmContextCleanup = contextConflicts.length
+        ? window.confirm(tf("保存托管目录将移除这些全局上下文设置：\n\n{0}", [contextConflicts.join("\n")]))
+        : false;
+      if (contextConflicts.length && !confirmContextCleanup) return;
+      const saved = await actions.commitProviderDetail(
+        next,
+        normalizedDraft.id,
+        isAggregateRelayProfile(normalizedDraft) || normalizedDraft.protocol === "chatCompletions"
+          ? null
+          : catalogDraft,
+        !isNew,
+        "detailSave",
+        confirmContextCleanup,
+      );
       if (!saved) return;
-    } else {
-      await onFormChange(next);
+      await actions.showMessage(t("保存供应商"), t("供应商配置已保存。"), "ok");
+      onSaved?.();
+    } catch (error) {
+      // The click handler discards this rejection, so an unreported throw would look like a save
+      // that simply did nothing.
+      await actions.showMessage(t("保存供应商"), stringifyError(error), "failed");
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
     }
-    onSaved?.();
   };
   const switchDraft = () => {
-    if (isNew || !form.relayProfilesEnabled) return;
+    if (
+      isNew
+      || !form.relayProfilesEnabled
+      || detailState.pendingTransformRevision !== null
+      || detailState.rawConfigContents !== null
+      || detailState.pendingConfirmation !== null
+      || detailState.pendingLegacyProviderIdResolution !== null
+      || detailState.blockers.length > 0
+    ) return;
     const draftWithWindows = draftWithModelRows();
     const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
     const previousActiveRelayId = form.activeRelayId;
@@ -2683,42 +3306,105 @@ function RelayProfileDetail({
       relayProfiles: form.relayProfiles.map((item) => (item.id === profile.id ? normalizedDraft : item)),
       activeRelayId: profile.id,
     });
-    void actions.switchRelayProfile(next, previousActiveRelayId);
+    void actions.switchRelayProfile(
+      next,
+      previousActiveRelayId,
+      isAggregateRelayProfile(normalizedDraft) || normalizedDraft.protocol === "chatCompletions" || !catalogDraft
+        ? undefined
+        : catalogDraft,
+    );
+  };
+  const navigateBack = () => {
+    const ended = endProviderDetailSession(detailStateRef.current, "navigate");
+    detailStateRef.current = ended.state;
+    onBack();
   };
   return (
     <div className="relay-detail-page" key={profile.id}>
       <div className="relay-detail-sticky">
         <Toolbar>
-          <Button onClick={onBack} variant="secondary">
+          <Button onClick={navigateBack} variant="secondary">
             <ArrowLeft className="h-4 w-4" />
             {t("返回列表")}
           </Button>
-          <Button disabled={!!validationError} onClick={() => void saveDraft()} title={validationError || t("保存")}>
-            <Save className="h-4 w-4" />
-            {t("保存")}
+          <Button
+            aria-busy={saving}
+            disabled={saving || !!validationError}
+            onClick={() => void saveDraft()}
+            title={validationError || (saving ? t("保存中") : t("保存"))}
+          >
+            {saving ? <RefreshCw className="h-4 w-4 spin" /> : <Save className="h-4 w-4" />}
+            {saving ? t("保存中") : t("保存")}
           </Button>
         </Toolbar>
       </div>
-        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={setDraft} onSwitch={switchDraft} actions={actions} modelWindowRows={modelWindowRows} setModelWindowRows={setModelWindowRows} />
-      {isNew || isAggregateRelayProfile(draft) ? null : (
+      {detailState.pendingLegacyProviderIdResolution === null ? null : (
+        <section className="catalog-profile-editor">
+          <div className="catalog-editor-head">
+            <div>
+              <strong>{t("旧供应商 ID 需要一个新名字")}</strong>
+              <span>{t("这个供应商用的是旧版名称，保存前请给它取一个未被占用的名字。")}</span>
+            </div>
+          </div>
+          <div className="catalog-editor-actions">
+            <Input
+              value={legacyReplacementProviderId}
+              onChange={(event) => setLegacyReplacementProviderId(event.currentTarget.value)}
+              placeholder={t("未使用的供应商 ID")}
+            />
+            <Button type="button" size="sm" onClick={retryLegacyProviderIdDraft}>
+              {t("重试重命名")}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              onClick={cancelLegacyProviderIdDraft}
+            >
+              {t("取消")}
+            </Button>
+          </div>
+          {detailState.preview?.renamedProviderFrom && detailState.preview.renamedProviderTo ? (
+            <span>
+              {tf("供应商 ID 将从 {0} 重命名为 {1}；当前仍是未保存草稿。", [
+                detailState.preview.renamedProviderFrom,
+                detailState.preview.renamedProviderTo,
+              ])}
+            </span>
+          ) : null}
+        </section>
+      )}
+        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={replaceDraft} onProfileEdit={editDraft} onSwitch={switchDraft} actions={actions} modelWindowRows={modelWindowRows} setModelWindowRows={setModelWindowRows} catalogProfile={catalogProfile} draftCommitBlocked={detailState.pendingTransformRevision !== null || detailState.rawConfigContents !== null || detailState.pendingConfirmation !== null || detailState.pendingLegacyProviderIdResolution !== null || detailState.blockers.length > 0} />
+      {!managedCatalogCapable(draft) ? null : catalogDraft ? (
         <CatalogProfileEditor
           catalog={modelCatalog}
+          draft={catalogDraft}
+          onDraftChange={(next) => updateDetailState(replaceProviderDetailCatalogDraft(detailStateRef.current, next))}
           profile={draft}
           summary={catalogProfile}
+          isNew={isNew}
           actions={actions}
         />
+      ) : (
+        <section className="catalog-profile-editor unavailable">
+          <div className="catalog-editor-head">
+            <div>
+              <strong>{t("模型目录")}</strong>
+              <span>{t("当前供应商的完整模型目录状态尚未加载，请刷新后重试。")}</span>
+            </div>
+            <UiBadge variant="outline">{t("不可用")}</UiBadge>
+          </div>
+        </section>
       )}
       {isAggregateRelayProfile(draft) ? null : (
       <RelayFileEditors
-        contextProfile={profile}
-        profile={draft}
-        form={form}
-        isActive={isActive}
-        authStatus={relayFiles?.authStatus ?? null}
-        profileId={profile.id}
-        onFormChange={onFormChange}
-        onProfileChange={setDraft}
-        actions={actions}
+        profile={detailState.rawConfigContents === null
+          ? draft
+          : { ...draft, configContents: detailState.rawConfigContents }}
+        authStatus={isActive ? relayFiles?.authStatus ?? null : null}
+        liveConfigContents={relayFiles?.configContents ?? ""}
+        onProviderConfigChange={editProviderConfigDraft}
+        providerReadOnly={isNew}
       />
       )}
     </div>
@@ -2731,24 +3417,42 @@ function RelayProfileEditor({
   form,
   isNew = false,
   onProfileChange,
+  onProfileEdit,
   onSwitch,
   actions,
   modelWindowRows,
   setModelWindowRows,
+  catalogProfile,
+  draftCommitBlocked = false,
 }: {
   profile: RelayProfile;
   form: BackendSettings;
   isNew?: boolean;
   onProfileChange: (value: RelayProfile) => void;
+  onProfileEdit?: (patch: Partial<RelayProfile>) => void;
   onSwitch: () => void;
   actions: Actions;
   modelWindowRows: ModelWindowRow[];
   setModelWindowRows: (value: ModelWindowRow[]) => void;
+  catalogProfile: ProfileCatalogSummary | null;
+  draftCommitBlocked?: boolean;
 }) {
-  const [showAdvanced, setShowAdvanced] = useState(false);
   const [doctorResult, setDoctorResult] = useState<ProviderDoctorResult | null>(null);
   const [doctorOpen, setDoctorOpen] = useState(false);
   const [doctorRunning, setDoctorRunning] = useState(false);
+  const doctorRequestSequenceRef = useRef(0);
+  const doctorSourceRevision = JSON.stringify({ profile, modelWindowRows });
+  const doctorSourceRevisionRef = useRef(doctorSourceRevision);
+  doctorSourceRevisionRef.current = doctorSourceRevision;
+  useEffect(() => {
+    doctorRequestSequenceRef.current += 1;
+    setDoctorResult(null);
+    setDoctorOpen(false);
+    setDoctorRunning(false);
+    return () => {
+      doctorRequestSequenceRef.current += 1;
+    };
+  }, [doctorSourceRevision]);
   if (isAggregateRelayProfile(profile)) {
     return (
       <AggregateRelayProfileEditor
@@ -2760,22 +3464,49 @@ function RelayProfileEditor({
     );
   }
 
-  const showApiFields = profile.relayMode !== "official" || profile.officialMixApiKey;
+  const newProviderFieldErrors = isNew ? validateNewProviderDraft(profile) : {};
+  // Every profile shows its endpoint and key, including one that has none yet: supplying them is
+  // how a profile that predates this contract upgrades itself.
+  const showApiFields = true;
   const updateDraft = (patch: Partial<RelayProfile>) => {
-    onProfileChange(applyRelayProfilePatchToFiles(profile, patch, { allowGenerateFiles: isNew }));
+    // Holding a provider key is what makes an official profile mixed; there is no separate
+    // switch. Clearing the key never flips it back, because leaving the mixed contract deletes a
+    // provider table and stays an explicit, previewed action.
+    const merged = { ...profile, ...patch };
+    const resolved = merged.relayMode === "official"
+      && !merged.officialMixApiKey
+      && merged.apiKey.trim()
+      ? { ...patch, officialMixApiKey: true }
+      : patch;
+    if (onProfileEdit) {
+      onProfileEdit(resolved);
+      return;
+    }
+    const target = providerConfigTargetContract({ ...profile, ...resolved }, isNew);
+    onProfileChange(applyRelayProfilePatchToFiles(profile, resolved, {
+      allowGenerateFiles: isNew,
+      target,
+    }));
   };
   const runProviderDoctor = async () => {
+    const requestSourceFingerprint = doctorSourceRevisionRef.current;
+    const requestSequence = doctorRequestSequenceRef.current + 1;
+    doctorRequestSequenceRef.current = requestSequence;
     setDoctorOpen(true);
     setDoctorRunning(true);
     setDoctorResult(null);
     const serializedRows = serializeModelWindowRows(modelWindowRows);
-    const result = await actions.diagnoseRelayProfile(
-      deriveRelayProfileFromFiles({
-        ...profile,
-        modelList: serializedRows.modelList,
-        modelWindows: serializedRows.modelWindows,
-      }),
-    );
+    const probedProfile = deriveRelayProfileFromFiles({
+      ...profile,
+      modelList: serializedRows.modelList,
+      modelWindows: serializedRows.modelWindows,
+    });
+    const result = await actions.diagnoseRelayProfile(probedProfile);
+    // Drop a result the draft has already moved past, so a slow probe cannot overwrite a newer one.
+    if (
+      requestSequence !== doctorRequestSequenceRef.current
+      || requestSourceFingerprint !== doctorSourceRevisionRef.current
+    ) return;
     setDoctorResult(result);
     setDoctorRunning(false);
   };
@@ -2788,22 +3519,15 @@ function RelayProfileEditor({
         </div>
         {isNew ? null : (
           <Button
-            disabled={!form.relayProfilesEnabled || actions.relaySwitching}
+            disabled={!form.relayProfilesEnabled || actions.relaySwitching || draftCommitBlocked}
             onClick={onSwitch}
-            title={!form.relayProfilesEnabled ? t("供应商配置总开关已关闭") : actions.relaySwitching ? t("供应商切换中") : undefined}
+            title={!form.relayProfilesEnabled ? t("供应商配置总开关已关闭") : actions.relaySwitching ? t("供应商切换中") : draftCommitBlocked ? t("供应商配置尚未通过后端验证。") : undefined}
             variant={profile.id === form.activeRelayId ? "secondary" : "default"}
           >
             {actions.relaySwitching ? t("切换中") : profile.id === form.activeRelayId ? t("使用中") : t("设为当前")}
           </Button>
         )}
       </div>
-      {isNew ? (
-        <ProviderPresetSelector
-          onSelect={(patch: PresetPatch) => {
-            updateDraft(patch as unknown as Partial<RelayProfile>);
-          }}
-        />
-      ) : null}
       <div className="relay-fields">
         <Field className="relay-field-name" label={t("名称")}>
           <Input
@@ -2811,128 +3535,46 @@ function RelayProfileEditor({
             onChange={(event) => updateDraft({ name: event.currentTarget.value })}
           />
         </Field>
-        <Field className="relay-field-mode" label={t("接入模式")}>
-          <select
-            className="field-select"
-            value={profile.relayMode}
-            onChange={(event) => {
-              const relayMode = event.currentTarget.value as RelayMode;
-              updateDraft(relayMode === "official" ? { relayMode, officialMixApiKey: false } : { relayMode });
-            }}
-          >
-            <option value="official">{t("官方登录")}</option>
-            <option value="pureApi">{t("纯 API")}</option>
-          </select>
-        </Field>
+        {profile.relayMode === "official" ? (
+          <Field className="relay-field-mode" label={t("接入模式")}>
+            <p className="field-hint">{t("官方登录＋混入 API Key＋Responses API")}</p>
+          </Field>
+        ) : null}
         <Field className="relay-field-config-model" label={t("配置模型")}>
           <Input
+            aria-describedby={newProviderFieldErrors.model ? "provider-model-error" : undefined}
+            aria-invalid={newProviderFieldErrors.model ? true : undefined}
             value={profile.model}
             onChange={(event) => updateDraft({ model: event.currentTarget.value })}
             placeholder={t("例如 deepseek-v4-pro")}
           />
+          {newProviderFieldErrors.model ? <p className="field-hint" id="provider-model-error" role="alert">{t("必填")}</p> : null}
           <p className="field-hint">
             {t("默认启动 Codex 时使用的模型名，请勿带后缀；上下文窗口请在下方「模型列表」中按模型单独配置。")}
           </p>
         </Field>
-        <Field className="relay-field-goals" label={t("Codex 目标")}>
-          <label className="inline-check">
-            <input
-              checked={configHasCodexGoalsFeature(profile.configContents)}
-              onChange={(event) =>
-                updateDraft({
-                  configContents: setCodexGoalsFeatureInConfig(profile.configContents, event.currentTarget.checked),
-                })
-              }
-              type="checkbox"
-            />
-            <span>{t("启用目标功能")}</span>
-          </label>
-        </Field>
-        <div className="relay-advanced-toggle">
-          <Button
-            aria-expanded={showAdvanced}
-            onClick={() => setShowAdvanced((current) => !current)}
-            size="sm"
-            type="button"
-            variant="secondary"
-          >
-            <Settings className="h-4 w-4" />
-            {t("更多选项")}
-          </Button>
-        </div>
-        {showAdvanced ? (
-          <div className="relay-advanced-fields">
-            <Field className="relay-field-test-model" label={t("测试模型")}>
-              <Input
-                value={profile.testModel}
-                onChange={(event) => updateDraft({ testModel: event.currentTarget.value })}
-                placeholder={tf("留空使用默认：{0}", [form.relayTestModel || defaultSettings.relayTestModel])}
-              />
-            </Field>
-            <Field className="relay-field-context-window" label={t("上下文大小")}>
-              <Input
-                inputMode="numeric"
-                value={profile.contextWindow}
-                onChange={(event) => updateDraft({ contextWindow: event.currentTarget.value.replace(/[^\d]/g, "") })}
-                placeholder={t("留空不改写，例如 200000")}
-              />
-            </Field>
-            <Field className="relay-field-auto-compact" label={t("压缩上下文大小")}>
-              <Input
-                inputMode="numeric"
-                value={profile.autoCompactLimit}
-                onChange={(event) => updateDraft({ autoCompactLimit: event.currentTarget.value.replace(/[^\d]/g, "") })}
-                placeholder={t("留空不改写，例如 160000")}
-              />
-            </Field>
-          </div>
-        ) : null}
-        {profile.relayMode === "official" ? (
-          <Field className="relay-field-official-key" label="API Key">
-            <label className="inline-check">
-              <input
-                checked={profile.officialMixApiKey}
-                onChange={(event) => updateDraft({ officialMixApiKey: event.currentTarget.checked })}
-                type="checkbox"
-              />
-              <span>{t("混入 API KEY")}</span>
-            </label>
-          </Field>
-        ) : null}
         {showApiFields ? (
           <div className="relay-api-fields">
             <Field className="relay-field-base-url" label="Base URL">
               <Input
+                aria-describedby={newProviderFieldErrors.baseUrl ? "provider-base-url-error" : undefined}
+                aria-invalid={newProviderFieldErrors.baseUrl ? true : undefined}
                 value={profile.baseUrl}
                 onChange={(event) => updateDraft({ baseUrl: event.currentTarget.value })}
                 placeholder={t("填写中转服务 Base URL")}
               />
+              {newProviderFieldErrors.baseUrl ? <p className="field-hint" id="provider-base-url-error" role="alert">{t("必填")}</p> : null}
             </Field>
             <Field className="relay-field-key" label="Key">
               <Input
+                aria-describedby={newProviderFieldErrors.apiKey ? "provider-api-key-error" : undefined}
+                aria-invalid={newProviderFieldErrors.apiKey ? true : undefined}
                 type="password"
                 value={profile.apiKey}
                 onChange={(event) => updateDraft({ apiKey: event.currentTarget.value })}
                 placeholder={t("输入中转服务的 API Key")}
               />
-            </Field>
-            <Field className="relay-field-protocol" label={t("上游协议")}>
-              <div className="protocol-options">
-                <button
-                  className={`protocol-option ${profile.protocol === "responses" ? "active" : ""}`}
-                  onClick={() => updateDraft({ protocol: "responses" })}
-                  type="button"
-                >
-                  Responses API
-                </button>
-                <button
-                  className={`protocol-option ${profile.protocol === "chatCompletions" ? "active" : ""}`}
-                  onClick={() => updateDraft({ protocol: "chatCompletions" })}
-                  type="button"
-                >
-                  Chat Completions
-                </button>
-              </div>
+              {newProviderFieldErrors.apiKey ? <p className="field-hint" id="provider-api-key-error" role="alert">{t("必填")}</p> : null}
             </Field>
           </div>
         ) : null}
@@ -2951,20 +3593,11 @@ function RelayProfileEditor({
             <span>{doctorResult?.summary ?? t("点击后会打开诊断弹框，按步骤检查供应商。")}</span>
           </div>
         ) : null}
-        {showApiFields ? (
-          <Field className="relay-field-user-agent" label="User-Agent">
-            <Input
-              value={profile.userAgent}
-              onChange={(event) => updateDraft({ userAgent: event.currentTarget.value })}
-              placeholder={t("留空使用默认值")}
-            />
-          </Field>
-        ) : null}
       </div>
       {showApiFields && profile.protocol === "chatCompletions" ? (
         <div className="hint-line relay-protocol-hint">
           <MessageCircle className="h-4 w-4" />
-          <span>{t("此上游依赖本地 127.0.0.1:57321 协议代理转成 Responses API；Codex-- 不提供该代理，选择此协议后 Codex 将无法请求，请慎用。")}</span>
+          <span>{t("此上游依赖本地 127.0.0.1:57321 协议代理转成 Responses API；Codex Minus 不提供该代理，选择此协议后 Codex 将无法请求，请慎用。")}</span>
         </div>
       ) : null}
       <div className="hint-line relay-protocol-hint">
@@ -2983,6 +3616,44 @@ function RelayProfileEditor({
     </div>
   );
 }
+
+function providerTransitionConfirmationMessage(
+  state: ProviderDetailDraftState<RelayProfile>,
+): string {
+  const pending = state.pendingConfirmation;
+  if (!pending) return t("当前没有等待确认的供应商转换。");
+  if (pending.requiredConfirmation === "replaceActorHeader") {
+    return t("当前自定义 Actor 标记与原生能力优先标记冲突。确认后只替换冲突的 Actor 标记并更新草稿，仍需点击保存或设为当前才会生效。是否继续？");
+  }
+  if (pending.transition.action === "exitPureOAuth") {
+    const providerId = state.preview?.removedProviderId || t("当前自定义供应商");
+    const fields = state.preview?.removedProviderFields.join("、") || t("全部供应商字段");
+    return tf(
+      "切换到纯 OAuth 将删除自定义供应商 {0} 及其全部配置字段（{1}）。确认后只更新草稿，仍需点击保存或设为当前才会生效。是否继续？",
+      [providerId, fields],
+    );
+  }
+  return t("切换到兼容模式将失去原生能力优先配置。确认后只更新草稿，仍需点击保存或设为当前才会生效。是否继续？");
+}
+
+function providerNativeCapabilityStateLabel(state: string): string {
+  switch (state) {
+    case "nativePriority":
+      return t("配置就绪");
+    case "upgradeAvailable":
+      return t("可升级");
+    case "degraded":
+      return t("需要处理");
+    case "compatibility":
+      return t("兼容模式");
+    case "notApplicable":
+      return t("不适用");
+    default:
+      return t("状态未知");
+  }
+}
+
+
 
 function AggregateRelayProfileEditor({
   profile,
@@ -3022,9 +3693,9 @@ function AggregateRelayProfileEditor({
       <div className="relay-editor-head">
         <div>
           <strong>{profile.name || t("未命名聚合供应商")}</strong>
-          <span>{isNew ? t("选择已有供应商作为成员，保存后写入 settings payload") : t("聚合配置只引用已有供应商，不复制 Key 和配置文件")}</span>
+          <span>{t("本地成员轮转依赖已移除的 127.0.0.1:57321 代理，不能应用。")}</span>
         </div>
-        <UiBadge variant="secondary">{t("聚合")}</UiBadge>
+        <UiBadge variant="outline">{t("高级兼容路径")} · {t("本地聚合（不可用）")}</UiBadge>
       </div>
       <div className="relay-fields aggregate-fields">
         <Field className="relay-field-name" label={t("名称")}>
@@ -3125,138 +3796,38 @@ function AggregateRelayProfileEditor({
 }
 
 
-function SyncedTextarea({
-  value,
-  onValueChange,
-  className,
-}: {
-  value: string;
-  onValueChange: (value: string) => void;
-  className?: string;
-}) {
-  const [localValue, setLocalValue] = useState(value);
-  const isFocusedRef = useRef(false);
-  const latestExternalValueRef = useRef(value);
-
-  useEffect(() => {
-    latestExternalValueRef.current = value;
-    if (!isFocusedRef.current) {
-      setLocalValue(value);
-    }
-  }, [value]);
-
-  return (
-    <Textarea
-      className={className}
-      value={localValue}
-      onBlur={() => {
-        isFocusedRef.current = false;
-        setLocalValue(latestExternalValueRef.current);
-      }}
-      onChange={(event) => {
-        const next = event.currentTarget.value;
-        setLocalValue(next);
-        onValueChange(next);
-      }}
-      onFocus={() => {
-        isFocusedRef.current = true;
-      }}
-      spellCheck={false}
-    />
-  );
-}
-
 function RelayFileEditors({
-  contextProfile,
   profile,
-  form,
-  isActive,
   authStatus,
-  profileId,
-  onFormChange,
-  onProfileChange,
-  actions,
+  liveConfigContents,
+  onProviderConfigChange,
+  providerReadOnly = false,
 }: {
-  contextProfile: RelayProfile;
   profile: RelayProfile;
-  form: BackendSettings;
-  isActive: boolean;
   authStatus: RelayFilesResult["authStatus"] | null;
-  profileId: string;
-  onFormChange: (value: BackendSettings) => void;
-  onProfileChange: (value: RelayProfile) => void;
-  actions: Actions;
+  liveConfigContents: string;
+  onProviderConfigChange: (configContents: string) => void;
+  providerReadOnly?: boolean;
 }) {
-  const configPreview = effectiveRelayConfigPreview(profile, form, contextProfile);
-  const entries = contextEntriesForProfile(form, contextProfile);
+  const nativeOfficial = profile.relayMode === "official" && !profile.officialMixApiKey;
+  const providerConfig = profile.configContents;
   return (
     <div className="relay-file-grid">
-      <div className="relay-file-panel">
-        <div className="relay-file-head">
-          <div>
-            <strong>{t("config.toml 预览")}</strong>
-            <span>{isActive ? t("当前供应商切换后会写入的预览；上下文开关变化会立即反映") : t("切换到此供应商时会写入的预览；上下文开关变化会立即反映")}</span>
-          </div>
-        </div>
-        <SyncedTextarea
-          className="relay-file-textarea"
-          value={configPreview}
-          onValueChange={(value) => {
-            const withoutCommon = stripCommonConfigTextFallback(
-              value,
-              relayCombinedCommonConfig(form),
-            );
-            const configContents = stripContextEntriesFromConfig(withoutCommon, entries);
-            onProfileChange(deriveRelayProfileFromFiles({
-              ...profile,
-              configContents,
-            }));
-          }}
-        />
-      </div>
-      <div className="relay-file-panel">
-        <div className="relay-file-head">
-          <div>
-            <strong>{t("通用配置文件")}</strong>
-            <span>{t("只保留非 MCP、Skills、Plugins 的跨供应商配置；工具与插件在独立页面管理。")}</span>
-          </div>
-          <Button
-            onClick={async () => {
-              const extracted = await actions.extractRelayCommonConfig(profile.configContents || "");
-              if (!extracted) return;
-              const split = splitContextConfigText(extracted.commonConfigContents || "");
-              if (!split.common.trim() && !split.context.trim()) {
-                await actions.showMessage(t("通用配置文件"), t("当前供应商 config.toml 里没有可提取的通用配置。"), "failed");
-                return;
-              }
-              const promotedProfile = {
-                ...profile,
-                configContents: extracted.profileConfigContents,
-              };
-              const next = syncLegacyRelayFields({
-                ...form,
-                relayCommonConfigContents: split.common,
-                relayContextConfigContents: joinTomlSectionsRootFirst([form.relayContextConfigContents || "", split.context]),
-                relayProfiles: form.relayProfiles.map((item) => (item.id === profileId ? promotedProfile : item)),
-              });
-              onFormChange(next);
-              onProfileChange(promotedProfile);
-              await actions.saveSettingsValue(next, false);
-            }}
-            size="sm"
-            type="button"
-            variant="secondary"
-          >
-            <Download className="h-4 w-4" />
-            {t("提取当前供应商配置")}
-          </Button>
-        </div>
-        <SyncedTextarea
-          className="relay-file-textarea"
-          value={form.relayCommonConfigContents}
-          onValueChange={(value) => onFormChange({ ...form, relayCommonConfigContents: value })}
-        />
-      </div>
+      <RelayConfigPanels
+        liveConfig={liveConfigContents}
+        liveHelp={t("直接读取 Codex 当前文件；Manager 不保存副本，切换时只替换供应商字段。")}
+        liveTitle={t("实时 config.toml")}
+        nativeOfficial={nativeOfficial}
+        nativeProviderMessage={t("官方原生模式无独立供应商配置；运行时使用右侧实时 config.toml。")}
+        onProviderConfigChange={onProviderConfigChange}
+        providerConfig={providerConfig}
+        providerHelp={providerReadOnly
+          ? t("新供应商首次统一保存前，此处仅预览 canonical TOML；保存后可编辑。")
+          : t("只保存模型、供应商、Base URL、目录指针和供应商表；全局配置实时读取。")}
+        providerReadOnly={providerReadOnly}
+        providerTitle={t("供应商配置")}
+        unavailableLiveMessage={t("当前 live config.toml 不可用")}
+      />
       <div className="relay-file-panel">
         <div className="relay-file-head">
           <div>
@@ -3676,89 +4247,6 @@ function filterContextEntriesBySelection(entries: CodexContextEntries, selection
   };
 }
 
-function configHasCodexGoalsFeature(configContents: string): boolean {
-  let inFeatures = false;
-  for (const line of configContents.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (/^\[features\]$/.test(trimmed)) {
-      inFeatures = true;
-      continue;
-    }
-    if (inFeatures && /^\[[^\]]+\]$/.test(trimmed)) {
-      inFeatures = false;
-    }
-    if (inFeatures && /^goals\s*=\s*true\b/.test(trimmed)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function setCodexGoalsFeatureInConfig(configContents: string, enabled: boolean): string {
-  const lines = configContents.split(/\r?\n/);
-  const next: string[] = [];
-  let inFeatures = false;
-  let sawFeatures = false;
-  let featuresHasGoals = false;
-
-  const maybeInsertGoals = () => {
-    if (enabled && sawFeatures && !featuresHasGoals) {
-      next.push("goals = true");
-      featuresHasGoals = true;
-    }
-  };
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (/^\[features\]$/.test(trimmed)) {
-      if (inFeatures) maybeInsertGoals();
-      inFeatures = true;
-      sawFeatures = true;
-      featuresHasGoals = false;
-      next.push(line);
-      continue;
-    }
-    if (inFeatures && /^\[[^\]]+\]$/.test(trimmed)) {
-      maybeInsertGoals();
-      inFeatures = false;
-    }
-    if (inFeatures && /^goals\s*=/.test(trimmed)) {
-      if (enabled && !featuresHasGoals) {
-        next.push("goals = true");
-        featuresHasGoals = true;
-      }
-      continue;
-    }
-    next.push(line);
-  }
-
-  if (inFeatures) maybeInsertGoals();
-  if (enabled && !sawFeatures) {
-    const trimmed = ensureTrailingNewline(next.join("\n").trimEnd());
-    return joinTomlSections([trimmed, "[features]\ngoals = true"]);
-  }
-
-  return ensureTrailingNewline(next.join("\n").trimEnd());
-}
-
-function effectiveRelayConfigPreview(profile: RelayProfile, settings: BackendSettings, contextProfile = profile): string {
-  const entries = contextEntriesForProfile(settings, contextProfile);
-  const isolatedConfig = stripContextEntriesFromConfig(profile.configContents, entries);
-  const configWithLimits = applyContextLimitPreview(isolatedConfig, profile);
-  return joinTomlSectionsRootFirst([configWithLimits, settings.relayCommonConfigContents || "", selectedContextConfigToml(entries)]);
-}
-
-function selectedContextConfigToml(entries: CodexContextEntries): string {
-  const sections: string[] = [];
-  for (const option of contextKindOptions) {
-    for (const entry of dedupeContextEntryList(contextEntriesByKind(entries, option.kind))) {
-      if (!entry.enabled) continue;
-      sections.push(contextEntryToTomlSection(option.tableName, entry));
-    }
-  }
-  return ensureTrailingNewline(sections.join("\n\n"));
-}
-
 function allContextConfigToml(entries: CodexContextEntries): string {
   const sections: string[] = [];
   for (const option of contextKindOptions) {
@@ -3785,11 +4273,6 @@ function relativeContextSubtableToAbsolute(line: string, tableName: string, id: 
   const subtable = match[1].trim();
   if (!subtable || subtable.includes(".")) return line;
   return `[${tableName}.${tomlKey(id)}.${tomlKey(subtable)}]`;
-}
-
-
-function relayCombinedCommonConfig(settings: BackendSettings): string {
-  return joinTomlSectionsRootFirst([settings.relayCommonConfigContents || "", settings.relayContextConfigContents || ""]);
 }
 
 function splitContextConfigText(configContents: string): { common: string; context: string } {
@@ -3821,49 +4304,6 @@ function stripContextEntriesFromConfig(configContents: string, entries: CodexCon
   }
 
   return ensureTrailingNewline(kept.join("\n").trimEnd());
-}
-
-function stripCommonConfigTextFallback(configContents: string, commonConfig: string): string {
-  const anchors = commonConfigAnchors(commonConfig);
-  if (!anchors.rootKeys.size && !anchors.tableHeaders.size) return ensureTrailingNewline(configContents.trimEnd());
-
-  const kept: string[] = [];
-  let skippingTable = false;
-
-  for (const line of configContents.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (/^\[[^\]]+\]$/.test(trimmed)) {
-      skippingTable = anchors.tableHeaders.has(trimmed);
-      if (skippingTable) continue;
-    }
-    if (skippingTable) continue;
-    const key = tomlRootKeyFromLine(trimmed);
-    if (key && anchors.rootKeys.has(key)) continue;
-    kept.push(line);
-  }
-
-  return ensureTrailingNewline(kept.join("\n").trimEnd());
-}
-
-function commonConfigAnchors(commonConfig: string): { rootKeys: Set<string>; tableHeaders: Set<string> } {
-  const rootKeys = new Set<string>();
-  const tableHeaders = new Set<string>();
-  let inRoot = true;
-
-  for (const line of commonConfig.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (/^\[[^\]]+\]$/.test(trimmed)) {
-      inRoot = false;
-      tableHeaders.add(trimmed);
-      continue;
-    }
-    if (inRoot) {
-      const key = tomlRootKeyFromLine(trimmed);
-      if (key) rootKeys.add(key);
-    }
-  }
-
-  return { rootKeys, tableHeaders };
 }
 
 function tomlRootKeyFromLine(line: string): string | null {
@@ -4272,54 +4712,39 @@ function relayProfileModeHelp(profile: RelayProfile): string {
 }
 
 
-function relayProfileSwitchCommand(profile: RelayProfile): "clear_relay_injection" | "apply_relay_injection" | "apply_pure_api_injection" {
-  if (isAggregateRelayProfile(profile)) return "apply_relay_injection";
-  if (profile.relayMode === "pureApi") return "apply_pure_api_injection";
-  if (profile.relayMode === "official" && !profile.officialMixApiKey) return "clear_relay_injection";
-  if (profile.configContents.trim()) return "apply_relay_injection";
-  return profile.officialMixApiKey ? "apply_relay_injection" : "clear_relay_injection";
-}
-
-function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {
+function withGeneratedRelayFiles(
+  profile: RelayProfile,
+  contract: ProviderConfigTargetContract,
+): RelayProfile {
   if (isAggregateRelayProfile(profile)) {
     return { ...profile, configContents: "", authContents: "", aggregate: normalizeAggregateConfig(profile.aggregate, []) };
   }
-  if (profile.relayMode === "official") {
-    return {
-      ...profile,
-      configContents: profile.officialMixApiKey ? buildRelayConfigToml(profile, { includeBearerToken: true }) : "",
-      authContents: "",
-    };
-  }
-  const pureApi = profile.relayMode === "pureApi";
   return {
-    ...profile,
-    configContents: buildRelayConfigToml(profile, { includeBearerToken: true, requiresOpenaiAuth: !pureApi }),
+    ...withGeneratedRelayConfig(profile, contract),
     authContents: "",
   };
 }
 
-function buildRelayConfigToml(
-  profile: Pick<RelayProfile, "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol">,
-  options: { includeBearerToken: boolean; requiresOpenaiAuth?: boolean },
-): string {
-  const baseUrl = profile.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : profile.baseUrl.trim();
-  const apiKey = profile.apiKey.trim();
-  const rootLines = [
-    profile.model.trim() ? `model = "${tomlString(profile.model.trim())}"` : null,
-    'model_provider = "custom"',
-    "",
-  ].filter((line): line is string => line !== null);
-  return [
-    ...rootLines,
-    "[model_providers.custom]",
-    'name = "custom"',
-    'wire_api = "responses"',
-    `requires_openai_auth = ${options.requiresOpenaiAuth ?? true}`,
-    `base_url = "${tomlString(baseUrl)}"`,
-    options.includeBearerToken && apiKey ? `experimental_bearer_token = "${tomlString(apiKey)}"` : null,
-    "",
-  ].filter((line): line is string => line !== null).join("\n");
+function providerConfigTargetContract(
+  profile: RelayProfile,
+  brandNew: boolean,
+): ProviderConfigTargetContract {
+  if (!brandNew) return { target: "preserveExisting", source: "existing" };
+  if (
+    profile.transientTarget === "nativePriority"
+    && profile.relayMode === "official"
+    && profile.officialMixApiKey
+    && profile.protocol === "responses"
+  ) {
+    return { target: "nativePriority", source: "brand-new-empty" };
+  }
+  if (profile.relayMode === "official" && !profile.officialMixApiKey) {
+    return { target: "pureOAuth", source: "brand-new-empty" };
+  }
+  if (profile.relayMode === "pureApi") {
+    return { target: "pureApi", source: "brand-new-empty" };
+  }
+  return { target: "compatibility", source: "brand-new-empty" };
 }
 
 function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
@@ -4352,59 +4777,38 @@ function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
 function applyRelayProfilePatchToFiles(
   profile: RelayProfile,
   patch: Partial<RelayProfile>,
-  options: { allowGenerateFiles?: boolean } = {},
+  options: {
+    allowGenerateFiles?: boolean;
+    target: ProviderConfigTargetContract;
+  },
 ): RelayProfile {
   let next: RelayProfile = { ...profile, ...patch };
   if (isAggregateRelayProfile(next)) {
     return normalizeAggregateRelayProfile(next, null);
   }
+  if (
+    options.target.source === "existing"
+    && providerConfigPatchRequiresBackendTransform(patch)
+  ) {
+    return { ...profile, authContents: "" };
+  }
   const shouldHaveFiles =
     next.relayMode !== "official" || next.officialMixApiKey || next.configContents.trim();
   if (options.allowGenerateFiles && shouldHaveFiles && !next.configContents.trim()) {
-    next = withGeneratedRelayFiles(next);
+    next = withGeneratedRelayFiles(next, options.target);
   }
-
-  if ("model" in patch) {
-    // 模型后缀（如 [1M]）仅供 CodexPlusPlus 内部使用，写入 config.toml 前需剥离，
-    // 否则 codex 会按带后缀的字符串去匹配 catalog slug，导致窗口回退到默认值。
-    const { slug } = parseModelSuffix(patch.model || "");
-    next.configContents = setRootTomlStringKey(next.configContents, "model", slug);
-  }
-  if ("apiKey" in patch) {
-    next.configContents = setCodexExperimentalBearerToken(next.configContents, patch.apiKey || "");
-    if (next.relayMode === "pureApi") next.configContents = setCodexProviderRequiresOpenaiAuth(next.configContents, false);
-  }
-  if ("baseUrl" in patch) {
-    next.upstreamBaseUrl = patch.baseUrl || "";
-  }
-  if ("upstreamBaseUrl" in patch) {
-    next.baseUrl = patch.upstreamBaseUrl || "";
-  }
-  if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch) {
-    const baseUrlForConfig = next.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : next.upstreamBaseUrl || next.baseUrl;
-    next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig);
-    next.configContents = removeRootTomlKey(next.configContents, CHAT_UPSTREAM_BASE_URL_KEY);
-  }
-  if ("contextWindow" in patch) {
-    next.configContents = setRootTomlIntKey(next.configContents, "model_context_window", patch.contextWindow || "");
-  }
-  if ("autoCompactLimit" in patch) {
-    next.configContents = setRootTomlIntKey(
-      next.configContents,
-      "model_auto_compact_token_limit",
-      patch.autoCompactLimit || "",
-    );
-  }
+  next = applyProviderConfigPatch(next, patch, options.target);
   if ("relayMode" in patch || "officialMixApiKey" in patch) {
     if (next.relayMode === "official" && !next.officialMixApiKey) {
       next.configContents = "";
       next.authContents = "";
     } else if (options.allowGenerateFiles && !next.configContents.trim()) {
-      next = withGeneratedRelayFiles(next);
+      next = withGeneratedRelayFiles(next, options.target);
     }
   }
 
   next.authContents = "";
+  if (!next.configContents.trim()) return next;
   return deriveRelayProfileFromFiles(next);
 }
 
@@ -4417,22 +4821,6 @@ function codexModelFromConfig(contents: string): string {
     if (match) return match[2].replace(/\\(["'\\])/g, "$1");
   }
   return "";
-}
-
-/// 解析模型后缀语法，如 deepseek-v4-flash[1M] -> { slug: "deepseek-v4-flash", window: 1000000 }
-/// 非法或没有后缀时返回原串作为 slug。
-function parseModelSuffix(raw: string): { slug: string; window?: number } {
-  const trimmed = raw.trim();
-  const match = /^(.*?)\[(\d+(?:[KkMm])?)\]$/.exec(trimmed);
-  if (!match) return { slug: trimmed };
-  const inner = match[2];
-  const numPart = inner.replace(/[KkMm]$/, "");
-  const multiplier = inner.endsWith("K") || inner.endsWith("k") ? 1_000
-    : inner.endsWith("M") || inner.endsWith("m") ? 1_000_000
-    : 1;
-  const window = Number.parseInt(numPart, 10) * multiplier;
-  if (!Number.isFinite(window) || window <= 0) return { slug: trimmed };
-  return { slug: match[1].trim(), window };
 }
 
 function codexBaseUrlFromConfig(contents: string): string {
@@ -4493,132 +4881,6 @@ function tomlStringAssignmentValue(line: string, key: string): string | null {
   const match = new RegExp(`^\\s*${key}\\s*=\\s*([\"'])(.*)\\1\\s*(?:#.*)?$`).exec(line.trim());
   if (!match) return null;
   return match[2].replace(/\\(["'\\])/g, "$1");
-}
-
-function setRootTomlStringKey(contents: string, key: string, value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return removeRootTomlKey(contents, key);
-  return setRootTomlLine(contents, key, `${key} = "${tomlString(trimmed)}"`);
-}
-
-function setRootTomlIntKey(contents: string, key: string, value: string): string {
-  const trimmed = value.replace(/[^\d]/g, "");
-  if (!trimmed) return removeRootTomlKey(contents, key);
-  return setRootTomlLine(contents, key, `${key} = ${trimmed}`);
-}
-
-function setRootTomlLine(contents: string, key: string, lineText: string): string {
-  const lines = contents.split(/\r?\n/);
-  const firstTable = lines.findIndex((line) => /^\s*\[[^\]]+\]\s*$/.test(line));
-  const rootEnd = firstTable >= 0 ? firstTable : lines.length;
-  for (let index = 0; index < rootEnd; index += 1) {
-    if (new RegExp(`^\\s*${key}\\s*=`).test(lines[index])) {
-      lines[index] = lineText;
-      return ensureTrailingNewline(lines.join("\n").trimEnd());
-    }
-  }
-  const insertAt = key === "model" ? 0 : rootEnd;
-  lines.splice(insertAt, 0, lineText);
-  return ensureTrailingNewline(lines.join("\n").trimEnd());
-}
-
-function setCodexProviderStringKey(contents: string, key: string, value: string): string {
-  const provider = rootTomlStringValue(contents, "model_provider") || "custom";
-  let next = contents;
-  if (!rootTomlStringValue(next, "model_provider")) {
-    next = setRootTomlStringKey(next, "model_provider", provider);
-  }
-  next = ensureCodexProviderDefaults(next, provider);
-  return setTomlSectionStringKey(next, `model_providers.${provider}`, key, value);
-}
-
-function setCodexExperimentalBearerToken(contents: string, apiKey: string): string {
-  const trimmed = apiKey.trim();
-  return trimmed
-    ? setCodexProviderStringKey(contents, "experimental_bearer_token", trimmed)
-    : removeCodexExperimentalBearerToken(contents);
-}
-
-function setCodexProviderRequiresOpenaiAuth(contents: string, required: boolean): string {
-  const provider = rootTomlStringValue(contents, "model_provider") || "custom";
-  let next = contents;
-  if (!rootTomlStringValue(next, "model_provider")) {
-    next = setRootTomlStringKey(next, "model_provider", provider);
-  }
-  next = ensureCodexProviderDefaults(next, provider);
-  return setTomlSectionBoolKey(next, `model_providers.${provider}`, "requires_openai_auth", required);
-}
-
-function removeCodexExperimentalBearerToken(contents: string): string {
-  const provider = rootTomlStringValue(contents, "model_provider") || "custom";
-  return removeTomlSectionKey(contents, `model_providers.${provider}`, "experimental_bearer_token");
-}
-
-function ensureCodexProviderDefaults(contents: string, provider: string): string {
-  let next = contents;
-  const section = `model_providers.${provider}`;
-  next = setTomlSectionStringKey(next, section, "name", provider);
-  next = setTomlSectionStringKey(next, section, "wire_api", "responses");
-  return setTomlSectionBoolKey(next, section, "requires_openai_auth", true);
-}
-
-function setTomlSectionBoolKey(contents: string, sectionName: string, key: string, value: boolean): string {
-  return setTomlSectionRawKey(contents, sectionName, key, value ? "true" : "false");
-}
-
-function setTomlSectionStringKey(contents: string, sectionName: string, key: string, value: string): string {
-  return setTomlSectionRawKey(contents, sectionName, key, `"${tomlString(value.trim())}"`);
-}
-
-function setTomlSectionRawKey(contents: string, sectionName: string, key: string, value: string): string {
-  const lines = contents.split(/\r?\n/);
-  let sectionStart = -1;
-  let sectionEnd = lines.length;
-  for (let index = 0; index < lines.length; index += 1) {
-    const section = tomlSectionName(lines[index]);
-    if (section === null) continue;
-    if (sectionStart >= 0) {
-      sectionEnd = index;
-      break;
-    }
-    if (section === sectionName) sectionStart = index;
-  }
-  if (sectionStart < 0) {
-    const prefix = ensureTrailingNewline(lines.join("\n").trimEnd()).trimEnd();
-    return joinTomlSections([prefix, `[${sectionName}]\n${key} = ${value}`]);
-  }
-  const replacement = `${key} = ${value}`;
-  for (let index = sectionStart + 1; index < sectionEnd; index += 1) {
-    if (new RegExp(`^\\s*${key}\\s*=`).test(lines[index])) {
-      lines[index] = replacement;
-      return ensureTrailingNewline(lines.join("\n").trimEnd());
-    }
-  }
-  let insertAt = sectionEnd;
-  while (insertAt > sectionStart + 1 && lines[insertAt - 1].trim() === "") insertAt -= 1;
-  lines.splice(insertAt, 0, replacement);
-  return ensureTrailingNewline(lines.join("\n").trimEnd());
-}
-
-function removeTomlSectionKey(contents: string, sectionName: string, key: string): string {
-  const lines = contents.split(/\r?\n/);
-  let sectionStart = -1;
-  let sectionEnd = lines.length;
-  for (let index = 0; index < lines.length; index += 1) {
-    const section = tomlSectionName(lines[index]);
-    if (section === null) continue;
-    if (sectionStart >= 0) {
-      sectionEnd = index;
-      break;
-    }
-    if (section === sectionName) sectionStart = index;
-  }
-  if (sectionStart < 0) return contents;
-  const next = lines.filter((line, index) => {
-    if (index <= sectionStart || index >= sectionEnd) return true;
-    return !new RegExp(`^\\s*${key}\\s*=`).test(line);
-  });
-  return ensureTrailingNewline(next.join("\n").trimEnd());
 }
 
 function relayProfileSwitchValidation(profile: RelayProfile): string | null {
@@ -4694,29 +4956,7 @@ function updateRelayProfile(settings: BackendSettings, id: string, patch: Partia
 function createRelayProfile(settings: BackendSettings): RelayProfile {
   const id = `relay-${Date.now().toString(36)}`;
   const contextSelection = contextSelectionForAllEntries(settings);
-  const next = {
-    id,
-    name: tf("供应商 {0}", [settings.relayProfiles.length + 1]),
-    model: "",
-    baseUrl: defaultSettings.relayBaseUrl,
-    upstreamBaseUrl: defaultSettings.relayBaseUrl,
-    apiKey: "",
-    protocol: "responses" as RelayProtocol,
-    relayMode: "official" as RelayMode,
-    officialMixApiKey: false,
-    testModel: "",
-    configContents: "",
-    authContents: "",
-    useCommonConfig: true,
-    contextSelection,
-    contextSelectionInitialized: true,
-    contextWindow: "",
-    autoCompactLimit: "",
-    modelList: "",
-    modelWindows: "",
-    userAgent: "",
-  };
-  return withGeneratedRelayFiles(next);
+  return createNewRelayProfileDraft({ id, contextSelection });
 }
 
 function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
@@ -4758,7 +4998,9 @@ function addRelayProfile(settings: BackendSettings, profile: RelayProfile): Back
   const nextWithFiles = isAggregateRelayProfile(profile)
     ? normalizeAggregateRelayProfile(profile, settings)
     : deriveRelayProfileFromFiles(
-        profile.configContents.trim() ? profile : withGeneratedRelayFiles(profile),
+        profile.configContents.trim()
+          ? profile
+          : withGeneratedRelayFiles(profile, providerConfigTargetContract(profile, true)),
       );
   const activeId = settings.relayProfiles.some((item) => item.id === settings.activeRelayId)
     ? settings.activeRelayId
@@ -4931,6 +5173,33 @@ function positiveNumberOrNull(value: string): number | null {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+function boundedPercentOrNull(value: string): number | null {
+  const parsed = positiveNumberOrNull(value);
+  return parsed !== null && parsed <= 100 ? parsed : null;
+}
+
+function boundedPercentOrDefault(value: string, fallback: number): number {
+  return boundedPercentOrNull(value) ?? fallback;
+}
+
+function parseCommaListOrNull(value: string): string[] | null {
+  const items = [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))];
+  return items.length ? items : null;
+}
+
+function parseReasoningLevels(value: string): ReasoningLevel[] | null {
+  const efforts = parseCommaListOrNull(value);
+  return efforts?.map((effort) => ({ effort, description: effort })) ?? null;
+}
+
+function reasoningEffortsText(levels: ReasoningLevel[]): string {
+  return levels.map((level) => level.effort).join(",");
+}
+
+function managedCatalogMode(mode: CatalogMode): boolean {
+  return mode === "official-plus-custom" || mode === "custom-only";
+}
+
 function integerOrNull(value: string): number | null {
   if (!value.trim()) return null;
   const parsed = Number.parseInt(value, 10);
@@ -4947,8 +5216,12 @@ function integerOrDefault(value: string, fallback: number): number {
 
 function catalogDraftErrorLabel(error: string | null): string {
   if (error === "empty-custom-slug") return t("自定义模型 slug 不能为空。");
+  if (error === "empty-display-name") return t("自定义模型显示名不能为空。");
   if (error === "duplicate-custom-slug") return t("自定义模型 slug 不能重复。");
   if (error === "invalid-context-window") return t("上下文窗口必须是正整数。");
+  if (error === "invalid-effective-percent") return t("有效上下文百分比必须为 1 到 100。");
+  if (error === "invalid-reasoning-levels") return t("推理级别不能为空或重复。");
+  if (error === "invalid-reasoning-default") return t("默认推理级别必须包含在支持列表中。");
   if (error === "invalid-default-model") return t("当前默认模型不在有效目录中，请先调整目录或默认模型。");
   return "";
 }

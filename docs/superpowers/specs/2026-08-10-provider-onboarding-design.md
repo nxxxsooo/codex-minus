@@ -92,7 +92,8 @@
 - 供应商 Key 继续由 owner-only Manager settings 持有，并通过既有 provider bearer 配置路径物化；不出现在目录状态、诊断、日志或备份正文中。
 - `config.toml`、`auth.json`、settings、事务 journal 及父目录继续执行 owner-only／平台等价 ACL 检查。
 - Provider Doctor 的响应预览必须截断并沿用现有脱敏规则；兼容重试不得记录请求头或 Key。
-- `requires_openai_auth = true` 的混合模式不改用 `env_key`，因为官方 Codex 在此模式会忽略 `env_key`；也不把 provider Key 伪装为官方登录缓存。
+- ~~`requires_openai_auth = true` 的混合模式不改用 `env_key`，因为官方 Codex 在此模式会忽略 `env_key`；也不把 provider Key 伪装为官方登录缓存。~~
+  - **已被取代**（`prioritize-native-capabilities-for-mixed-providers`）：新建混合供应商的默认目标是原生能力优先契约，其中 `requires_openai_auth = false`，由 provider bearer 携带 Key。`requires_openai_auth = true` 现在只是遗留兼容形态，需显式选择。不改用 `env_key`、不把 provider Key 伪装为官方登录缓存这两条约束继续有效。
 
 ## 错误处理
 

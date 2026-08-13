@@ -1,10 +1,10 @@
 <p align="right"><a href="README.en.md">English</a></p>
 
 <p align="center">
-  <img src="docs/assets/codex-minus-hero.webp" alt="Codex-- Manager 供应商配置界面" width="960">
+  <img src="docs/assets/codex-minus-hero.webp" alt="Codex Minus 供应商配置界面" width="960">
 </p>
 
-<h1 align="center">Codex-- Manager</h1>
+<h1 align="center">Codex Minus</h1>
 
 <p align="center">安全切换供应商，管理模型目录，不交出你的 OAuth 与 Context。</p>
 
@@ -15,7 +15,7 @@
   <a href="LICENSE"><img alt="AGPL-3.0-only" src="https://img.shields.io/badge/license-AGPL--3.0--only-197547?style=flat-square"></a>
 </p>
 
-Codex-- Manager 是 [Codex++ Manager](https://github.com/BigPizzaV3/CodexPlusPlus) 的精简 fork，只保留供应商切换、模型目录、本地会话生命周期和配置诊断。没有渲染注入、launcher、市场或自动更新器。
+Codex Minus 是 [Codex++ Manager](https://github.com/BigPizzaV3/CodexPlusPlus) 的精简 fork，只保留供应商切换、模型目录、本地会话生命周期和配置诊断。没有渲染注入、launcher、市场或自动更新器。
 
 ## 下载
 
@@ -34,11 +34,11 @@ Codex-- Manager 是 [Codex++ Manager](https://github.com/BigPizzaV3/CodexPlusPlu
 shasum -a 256 -c SHA256SUMS
 ```
 
-校验后解压，将 `Codex-- Manager.app` 移入 `/Applications`。当前版本采用 ad-hoc 签名，尚未使用 Developer ID 签名或 Apple 公证。首次启动如被 macOS 拦截，请在「系统设置 → 隐私与安全性」中选择「仍要打开」。
+校验后解压，将 `Codex Minus.app` 移入 `/Applications`。当前版本采用 ad-hoc 签名，尚未使用 Developer ID 签名或 Apple 公证。首次启动如被 macOS 拦截，请在「系统设置 → 隐私与安全性」中选择「仍要打开」。
 
 ## 为什么需要它
 
-供应商切换只应该改供应商配置。Codex-- 会在每条写入路径执行前快照 `~/.codex/config.toml` 中的三张 Context 表，并在上游写入结束后把原始 TOML 内容逐字回植：
+供应商切换只应该改供应商配置。Codex Minus 会在每条写入路径执行前快照 `~/.codex/config.toml` 中的三张 Context 表，并在上游写入结束后把原始 TOML 内容逐字回植：
 
 ```toml
 [mcp_servers]
@@ -46,7 +46,7 @@ shasum -a 256 -c SHA256SUMS
 [plugins]
 ```
 
-这层保护来自一次真实事故：旧的 managed context 副本在供应商切换时覆盖了有效 MCP 配置。Codex-- 删除了该管理功能，并用 Rust 测试固定保护契约。
+这层保护来自一次真实事故：旧的 managed context 副本在供应商切换时覆盖了有效 MCP 配置。Codex Minus 删除了该管理功能，并用 Rust 测试固定保护契约。
 
 ## 功能范围
 
@@ -59,13 +59,26 @@ shasum -a 256 -c SHA256SUMS
 - 检查可能覆盖供应商配置的 `OPENAI_*` 环境变量。
 - 供应商快速测试与 Provider Doctor 遇到严格匹配的 Responses HTTP 400 字段兼容错误时，会在 Manager 内省略可选的 `max_output_tokens` 重试一次并明确标记；认证、模型、限流、普通上游错误和 Chat Completions 不重试。
 
+### 原生能力优先
+
+- 混合供应商（官方登录 + 自定义 Base URL 与 Key）可采用一份固定契约：provider 名称为 `OpenAI`、`wire_api = "responses"`、`requires_openai_auth = false`、provider bearer 使用你的 Key，并带一个 Actor 标记请求头。
+- Actor 标记只表示「本客户端有资格以本地扩展身份发起请求」，不是订阅升级，也不代表任何具体能力被授予。是否放行由上游决定：文本 Responses、模型发现、图像生成、图像编辑、远端压缩、联网搜索各自独立，任一项的成功或拒绝都不能推断其他项。未实测的能力一律显示为「未知」，不会被写成成功。
+- 升级为原生能力优先是显式动作，带预览与确认，只改这一个 profile。启动、读取和检视都不会自动改写任何已有 profile 的契约；保存某个供应商也不会顺带迁移其他供应商。
+- 退出到纯 OAuth 是破坏性动作：预览会列出将被删除的 provider 表与字段，确认后该 provider 及其 Key 会从 profile、settings 与 live `config.toml` 中一并删除，不保留休眠副本。
+- profile 配置只拥有 provider 相关的键。写入 live 配置时，profile 内的全局键不会进入 live 根，live 中既有的 `mcp_servers`、`skills`、`plugins` 等全局内容也不会被覆盖。
+- 活动供应商的契约或静态目录发生变化后需要重启 Codex：请退出并重开 Codex 宿主，然后新建任务；已经在运行的会话仍使用旧配置，提示不会自动消失。
+- 遗留 provider 标识（`CodexPlusPlus`、`CodexPP`）和保留标识（如 `openai`）无法承载该契约——固定的上游内核会把它们改写成自己的 `custom` 形态并丢弃 Actor 标记，因此必须先显式改名再升级。
+
 ### 模型目录
 
 - Codex 在未配置静态 `model_catalog_json` 时，OAuth 或 API provider 都可能通过各自的 `/models` 路径更新共享 `models_cache.json`；混合模式会走当前 custom provider，因此该 live cache 具有 provider 歧义，不能作为官方基线。
 - 官方清单只通过配置目标应用内、经过平台签名验证的 Codex CLI 刷新，不使用 `PATH` 中的任意 `codex`，也不把供应商 `/v1/models` 当作官方来源。
 - 刷新在 owner-only 临时 `CODEX_HOME` 中运行，只投影当前 access/ID token；refresh token 为空，临时认证不会回写 live 状态。
-- 每个非聚合供应商可选择「官方原生」「官方 + 自定义」「仅自定义」或「外部目录」。外部文件只读，必须显式预览并采用后才转为 manager ownership。
-- 官方条目保留目标 CLI 返回的全部字段与隐藏模型；overlay 只管理可见性、顺序、上下文窗口和自定义模型。
+- 每个可用供应商可选择「官方原生」「官方 + 自定义」「仅自定义」或「外部目录」。服务端复合供应商仍以一个纯 API Responses Base URL 和 Key 接入，模型聚合由上游完成，默认使用「官方 + 自定义」。
+- 官方条目保留目标 CLI 返回的全部字段与隐藏模型；overlay 可管理显示名、可见性、顺序、上下文与有效百分比、推理级别以及显式工具能力。自定义模型默认不声明官方后端专属能力。
+- 托管多模型目录以每个模型的上下文元数据为准；已有 `model_context_window` 和 `model_auto_compact_token_limit` 会先显示冲突，只有确认后才在可恢复事务中移除。
+- 外部文件保持只读，采用前执行结构与目标 CLI 离线验证。目录声明版本与目标版本不同会显示警告并要求单独确认，但不会仅因版本字符串不同而拒绝兼容目录。
+- 外部目录优先于托管模式：只要 profile 的配置指向一个非本工具生成的目录文件，该 profile 就按「外部」处理，托管目录动作与原生能力优先判定都不适用，直到你显式改用内置目录。
 - 供应商 `/v1/models` 仅作为有时间戳的「已报告／未报告」证据和自定义候选；遗漏不会隐藏官方模型。
 - 托管目录写入 `~/.codex/model-catalogs/codex-minus-<profile>-<hash>.json`。活动静态目录变化后会提示重启 Codex，不会自动结束或重启官方客户端。
 
@@ -86,7 +99,7 @@ shasum -a 256 -c SHA256SUMS
 
 ## 更新与卸载
 
-更新时先退出 Codex-- Manager，再下载最新版覆盖 `/Applications/Codex-- Manager.app`。应用不包含自动更新器，GitHub Release 不会自动更新本机副本。
+更新时先退出 Codex Minus，再下载最新版覆盖 `/Applications/Codex Minus.app`。应用不包含自动更新器，GitHub Release 不会自动更新本机副本。
 
 用户设置位于 `~/.codex-session-delete/`，覆盖应用不会删除。卸载应用时可单独决定是否保留该目录。
 
@@ -96,7 +109,7 @@ shasum -a 256 -c SHA256SUMS
 - Windows 构建通过 CI 自动生成，未在本地进行 Windows 实机测试。
 - Credential-bearing 官方目录刷新当前验证下限为内嵌 `codex-cli 0.147.0-alpha.1`；已验证 macOS OpenAI Team ID `2DC432GLL2`。不支持 keyring-only 或无法安全读取的认证存储。
 - Windows 已实现 Authenticode/OpenAI publisher gate，但尚未完成 Windows 实机 OAuth 刷新验证。
-- 「Chat Completions 协议」和「聚合供应商」依赖上游 launcher 提供的 `127.0.0.1:57321` 代理，本项目不包含该代理，请勿使用。
+- 「Chat Completions 协议」和「本地成员聚合」依赖上游 launcher 提供的 `127.0.0.1:57321` 代理，本项目不包含该代理，请勿使用。由远端服务完成路由、对 Codex 仅暴露一个 Responses Base URL 和 Key 的服务端复合供应商不受此限制。
 - 固定的上游 revision 尚未提供 active-only provider-sync 写入范围，因此「适配到当前 provider」保持禁用，不会回退到全历史改写。
 - 会话归档用于整理，不会压缩数据或释放磁盘空间。
 
@@ -120,7 +133,7 @@ npm run build
 
 完整 Tauri 构建会生成：
 
-- macOS: `src-tauri/target/release/bundle/macos/Codex-- Manager.app`
+- macOS: `src-tauri/target/release/bundle/macos/Codex Minus.app`
 - Windows: `src-tauri/target/release/bundle/msi/*.msi` 或 `src-tauri/target/release/bundle/nsis/*.exe`
 
 ## License
