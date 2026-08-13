@@ -940,16 +940,21 @@ export function App() {
 
   const refreshSettings = async (silent = false) => {
     const result = await run(() => call<SettingsResult>("load_settings"));
-    if (result) {
-      const normalized = normalizeSettings(result.settings);
-      const baseline = { ...result, settings: normalized };
-      providerCommitState.current = { ...providerCommitState.current, baseline };
-      setSettings(baseline);
-      setSettingsForm(normalized);
-      if (!silent) showResultNotice(t("设置已加载"), result, { silentSuccess: true });
-      return normalized;
+    if (!result) return null;
+    // A read that failed answers with default settings and no fingerprint. Adopting that as the
+    // compare-and-swap baseline would replace the real profiles on screen and hide the reason
+    // until the next save reported a missing fingerprint, so keep the old baseline and say why.
+    if (!result.provider_fingerprint) {
+      showNotice(t("设置已加载"), result.message, "failed");
+      return null;
     }
-    return null;
+    const normalized = normalizeSettings(result.settings);
+    const baseline = { ...result, settings: normalized };
+    providerCommitState.current = { ...providerCommitState.current, baseline };
+    setSettings(baseline);
+    setSettingsForm(normalized);
+    if (!silent) showResultNotice(t("设置已加载"), result, { silentSuccess: true });
+    return normalized;
   };
 
   const refreshRelay = async (silent = false) => {
@@ -1482,9 +1487,30 @@ export function App() {
     return true;
   };
 
-  const providerCommitCommon = (next: BackendSettings, confirmContextCleanup = false) => {
-    const baseline = providerCommitState.current.baseline ?? settings;
-    if (!baseline?.provider_fingerprint) throw new Error("provider settings fingerprint is unavailable");
+  // The compare-and-swap baseline is the settings generation a save is written against. A save
+  // pressed before the first read landed — or after one failed — has none, and the click used to
+  // die on an internal condition the user could do nothing with. It must not simply commit
+  // either: without a baseline the form on screen holds placeholder settings, so writing it back
+  // would publish an empty provider list. Read the real generation, then ask for the edit again.
+  const providerCommitBaseline = async (): Promise<SettingsResult | null> => {
+    const current = providerCommitState.current.baseline ?? settings;
+    if (current?.provider_fingerprint) return current;
+    const reloaded = await refreshSettings(true);
+    showNotice(
+      t("保存供应商"),
+      reloaded
+        ? t("刚刚才读到供应商设置，页面已更新为当前内容，请确认后重新保存。")
+        : t("尚未读取到供应商设置，请点击右上角刷新后重试。"),
+      "failed",
+    );
+    return null;
+  };
+
+  const providerCommitCommon = (
+    baseline: SettingsResult,
+    next: BackendSettings,
+    confirmContextCleanup = false,
+  ) => {
     return {
       settings: normalizeSettings(next),
       persistedSettings: normalizeSettings(baseline.settings),
@@ -1502,7 +1528,9 @@ export function App() {
     copySourceProfileId?: string,
   ) => {
     try {
-      const common = providerCommitCommon(next);
+      const baseline = await providerCommitBaseline();
+      if (!baseline) return false;
+      const common = providerCommitCommon(baseline, next);
       const invocation = kind === "copy"
         ? buildProviderMutationInvocation({ ...common, kind, copySourceProfileId: copySourceProfileId ?? "" })
         : buildProviderMutationInvocation({ ...common, kind });
@@ -1522,7 +1550,9 @@ export function App() {
     confirmContextCleanup = false,
   ) => {
     try {
-      const common = providerCommitCommon(next, confirmContextCleanup);
+      const baseline = await providerCommitBaseline();
+      if (!baseline) return false;
+      const common = providerCommitCommon(baseline, next, confirmContextCleanup);
       const invocation = buildProviderMutationInvocation({
         ...common,
         kind,

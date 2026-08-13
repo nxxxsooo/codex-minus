@@ -377,6 +377,10 @@ export const EN_PLAIN: Record<string, string> = {
   "对话居中宽度": "Centered conversation width",
   "导入 Codex++ 供应商": "Import Codex++ provider",
   "尚未刷新": "Not refreshed yet",
+  "尚未读取到供应商设置，请点击右上角刷新后重试。":
+    "Provider settings have not been read yet. Use the refresh button in the top right, then try again.",
+  "刚刚才读到供应商设置，页面已更新为当前内容，请确认后重新保存。":
+    "Provider settings only just loaded. The page now shows the current content — check it and save again.",
   "尚未加载推荐内容": "Recommendations not loaded yet",
   "尚未检查 Codex 应用路径。": "Codex app path not checked yet.",
   "尚未检查 GitHub Release；更新会下载并启动安装包。": "GitHub Release not checked yet; updating downloads and launches the installer.",
