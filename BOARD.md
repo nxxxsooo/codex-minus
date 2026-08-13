@@ -8,6 +8,10 @@
 
 ### 2026-08-13
 
+- **fix/windows**: gave each bounded helper capture its own temp files, so two helpers started in the same clock tick stop deleting each other's output
+  - why: the capture name was derived from `SystemTime::now` and the pid, and Windows advances that clock in ~15.6 ms steps while every thread shares the pid — colliding helpers made the first to finish delete the file the other was still reading, which surfaced as a bare `os error 2` with no context from the ACL verifier and failed `live_state` on the Windows x64 runner
+  - verified: the naming and concurrent-capture regressions pass, 173 Rust lib + 17 + 24 integration tests pass with the live OAuth test intentionally ignored, and GitHub Actions macOS arm64 + Windows x64 + Windows arm64 pass
+  - refs: `src-tauri/src/platform_command.rs`
 - **fix/providers**: stopped a failed settings read from becoming the compare-and-swap baseline, made a save with no baseline re-read and report which case it hit instead of dying on `provider settings fingerprint is unavailable`, and settled `load_settings`/`save_settings` through `settle_blocking` so a panic still answers the caller
   - why: a failed read answers with default settings and no fingerprint, so adopting it replaced the profiles on screen and postponed the reason until the next save, which then failed with an internal condition the user could do nothing about; re-reading is not enough on its own because the form holds placeholder settings at that moment and committing it would publish an empty provider list
   - verified: 171 Rust lib + 17 + 24 integration tests pass with the live OAuth test intentionally ignored; 151 frontend tests including new baseline-gate and failed-read regressions, TypeScript, Vite build, and `cargo fmt --check` pass; the on-disk preconditions on the reporting machine (state dir 0700, `auth.json` 0600, parseable settings, empty journal) were all healthy, so the exact trigger of the empty baseline there is not pinned
