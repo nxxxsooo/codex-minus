@@ -87,27 +87,33 @@ gh pr merge <PR号> --merge
 
 ### 2.6 发版
 
-只在需要发版时做。三个版本号文件必须一致：
+版本号写在**四个**文件里，没有任何工具会帮你同步：`package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`。改三个漏一个，安装包文件名和 App 里的版本号就会对不上。
+
+所以先手写 BOARD.md 那一条（什么 / 为什么 / 怎么验证的 —— 脚本写不出来），然后：
 
 ```bash
-# 1. 改版本号
-#    package.json / src-tauri/tauri.conf.json / src-tauri/Cargo.toml
-# 2. 同步 Cargo.lock
-cargo update -p codex-minus --manifest-path src-tauri/Cargo.toml
-# 3. BOARD.md 写一条记录
-# 4. 提交、走上面的 PR 流程合并
-
-# 合并之后再打 tag —— 打在 origin/master 上，不是分支上
-git fetch origin master
-git tag -a v0.4.4 origin/master -m "说明"
-git push origin v0.4.4
+# 1. 改完 BOARD.md 并提交，工作区必须干净
+scripts/release.sh 0.4.5
 ```
+
+这个脚本会：拒绝脏工作区、拒绝在 master 上跑、拒绝 BOARD.md 没有今天的条目、改四个文件、跑一遍测试、提交。任何一步不满足就停下并说原因。
+
+```bash
+# 2. 走 2.3–2.5 的 PR 流程合并
+
+# 3. 合并之后打 tag
+scripts/release-tag.sh 0.4.5
+```
+
+`release-tag.sh` 会先 fetch，确认 **origin/master 上**的版本号确实是 0.4.5，才打 tag —— 防止在没合并的提交上打 tag。
 
 推 tag 会触发 release job，自动构建 6 个安装包并发布。
 
 ```bash
-gh release view v0.4.4 --json assets --jq '.assets[].name'
+gh release view v0.4.5 --json assets --jq '.assets[].name'
 ```
+
+**兜底**：`src/release-version.test.ts` 会断言四个文件版本号一致，跟着 `npm test` 在 CI 里跑。就算绕过脚本手工改，不一致也会在 PR 阶段红掉。
 
 ### 2.7 收工
 
@@ -141,14 +147,20 @@ git 只懂**文本行**，不懂「你删的东西我还在用」。
 
 而且默认情况下 **CI 测的是你的分支，不是合并后的结果**。
 
-### 两个解法
+### 现在的设置（2026-08-13 已开启）
 
-| 做法 | 位置 | 代价 |
+master 分支保护已生效：
+
+| 项 | 值 | 意思 |
 |---|---|---|
-| 打开 `Require branches to be up to date before merging` | 仓库 Settings → Branches | 每个 PR 合并前必须 rebase 重跑 CI，并发度降到 1 |
-| Merge Queue | 同上，GitHub 原生功能 | 排队测「按这个顺序合并后的结果」，既并发又安全；对小仓库偏重 |
+| 必需检查 | macOS arm64 / Windows x64 / Windows arm64 | 三个都绿才能合并 |
+| `strict` | `true` | **合并前分支必须与 master 同步**，master 动过就得 rebase 重跑 CI |
+| `enforce_admins` | `false` | 你本人保留紧急绕过的口子 |
+| 强推 / 删分支 | 禁止 | master 不会被覆盖或删掉 |
 
-**一旦同时有 2 个以上 PR 在跑，就去打开第一个。** 慢一点，但省掉「合完发现 master 坏了」的排查——那个比等 CI 贵得多。
+**Merge Queue 用不了**：它只对**组织仓库**开放，这个仓库是个人所有，API 直接拒绝。`strict: true` 是等效替代 —— 代价是并发度降到 1（第二个 PR 得等第一个合完再 rebase 重跑）。
+
+工作流里已经加好了 `merge_group:` 触发器，哪天仓库转到组织名下，打开队列就能直接用。
 
 ---
 
@@ -164,7 +176,7 @@ git 只懂**文本行**，不懂「你删的东西我还在用」。
    ```bash
    git fetch origin master && git rebase origin/master
    ```
-4. **2 个以上并发 PR → 打开 branch protection。**
+4. **合并被拒说「branch is out of date」不是故障**，是 `strict` 在起作用 —— rebase 再推一次，等 CI 重跑。
 5. **动共享基础的先合**，依赖它的后合并再 rebase。
 
 ---
@@ -233,7 +245,26 @@ const HELPERS_STILL_IN_APP = ["normalizeSettings", "codexModelFromConfig", /* ..
 
 ---
 
-## 7. 建议顺序
+## 7. 现在装了哪些工具
+
+全部是通用公开手段 —— 不依赖任何编辑器、插件或账号，人和 AI 都能用同一条命令。
+
+| 命令 | 干什么 |
+|---|---|
+| `npm run check` | TypeScript 类型检查 |
+| `npm test` | 前端测试（含四个版本号文件一致性） |
+| `npm run knip` | 找出没人用的依赖、导出、文件 |
+| `npm run verify` | 上面三个一起跑 —— **CI 里跑的就是这个** |
+| `scripts/release.sh <版本>` | 改四个版本号文件 + 跑测试 + 提交 |
+| `scripts/release-tag.sh <版本>` | 确认已合并，在 origin/master 上打 tag 并推送 |
+
+**knip** 是找死代码的。像「注册了但前端从没调用过的命令」「装了但从没 import 的依赖」这类东西，它一条命令扫出来 —— 而不是等人读代码读出来。
+
+**CI 之前从来没跑过前端测试和 tsc**，只跑了 `vite build` 和 `cargo test`。现在 `npm run verify` 加进了 macOS 那个 job（前端与平台无关，只跑一次，不用跑三遍）。
+
+---
+
+## 8. 建议顺序
 
 ```
 1. 打薄批次 1+2 + 棘轮测试        ← 一个 PR
