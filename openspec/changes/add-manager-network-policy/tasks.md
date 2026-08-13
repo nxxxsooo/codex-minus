@@ -22,5 +22,5 @@
 ## 4. Verification And Completion
 
 - [x] 4.1 Run strict OpenSpec validation, Rust formatting and tests, frontend tests, TypeScript check, and Vite production build; fix all regressions.
-- [ ] 4.2 Build the full Tauri macOS bundle and manually verify status is read-only, direct mode strips ambient proxy values, custom local proxy routing is used, and unavailable remote refresh retains the prior baseline.
+- [x] 4.2 Withdrawn — the feature was removed by `simplify-into-codex-minus` before this manual pass ran. What it would have verified no longer exists, except "direct mode strips ambient proxy values", which is now the only mode and is covered by `the_isolated_child_inherits_no_proxy_and_no_credentials`.
 - [x] 4.3 Append the completed behavior and verification evidence to `BOARD.md` without changing release version or installing over the current application.

@@ -4,8 +4,13 @@ import { describe, it } from "node:test";
 import {
   addCatalogCandidate,
   adoptionPreviewSummary,
+  catalogCandidateSlugs,
   catalogModeForOverlay,
   catalogOverlayIsEmpty,
+  catalogRestoreLosses,
+  officialModelIsVisible,
+  officialVisibilityOverride,
+  restoreCatalogList,
   appModelLabel,
   catalogDiffSummary,
   catalogModeChangeDecision,
@@ -275,6 +280,115 @@ describe("a context override cannot be typed into a mode that ignores it", () =>
       assert.equal(catalogModeForOverlay(mode, asked), mode);
       assert.equal(catalogModeForOverlay(mode, emptyOverlay()), mode);
     }
+  });
+});
+
+describe("the model table shows the list Codex will show", () => {
+  const override = (patch: Record<string, unknown>) => ({
+    displayName: null,
+    visible: null,
+    contextWindow: null,
+    effectiveContextWindowPercent: null,
+    order: null,
+    supportedReasoningLevels: null,
+    defaultReasoningLevel: null,
+    supportedTools: null,
+    toolCapabilities: null,
+    ...patch,
+  });
+  // Mirrors the bundled baseline: the retired 5.4 pair is carried but hidden.
+  const officialModels = [
+    { slug: "gpt-5.6-sol", visible: true },
+    { slug: "gpt-5.6-terra", visible: true },
+    { slug: "gpt-5.6-luna", visible: true },
+    { slug: "gpt-5.5", visible: true },
+    { slug: "gpt-5.4", visible: false },
+    { slug: "gpt-5.4-mini", visible: false },
+    { slug: "gpt-5.2", visible: true },
+  ];
+  const pro = ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.5", "gpt-5.3-codex-spark"];
+  const visibleList = (overlay: CatalogOverlayDraft) => [
+    ...officialModels.filter((model) => officialModelIsVisible(overlay, model)).map((model) => model.slug),
+    ...overlay.custom.map((model) => model.slug),
+  ];
+
+  it("takes the baseline's answer until the user gives one", () => {
+    // Codex hides the retired pair, so a table that listed every official entry offered two models
+    // the picker does not have.
+    assert.equal(officialModelIsVisible(emptyOverlay(), { slug: "gpt-5.4", visible: false }), false);
+    assert.equal(officialModelIsVisible(emptyOverlay(), { slug: "gpt-5.2", visible: true }), true);
+    const shown = { official: { "gpt-5.4": override({ visible: true }) }, custom: [] };
+    assert.equal(officialModelIsVisible(shown, { slug: "gpt-5.4", visible: false }), true);
+  });
+
+  it("records a deletion as its difference from the baseline", () => {
+    // Writing `false` for a model already hidden would leave an overlay that asks for nothing and
+    // still promotes a native profile to a generated catalog.
+    assert.equal(officialVisibilityOverride(true, false), false);
+    assert.equal(officialVisibilityOverride(false, false), null);
+    assert.equal(officialVisibilityOverride(false, true), true);
+    assert.equal(officialVisibilityOverride(true, true), null);
+  });
+
+  it("turns a deletion into the managed catalog that can express it", () => {
+    const deleted = { official: { "gpt-5.2": override({ visible: false }) }, custom: [] };
+    assert.equal(catalogModeForOverlay("native-official", deleted), "official-plus-custom");
+  });
+
+  it("offers a deleted model back and never offers one the table already shows", () => {
+    const deleted = { official: { "gpt-5.2": override({ visible: false }) }, custom: [] };
+    const candidates = catalogCandidateSlugs({
+      overlay: deleted,
+      officialModels,
+      // The provider reports slugs that collide with official rows; adding one as a custom model
+      // would put two rows with the same slug into one generated catalog.
+      providerCandidates: ["gpt-5.6-sol", "gpt-5.3-codex-spark", "gpt-4o-audio-preview"],
+    });
+    assert.ok(candidates.includes("gpt-5.2"), "a deleted model can be added back");
+    assert.ok(candidates.includes("gpt-5.4"), "a model the baseline hides can be added");
+    assert.ok(!candidates.includes("gpt-5.6-sol"), "a visible official row is not offered again");
+    assert.deepEqual(
+      candidates.filter((slug) => slug === "gpt-5.3-codex-spark"),
+      ["gpt-5.3-codex-spark"],
+      "each candidate is offered once",
+    );
+  });
+
+  it("restores the Pro list without forgetting the context windows already typed", () => {
+    const before: CatalogOverlayDraft = {
+      official: { "gpt-5.6-sol": override({ contextWindow: 372000 }) },
+      custom: addCatalogCandidate(emptyOverlay(), "some-experiment").custom,
+    };
+    const after = restoreCatalogList({ overlay: before, officialModels, wanted: pro });
+    assert.deepEqual(visibleList(after).sort(), [...pro].sort());
+    assert.equal(after.official["gpt-5.6-sol"].contextWindow, 372000);
+    assert.equal(after.official["gpt-5.6-sol"].visible, null, "a Pro model keeps the baseline answer");
+    assert.equal(after.official["gpt-5.2"].visible, false);
+    assert.equal(after.official["gpt-5.4"], undefined, "a model already hidden needs no override");
+  });
+
+  it("names every row the restore would take away", () => {
+    const before: CatalogOverlayDraft = {
+      official: {},
+      custom: addCatalogCandidate(emptyOverlay(), "some-experiment").custom,
+    };
+    assert.deepEqual(
+      catalogRestoreLosses({ overlay: before, officialModels, wanted: pro }).sort(),
+      ["gpt-5.2", "some-experiment"],
+    );
+    const restored = restoreCatalogList({ overlay: before, officialModels, wanted: pro });
+    assert.deepEqual(catalogRestoreLosses({ overlay: restored, officialModels, wanted: pro }), []);
+  });
+
+  it("refuses a startup model the user deleted, and a list with nothing left in it", () => {
+    const deleted = { official: { "gpt-5.2": override({ visible: false }) }, custom: [] };
+    const slugs = officialModels.filter((model) => model.visible).map((model) => model.slug);
+    assert.equal(validateCatalogDraft(deleted, "official-plus-custom", "gpt-5.2", slugs), "invalid-default-model");
+    assert.equal(validateCatalogDraft(deleted, "official-plus-custom", "gpt-5.5", slugs), null);
+    // The generator refuses a catalog with no visible model; the editor says so before the save.
+    assert.equal(validateCatalogDraft(emptyOverlay(), "official-plus-custom", "", []), "empty-catalog");
+    assert.equal(validateCatalogDraft(emptyOverlay(), "custom-only", "", slugs), "empty-catalog");
+    assert.equal(validateCatalogDraft(emptyOverlay(), "native-official", "", []), null);
   });
 });
 

@@ -1,3 +1,17 @@
+## Status: withdrawn (superseded by `simplify-into-codex-minus`, 2026-08-13)
+
+Shipped and then removed without ever being archived, so its spec deltas MUST NOT be applied. The
+premise below — that isolated Codex CLI children need a configurable proxy so official catalog
+refreshes can succeed — stopped holding when the official baseline moved into the application as a
+bundled asset. With no runtime refresh left to configure, the policy had no production consumer: the
+provider connection test and Provider Doctor run on the pinned core's own HTTP client, which reads
+the process environment directly and never consulted this policy. The panel therefore described a
+route the user could not reach and could not affect.
+
+Saved `network-policy.json` is left on disk untouched and unread. The one thing that outlived the
+feature is `reqwest`'s `socks` feature in `src-tauri/Cargo.toml`: the pinned core does not enable it,
+so that entry is what gives provider connection tests SOCKS support, and it stays.
+
 ## Why
 
 Codex-- Manager starts network work from a desktop GUI, where shell-only proxy variables are not reliably visible, while its isolated Codex CLI children currently receive only proxy variables inherited by the Manager process. This makes valid official catalog refreshes fail as opaque cache errors on machines that depend on an operating-system or local proxy.

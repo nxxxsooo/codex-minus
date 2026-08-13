@@ -19,15 +19,27 @@
 - [x] 3.1 Author the bundled baseline JSON (slug, corrected display name, context window, effective percent, reasoning levels, visibility) from a verified official output plus the fleet overlay `gpt-5.6-sol`; record the source client version inside the asset; review display names with the user.
 - [x] 3.2 Load the bundled asset as the official baseline: composition, readiness, activation-scope, and commit planning re-anchor to it; account-scope staleness for the baseline is removed; the stored runtime `state.official` is migrated or ignored without erroring.
 - [ ] 3.3 Remove the runtime refresh machinery: isolated CODEX_HOME projection, access-token handling, publisher-signature shell-out, `refresh_official_model_catalog` command, and the 官方模型目录 band; keep `/v1/models` provider evidence collection working.
-- [ ] 3.4 Remove the Manager network-policy feature end to end (module, three commands, panel, `network-policy-ui.ts`, CSS `styles.css:1061-1168`, i18n block, tests); saved policy state is left on disk untouched and unread.
+- [x] 3.4 Remove the Manager network-policy feature end to end (module, three commands, panel, `network-policy-ui.ts`, CSS, i18n block, tests); saved policy state is left on disk untouched and unread. The isolated refresh path — still unreachable from the UI pending 3.3 — is fixed direct. `reqwest`'s `socks` feature stays in `src-tauri/Cargo.toml`: the pinned core does not enable it, so dropping it would silently break provider tests through a socks5:// proxy.
 - [ ] 3.5 Re-anchor the "active default model disappears" continuity behavior to bundled-baseline updates with a regression test.
-- [ ] 3.6 Reconcile the in-flight `add-manager-network-policy` change before archive of this one (close or annotate its remaining task; its spec delta must not land a panel this change removes).
+- [x] 3.6 Reconcile the in-flight `add-manager-network-policy` change: marked withdrawn in its proposal with the reason its premise stopped holding, and its remaining manual task closed. Its spec deltas stay unapplied.
+- [x] 3.7 Promote a native profile to `official-plus-custom` when a per-model context override is supplied, generate the catalog, point live config at it, and state the restart before the save.
+- [x] 3.8 List only the models the profile's catalog makes selectable (the editor listed every baseline entry, including the ones Codex hides), give every row a removal that records a hidden override, offer removed and provider-reported slugs back without duplicating a row the list already carries, and refuse an empty list in the editor.
+- [x] 3.9 Add a one-action restore of the shipped Pro list that names what it would remove, keeps context overrides, and moves the startup model into the restored list.
+
+## 3b. Save legibility (found in use)
+
+- [x] 3b.1 Keep a failed settings read out of the compare-and-swap baseline and out of the form; report its own reason when it happens.
+- [x] 3b.2 Replace the internal missing-fingerprint throw with a re-read and a plain-language outcome that never commits placeholder settings.
+- [x] 3b.3 Settle `load_settings`/`save_settings` through `settle_blocking` so a panic answers the caller.
+- [x] 3b.4 Give each bounded helper capture its own temp files (Windows clock granularity + shared pid collided, so one helper deleted another's output).
+- [x] 3b.5 Normalize a backend-returned profile at the editor boundary; the wire omits empty strings, so `.trim()` on an absent field crashed every save on such a profile.
+- [ ] 3b.6 Root-cause the reported in-session `staleState` on a second consecutive save. Backend two-save round-trip is ruled out by test in both native and managed modes; the invariant test is a guard, not a fix.
 
 ## 4. Foolproof editor
 
 - [x] 4.1 Reduce the provider editor to 名称 / 配置模型 / Base URL / API Key / Provider Doctor; remove preset selector, 接入模式, 混入 checkbox, 上游协议, User-Agent, context-size fields; every save materializes the canonical contract; legacy profiles upgrade on save.
 - [ ] 4.2 Remove the raw provider-TOML editor; the bearer never renders in plaintext anywhere (test sweeps UI state and DOM copy paths with a sentinel key).
-- [ ] 4.3 Reduce the catalog section to the 配置模型 list (mode control, official override table, topology, external-adopt removed); existing external profiles keep their pointer behavior untouched; custom rows need only slug + optional display name.
+- [x] 4.3 Reduce the catalog section to one model table (mode control, topology, external-adopt removed); official and custom models share one list; the startup model is a row selection, not a free-text field; the global and per-profile test models are retired; `model-windows.ts` and its row plumbing are deleted; existing external profiles keep their pointer behavior untouched.
 - [ ] 4.4 Render every typed failure as one plain-language sentence with the code and raw detail behind 详情; no path ends in a spinner or bare code; snapshot tests cover the common failures (stale, staging-rejected, contract-gap, timeout).
 
 ## 5. Capability-evidence removal

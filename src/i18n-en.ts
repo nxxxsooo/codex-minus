@@ -103,47 +103,12 @@ export const EN_PLAIN: Record<string, string> = {
   "Helper 端口": "Helper port",
   "MCP、Skills、Plugins 作为全局配置独立管理，切换任意供应商都会合并。":
     "MCP, Skills and Plugins are managed independently as global config and merged in whenever you switch providers.",
-  "Manager 网络": "Manager network",
-  "Manager 网络测试": "Manager network test",
-  "Manager 网络模式": "Manager network mode",
-  "仅用于 Manager 连接测试和隔离的官方目录刷新；不会修改系统代理或 Codex 对话路由。":
-    "Used only for the Manager connection test and isolated official catalog refresh; it does not change the system proxy or Codex conversation routing.",
   "自动": "Auto",
-  "直连": "Direct",
   "自定义": "Custom",
-  "代理地址": "Proxy URL",
-  "来源": "Source",
-  "端点": "Endpoint",
-  "绕过条目": "Bypass entries",
   "无": "None",
-  "已解析": "Resolved",
   "需要处理": "Action required",
   "读取中": "Loading",
-  "保存 Manager 网络策略": "Save Manager network policy",
-  "请先保存网络策略": "Save the network policy first",
-  "测试 Manager 网络": "Test Manager network",
-  "自定义模式必须填写代理地址。": "Custom mode requires a proxy URL.",
-  "代理地址仅支持 HTTP、HTTPS、SOCKS5 或 SOCKS5H。":
-    "The proxy URL supports only HTTP, HTTPS, SOCKS5, or SOCKS5H.",
-  "v1 不支持在代理地址中保存用户名、密码或令牌。":
-    "V1 does not store a username, password, or token in the proxy URL.",
-  "NO_PROXY 条目过多或过长。": "The NO_PROXY list has too many or overly long entries.",
-  "代理地址无效；请只填写协议、主机和端口。":
-    "The proxy URL is invalid; enter only the scheme, host, and port.",
-  "macOS 系统代理": "macOS system proxy",
-  "Windows 系统代理": "Windows system proxy",
-  "自定义代理": "Custom proxy",
-  "自动直连": "Automatic direct connection",
-  "连接成功": "Connected",
-  "DNS 失败": "DNS failure",
-  "代理连接失败": "Proxy connection failure",
-  "代理认证不受支持": "Proxy authentication unsupported",
-  "TLS 失败": "TLS failure",
-  "连接超时": "Connection timeout",
-  "策略不受支持": "Policy unsupported",
   "已回退 bundled 模型": "Bundled-model fallback",
-  "连接失败": "Connection failed",
-  "处理中": "Working",
   "Markdown 导出": "Markdown export",
   "Provider 同步目标": "Provider sync target",
   "Stepwise 直接发送": "Stepwise direct send",
@@ -159,7 +124,6 @@ export const EN_PLAIN: Record<string, string> = {
   "最多建议数": "Max suggestions",
   "最大输入字符": "Max input characters",
   "最大输出 tokens": "Max output tokens",
-  "测试连接": "Test connection",
   "超时毫秒": "Timeout milliseconds",
   "连接": "Connection",
   "高级参数": "Advanced parameters",
@@ -377,8 +341,14 @@ export const EN_PLAIN: Record<string, string> = {
   "对话居中宽度": "Centered conversation width",
   "导入 Codex++ 供应商": "Import Codex++ provider",
   "尚未刷新": "Not refreshed yet",
-  "改过上下文，所以保存会为这个供应商生成一份模型目录，之后需要完整退出并重开 Codex 才生效。":
-    "A context window was changed, so saving generates a model catalog for this provider. Fully quit and reopen Codex for it to take effect.",
+  "改过这份列表，所以保存会为这个供应商生成一份模型目录，之后需要完整退出并重开 Codex 才生效。":
+    "This list was changed, so saving generates a model catalog for this provider. Fully quit and reopen Codex for it to take effect.",
+  "这里就是 Codex 里能选到的模型；上下文留空表示用官方默认。":
+    "These are the models Codex will offer. Leave a context window empty to use the official default.",
+  "还原 Pro 列表": "Restore Pro list",
+  "模型列表不能为空，至少保留一个模型。": "The model list cannot be empty; keep at least one model.",
+  "还原为 Pro 列表会移除这些模型：\n\n{0}":
+    "Restoring the Pro list removes these models:\n\n{0}",
   "尚未读取到供应商设置，请点击右上角刷新后重试。":
     "Provider settings have not been read yet. Use the refresh button in the top right, then try again.",
   "刚刚才读到供应商设置，页面已更新为当前内容，请确认后重新保存。":
@@ -770,7 +740,6 @@ export const EN_PLAIN: Record<string, string> = {
   "；这些条目独立于供应商保存，会写入所有供应商切换后的 config.toml。":
     "; these entries are saved independently of providers and written to config.toml after switching to any provider.",
   "中转站环境配置检测": "Relay environment check",
-  "进程环境": "Process environment",
   "系统环境": "System environment",
   "Clash Verge Rev TUN 模式": "Clash Verge Rev TUN mode",
   "未发现 Clash Verge Rev 配置，按未开启处理。": "No Clash Verge Rev configuration was found; TUN is treated as disabled.",
@@ -891,35 +860,6 @@ export const EN_TEMPLATE: Record<string, string> = {
 // at the display layer (showNotice wraps message with t()). Exact-match first,
 // then pattern-based for messages that embed dynamic values.
 export const EN_BACKEND: Record<string, string> = {
-  "Manager 网络策略已解析。": "Manager network policy resolved.",
-  "Manager 网络策略已保存。": "Manager network policy saved.",
-  "Manager 网络策略不可用。": "Manager network policy is unavailable.",
-  "Manager 网络策略需要处理。": "Manager network policy needs attention.",
-  "Manager 网络策略已保存，但当前不可用。": "Manager network policy was saved, but it is currently unavailable.",
-  "Manager 网络连接测试通过。": "Manager network connection test passed.",
-  "代理要求认证；v1 不读取或保存代理凭据。":
-    "The proxy requires authentication; v1 does not read or store proxy credentials.",
-  "Manager 网络连接测试超时；请检查代理进程、节点与分流规则。":
-    "Manager network test timed out. Check the proxy process, node, and routing rules.",
-  "Manager 网络无法解析测试域名；请检查 DNS 或代理解析模式。":
-    "Manager network could not resolve the test host. Check DNS or proxy DNS mode.",
-  "Manager 网络 TLS 验证失败；请检查代理证书与系统信任。":
-    "Manager network TLS validation failed. Check the proxy certificate and system trust.",
-  "Manager 网络无法建立连接；请检查代理地址、进程与节点。":
-    "Manager network could not connect. Check the proxy URL, process, and node.",
-  "Manager 网络连接测试失败；请检查当前网络策略。":
-    "Manager network test failed. Check the current network policy.",
-  "无法读取 macOS 系统代理；请选择直连或自定义代理。":
-    "Could not read the macOS system proxy. Choose Direct or Custom.",
-  "无法启动 macOS 系统代理检查；请选择直连或自定义代理。":
-    "Could not start the macOS system proxy check. Choose Direct or Custom.",
-  "无法读取 Windows 系统代理；请选择直连或自定义代理。":
-    "Could not read the Windows system proxy. Choose Direct or Custom.",
-  "当前平台不支持系统代理发现。": "System proxy discovery is not supported on this platform.",
-  "检测到 macOS PAC/WPAD 自动代理；v1 不能安全投影，请选择直连或自定义代理。":
-    "A macOS PAC/WPAD proxy is enabled. V1 cannot project it safely; choose Direct or Custom.",
-  "检测到 Windows PAC/WPAD 自动代理；v1 不能安全投影，请选择直连或自定义代理。":
-    "A Windows PAC/WPAD proxy is enabled. V1 cannot project it safely; choose Direct or Custom.",
   "会话归档设置已加载。": "Session archive settings loaded.",
   "会话归档设置已保存。": "Session archive settings saved.",
   "归档候选预览已生成，尚未修改任何会话。": "Archive preview generated; no sessions were modified.",
@@ -1019,11 +959,8 @@ export const EN_BACKEND: Record<string, string> = {
 // Pattern-based backend translations: [regex, replacement template].
 // Checked when EN_BACKEND exact match fails — covers messages with dynamic values.
 export const EN_BACKEND_PATTERNS: Array<[RegExp, string]> = [
-  [/^Manager 网络策略读取失败：(.+)$/, "Failed to read Manager network policy: $1"],
-  [/^Manager 网络策略保存失败：(.+)$/, "Failed to save Manager network policy: $1"],
-  [/^(.+) 不是受支持的代理 URL；请修正后重启 Manager。$/, "$1 is not a supported proxy URL. Fix it and restart Manager."],
   [/^检测到互相冲突的 (.+) 大小写环境变量；请统一后重启 Manager。$/, "Conflicting case variants of $1 are set. Make them consistent and restart Manager."],
-  [/^官方模型目录刷新失败：目标 CLI 未创建远端模型缓存，已回退 bundled 模型；Manager 网络来源：(.+)。请先在 Manager 网络中测试连接$/, "Official catalog refresh failed: the target CLI created no remote cache and fell back to bundled models. Manager network source: $1. Test the route in Manager network first."],
+  [/^官方模型目录刷新失败：目标 CLI 未创建远端模型缓存，已回退 bundled 模型$/, "Official catalog refresh failed: the target CLI created no remote cache and fell back to bundled models."],
   [/^启动静默入口失败：(.+)$/, "Failed to launch silent entrypoint: $1"],
   [/^无法启动 (.+?)：(.+)$/, "Cannot launch $1: $2"],
   [/^设置已保存。(.*)$/, "Settings saved.$1"],

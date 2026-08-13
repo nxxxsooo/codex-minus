@@ -1,7 +1,6 @@
 pub mod commands;
 mod live_state;
 mod model_catalog;
-mod network_policy;
 mod platform_command;
 pub mod provider_commit;
 pub mod provider_native_capability;
@@ -80,9 +79,6 @@ pub fn run() {
             model_catalog::adopt_external_model_catalog,
             provider_native_capability::inspect_provider_native_capabilities,
             provider_native_capability::transform_provider_native_capability_draft,
-            network_policy::manager_network_policy_status,
-            network_policy::save_manager_network_policy,
-            network_policy::test_manager_network_policy,
             update_tray_labels
         ])
         .build(tauri::generate_context!());
