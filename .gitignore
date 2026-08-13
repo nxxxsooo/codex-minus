@@ -2,3 +2,12 @@ node_modules/
 dist/
 src-tauri/target/
 .DS_Store
+
+# Serena's project definition is shared tooling, like .github/ — it says which language servers to
+# start and what the project is called. Serena writes it into whichever directory it starts in, so
+# without this every worktree generates its own copy named after that worktree's branch.
+#
+# The negation is needed because a global ignore rule (~/.config/git/ignore) excludes every
+# dot-directory, and git will not descend into an excluded directory to reach a file inside it.
+# Serena's own .serena/.gitignore keeps the cache and local overrides out.
+!.serena/
