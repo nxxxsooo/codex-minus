@@ -4582,3 +4582,152 @@ experimental_bearer_token = "provider-key"
         auth_before
     );
 }
+
+#[test]
+fn a_second_save_in_one_session_is_accepted_without_reloading_the_editor() {
+    // The editor's compare-and-swap baseline is whatever the previous save answered with. If a
+    // commit answers with the draft it planned rather than the generation the next read will show,
+    // every later save in that session reports stale state and only restarting the app clears it.
+    let profile = canonical_profile(
+        "relay-a",
+        "gpt-5.6-sol",
+        "https://a.example/v1",
+        "provider-key-a",
+    );
+    let initial = settings_with(vec![profile], "relay-a");
+    let fixture = Fixture::new(&initial, &state_with_official());
+    let persisted = fixture.read_settings();
+
+    let context_draft = |window: u64| {
+        let mut draft = catalog_draft("relay-a");
+        draft.mode = CatalogMode::NativeOfficial;
+        draft.mode_explicit = true;
+        draft.overlay.official.insert(
+            "gpt-5.6-sol".to_string(),
+            crate::model_catalog::OfficialOverride {
+                context_window: Some(window),
+                ..Default::default()
+            },
+        );
+        draft
+    };
+
+    let first = ProviderCommitRequest {
+        topology: ProviderOwnedTopologyDraft::from_settings(&persisted),
+        catalog_drafts: vec![context_draft(372_000)],
+        focused_profile_id: Some("relay-a".to_string()),
+        action: ProviderCommitAction::Save,
+        previous_active_relay_id: persisted.active_relay_id.clone(),
+        confirm_context_cleanup: false,
+        draft_revision: 1,
+        expected_provider_fingerprint: provider_owned_fingerprint(
+            &ProviderOwnedTopologyDraft::from_settings(&persisted),
+        )
+        .unwrap(),
+    };
+    let first_payload = commit_provider_detail_from_paths(&fixture.paths, first).unwrap();
+    let editor_baseline = first_payload
+        .settings
+        .clone()
+        .expect("a successful save answers with the settings the editor keeps");
+
+    // No reload happens here: the editor edits the generation the first save handed back.
+    let second = ProviderCommitRequest {
+        topology: ProviderOwnedTopologyDraft::from_settings(&editor_baseline),
+        catalog_drafts: vec![context_draft(400_000)],
+        focused_profile_id: Some("relay-a".to_string()),
+        action: ProviderCommitAction::Save,
+        previous_active_relay_id: editor_baseline.active_relay_id.clone(),
+        confirm_context_cleanup: false,
+        draft_revision: 2,
+        expected_provider_fingerprint: first_payload.provider_fingerprint.clone(),
+    };
+
+    commit_provider_detail_from_paths(&fixture.paths, second)
+        .expect("a second save must not require an application restart");
+
+    assert_eq!(
+        fixture.read_state().profiles["relay-a"].overlay.official["gpt-5.6-sol"].context_window,
+        Some(400_000)
+    );
+}
+
+#[test]
+fn a_context_override_on_a_native_profile_generates_the_catalog_it_needs() {
+    // Native mode generates no catalog and points at none, so an override saved there would be
+    // stored and then ignored. The editor promotes the mode when a value is typed; this is the
+    // backend half — the promoted save has to actually produce the generation.
+    let profile = canonical_profile(
+        "relay-a",
+        "gpt-5.6-sol",
+        "https://a.example/v1",
+        "provider-key-a",
+    );
+    let initial = settings_with(vec![profile], "relay-a");
+    let mut catalog_state = state_with_official();
+    catalog_state
+        .profiles
+        .entry("relay-a".to_string())
+        .or_default()
+        .mode = CatalogMode::NativeOfficial;
+    let fixture = Fixture::new(&initial, &catalog_state);
+    let persisted = fixture.read_settings();
+    assert_eq!(
+        fixture.read_state().profiles["relay-a"].generated_path,
+        None,
+        "native mode starts with nothing generated"
+    );
+
+    let mut promoted = catalog_draft("relay-a");
+    promoted.mode = CatalogMode::OfficialPlusCustom;
+    promoted.mode_explicit = true;
+    promoted.overlay.official.insert(
+        "gpt-5.6-sol".to_string(),
+        crate::model_catalog::OfficialOverride {
+            context_window: Some(372_000),
+            ..Default::default()
+        },
+    );
+    let request = ProviderCommitRequest {
+        topology: ProviderOwnedTopologyDraft::from_settings(&persisted),
+        catalog_drafts: vec![promoted],
+        focused_profile_id: Some("relay-a".to_string()),
+        action: ProviderCommitAction::Save,
+        previous_active_relay_id: persisted.active_relay_id.clone(),
+        confirm_context_cleanup: false,
+        draft_revision: 1,
+        expected_provider_fingerprint: provider_owned_fingerprint(
+            &ProviderOwnedTopologyDraft::from_settings(&persisted),
+        )
+        .unwrap(),
+    };
+
+    let payload = commit_provider_detail_from_paths(&fixture.paths, request).unwrap();
+
+    let saved = fixture.read_state().profiles["relay-a"].clone();
+    assert_eq!(saved.mode, CatalogMode::OfficialPlusCustom);
+    assert_eq!(
+        saved.overlay.official["gpt-5.6-sol"].context_window,
+        Some(372_000)
+    );
+    let generated = saved
+        .generated_path
+        .as_ref()
+        .expect("the promoted save generated a catalog");
+    assert!(
+        fixture.paths.codex_home.join(generated).is_file(),
+        "the generated catalog exists on disk"
+    );
+    // The profile has to point at it, or Codex would keep reading its own built-in list.
+    // Codex reads live config.toml, so that is where the pointer has to land for the active
+    // profile; without it Codex keeps reading its own built-in list and the number changes nothing.
+    let live = fs::read_to_string(fixture.paths.codex_home.join("config.toml")).unwrap();
+    assert!(
+        live.contains(&format!("model_catalog_json = \"{generated}\"")),
+        "live config points at the generated catalog: {live}"
+    );
+    assert!(
+        payload.restart_required,
+        "a new generation only reaches Codex after a restart"
+    );
+}

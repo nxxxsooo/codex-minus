@@ -61,8 +61,10 @@ import {
   addCatalogCandidate,
   adoptionPreviewSummary,
   appModelLabel,
+  catalogModeForOverlay,
   catalogModePresentation,
   defaultCatalogMode,
+  type CatalogOverlayDraft,
   externalVersionRequiresAcceptance,
   managedContextConflictKeys,
   catalogRestartGuidance,
@@ -885,7 +887,7 @@ const defaultSettings: BackendSettings = {
   activeRelayId: "default",
   aggregateRelayProfiles: [],
   activeAggregateRelayId: "",
-  relayTestModel: "gpt-5.4-mini",
+  relayTestModel: "gpt-5.6-luna",
 };
 
 export function App() {
@@ -1387,10 +1389,18 @@ export function App() {
 
   const transformProviderNativeCapability = async (
     invocation: ProviderDetailTransformInvocation<RelayProfile>,
-  ) => call<ProviderDetailTransformResponse<RelayProfile>>(
-    invocation.command,
-    { request: invocation.request },
-  );
+  ) => {
+    const response = await call<ProviderDetailTransformResponse<RelayProfile>>(
+      invocation.command,
+      { request: invocation.request },
+    );
+    // The wire format omits an empty string rather than sending `""`, so a profile whose model,
+    // Base URL, or Key lives only inside its TOML comes back missing those fields. The editor's
+    // type says they are present, and the next save read one of them straight into `.trim()`.
+    return response.draft?.profile
+      ? { ...response, draft: { ...response.draft, profile: normalizeRelayProfile(response.draft.profile) } }
+      : response;
+  };
 
   const fetchRelayProfileModels = async (profile: RelayProfile) => {
     const result = await run(() => call<RelayProfileModelsResult>("fetch_relay_profile_models", { profile }));
@@ -2073,7 +2083,7 @@ function RelayScreen({
                 value={form.relayTestModel}
                 onChange={(event) => onFormChange({ ...form, relayTestModel: event.currentTarget.value })}
                 onBlur={() => void saveRelaySettings(normalizeSettings(form), "testModel")}
-                placeholder={t("例如 gpt-5.4-mini")}
+                placeholder={t("例如 gpt-5.6-luna")}
               />
             </Field>
           </div>
@@ -2283,6 +2293,14 @@ function CatalogProfileEditor({
     codexModelFromConfig(profile.configContents) || profile.model,
     officialModels.map((model) => model.slug),
   );
+  // Every overlay edit goes through here, so a value the user types can never land in a mode that
+  // would leave it dormant: asking for a different context window is asking for a managed catalog.
+  const applyOverlay = (nextOverlay: CatalogOverlayDraft) => {
+    const nextMode = catalogModeForOverlay(mode, nextOverlay);
+    onDraftChange(updateCatalogProfileDraft(draft, nextMode === mode
+      ? { overlay: nextOverlay }
+      : { overlay: nextOverlay, mode: nextMode, modeExplicit: true }));
+  };
   const setOfficialOverride = (slug: string, patch: Partial<OfficialCatalogOverride>) => {
     const current = overlay.official[slug] ?? {
       displayName: null,
@@ -2299,20 +2317,20 @@ function CatalogProfileEditor({
     const official = { ...overlay.official };
     if (Object.values(next).every((item) => item === null)) delete official[slug];
     else official[slug] = next;
-    onDraftChange(updateCatalogProfileDraft(draft, { overlay: { ...overlay, official } }));
+    applyOverlay({ ...overlay, official });
   };
   const updateCustom = (index: number, patch: Partial<CustomCatalogModel>) => {
-    onDraftChange(updateCatalogProfileDraft(draft, { overlay: {
+    applyOverlay({
       ...overlay,
       custom: overlay.custom.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item)),
-    } }));
+    });
   };
   const addCustom = (slug = "") => {
     if (slug) {
-      onDraftChange(updateCatalogProfileDraft(draft, { overlay: addCatalogCandidate(overlay, slug) }));
+      applyOverlay(addCatalogCandidate(overlay, slug));
       return;
     }
-    onDraftChange(updateCatalogProfileDraft(draft, { overlay: { ...overlay, custom: [...overlay.custom, {
+    applyOverlay({ ...overlay, custom: [...overlay.custom, {
       slug: "",
       displayName: "",
       contextWindow: 272000,
@@ -2324,7 +2342,7 @@ function CatalogProfileEditor({
       supportedTools: [],
       toolCapabilities: null,
       templateProvenance: "user-created",
-    }] } }));
+    }] });
   };
   return (
     <section className="catalog-profile-editor">
@@ -2338,6 +2356,12 @@ function CatalogProfileEditor({
         </div>
       </div>
       {summary?.actionRequired || draftError ? <div className="catalog-inline-error">{summary?.actionRequired || catalogDraftErrorLabel(draftError)}</div> : null}
+      {summary?.mode === "native-official" && mode !== "native-official" ? (
+        <div className="hint-line">
+          <Info className="h-4 w-4" />
+          <span>{t("改过上下文，所以保存会为这个供应商生成一份模型目录，之后需要完整退出并重开 Codex 才生效。")}</span>
+        </div>
+      ) : null}
       <fieldset className="catalog-editor-readonly" disabled={!editingAvailability.editable}>
         <div className="catalog-official-list">
           <div className="catalog-model-row catalog-model-row-head">
@@ -2376,7 +2400,7 @@ function CatalogProfileEditor({
             <div className="catalog-model-row" key={`${model.slug}-${index}`}>
               <Input value={model.slug} onChange={(event) => updateCustom(index, { slug: event.currentTarget.value, displayName: event.currentTarget.value })} placeholder="model-id" />
               <Input inputMode="numeric" value={model.contextWindow} onChange={(event) => updateCustom(index, { contextWindow: positiveNumberOrDefault(event.currentTarget.value, 272000) })} />
-              <Button onClick={() => onDraftChange(updateCatalogProfileDraft(draft, { overlay: { ...overlay, custom: overlay.custom.filter((_, itemIndex) => itemIndex !== index) } }))} size="icon" title={t("删除模型")} variant="ghost"><Trash2 className="h-4 w-4" /></Button>
+              <Button onClick={() => applyOverlay({ ...overlay, custom: overlay.custom.filter((_, itemIndex) => itemIndex !== index) })} size="icon" title={t("删除模型")} variant="ghost"><Trash2 className="h-4 w-4" /></Button>
             </div>
           ))}
         </div>
@@ -4790,7 +4814,9 @@ function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
   const configModel = codexModelFromConfig(configContents);
   // 如果用户输入了带后缀的模型名，优先保留在界面的「配置模型」字段中；
   // config.toml 里实际写的是剥离后缀的 slug（由 applyRelayProfilePatchToFiles 处理）。
-  const model = /\[.+\]$/.test(profile.model.trim()) ? profile.model.trim() : configModel;
+  // An omitted field arrives as undefined, not "": read it the same way every other field here is.
+  const declaredModel = (profile.model || "").trim();
+  const model = /\[.+\]$/.test(declaredModel) ? declaredModel : configModel;
   return {
     ...profile,
     model,

@@ -217,7 +217,7 @@ export const EN_PLAIN: Record<string, string> = {
   "例如 C:\\Program Files\\WindowsApps\\OpenAI.Codex...\\app": "e.g. C:\\Program Files\\WindowsApps\\OpenAI.Codex...\\app",
   "例如 context7": "e.g. context7",
   "例如 deepseek-v4-pro": "e.g. deepseek-v4-pro",
-  "例如 gpt-5.4-mini": "e.g. gpt-5.4-mini",
+  "例如 gpt-5.6-luna": "e.g. gpt-5.6-luna",
   "例如 主力聚合池": "e.g. Primary aggregate pool",
   "供": "P",
   "供应商": "Provider",
@@ -377,6 +377,8 @@ export const EN_PLAIN: Record<string, string> = {
   "对话居中宽度": "Centered conversation width",
   "导入 Codex++ 供应商": "Import Codex++ provider",
   "尚未刷新": "Not refreshed yet",
+  "改过上下文，所以保存会为这个供应商生成一份模型目录，之后需要完整退出并重开 Codex 才生效。":
+    "A context window was changed, so saving generates a model catalog for this provider. Fully quit and reopen Codex for it to take effect.",
   "尚未读取到供应商设置，请点击右上角刷新后重试。":
     "Provider settings have not been read yet. Use the refresh button in the top right, then try again.",
   "刚刚才读到供应商设置，页面已更新为当前内容，请确认后重新保存。":
