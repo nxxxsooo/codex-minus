@@ -476,9 +476,14 @@ pub struct StartupPayload {
 
 #[tauri::command]
 pub async fn load_settings() -> CommandResult<SettingsPayload> {
-    tauri::async_runtime::spawn_blocking(|| load_settings_blocking())
-        .await
-        .expect("blocking command panicked")
+    // A panic here used to reject the whole invoke, which left the UI with no settings baseline
+    // and no reason for it. Answering with the fallback payload keeps the failure legible.
+    settle_blocking(
+        tauri::async_runtime::spawn_blocking(|| load_settings_blocking()),
+        "设置读取中断；请重新加载设置。",
+        fallback_settings_payload,
+    )
+    .await
 }
 
 fn load_settings_blocking() -> CommandResult<SettingsPayload> {
@@ -501,9 +506,12 @@ fn load_settings_blocking() -> CommandResult<SettingsPayload> {
 
 #[tauri::command]
 pub async fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload> {
-    tauri::async_runtime::spawn_blocking(move || save_settings_blocking(settings))
-        .await
-        .expect("blocking command panicked")
+    settle_blocking(
+        tauri::async_runtime::spawn_blocking(move || save_settings_blocking(settings)),
+        "设置保存中断；请重新加载设置后再试。",
+        fallback_settings_payload,
+    )
+    .await
 }
 
 fn save_settings_blocking(settings: BackendSettings) -> CommandResult<SettingsPayload> {

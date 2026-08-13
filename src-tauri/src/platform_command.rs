@@ -2,6 +2,7 @@ use anyhow::{Context, ensure};
 use std::ffi::OsStr;
 use std::fs;
 use std::process::{Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(windows)]
@@ -16,6 +17,13 @@ const DETACHED_PROCESS: u32 = 0x0000_0008;
 pub(crate) const HELPER_TIMEOUT: Duration = Duration::from_secs(10);
 
 const MAX_HELPER_OUTPUT_BYTES: u64 = 1024 * 1024;
+
+/// Distinguishes concurrent captures inside one process.
+///
+/// The wall clock cannot: on Windows it advances in ~15.6 ms steps, so two helpers started in the
+/// same tick derive the same temp-file name, and whichever finishes first deletes the file the
+/// other is still reading.
+static HELPER_CAPTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Spawns a child with no window and no console of its own.
 ///
@@ -98,6 +106,29 @@ pub(crate) struct BoundedHelperOutput {
     pub(crate) stderr: Vec<u8>,
 }
 
+/// Names one capture's stdout and stderr files.
+///
+/// The clock alone does not separate them. `SystemTime::now` reports nanoseconds but advances in
+/// ~15.6 ms steps on Windows, and the pid is shared by every thread, so helpers started together
+/// derive one name — and the first to finish deletes the files the others are still reading. The
+/// sequence is what makes each capture its own.
+fn capture_paths() -> (std::path::PathBuf, std::path::PathBuf) {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sequence = HELPER_CAPTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir();
+    let stem = format!(
+        "codex-minus-helper-{}-{nonce}-{sequence}",
+        std::process::id()
+    );
+    (
+        root.join(format!("{stem}.out")),
+        root.join(format!("{stem}.err")),
+    )
+}
+
 /// Runs a helper whose output is needed, with a hard upper bound on its runtime.
 ///
 /// Output lands in temporary files instead of pipes: waiting on a pipe means waiting for every
@@ -108,19 +139,7 @@ pub(crate) fn output_bounded(
     timeout: Duration,
     what: &str,
 ) -> anyhow::Result<BoundedHelperOutput> {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let root = std::env::temp_dir();
-    let stdout_path = root.join(format!(
-        "codex-minus-helper-{}-{nonce}.out",
-        std::process::id()
-    ));
-    let stderr_path = root.join(format!(
-        "codex-minus-helper-{}-{nonce}.err",
-        std::process::id()
-    ));
+    let (stdout_path, stderr_path) = capture_paths();
     let result = (|| -> anyhow::Result<BoundedHelperOutput> {
         let stdout_file = fs::File::create(&stdout_path)
             .with_context(|| format!("cannot capture output of {what}"))?;
@@ -131,15 +150,22 @@ pub(crate) fn output_bounded(
             .stdout(stdout_file)
             .stderr(stderr_file);
         let status = wait_bounded(command, timeout, what)?;
+        let measure = |path: &std::path::Path| -> anyhow::Result<u64> {
+            Ok(fs::metadata(path)
+                .with_context(|| format!("cannot measure the output of {what}"))?
+                .len())
+        };
         ensure!(
-            fs::metadata(&stdout_path)?.len() <= MAX_HELPER_OUTPUT_BYTES
-                && fs::metadata(&stderr_path)?.len() <= MAX_HELPER_OUTPUT_BYTES,
+            measure(&stdout_path)? <= MAX_HELPER_OUTPUT_BYTES
+                && measure(&stderr_path)? <= MAX_HELPER_OUTPUT_BYTES,
             "{what} produced more output than expected"
         );
         Ok(BoundedHelperOutput {
             status,
-            stdout: fs::read(&stdout_path)?,
-            stderr: fs::read(&stderr_path)?,
+            stdout: fs::read(&stdout_path)
+                .with_context(|| format!("cannot read the output of {what}"))?,
+            stderr: fs::read(&stderr_path)
+                .with_context(|| format!("cannot read the output of {what}"))?,
         })
     })();
     let _ = fs::remove_file(&stdout_path);
@@ -196,6 +222,56 @@ mod tests {
 
         assert!(output.status.success());
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "BOUNDED");
+    }
+
+    #[test]
+    fn captures_taken_inside_one_clock_tick_still_get_their_own_files() {
+        // Windows advances the wall clock in ~15.6 ms steps, so a burst of helpers reads the same
+        // nanosecond value, and every thread reports the same pid. Names must still differ.
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..64 {
+            let (stdout_path, stderr_path) = capture_paths();
+            assert_ne!(stdout_path, stderr_path);
+            assert!(
+                seen.insert(stdout_path),
+                "each capture named its own stdout"
+            );
+            assert!(
+                seen.insert(stderr_path),
+                "each capture named its own stderr"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_bounded_helper_keeps_its_output_while_others_run_beside_it() {
+        let outputs: Vec<String> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|index| {
+                    scope.spawn(move || {
+                        let output = output_bounded(
+                            Command::new("echo").arg(format!("BOUNDED-{index}")),
+                            Duration::from_secs(5),
+                            "the test helper",
+                        )
+                        .expect("a helper running beside others should still be readable");
+                        String::from_utf8_lossy(&output.stdout).trim().to_string()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("the helper thread should finish"))
+                .collect()
+        });
+
+        for index in 0..8 {
+            assert!(
+                outputs.contains(&format!("BOUNDED-{index}")),
+                "each helper read back its own output: {outputs:?}"
+            );
+        }
     }
 
     #[cfg(windows)]

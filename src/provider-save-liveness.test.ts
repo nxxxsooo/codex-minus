@@ -85,6 +85,63 @@ describe("a provider save always settles", () => {
     assert.match(fetchCommand, /spawn_blocking\(move \|\| \{?\s*crate::model_catalog::record_provider_evidence/);
   });
 
+  it("never asks the user to act on a missing compare-and-swap baseline", () => {
+    assert.doesNotMatch(
+      appSource,
+      /throw new Error\("provider settings fingerprint is unavailable"\)/,
+      "an internal condition must not reach the user as the reason a save failed",
+    );
+    const gate = appSource.match(
+      /const providerCommitBaseline = async[\s\S]*?\n  \};/,
+    )?.[0] ?? "";
+    assert.ok(gate.length > 0, "the baseline gate was located");
+    assert.match(gate, /await refreshSettings\(true\)/, "a missing baseline is read again");
+    assert.match(gate, /showNotice\(/, "the user is told why the save did not run");
+    assert.match(
+      gate,
+      /return null;\s*\};$/,
+      "a save with no baseline stops instead of committing the placeholder form",
+    );
+    for (const caller of ["commitProviderTopology", "commitProviderDetail"]) {
+      const body = appSource.match(
+        new RegExp(`const ${caller} = async \\([\\s\\S]*?\\n  \\};`),
+      )?.[0] ?? "";
+      assert.ok(body.length > 0, `${caller} was located`);
+      assert.match(
+        body,
+        /const baseline = await providerCommitBaseline\(\);\s*if \(!baseline\) return false;/,
+        `${caller} takes its baseline from the gate`,
+      );
+    }
+  });
+
+  it("keeps a failed settings read out of the baseline and out of the form", () => {
+    const refresh = appSource.match(
+      /const refreshSettings = async[\s\S]*?\n  \};/,
+    )?.[0] ?? "";
+    assert.ok(refresh.length > 0, "the settings read was located");
+    // A failed read answers with default settings and no fingerprint; adopting it would replace
+    // the profiles on screen and postpone the reason until the next save.
+    assert.match(refresh, /if \(!result\.provider_fingerprint\) \{[\s\S]*?return null;/);
+    const adopt = refresh.slice(refresh.indexOf("provider_fingerprint"));
+    assert.ok(
+      adopt.indexOf("return null;") < adopt.indexOf("setSettingsForm"),
+      "the form is only replaced once the read carried a fingerprint",
+    );
+    for (const command of ["load_settings", "save_settings"]) {
+      const rust = commandsSource.match(
+        new RegExp(`pub async fn ${command}\\([\\s\\S]*?\\n\\}`),
+      )?.[0] ?? "";
+      assert.ok(rust.length > 0, `${command} was located`);
+      assert.doesNotMatch(
+        rust,
+        /expect\("blocking command panicked"\)/,
+        `${command} must answer the caller instead of rejecting the invoke`,
+      );
+      assert.match(rust, /settle_blocking\(/);
+    }
+  });
+
   it("answers the caller when the blocking body panics and keeps the coordinator usable", () => {
     const command = commandsSource.match(
       /pub async fn commit_provider_detail\([\s\S]*?\n\}/,
