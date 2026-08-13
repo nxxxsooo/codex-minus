@@ -882,7 +882,7 @@ const defaultSettings: BackendSettings = {
   activeRelayId: "default",
   aggregateRelayProfiles: [],
   activeAggregateRelayId: "",
-  relayTestModel: "gpt-5.6-luna",
+  relayTestModel: "",
 };
 
 export function App() {
@@ -4604,6 +4604,8 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     relayContextConfigContents,
     relayProfiles: profiles,
     activeRelayId,
+    // There is no global test model any more; the next save retires whatever an older version left.
+    relayTestModel: "",
   });
 }
 
@@ -4659,7 +4661,11 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     protocol: profile.protocol === "chatCompletions" ? "chatCompletions" : "responses",
     relayMode,
     officialMixApiKey,
-    testModel: profile.testModel || "",
+    // A provider is tested with the model it starts on, so an ordinary profile keeps no test
+    // model of its own. Clearing it on save retires a value an older version left behind, which
+    // the backend would otherwise keep preferring over the startup model. An aggregate profile
+    // has no startup model to follow and still shows the field, so it returns above this.
+    testModel: "",
     configContents: relayMode === "official" && !officialMixApiKey ? "" : profile.configContents || "",
     authContents: "",
     useCommonConfig: profile.useCommonConfig !== false,

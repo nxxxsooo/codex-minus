@@ -157,6 +157,22 @@ describe("one model table answers every model question", () => {
     assert.match(catalogEditor, /disabled=\{!model\.slug\}/);
   });
 
+  it("retires a test model an older version left behind", () => {
+    // The controls that set these are gone, so a stale value would outrank the startup model for
+    // good — the backend prefers a profile's own test model over the model it starts on.
+    const normalize = appSource.match(
+      /function normalizeRelayProfile\([\s\S]*?\n\}/,
+    )?.[0] ?? "";
+    assert.ok(normalize.length > 0, "the profile normalizer was located");
+    const ordinary = normalize.slice(normalize.indexOf("const legacyMixedApi"));
+    assert.match(ordinary, /testModel: "",/);
+    const settings = appSource.match(
+      /function normalizeSettings\([\s\S]*?\n\}/,
+    )?.[0] ?? "";
+    assert.ok(settings.length > 0, "the settings normalizer was located");
+    assert.match(settings, /relayTestModel: "",/);
+  });
+
   it("leaves no second place to name a model", () => {
     for (const [gone, why] of [
       ["供应商测试模型", "a provider is tested with the model it starts on"],

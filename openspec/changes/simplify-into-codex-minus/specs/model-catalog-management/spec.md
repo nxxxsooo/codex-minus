@@ -24,6 +24,25 @@ The official model baseline SHALL ship inside the application as a versioned bun
 - **WHEN** an application update's bundled baseline no longer carries an active profile's default model and no custom row preserves it
 - **THEN** the system keeps the existing effective catalog for continuity and reports that a replacement default is required instead of silently invalidating the profile
 
+### Requirement: A context override implies the catalog it needs
+
+Native official mode generates no managed catalog and points at none, so a per-model context override cannot take effect there. Supplying one SHALL therefore be treated as choosing a managed catalog: the profile's mode becomes `official-plus-custom`, the save generates the catalog, and the active profile's live configuration points at it. The system MUST state, before the save, that a catalog will be generated and that Codex needs a full restart. An overlay that becomes empty again SHALL NOT silently return the profile to native mode. The system MUST NOT persist a per-model override in a mode that would ignore it.
+
+#### Scenario: A larger context window on a native profile takes effect
+
+- **WHEN** the user sets a context window against an official model on a profile in native official mode and saves
+- **THEN** the profile becomes managed, a catalog carrying that window is generated, the active profile's live configuration points at it, and the outcome reports that Codex must be restarted
+
+#### Scenario: The consequence is stated before the save
+
+- **WHEN** a context override has been supplied against a profile whose persisted mode is native official
+- **THEN** the editor states that saving will generate a catalog for this provider and that Codex must be fully quit and reopened
+
+#### Scenario: Clearing the override keeps catalog ownership
+
+- **WHEN** every override on a promoted profile is cleared again
+- **THEN** the profile stays managed and no mode change happens without the user's action
+
 ### Requirement: Catalog status and provenance
 
 The system SHALL expose enough status to distinguish the bundled baseline's source version, custom-row state, provider-reporting evidence, effective catalog state, and runtime activation without exposing secret, identity, or prompt content. Status SHALL NOT present refresh controls or refresh freshness; the baseline's identity is the running application version plus its recorded source client version.
