@@ -60,6 +60,7 @@ import {
 import {
   addCatalogCandidate,
   adoptionPreviewSummary,
+  appModelLabel,
   catalogDiffSummary,
   catalogModePresentation,
   catalogRefreshGate,
@@ -2396,7 +2397,7 @@ function CatalogProfileEditor({
             const value = overlay.official[model.slug];
             return (
               <div className="catalog-model-row" key={model.slug}>
-                <span className="catalog-model-name"><strong>{model.displayName}</strong><small>{model.slug}</small></span>
+                <span className="catalog-model-name"><strong>{appModelLabel(model.displayName)}</strong><small>{model.slug}</small></span>
                 <Input
                   inputMode="numeric"
                   value={value?.contextWindow ?? ""}

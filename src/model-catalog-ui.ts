@@ -157,6 +157,14 @@ export function catalogRefreshGate(status: {
   return { disabled: false, reason: null };
 }
 
+/// Renders a model the way the Codex model picker does.
+///
+/// The official catalog stores `GPT-5.6-Sol` while the picker shows `5.6 Sol`. Showing the stored
+/// form here makes the same model look like two different models across the two windows.
+export function appModelLabel(displayName: string): string {
+  return displayName.replace(/^GPT-/i, "").replace(/-/g, " ").trim() || displayName;
+}
+
 export function providerEvidenceState(slug: string, reportedSlugs: readonly string[]): "reported" | "not-reported" {
   return reportedSlugs.includes(slug) ? "reported" : "not-reported";
 }

@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import {
   addCatalogCandidate,
   adoptionPreviewSummary,
+  appModelLabel,
   catalogDiffSummary,
   catalogModeChangeDecision,
   catalogModeDraftController,
@@ -251,3 +252,26 @@ describe("restart guidance", () => {
     assert.equal(new Set(guidance).size, guidance.length);
   });
 })
+
+describe("model labels match the Codex picker", () => {
+  it("renders the stored catalog name the way the app shows it", () => {
+    // Observed in the official client's picker against the same catalog entries.
+    for (const [stored, shown] of [
+      ["GPT-5.6-Sol", "5.6 Sol"],
+      ["GPT-5.6-Terra", "5.6 Terra"],
+      ["GPT-5.6-Luna", "5.6 Luna"],
+      ["GPT-5.5", "5.5"],
+      ["GPT-5.4", "5.4"],
+      ["GPT-5.4-Mini", "5.4 Mini"],
+      ["GPT-5.3-Codex-Spark", "5.3 Codex Spark"],
+    ] as const) {
+      assert.equal(appModelLabel(stored), shown);
+    }
+  });
+
+  it("leaves a name it does not recognize alone", () => {
+    assert.equal(appModelLabel("Codex Auto Review"), "Codex Auto Review");
+    assert.equal(appModelLabel("deepseek-v4-pro"), "deepseek v4 pro");
+    assert.equal(appModelLabel(""), "");
+  });
+});
