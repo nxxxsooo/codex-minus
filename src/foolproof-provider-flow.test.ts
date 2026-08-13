@@ -18,13 +18,18 @@ describe("the provider editor offers one contract and no switches", () => {
   it("shows only the controls the seven-step flow needs", () => {
     for (const kept of [
       'className="relay-field-name"',
-      'className="relay-field-config-model"',
       'className="relay-field-base-url"',
       'className="relay-field-key"',
       "Provider Doctor",
     ]) {
       assert.ok(editor.includes(kept), `the editor lost ${kept}`);
     }
+    // The startup model is a row in the model table now, so a second place to name one would be
+    // two answers to one question.
+    assert.ok(
+      !editor.includes('className="relay-field-config-model"'),
+      "a free-text startup model is back beside the table that already selects one",
+    );
   });
 
   it("offers no control that could produce a different contract", () => {
@@ -71,11 +76,16 @@ describe("the provider editor offers one contract and no switches", () => {
     assert.doesNotMatch(detail, /升级为原生能力优先|处理旧供应商 ID|替换自定义 Actor 标记/);
   });
 
-  it("offers one context-window field per model and nothing else to configure", () => {
+  it("offers one model table with one context field and one startup choice per row", () => {
     const catalogEditor = appSource.match(
       /function CatalogProfileEditor\([\s\S]*?(?=\nfunction EnvConflictNotice)/,
     )?.[0] ?? "";
-    assert.ok(catalogEditor.includes("catalog-official-list"), "the catalog editor was located");
+    assert.ok(catalogEditor.includes("catalog-model-list"), "the catalog editor was located");
+    // Official and custom models are one list: they answer the same question for the user.
+    assert.ok(!catalogEditor.includes("catalog-official-list"), "the official table split off again");
+    assert.ok(!catalogEditor.includes("catalog-custom-list"), "the custom table split off again");
+    assert.match(catalogEditor, /type="radio"/);
+    assert.match(catalogEditor, /const selectedModel = codexModelFromConfig\(profile\.configContents\) \|\| profile\.model;/);
     // Raising Sol from 272k to 372k must be one number, not a hunt through a wide table.
     assert.match(catalogEditor, /contextWindow: positiveNumberOrNull\(event\.currentTarget\.value\)/);
     assert.match(catalogEditor, /placeholder=\{model\.contextWindow \? String\(model\.contextWindow\) : t\("默认"\)\}/);
@@ -120,5 +130,40 @@ describe("a profile whose empty fields never reached the wire", () => {
     assert.ok(derive.length > 0, "the derivation was located");
     assert.doesNotMatch(derive, /profile\.model\.trim\(\)/);
     assert.match(derive, /\(profile\.model \|\| ""\)\.trim\(\)/);
+  });
+});
+
+describe("one model table answers every model question", () => {
+  const catalogEditor = appSource.match(
+    /function CatalogProfileEditor\([\s\S]*?(?=\nfunction EnvConflictNotice)/,
+  )?.[0] ?? "";
+
+  it("was read from the real editor", () => {
+    assert.ok(catalogEditor.includes("catalog-model-list"), "the model table was located");
+  });
+
+  it("carries the startup selection when the selected row is renamed or deleted", () => {
+    // The selection names a model by slug, so a row that changes its slug or disappears would
+    // otherwise leave the profile starting Codex on a model its catalog no longer contains.
+    const rename = catalogEditor.match(/const renameCustom = [\s\S]*?\n  \};/)?.[0] ?? "";
+    const remove = catalogEditor.match(/const removeCustom = [\s\S]*?\n  \};/)?.[0] ?? "";
+    assert.ok(rename.length > 0 && remove.length > 0, "both row actions were located");
+    assert.match(rename, /if \(previous && selectedModel === previous\) onProfileEdit\(\{ model: slug \}\)/);
+    assert.match(remove, /if \(removed && selectedModel === removed\) onProfileEdit\(\{ model: "" \}\)/);
+  });
+
+  it("never selects a row that has no slug yet", () => {
+    assert.match(catalogEditor, /const selectStartupModel = \(slug: string\) => \{\s*if \(slug\) onProfileEdit/);
+    assert.match(catalogEditor, /disabled=\{!model\.slug\}/);
+  });
+
+  it("leaves no second place to name a model", () => {
+    for (const [gone, why] of [
+      ["供应商测试模型", "a provider is tested with the model it starts on"],
+      ["modelWindowRows", "the removed per-profile window rows had no editor left"],
+      ["serializeModelWindowRows", "the removed per-profile window rows had no editor left"],
+    ] as const) {
+      assert.ok(!appSource.includes(gone), `${gone} is back — ${why}`);
+    }
   });
 });

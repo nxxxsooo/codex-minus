@@ -53,11 +53,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  modelWindowRowsFromProfile,
-  serializeModelWindowRows,
-  type ModelWindowRow,
-} from "./model-windows";
-import {
   addCatalogCandidate,
   adoptionPreviewSummary,
   appModelLabel,
@@ -1404,7 +1399,7 @@ export function App() {
 
   const fetchRelayProfileModels = async (profile: RelayProfile) => {
     const result = await run(() => call<RelayProfileModelsResult>("fetch_relay_profile_models", { profile }));
-    if (result) showNotice(t("模型列表"), result.message, result.status);
+    if (result) showNotice(t("供应商支持的模型"), result.message, result.status);
     if (result && isSuccessStatus(result.status)) await refreshModelCatalog(true);
     return result && isSuccessStatus(result.status) ? result.models : null;
   };
@@ -2077,16 +2072,6 @@ function RelayScreen({
               {t("添加聚合供应商")}
             </Button>
           </div>
-          <div className="form-row">
-            <Field label={t("供应商测试模型")}>
-              <Input
-                value={form.relayTestModel}
-                onChange={(event) => onFormChange({ ...form, relayTestModel: event.currentTarget.value })}
-                onBlur={() => void saveRelaySettings(normalizeSettings(form), "testModel")}
-                placeholder={t("例如 gpt-5.6-luna")}
-              />
-            </Field>
-          </div>
           <RelayProfileList
             form={normalized}
             onEdit={(profileId) => void editRelayProfile(profileId)}
@@ -2249,6 +2234,7 @@ function CatalogProfileEditor({
   draft,
   onDraftChange,
   profile,
+  onProfileEdit,
   summary,
   isNew = false,
   actions,
@@ -2257,6 +2243,7 @@ function CatalogProfileEditor({
   draft: ProfileCatalogDraft;
   onDraftChange: (draft: ProfileCatalogDraft) => void;
   profile: RelayProfile;
+  onProfileEdit: (patch: Partial<RelayProfile>) => void;
   summary: ProfileCatalogSummary | null;
   isNew?: boolean;
   actions: Actions;
@@ -2293,6 +2280,14 @@ function CatalogProfileEditor({
     codexModelFromConfig(profile.configContents) || profile.model,
     officialModels.map((model) => model.slug),
   );
+  // The model Codex starts on is one of these rows. It used to be a free-text field elsewhere in
+  // the editor, which let a profile name a model its own catalog did not contain and gave the user
+  // two places to look for one answer.
+  const selectedModel = codexModelFromConfig(profile.configContents) || profile.model;
+  const startupModelGroup = `startup-model-${draft.profileId}`;
+  const selectStartupModel = (slug: string) => {
+    if (slug) onProfileEdit({ model: slug });
+  };
   // Every overlay edit goes through here, so a value the user types can never land in a mode that
   // would leave it dormant: asking for a different context window is asking for a managed catalog.
   const applyOverlay = (nextOverlay: CatalogOverlayDraft) => {
@@ -2324,6 +2319,19 @@ function CatalogProfileEditor({
       ...overlay,
       custom: overlay.custom.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item)),
     });
+  };
+  // The startup model is a row in this table, not a name typed somewhere else, so renaming or
+  // deleting the row that is selected has to carry the selection with it. Otherwise the profile
+  // would keep starting Codex on a model this catalog no longer contains.
+  const renameCustom = (index: number, slug: string) => {
+    const previous = overlay.custom[index]?.slug ?? "";
+    updateCustom(index, { slug, displayName: slug });
+    if (previous && selectedModel === previous) onProfileEdit({ model: slug });
+  };
+  const removeCustom = (index: number) => {
+    const removed = overlay.custom[index]?.slug ?? "";
+    applyOverlay({ ...overlay, custom: overlay.custom.filter((_, itemIndex) => itemIndex !== index) });
+    if (removed && selectedModel === removed) onProfileEdit({ model: "" });
   };
   const addCustom = (slug = "") => {
     if (slug) {
@@ -2363,46 +2371,65 @@ function CatalogProfileEditor({
         </div>
       ) : null}
       <fieldset className="catalog-editor-readonly" disabled={!editingAvailability.editable}>
-        <div className="catalog-official-list">
+        <div className="catalog-model-list">
           <div className="catalog-model-row catalog-model-row-head">
-            <span>{t("模型")}</span><span>{t("上下文")}</span>
+            <span>{t("启动")}</span><span>{t("模型")}</span><span>{t("上下文")}</span><span />
           </div>
-          {officialModels.map((model) => {
-            const value = overlay.official[model.slug];
-            return (
-              <div className="catalog-model-row" key={model.slug}>
-                <span className="catalog-model-name"><strong>{appModelLabel(model.displayName)}</strong><small>{model.slug}</small></span>
-                <Input
-                  inputMode="numeric"
-                  value={value?.contextWindow ?? ""}
-                  onChange={(event) => setOfficialOverride(model.slug, { contextWindow: positiveNumberOrNull(event.currentTarget.value) })}
-                  placeholder={model.contextWindow ? String(model.contextWindow) : t("默认")}
-                />
-              </div>
-            );
-          })}
-        </div>
-      </fieldset>
-      <fieldset className="catalog-editor-readonly" disabled={!editingAvailability.editable}>
-        <div className="catalog-custom-list">
-          <div className="catalog-list-head">
-            <div><strong>{t("自定义模型")}</strong><span>{t("供应商支持但官方清单没有的模型")}</span></div>
-            <Button onClick={() => addCustom()} size="sm" variant="secondary"><Plus className="h-4 w-4" />{t("添加")}</Button>
-          </div>
-          {summary?.customCandidates.length ? (
-            <div className="catalog-candidates">
-              {summary.customCandidates.map((slug) => (
-                <button key={slug} onClick={() => addCustom(slug)} type="button"><Plus className="h-3 w-3" />{slug}</button>
-              ))}
-            </div>
-          ) : null}
-          {overlay.custom.map((model, index) => (
-            <div className="catalog-model-row" key={`${model.slug}-${index}`}>
-              <Input value={model.slug} onChange={(event) => updateCustom(index, { slug: event.currentTarget.value, displayName: event.currentTarget.value })} placeholder="model-id" />
-              <Input inputMode="numeric" value={model.contextWindow} onChange={(event) => updateCustom(index, { contextWindow: positiveNumberOrDefault(event.currentTarget.value, 272000) })} />
-              <Button onClick={() => applyOverlay({ ...overlay, custom: overlay.custom.filter((_, itemIndex) => itemIndex !== index) })} size="icon" title={t("删除模型")} variant="ghost"><Trash2 className="h-4 w-4" /></Button>
+          {officialModels.map((model) => (
+            <div className="catalog-model-row" key={model.slug}>
+              <input
+                checked={selectedModel === model.slug}
+                name={startupModelGroup}
+                onChange={() => selectStartupModel(model.slug)}
+                title={t("设为启动模型")}
+                type="radio"
+              />
+              <span className="catalog-model-name">
+                <strong>{appModelLabel(model.displayName)}</strong>
+                <small>{model.slug}</small>
+              </span>
+              <Input
+                inputMode="numeric"
+                value={overlay.official[model.slug]?.contextWindow ?? ""}
+                onChange={(event) => setOfficialOverride(model.slug, { contextWindow: positiveNumberOrNull(event.currentTarget.value) })}
+                placeholder={model.contextWindow ? String(model.contextWindow) : t("默认")}
+              />
+              <span />
             </div>
           ))}
+          {overlay.custom.map((model, index) => (
+            <div className="catalog-model-row" key={`custom-${index}`}>
+              <input
+                checked={!!model.slug && selectedModel === model.slug}
+                disabled={!model.slug}
+                name={startupModelGroup}
+                onChange={() => selectStartupModel(model.slug)}
+                title={t("设为启动模型")}
+                type="radio"
+              />
+              <Input
+                value={model.slug}
+                onChange={(event) => renameCustom(index, event.currentTarget.value)}
+                placeholder="model-id"
+              />
+              <Input
+                inputMode="numeric"
+                value={model.contextWindow}
+                onChange={(event) => updateCustom(index, { contextWindow: positiveNumberOrDefault(event.currentTarget.value, 272000) })}
+              />
+              <Button onClick={() => removeCustom(index)} size="icon" title={t("删除模型")} variant="ghost"><Trash2 className="h-4 w-4" /></Button>
+            </div>
+          ))}
+          <div className="catalog-list-foot">
+            {summary?.customCandidates.length ? (
+              <div className="catalog-candidates">
+                {summary.customCandidates.map((slug) => (
+                  <button key={slug} onClick={() => addCustom(slug)} type="button"><Plus className="h-3 w-3" />{slug}</button>
+                ))}
+              </div>
+            ) : <span />}
+            <Button onClick={() => addCustom()} size="sm" variant="secondary"><Plus className="h-4 w-4" />{t("添加模型")}</Button>
+          </div>
         </div>
       </fieldset>
     </section>
@@ -2948,9 +2975,6 @@ function RelayProfileDetail({
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   const [legacyReplacementProviderId, setLegacyReplacementProviderId] = useState("");
-  const [modelWindowRows, setModelWindowRows] = useState<ModelWindowRow[]>(
-    modelWindowRowsFromProfile(profile.modelList, profile.modelWindows || ""),
-  );
   const fallbackCatalogMode = defaultCatalogMode(
     profile.relayMode,
     profile.officialMixApiKey,
@@ -3037,7 +3061,6 @@ function RelayProfileDetail({
     });
     updateDetailState(nextState);
     setLegacyReplacementProviderId("");
-    setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || ""));
     let cancelled = false;
     if (!isNew && !isAggregateRelayProfile(nextDraft)) {
       const inspectionCorrelation = beginProviderDetailInspection(nextState);
@@ -3264,10 +3287,6 @@ function RelayProfileDetail({
             : detailState.blockers.length
               ? t("供应商草稿被后端验证阻止，请处理提示后重试。")
               : null;
-  const draftWithModelRows = (source: RelayProfile = draft) => {
-    const serializedRows = serializeModelWindowRows(modelWindowRows);
-    return { ...source, modelList: serializedRows.modelList, modelWindows: serializedRows.modelWindows };
-  };
   const saveDraft = async () => {
     if (validationError || savingRef.current) return;
     savingRef.current = true;
@@ -3290,8 +3309,8 @@ function RelayProfileDetail({
       }
       // Deriving the draft inside the guard keeps the `finally` reset reachable: a throw before it
       // would leave the button pending forever, and its click handler discards the rejection.
-      const draftWithWindows = draftWithModelRows(detailStateRef.current.profile);
-      const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
+      const current = detailStateRef.current.profile;
+      const normalizedDraft = isAggregateRelayProfile(current) ? normalizeAggregateRelayProfile(current, form) : deriveRelayProfileFromFiles(current);
       const next = isNew
         ? addRelayProfile(form, normalizedDraft)
         : updateRelayProfile(form, profile.id, normalizedDraft);
@@ -3352,8 +3371,7 @@ function RelayProfileDetail({
       || detailState.pendingLegacyProviderIdResolution !== null
       || detailState.blockers.length > 0
     ) return;
-    const draftWithWindows = draftWithModelRows();
-    const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
+    const normalizedDraft = isAggregateRelayProfile(draft) ? normalizeAggregateRelayProfile(draft, form) : deriveRelayProfileFromFiles(draft);
     const previousActiveRelayId = form.activeRelayId;
     const next = syncLegacyRelayFields({
       ...form,
@@ -3428,13 +3446,14 @@ function RelayProfileDetail({
           ) : null}
         </section>
       )}
-        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={replaceDraft} onProfileEdit={editDraft} onSwitch={switchDraft} actions={actions} modelWindowRows={modelWindowRows} setModelWindowRows={setModelWindowRows} catalogProfile={catalogProfile} draftCommitBlocked={detailState.pendingTransformRevision !== null || detailState.rawConfigContents !== null || detailState.pendingConfirmation !== null || detailState.pendingLegacyProviderIdResolution !== null || detailState.blockers.length > 0} />
+        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={replaceDraft} onProfileEdit={editDraft} onSwitch={switchDraft} actions={actions} catalogProfile={catalogProfile} draftCommitBlocked={detailState.pendingTransformRevision !== null || detailState.rawConfigContents !== null || detailState.pendingConfirmation !== null || detailState.pendingLegacyProviderIdResolution !== null || detailState.blockers.length > 0} />
       {!managedCatalogCapable(draft) ? null : catalogDraft ? (
         <CatalogProfileEditor
           catalog={modelCatalog}
           draft={catalogDraft}
           onDraftChange={(next) => updateDetailState(replaceProviderDetailCatalogDraft(detailStateRef.current, next))}
           profile={draft}
+          onProfileEdit={editDraft}
           summary={catalogProfile}
           isNew={isNew}
           actions={actions}
@@ -3474,8 +3493,6 @@ function RelayProfileEditor({
   onProfileEdit,
   onSwitch,
   actions,
-  modelWindowRows,
-  setModelWindowRows,
   catalogProfile,
   draftCommitBlocked = false,
 }: {
@@ -3486,8 +3503,6 @@ function RelayProfileEditor({
   onProfileEdit?: (patch: Partial<RelayProfile>) => void;
   onSwitch: () => void;
   actions: Actions;
-  modelWindowRows: ModelWindowRow[];
-  setModelWindowRows: (value: ModelWindowRow[]) => void;
   catalogProfile: ProfileCatalogSummary | null;
   draftCommitBlocked?: boolean;
 }) {
@@ -3495,7 +3510,7 @@ function RelayProfileEditor({
   const [doctorOpen, setDoctorOpen] = useState(false);
   const [doctorRunning, setDoctorRunning] = useState(false);
   const doctorRequestSequenceRef = useRef(0);
-  const doctorSourceRevision = JSON.stringify({ profile, modelWindowRows });
+  const doctorSourceRevision = JSON.stringify(profile);
   const doctorSourceRevisionRef = useRef(doctorSourceRevision);
   doctorSourceRevisionRef.current = doctorSourceRevision;
   useEffect(() => {
@@ -3549,12 +3564,7 @@ function RelayProfileEditor({
     setDoctorOpen(true);
     setDoctorRunning(true);
     setDoctorResult(null);
-    const serializedRows = serializeModelWindowRows(modelWindowRows);
-    const probedProfile = deriveRelayProfileFromFiles({
-      ...profile,
-      modelList: serializedRows.modelList,
-      modelWindows: serializedRows.modelWindows,
-    });
+    const probedProfile = deriveRelayProfileFromFiles(profile);
     const result = await actions.diagnoseRelayProfile(probedProfile);
     // Drop a result the draft has already moved past, so a slow probe cannot overwrite a newer one.
     if (
@@ -3594,19 +3604,6 @@ function RelayProfileEditor({
             <p className="field-hint">{t("官方登录＋混入 API Key＋Responses API")}</p>
           </Field>
         ) : null}
-        <Field className="relay-field-config-model" label={t("配置模型")}>
-          <Input
-            aria-describedby={newProviderFieldErrors.model ? "provider-model-error" : undefined}
-            aria-invalid={newProviderFieldErrors.model ? true : undefined}
-            value={profile.model}
-            onChange={(event) => updateDraft({ model: event.currentTarget.value })}
-            placeholder={t("例如 deepseek-v4-pro")}
-          />
-          {newProviderFieldErrors.model ? <p className="field-hint" id="provider-model-error" role="alert">{t("必填")}</p> : null}
-          <p className="field-hint">
-            {t("默认启动 Codex 时使用的模型名，请勿带后缀；上下文窗口请在下方「模型列表」中按模型单独配置。")}
-          </p>
-        </Field>
         {showApiFields ? (
           <div className="relay-api-fields">
             <Field className="relay-field-base-url" label="Base URL">
@@ -3637,7 +3634,7 @@ function RelayProfileEditor({
             <div className="provider-doctor-head">
               <div>
                 <strong>Provider Doctor</strong>
-                <span>{t("检查配置、模型列表和一次真实请求，定位供应商不可用原因。")}</span>
+                <span>{t("检查配置、供应商支持的模型和一次真实请求，定位供应商不可用原因。")}</span>
               </div>
               <Button onClick={() => void runProviderDoctor()} size="sm" type="button" variant="secondary">
                 <Stethoscope className="h-4 w-4" />
@@ -3763,7 +3760,7 @@ function AggregateRelayProfileEditor({
           <Input
             value={profile.testModel}
             onChange={(event) => onProfileChange({ ...profile, testModel: event.currentTarget.value })}
-            placeholder={tf("留空使用默认：{0}", [form.relayTestModel || defaultSettings.relayTestModel])}
+            placeholder={t("留空使用该聚合成员自己的模型")}
           />
         </Field>
         <Field className="aggregate-strategy-field" label={t("聚合策略")}>
@@ -3967,7 +3964,7 @@ function providerDoctorSteps(
 ): Array<{ id: string; title: string; detail: string; state: ProviderDoctorStepState }> {
   const base = [
     { id: "config", title: t("配置完整性"), pending: t("等待检查 Base URL / API Key。") },
-    { id: "models", title: t("模型列表"), pending: t("等待检查 /v1/models。") },
+    { id: "models", title: t("供应商支持的模型"), pending: t("等待检查 /v1/models。") },
     { id: "request", title: t("真实请求"), pending: t("等待发送一次测试请求。") },
     { id: "recommendation", title: t("处理建议"), pending: t("等待生成建议。") },
   ];
