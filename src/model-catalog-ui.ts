@@ -27,6 +27,29 @@ export type CatalogOverlayDraft = {
   }>;
 };
 
+/// True when an overlay asks for nothing the official baseline does not already say.
+export function catalogOverlayIsEmpty(overlay: CatalogOverlayDraft): boolean {
+  if (overlay.custom.length > 0) return false;
+  return Object.values(overlay.official).every((override) =>
+    Object.values(override).every((field) => field === null)
+  );
+}
+
+/// The mode an overlay actually needs.
+///
+/// Native mode generates no catalog and points at none, so an override typed there is stored and
+/// then sits dormant — the number changes nothing, with no mode control left in the editor to
+/// explain why. Typing one *is* the request for a managed catalog, so it becomes one. Clearing the
+/// overlay again does not go back: a managed catalog that merely restates the official baseline is
+/// harmless, while silently dropping ownership under the user is not.
+export function catalogModeForOverlay(
+  mode: CatalogModeValue,
+  overlay: CatalogOverlayDraft,
+): CatalogModeValue {
+  if (mode !== "native-official") return mode;
+  return catalogOverlayIsEmpty(overlay) ? mode : "official-plus-custom";
+}
+
 export function catalogModeChangeDecision(
   currentMode: CatalogModeValue,
   requestedMode: CatalogModeValue,

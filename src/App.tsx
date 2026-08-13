@@ -61,8 +61,10 @@ import {
   addCatalogCandidate,
   adoptionPreviewSummary,
   appModelLabel,
+  catalogModeForOverlay,
   catalogModePresentation,
   defaultCatalogMode,
+  type CatalogOverlayDraft,
   externalVersionRequiresAcceptance,
   managedContextConflictKeys,
   catalogRestartGuidance,
@@ -2291,6 +2293,14 @@ function CatalogProfileEditor({
     codexModelFromConfig(profile.configContents) || profile.model,
     officialModels.map((model) => model.slug),
   );
+  // Every overlay edit goes through here, so a value the user types can never land in a mode that
+  // would leave it dormant: asking for a different context window is asking for a managed catalog.
+  const applyOverlay = (nextOverlay: CatalogOverlayDraft) => {
+    const nextMode = catalogModeForOverlay(mode, nextOverlay);
+    onDraftChange(updateCatalogProfileDraft(draft, nextMode === mode
+      ? { overlay: nextOverlay }
+      : { overlay: nextOverlay, mode: nextMode, modeExplicit: true }));
+  };
   const setOfficialOverride = (slug: string, patch: Partial<OfficialCatalogOverride>) => {
     const current = overlay.official[slug] ?? {
       displayName: null,
@@ -2307,20 +2317,20 @@ function CatalogProfileEditor({
     const official = { ...overlay.official };
     if (Object.values(next).every((item) => item === null)) delete official[slug];
     else official[slug] = next;
-    onDraftChange(updateCatalogProfileDraft(draft, { overlay: { ...overlay, official } }));
+    applyOverlay({ ...overlay, official });
   };
   const updateCustom = (index: number, patch: Partial<CustomCatalogModel>) => {
-    onDraftChange(updateCatalogProfileDraft(draft, { overlay: {
+    applyOverlay({
       ...overlay,
       custom: overlay.custom.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item)),
-    } }));
+    });
   };
   const addCustom = (slug = "") => {
     if (slug) {
-      onDraftChange(updateCatalogProfileDraft(draft, { overlay: addCatalogCandidate(overlay, slug) }));
+      applyOverlay(addCatalogCandidate(overlay, slug));
       return;
     }
-    onDraftChange(updateCatalogProfileDraft(draft, { overlay: { ...overlay, custom: [...overlay.custom, {
+    applyOverlay({ ...overlay, custom: [...overlay.custom, {
       slug: "",
       displayName: "",
       contextWindow: 272000,
@@ -2332,7 +2342,7 @@ function CatalogProfileEditor({
       supportedTools: [],
       toolCapabilities: null,
       templateProvenance: "user-created",
-    }] } }));
+    }] });
   };
   return (
     <section className="catalog-profile-editor">
@@ -2346,6 +2356,12 @@ function CatalogProfileEditor({
         </div>
       </div>
       {summary?.actionRequired || draftError ? <div className="catalog-inline-error">{summary?.actionRequired || catalogDraftErrorLabel(draftError)}</div> : null}
+      {summary?.mode === "native-official" && mode !== "native-official" ? (
+        <div className="hint-line">
+          <Info className="h-4 w-4" />
+          <span>{t("改过上下文，所以保存会为这个供应商生成一份模型目录，之后需要完整退出并重开 Codex 才生效。")}</span>
+        </div>
+      ) : null}
       <fieldset className="catalog-editor-readonly" disabled={!editingAvailability.editable}>
         <div className="catalog-official-list">
           <div className="catalog-model-row catalog-model-row-head">
@@ -2384,7 +2400,7 @@ function CatalogProfileEditor({
             <div className="catalog-model-row" key={`${model.slug}-${index}`}>
               <Input value={model.slug} onChange={(event) => updateCustom(index, { slug: event.currentTarget.value, displayName: event.currentTarget.value })} placeholder="model-id" />
               <Input inputMode="numeric" value={model.contextWindow} onChange={(event) => updateCustom(index, { contextWindow: positiveNumberOrDefault(event.currentTarget.value, 272000) })} />
-              <Button onClick={() => onDraftChange(updateCatalogProfileDraft(draft, { overlay: { ...overlay, custom: overlay.custom.filter((_, itemIndex) => itemIndex !== index) } }))} size="icon" title={t("删除模型")} variant="ghost"><Trash2 className="h-4 w-4" /></Button>
+              <Button onClick={() => applyOverlay({ ...overlay, custom: overlay.custom.filter((_, itemIndex) => itemIndex !== index) })} size="icon" title={t("删除模型")} variant="ghost"><Trash2 className="h-4 w-4" /></Button>
             </div>
           ))}
         </div>

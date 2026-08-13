@@ -4,6 +4,8 @@ import { describe, it } from "node:test";
 import {
   addCatalogCandidate,
   adoptionPreviewSummary,
+  catalogModeForOverlay,
+  catalogOverlayIsEmpty,
   appModelLabel,
   catalogDiffSummary,
   catalogModeChangeDecision,
@@ -233,6 +235,46 @@ describe("model catalog UI state", () => {
     assert.equal(externalVersionRequiresAcceptance("mismatch"), true);
     assert.equal(externalVersionRequiresAcceptance("match"), false);
     assert.equal(externalVersionRequiresAcceptance("unknown"), false);
+  });
+});
+
+describe("a context override cannot be typed into a mode that ignores it", () => {
+  const override = (patch: Record<string, unknown>) => ({
+    displayName: null,
+    visible: null,
+    contextWindow: null,
+    effectiveContextWindowPercent: null,
+    order: null,
+    supportedReasoningLevels: null,
+    defaultReasoningLevel: null,
+    supportedTools: null,
+    toolCapabilities: null,
+    ...patch,
+  });
+
+  it("reads an all-null override as asking for nothing", () => {
+    assert.equal(catalogOverlayIsEmpty(emptyOverlay()), true);
+    assert.equal(catalogOverlayIsEmpty({ official: { "gpt-5.6-sol": override({}) }, custom: [] }), true);
+    assert.equal(
+      catalogOverlayIsEmpty({ official: { "gpt-5.6-sol": override({ contextWindow: 372000 }) }, custom: [] }),
+      false,
+    );
+    assert.equal(catalogOverlayIsEmpty(addCatalogCandidate(emptyOverlay(), "custom-a")), false);
+  });
+
+  it("turns a native profile into a managed one the moment an override exists", () => {
+    const asked = { official: { "gpt-5.6-sol": override({ contextWindow: 372000 }) }, custom: [] };
+    // Native mode generates no catalog, so the number would have been stored and ignored.
+    assert.equal(catalogModeForOverlay("native-official", asked), "official-plus-custom");
+    assert.equal(catalogModeForOverlay("native-official", emptyOverlay()), "native-official");
+  });
+
+  it("never changes a mode the user already owns", () => {
+    const asked = { official: { "gpt-5.6-sol": override({ contextWindow: 372000 }) }, custom: [] };
+    for (const mode of ["official-plus-custom", "custom-only", "external"] as const) {
+      assert.equal(catalogModeForOverlay(mode, asked), mode);
+      assert.equal(catalogModeForOverlay(mode, emptyOverlay()), mode);
+    }
   });
 });
 
