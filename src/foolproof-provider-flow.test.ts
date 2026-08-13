@@ -5,6 +5,8 @@ import { describe, it } from "node:test";
 import { NEW_PROVIDER_ID, PRO_MODEL_SLUGS, createNewRelayProfileDraft } from "./provider-onboarding.ts";
 
 const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+// Reading and repairing a profile is no longer the shell's job; the rules moved here.
+const relaySettings = readFileSync(new URL("./relay-settings.ts", import.meta.url), "utf8");
 const editor = appSource.match(
   /function RelayProfileEditor\([\s\S]*?\n\}\n\nfunction /,
 )?.[0] ?? "";
@@ -124,7 +126,7 @@ describe("a profile whose empty fields never reached the wire", () => {
   });
 
   it("reads a possibly-absent model the way every other field here is read", () => {
-    const derive = appSource.match(
+    const derive = relaySettings.match(
       /function deriveRelayProfileFromFiles[\s\S]*?\n\}/,
     )?.[0] ?? "";
     assert.ok(derive.length > 0, "the derivation was located");
@@ -187,13 +189,13 @@ describe("one model table answers every model question", () => {
   it("retires a test model an older version left behind", () => {
     // The controls that set these are gone, so a stale value would outrank the startup model for
     // good — the backend prefers a profile's own test model over the model it starts on.
-    const normalize = appSource.match(
+    const normalize = relaySettings.match(
       /function normalizeRelayProfile\([\s\S]*?\n\}/,
     )?.[0] ?? "";
     assert.ok(normalize.length > 0, "the profile normalizer was located");
     const ordinary = normalize.slice(normalize.indexOf("const legacyMixedApi"));
     assert.match(ordinary, /testModel: "",/);
-    const settings = appSource.match(
+    const settings = relaySettings.match(
       /function normalizeSettings\([\s\S]*?\n\}/,
     )?.[0] ?? "";
     assert.ok(settings.length > 0, "the settings normalizer was located");

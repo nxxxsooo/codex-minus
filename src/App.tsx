@@ -136,739 +136,99 @@ import {
   providerTransitionDecisionForStructuredPatch,
 } from "./provider-native-capability-view";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
-
-
-type Status = "ok" | "failed" | "not_implemented" | "not_checked" | string;
-
-type CommandResult<T> = T & {
-  status: Status;
-  message: string;
-};
-
-type PathState = {
-  status: string;
-  path: string | null;
-};
-
-type LaunchStatus = {
-  status: string;
-  message: string;
-  started_at_ms: number;
-  debug_port: number | null;
-  helper_port: number | null;
-  codex_app: string | null;
-};
-
-type OverviewResult = CommandResult<{
-  codex_app: PathState;
-  codex_version: string | null;
-  silent_shortcut: PathState;
-  management_shortcut: PathState;
-  latest_launch: LaunchStatus | null;
-  current_version: string;
-  update_status: string;
-  settings_path: string;
-  logs_path: string;
-}>;
-
-type PluginMarketplaceRepairResult = CommandResult<{
-  codexHome: string;
-  marketplaceRoot?: string | null;
-  initialized: boolean;
-  configured: boolean;
-  needsRepair: boolean;
-}>;
-
-type PluginMarketplaceStatusResult = CommandResult<{
-  codexHome: string;
-  marketplaceRoot?: string | null;
-  configRegistered: boolean;
-  needsRepair: boolean;
-}>;
-
-type RemotePluginMarketplaceResult = CommandResult<{
-  codexHome: string;
-  marketplaceRoot?: string | null;
-  configRegistered: boolean;
-  needsRepair: boolean;
-  pluginCount: number;
-  skillCount: number;
-}>;
-
-type BackendSettings = {
-  codexAppPath: string;
-  codexExtraArgs: string[];
-  providerSyncEnabled: boolean;
-  providerSyncSavedProviders: string[];
-  providerSyncManualProviders: string[];
-  providerSyncLastSelectedProvider: string;
-  relayProfilesEnabled: boolean;
-  enhancementsEnabled: boolean;
-  computerUseGuardEnabled: boolean;
-  codexAppPluginMarketplaceUnlock: boolean;
-  codexAppPluginAutoExpand: boolean;
-  codexAppModelWhitelistUnlock: boolean;
-  codexAppSessionDelete: boolean;
-  codexAppMarkdownExport: boolean;
-  codexAppPasteFix: boolean;
-  codexAppForceChineseLocale: boolean;
-  codexAppFastStartup: boolean;
-  codexAppProjectMove: boolean;
-  codexAppThreadIdBadge: boolean;
-  codexAppConversationView: boolean;
-  codexAppThreadScrollRestore: boolean;
-  codexAppZedRemoteOpen: boolean;
-  zedRemoteOpenStrategy: ZedOpenStrategy;
-  zedRemoteProjectRegistryEnabled: boolean;
-  zedRemoteSyncToZedSettings: boolean;
-  codexAppUpstreamWorktreeCreate: boolean;
-  codexAppNativeMenuPlacement: boolean;
-  codexAppNativeMenuLocalization: boolean;
-  codexAppServiceTierControls: boolean;
-  codexAppPetRealMouseLook: boolean;
-  codexAppStepwiseEnabled: boolean;
-  codexAppStepwiseDirectSend: boolean;
-  codexAppStepwiseBaseUrl: string;
-  codexAppStepwiseApiKey: string;
-  codexAppStepwiseApiKeyEnv: string;
-  codexAppStepwiseModel: string;
-  codexAppStepwiseMaxItems: number;
-  codexAppStepwiseMaxInputChars: number;
-  codexAppStepwiseMaxOutputTokens: number;
-  codexAppStepwiseTimeoutMs: number;
-  codexAppImageOverlayEnabled: boolean;
-  codexAppImageOverlayPath: string;
-  codexAppImageOverlayOpacity: number;
-  codexAppImageOverlayFitMode: ImageOverlayFitMode;
-  codexGoalsEnabled: boolean;
-  launchMode: LaunchMode;
-  relayBaseUrl: string;
-  relayApiKey: string;
-  relayProfiles: RelayProfile[];
-  aggregateRelayProfiles: AggregateRelayProfile[];
-  activeAggregateRelayId: string;
-  relayCommonConfigContents: string;
-  relayContextConfigContents: string;
-  activeRelayId: string;
-  relayTestModel: string;
-};
-
-type ZedOpenStrategy = "addToFocusedWorkspace" | "reuseWindow" | "newWindow" | "default";
-type LaunchMode = "patch" | "relay";
-type ImageOverlayFitMode = "fill" | "fit" | "stretch" | "tile" | "center";
-
-export type RelayProfile = {
-  id: string;
-  name: string;
-  model: string;
-  baseUrl: string;
-  upstreamBaseUrl: string;
-  apiKey: string;
-  protocol: RelayProtocol;
-  relayMode: RelayMode;
-  officialMixApiKey: boolean;
-  testModel: string;
-  configContents: string;
-  authContents: string;
-  useCommonConfig: boolean;
-  contextSelection: RelayContextSelection;
-  contextSelectionInitialized: boolean;
-  contextWindow: string;
-  autoCompactLimit: string;
-  modelList: string;
-  modelWindows: string;
-  userAgent: string;
-  transientTarget?: NewProviderTransientTarget;
-  aggregate?: RelayAggregateConfig | null;
-};
-
-type RelayAggregateStrategy = "failover" | "conversationRoundRobin" | "requestRoundRobin" | "weightedRoundRobin";
-type RelayAggregateMember = {
-  profileId: string;
-  weight: number;
-};
-type RelayAggregateConfig = {
-  strategy: RelayAggregateStrategy;
-  members: RelayAggregateMember[];
-};
-type AggregateRelayMember = {
-  relayId: string;
-  weight: number;
-};
-type AggregateRelayProfile = {
-  id: string;
-  name: string;
-  strategy: RelayAggregateStrategy;
-  members: AggregateRelayMember[];
-};
-
-type RelayContextSelection = {
-  mcpServers: string[];
-  skills: string[];
-  plugins: string[];
-};
-
-type ContextKind = "mcp" | "skill" | "plugin";
-
-type CodexContextEntry = {
-  id: string;
-  kind: ContextKind;
-  title: string;
-  summary: string;
-  tomlBody: string;
-  enabled: boolean;
-};
-
-type CodexContextEntries = {
-  mcpServers: CodexContextEntry[];
-  skills: CodexContextEntry[];
-  plugins: CodexContextEntry[];
-};
-
-type RelayProtocol = "responses" | "chatCompletions";
-type RelayMode = "official" | "mixedApi" | "pureApi" | "aggregate";
-const PROTOCOL_PROXY_BASE_URL = "http://127.0.0.1:57321/v1";
-const CHAT_UPSTREAM_BASE_URL_KEY = "codex_plus_chat_base_url";
-
-const emptyContextSelection = (): RelayContextSelection => ({
-  mcpServers: [],
-  skills: [],
-  plugins: [],
-});
-
-type UserScriptInventory = {
-  enabled?: boolean;
-  scripts?: Array<{
-    key: string;
-    name: string;
-    source: string;
-    enabled: boolean;
-    status: string;
-    error: string;
-    market_id?: string;
-    version?: string;
-    installed?: boolean;
-    source_url?: string;
-    homepage?: string;
-  }>;
-};
-
-type SettingsResult = CommandResult<{
-  settings: BackendSettings;
-  settings_path: string;
-  user_scripts: UserScriptInventory;
-  provider_fingerprint: string;
-}>;
-
-type ProviderCommitResult = CommandResult<{
-  settings: BackendSettings | null;
-  draftRevision: number;
-  providerFingerprint: string;
-  restartRequired: boolean;
-  errorCode: string | null;
-  reason: string | null;
-}>;
-
-type ProviderNativeCapabilityInspectionResult = CommandResult<{
-  inspections: ProviderDetailInspectionMetadata[];
-}>;
-
-type RelayResult = CommandResult<{
-  authenticated: boolean;
-  authSource: string;
-  accountLabel: string | null;
-  configPath: string;
-  configured: boolean;
-  requiresOpenaiAuth: boolean;
-  hasBearerToken: boolean;
-  backupPath: string | null;
-}>;
-
-type RelayFilesResult = CommandResult<{
-  configPath: string;
-  authPath: string;
-  configContents: string;
-  authStatus: {
-    authenticated: boolean;
-    source: string;
-    accountLabel: string | null;
-    actionRequired: string | null;
-  };
-}>;
-
-type LocalSession = {
-  id: string;
-  title: string;
-  cwd: string;
-  modelProvider: string;
-  archived: boolean;
-  updatedAtMs: number | null;
-  rolloutPath: string;
-  dbPath: string;
-};
-
-type LocalSessionsResult = CommandResult<{
-  dbPath: string;
-  dbPaths: string[];
-  sessions: LocalSession[];
-  activeCount: number;
-  archivedCount: number;
-  archived: boolean;
-  nextCursor: string | null;
-  pageSize: number;
-  elapsedMs: number;
-}>;
-
-type SessionLifecycleSettingsResult = CommandResult<{
-  archiveEnabled: boolean;
-  firstRunReviewed: boolean;
-  retentionDays: number;
-  lastCompletedAtMs: number | null;
-}>;
-
-type ArchivePreviewResult = CommandResult<{
-  retentionDays: number;
-  cutoffAtMs: number;
-  candidateCount: number;
-  missingTimestampCount: number;
-  destination: string;
-  capability: {
-    available: boolean;
-    cliPath: string | null;
-    message: string;
-  };
-}>;
-
-type ArchiveMaintenanceResult = CommandResult<{
-  due: boolean;
-  deferred: boolean;
-  cutoffAtMs: number;
-  candidateCount: number;
-  archivedCount: number;
-  skippedCount: number;
-  failedCount: number;
-  elapsedMs: number;
-  lastCompletedAtMs: number | null;
-}>;
-
-type SessionLifecycleOperationResult = CommandResult<{
-  sessionId: string;
-  archived: boolean;
-  currentProvider: string;
-  sessionProvider: string;
-  providerMismatch: boolean;
-}>;
-
-type ProviderCompatibilityResult = CommandResult<{
-  currentProvider: string;
-  activeCount: number;
-  mismatchCount: number;
-  missingProviderCount: number;
-  scanGeneration: string;
-  encryptedContentWarning: string | null;
-  adaptationAvailable: boolean;
-  adaptationMessage: string;
-  scanElapsedMs: number;
-  archivedRolloutsTraversed: number;
-}>;
-
-type ZedRemoteProject = {
-  id: string;
-  label: string;
-  hostId: string;
-  ssh: {
-    user: string;
-    host: string;
-    port: number | null;
-  };
-  path: string;
-  url: string;
-  source: "currentThread" | "codexRemoteProject" | "threadWorkspaceHint" | "sqliteThreadCwd" | "recent" | string;
-  lastOpenedAtMs: number | null;
-  isCurrent: boolean;
-};
-
-type ZedRemoteProjectsResult = CommandResult<{
-  projects: ZedRemoteProject[];
-}>;
-
-type ZedRemoteOpenResult = CommandResult<{
-  url: string;
-  strategy: ZedOpenStrategy;
-}>;
-
-type DeleteLocalSessionResult = CommandResult<{
-  status: string;
-  session_id: string;
-  message: string;
-  undo_token: string | null;
-  backup_path: string | null;
-}>;
-
-type ContextEntriesResult = CommandResult<{
-  settings: BackendSettings;
-  entries: CodexContextEntries;
-}>;
-
-type LiveContextEntriesResult = CommandResult<{
-  entries: CodexContextEntries;
-}>;
-
-type ExtractRelayCommonConfigResult = CommandResult<{
-  commonConfigContents: string;
-  profileConfigContents: string;
-}>;
-
-type RelayProfileTestResult = CommandResult<{
-  httpStatus: number;
-  endpoint: string;
-  responsePreview: string;
-  compatibilityFallbackUsed: boolean;
-  initialHttpStatus: number | null;
-}>;
-
-type StepwiseTestResult = CommandResult<{
-  itemCount: number;
-  error: string;
-}>;
-
-type RelayProfileModelsResult = CommandResult<{
-  models: string[];
-  endpoint: string;
-}>;
-
-type CatalogMode = "native-official" | "official-plus-custom" | "custom-only" | "external";
-type UpstreamTopology = "direct" | "server-side-composite";
-type ReasoningLevel = { effort: string; description: string };
-type OfficialCatalogOverride = {
-  displayName: string | null;
-  visible: boolean | null;
-  contextWindow: number | null;
-  effectiveContextWindowPercent: number | null;
-  order: number | null;
-  supportedReasoningLevels: ReasoningLevel[] | null;
-  defaultReasoningLevel: string | null;
-  supportedTools: string[] | null;
-  toolCapabilities: Record<string, unknown> | null;
-};
-type CustomCatalogModel = {
-  slug: string;
-  displayName: string;
-  contextWindow: number;
-  effectiveContextWindowPercent: number;
-  visible: boolean;
-  order: number;
-  supportedReasoningLevels: ReasoningLevel[];
-  defaultReasoningLevel: string | null;
-  supportedTools: string[];
-  toolCapabilities: Record<string, unknown> | null;
-  templateProvenance: string;
-};
-type CatalogOverlay = {
-  official: Record<string, OfficialCatalogOverride>;
-  custom: CustomCatalogModel[];
-};
-type OfficialModelSummary = {
-  slug: string;
-  displayName: string;
-  visible: boolean;
-  contextWindow: number | null;
-};
-type ProfileCatalogSummary = {
-  profileId: string;
-  mode: CatalogMode;
-  modeExplicit: boolean;
-  upstreamTopology: UpstreamTopology;
-  managedAvailable: boolean;
-  contextConflicts: string[];
-  externalPointer: string | null;
-  generatedPath: string | null;
-  effectiveHash: string | null;
-  restartRequired: boolean;
-  actionRequired: string | null;
-  officialOverrideCount: number;
-  customCount: number;
-  providerEvidenceAtMs: number | null;
-  providerReportedCount: number;
-  customCandidates: string[];
-  providerReportedSlugs: string[];
-  overlay: CatalogOverlay;
-};
-type ModelCatalogStatusResult = CommandResult<{
-  statePath: string;
-  source: string;
-  targetClientVersion: string | null;
-  targetCliPath: string | null;
-  targetTrusted: boolean;
-  refreshAvailable: boolean;
-  lastSuccessfulRefreshAtMs: number | null;
-  visibleCount: number;
-  totalCount: number;
-  freshness: "missing" | "current" | "stale" | "scope-stale" | string;
-  credentialAction: string | null;
-  diff: {
-    added: string[];
-    updated: string[];
-    removed: string[];
-    collisions: string[];
-  };
-  officialModels: OfficialModelSummary[];
-  profiles: ProfileCatalogSummary[];
-}>;
-
-type AdoptionPreviewResult = CommandResult<{
-  profileId: string;
-  sourcePath: string;
-  officialOverrideCount: number;
-  customModels: CustomCatalogModel[];
-  collisions: string[];
-  sourceHash: string;
-  catalogClientVersion: string | null;
-  targetClientVersion: string;
-  versionStatus: "match" | "mismatch" | "unknown" | string;
-  committed: boolean;
-}>;
-
-type ProviderDoctorCheck = {
-  id: string;
-  title: string;
-  status: Status;
-  detail: string;
-};
-
-type ProviderDoctorResult = CommandResult<{
-  profileName: string;
-  model: string;
-  summary: string;
-  recommendation: string;
-  checks: ProviderDoctorCheck[];
-  compatibilityFallbackUsed: boolean;
-  initialHttpStatus: number | null;
-  requestHttpStatus: number | null;
-}>;
-
-
-type CcsProviderImport = {
-  sourceId: string;
-  name: string;
-  baseUrl: string;
-  apiKey: string;
-  protocol: RelayProtocol;
-  configContents: string;
-  authContents: string;
-};
-
-type CcsProvidersResult = CommandResult<{
-  dbPath: string;
-  providers: CcsProviderImport[];
-}>;
-
-type ProviderImportRequest = {
-  name: string;
-  baseUrl: string;
-  apiKey: string;
-  wireApi: string;
-  relayMode: string;
-  configContents: string;
-  authContents: string;
-};
-
-type PendingProviderImportResult = CommandResult<{
-  pending: ProviderImportRequest | null;
-}>;
-
-type EnvConflict = {
-  name: string;
-  source: "process" | "user" | string;
-  valuePresent: boolean;
-};
-
-type EnvConflictsResult = CommandResult<{
-  conflicts: EnvConflict[];
-}>;
-
-type RemoveEnvConflictsResult = CommandResult<{
-  removed: Array<{
-    name: string;
-    removedProcess: boolean;
-    removedUser: boolean;
-  }>;
-  backupPath: string | null;
-  remaining: EnvConflict[];
-}>;
-
-type TaskProgress = {
-  active: boolean;
-  percent: number;
-  message: string;
-};
-
-type LogsResult = CommandResult<{
-  path: string;
-  text: string;
-  lines: number;
-}>;
-
-type DiagnosticsResult = CommandResult<{
-  report: string;
-}>;
-
-type WatcherResult = CommandResult<{
-  enabled: boolean;
-  disabled_flag: string;
-}>;
-
-type InstallResult = CommandResult<{
-  silent_shortcut: { installed: boolean; path: string | null };
-  management_shortcut: { installed: boolean; path: string | null };
-}>;
-
-type UpdateResult = CommandResult<{
-  currentVersion: string;
-  latestVersion?: string | null;
-  releaseSummary?: string;
-  assetName?: string | null;
-  assetUrl?: string | null;
-  updateAvailable?: boolean;
-  installedPath?: string;
-  progress?: number;
-}>;
-
-type AdItem = {
-  id?: string;
-  type: "sponsor" | "normal" | string;
-  title: string;
-  description: string;
-  url: string;
-  image?: string;
-  highlights?: string[];
-  expires_at?: string;
-};
-
-type AdsResult = CommandResult<{
-  version: number;
-  ads: AdItem[];
-}>;
-
-type ScriptMarketItem = {
-  id: string;
-  name: string;
-  description: string;
-  version: string;
-  author: string;
-  tags: string[];
-  homepage: string;
-  script_url: string;
-  sha256: string;
-  installed: boolean;
-  installedVersion: string;
-  updateAvailable: boolean;
-};
-
-type ScriptMarketResult = CommandResult<{
-  market: {
-    status: string;
-    message: string;
-    indexUrl: string;
-    updatedAt: string;
-    scripts: ScriptMarketItem[];
-  };
-  user_scripts: UserScriptInventory;
-}>;
-
-
-type StartupResult = CommandResult<{
-  showUpdate: boolean;
-}>;
-
-type Route = "relay" | "sessions";
-type Theme = "dark" | "light";
+import type {
+  AdoptionPreviewResult,
+  AggregateRelayProfile,
+  ArchiveMaintenanceResult,
+  ArchivePreviewResult,
+  BackendSettings,
+  CatalogMode,
+  CodexContextEntries,
+  CodexContextEntry,
+  CommandResult,
+  ContextKind,
+  CustomCatalogModel,
+  DeleteLocalSessionResult,
+  EnvConflictsResult,
+  ExtractRelayCommonConfigResult,
+  ImageOverlayFitMode,
+  LocalSession,
+  LocalSessionsResult,
+  ModelCatalogStatusResult,
+  OfficialCatalogOverride,
+  OfficialModelSummary,
+  ProfileCatalogSummary,
+  ProviderCommitResult,
+  ProviderCompatibilityResult,
+  ProviderDoctorResult,
+  ProviderNativeCapabilityInspectionResult,
+  ReasoningLevel,
+  RelayAggregateConfig,
+  RelayAggregateStrategy,
+  RelayContextSelection,
+  RelayFilesResult,
+  RelayMode,
+  RelayProfile,
+  RelayProfileModelsResult,
+  RelayProfileTestResult,
+  RelayProtocol,
+  RelayResult,
+  RemoveEnvConflictsResult,
+  Route,
+  SessionLifecycleOperationResult,
+  SessionLifecycleSettingsResult,
+  SettingsResult,
+  Status,
+  Theme,
+} from "./backend-types";
+import {
+  normalizeSettings,
+  normalizeRelayProfile,
+  activeRelayProfile,
+  providerConfigTargetContract,
+  deriveRelayProfileFromFiles,
+  applyRelayProfilePatchToFiles,
+  relayProfileSwitchValidation,
+  syncLegacyRelayFields,
+  updateRelayProfile,
+  createRelayProfile,
+  createAggregateRelayProfile,
+  addRelayProfile,
+  duplicateRelayProfile,
+  reorderRelayProfiles,
+  removeRelayProfile,
+  isAggregateRelayProfile,
+  normalizeAggregateRelayProfile,
+  normalizeAggregateConfig,
+  aggregateMemberCandidates,
+  clampAggregateWeight,
+  aggregateRelayProfileValidation,
+  AGGREGATE_STRATEGIES,
+  defaultSettings,
+} from "./relay-settings";
+import {
+  splitContextConfigText,
+  contextSelectionForAllEntries,
+} from "./codex-context-entries";
+import {
+  CONTEXT_KIND_TABLES,
+  tomlTablePathFromLine,
+  contextHeaderFromLine,
+  joinTomlSectionsRootFirst,
+  normalizeDuplicateTomlTables,
+  tomlKey,
+  ensureTrailingNewline,
+  rootTomlStringValue,
+  codexModelFromConfig,
+  codexBaseUrlFromConfig,
+  codexExperimentalBearerTokenFromConfig,
+  codexTopLevelIntFromConfig,
+} from "./codex-toml";
 
 const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string }> = [
   { id: "relay", label: t("供应商配置"), icon: KeyRound },
   { id: "sessions", label: t("会话管理"), icon: MessageCircle },
 ];
-
-const defaultSettings: BackendSettings = {
-  codexAppPath: "",
-  codexExtraArgs: [],
-  providerSyncEnabled: false,
-  providerSyncSavedProviders: [],
-  providerSyncManualProviders: [],
-  providerSyncLastSelectedProvider: "",
-  relayProfilesEnabled: true,
-  enhancementsEnabled: true,
-  computerUseGuardEnabled: false,
-  codexAppPluginMarketplaceUnlock: true,
-  codexAppPluginAutoExpand: true,
-  codexAppModelWhitelistUnlock: true,
-  codexAppSessionDelete: true,
-  codexAppMarkdownExport: true,
-  codexAppPasteFix: false,
-  codexAppForceChineseLocale: true,
-  codexAppFastStartup: false,
-  codexAppProjectMove: true,
-  codexAppThreadIdBadge: false,
-  codexAppConversationView: false,
-  codexAppThreadScrollRestore: true,
-  codexAppZedRemoteOpen: true,
-  zedRemoteOpenStrategy: "addToFocusedWorkspace",
-  zedRemoteProjectRegistryEnabled: true,
-  zedRemoteSyncToZedSettings: false,
-  codexAppUpstreamWorktreeCreate: true,
-  codexAppNativeMenuPlacement: true,
-  codexAppNativeMenuLocalization: true,
-  codexAppServiceTierControls: false,
-  codexAppPetRealMouseLook: false,
-  codexAppStepwiseEnabled: false,
-  codexAppStepwiseDirectSend: false,
-  codexAppStepwiseBaseUrl: "",
-  codexAppStepwiseApiKey: "",
-  codexAppStepwiseApiKeyEnv: "CODEX_STEPWISE_API_KEY",
-  codexAppStepwiseModel: "",
-  codexAppStepwiseMaxItems: 6,
-  codexAppStepwiseMaxInputChars: 6000,
-  codexAppStepwiseMaxOutputTokens: 500,
-  codexAppStepwiseTimeoutMs: 8000,
-  codexAppImageOverlayEnabled: false,
-  codexAppImageOverlayPath: "",
-  codexAppImageOverlayOpacity: 35,
-  codexAppImageOverlayFitMode: "fit",
-  codexGoalsEnabled: false,
-  launchMode: "patch",
-  relayBaseUrl: "",
-  relayApiKey: "",
-  relayProfiles: [
-    {
-      id: "default",
-      name: t("默认中转"),
-      model: "",
-      baseUrl: "",
-      upstreamBaseUrl: "",
-      apiKey: "",
-      protocol: "responses",
-      relayMode: "official",
-      officialMixApiKey: false,
-      testModel: "",
-      configContents: "",
-      authContents: "",
-      useCommonConfig: true,
-      contextSelection: emptyContextSelection(),
-      contextSelectionInitialized: true,
-      contextWindow: "",
-      autoCompactLimit: "",
-      modelList: "",
-      modelWindows: "",
-      userAgent: "",
-    },
-  ],
-  relayCommonConfigContents: "",
-  relayContextConfigContents: "",
-  activeRelayId: "default",
-  aggregateRelayProfiles: [],
-  activeAggregateRelayId: "",
-  relayTestModel: "",
-};
 
 export function App() {
   const [theme, setTheme] = useState<Theme>(() => loadInitialTheme());
@@ -1255,7 +615,6 @@ export function App() {
     }
   };
 
-
   const saveSettings = async () => {
     const next = normalizeSettings(settingsForm);
     const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
@@ -1283,7 +642,6 @@ export function App() {
     }
     return !!result && isSuccessStatus(result.status);
   };
-
 
   const extractRelayCommonConfig = async (configContents: string) => {
     const result = await run(() =>
@@ -1594,7 +952,6 @@ export function App() {
     }
   };
 
-
   const openExternalUrl = async (url: string) => {
     const result = await run(() => call<CommandResult<Record<string, unknown>>>("open_external_url", { url }));
     if (result) {
@@ -1605,7 +962,6 @@ export function App() {
   const showNotice = (title: string, message: string, status?: Status) => {
     setNotice({ title, message: t(message), status });
   };
-
 
   const showResultNotice = (
     title: string,
@@ -1856,7 +1212,6 @@ type Actions = {
   showMessage: (title: string, message: string, status?: Status) => Promise<void>;
   toggleTheme: () => void;
 };
-
 
 function RelayScreen({
   settings: _settings,
@@ -2268,7 +1623,6 @@ function envConflictSourceLabel(source: string): string {
   return source || t("环境变量");
 }
 
-
 const SESSION_LIST_PAGE_SIZE = 100;
 
 function SessionsScreen({
@@ -2559,7 +1913,6 @@ function SessionsScreen({
     </>
   );
 }
-
 
 function RelayProfileList({
   form,
@@ -3269,7 +2622,6 @@ function RelayProfileDetail({
   );
 }
 
-
 function RelayProfileEditor({
   profile,
   form,
@@ -3489,8 +2841,6 @@ function providerNativeCapabilityStateLabel(state: string): string {
   }
 }
 
-
-
 function AggregateRelayProfileEditor({
   profile,
   form,
@@ -3630,7 +2980,6 @@ function AggregateRelayProfileEditor({
     </div>
   );
 }
-
 
 function RelayFileEditors({
   profile,
@@ -3789,7 +3138,6 @@ function providerDoctorSteps(
   });
 }
 
-
 function ToggleVisual() {
   return (
     <span aria-hidden="true" className="toggle-switch-visual">
@@ -3797,7 +3145,6 @@ function ToggleVisual() {
     </span>
   );
 }
-
 
 function NoticeDialog({
   notice,
@@ -3859,7 +3206,6 @@ function ConfirmDialog({
   );
 }
 
-
 function Panel({ children, fill = false, className = "" }: { children: React.ReactNode; fill?: boolean; className?: string }) {
   return (
     <Card className={`panel ${fill ? "fill" : ""} ${className}`}>
@@ -3890,11 +3236,9 @@ function Field({ label, children, className = "" }: { label: string; children: R
   );
 }
 
-
 function Badge({ status }: { status: string }) {
   return <UiBadge className={statusClass(status)} variant="secondary">{statusLabel(status)}</UiBadge>;
 }
-
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
@@ -3904,7 +3248,6 @@ function Metric({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
-
 
 function routeTitle(route: Route) {
   return routes.find((item) => item.id === route)?.label ?? t("概览");
@@ -3918,369 +3261,12 @@ function routeSubtitle(route: Route) {
   return subtitles[route];
 }
 
-const contextKindOptions: Array<{ kind: ContextKind; label: string; tableName: string }> = [
-  { kind: "mcp", label: "MCP", tableName: "mcp_servers" },
-  { kind: "skill", label: "Skills", tableName: "skills" },
-  { kind: "plugin", label: t("插件"), tableName: "plugins" },
-];
-
-
-function contextEntriesFromSettings(settings: BackendSettings): CodexContextEntries {
-  const commonConfig = normalizeDuplicateTomlTables(settings.relayContextConfigContents || "");
-  return {
-    mcpServers: parseContextEntries(commonConfig, "mcp", "mcp_servers"),
-    skills: parseContextEntries(commonConfig, "skill", "skills"),
-    plugins: parseContextEntries(commonConfig, "plugin", "plugins"),
-  };
-}
-
-
-function contextEntriesForProfile(settings: BackendSettings, profile: RelayProfile): CodexContextEntries {
-  return filterContextEntriesBySelection(contextEntriesFromSettings(settings), profile.contextSelection);
-}
-
-function contextEntriesFromConfig(configContents: string): CodexContextEntries {
-  return {
-    mcpServers: parseContextEntries(configContents, "mcp", "mcp_servers"),
-    skills: parseContextEntries(configContents, "skill", "skills"),
-    plugins: parseContextEntries(configContents, "plugin", "plugins"),
-  };
-}
-
-
-function dedupeContextEntryList(entries: CodexContextEntry[]): CodexContextEntry[] {
-  const byId = new Map<string, CodexContextEntry>();
-  for (const entry of entries) {
-    byId.set(entry.id, entry);
-  }
-  return Array.from(byId.values());
-}
-
-function parseContextEntries(commonConfig: string, kind: ContextKind, tableName: string): CodexContextEntry[] {
-  const anyHeaderPattern = /^\s*\[[^\]]+\]\s*$/;
-  const entries = new Map<string, CodexContextEntry>();
-  let currentId: string | null = null;
-  let body: string[] = [];
-
-  const flush = () => {
-    if (!currentId) return;
-    const tomlBody = ensureTrailingNewline(body.join("\n").trimEnd());
-    entries.set(currentId, {
-      id: currentId,
-      kind,
-      title: currentId,
-      summary: contextEntrySummary(tomlBody),
-      tomlBody,
-      enabled: contextEntryEnabled(tomlBody),
-    });
-  };
-
-  for (const line of commonConfig.split(/\r?\n/)) {
-    const path = tomlTablePathFromLine(line);
-    if (path?.[0] === tableName && path.length >= 2) {
-      const id = path[1];
-      if (currentId === id && path.length > 2) {
-        body.push(`[${path.slice(2).map(tomlKey).join(".")}]`);
-        continue;
-      }
-      flush();
-      currentId = id;
-      body = [];
-      continue;
-    }
-    if (currentId && anyHeaderPattern.test(line)) {
-      flush();
-      currentId = null;
-      body = [];
-      continue;
-    }
-    if (currentId) body.push(line);
-  }
-  flush();
-
-  return Array.from(entries.values());
-}
-
-function tomlTablePathFromLine(line: string): string[] | null {
-  const match = /^\s*\[([^\]]+)\]\s*$/.exec(line);
-  if (!match) return null;
-  return parseTomlDottedPath(match[1].trim());
-}
-
-function parseTomlDottedPath(path: string): string[] | null {
-  const parts: string[] = [];
-  let current = "";
-  let quote: '"' | "'" | null = null;
-  let escaping = false;
-
-  for (const char of path) {
-    if (quote) {
-      if (quote === '"' && escaping) {
-        current += char;
-        escaping = false;
-      } else if (quote === '"' && char === "\\") {
-        escaping = true;
-      } else if (char === quote) {
-        quote = null;
-      } else {
-        current += char;
-      }
-      continue;
-    }
-
-    if (char === '"' || char === "'") {
-      quote = char;
-      continue;
-    }
-    if (char === ".") {
-      if (!current.trim()) return null;
-      parts.push(current.trim());
-      current = "";
-      continue;
-    }
-    current += char;
-  }
-
-  if (quote || escaping || !current.trim()) return null;
-  parts.push(current.trim());
-  return parts;
-}
-
-function contextEntrySummary(tomlBody: string) {
-  return tomlBody
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find((line) => line && !line.startsWith("#") && !/^enabled\s*=/.test(line))
-    ?.slice(0, 96) ?? "";
-}
-
-function contextEntryEnabled(tomlBody: string) {
-  return !tomlBody.split(/\r?\n/).some((line) => /^\s*enabled\s*=\s*false\s*(#.*)?$/i.test(line));
-}
-
-
-function ensureTrailingNewline(value: string) {
-  return value.trim() ? `${value}\n` : "";
-}
-
-
-function contextEntriesByKind(entries: CodexContextEntries, kind: ContextKind): CodexContextEntry[] {
-  if (kind === "mcp") return dedupeContextEntryList(entries.mcpServers);
-  if (kind === "skill") return dedupeContextEntryList(entries.skills);
-  return dedupeContextEntryList(entries.plugins);
-}
-
-function filterContextEntriesBySelection(entries: CodexContextEntries, selection: RelayContextSelection): CodexContextEntries {
-  const selected = {
-    mcp: new Set(selection.mcpServers.map((id) => id.trim()).filter(Boolean)),
-    skill: new Set(selection.skills.map((id) => id.trim()).filter(Boolean)),
-    plugin: new Set(selection.plugins.map((id) => id.trim()).filter(Boolean)),
-  };
-  return {
-    mcpServers: entries.mcpServers.filter((entry) => selected.mcp.has(entry.id)),
-    skills: entries.skills.filter((entry) => selected.skill.has(entry.id)),
-    plugins: entries.plugins.filter((entry) => selected.plugin.has(entry.id)),
-  };
-}
-
-function allContextConfigToml(entries: CodexContextEntries): string {
-  const sections: string[] = [];
-  for (const option of contextKindOptions) {
-    for (const entry of dedupeContextEntryList(contextEntriesByKind(entries, option.kind))) {
-      sections.push(contextEntryToTomlSection(option.tableName, entry));
-    }
-  }
-  return ensureTrailingNewline(sections.join("\n\n"));
-}
-
-function contextEntryToTomlSection(tableName: string, entry: CodexContextEntry): string {
-  const parentHeader = `[${tableName}.${tomlKey(entry.id)}]`;
-  const body = entry.tomlBody
-    .trimEnd()
-    .split(/\r?\n/)
-    .map((line) => relativeContextSubtableToAbsolute(line, tableName, entry.id))
-    .join("\n");
-  return `${parentHeader}\n${body}`;
-}
-
-function relativeContextSubtableToAbsolute(line: string, tableName: string, id: string): string {
-  const match = /^\s*\[([^\]]+)\]\s*$/.exec(line);
-  if (!match) return line;
-  const subtable = match[1].trim();
-  if (!subtable || subtable.includes(".")) return line;
-  return `[${tableName}.${tomlKey(id)}.${tomlKey(subtable)}]`;
-}
-
-function splitContextConfigText(configContents: string): { common: string; context: string } {
-  const entries = contextEntriesFromConfig(configContents);
-  return {
-    common: stripContextEntriesFromConfig(configContents, entries),
-    context: allContextConfigToml(entries),
-  };
-}
-
-function stripContextEntriesFromConfig(configContents: string, entries: CodexContextEntries): string {
-  const knownIds: Record<ContextKind, Set<string>> = {
-    mcp: new Set(entries.mcpServers.map((entry) => entry.id)),
-    skill: new Set(entries.skills.map((entry) => entry.id)),
-    plugin: new Set(entries.plugins.map((entry) => entry.id)),
-  };
-  const lines = configContents.split(/\r?\n/);
-  const kept: string[] = [];
-  let skipping = false;
-
-  for (const line of lines) {
-    const contextHeader = contextHeaderFromLine(line);
-    if (contextHeader) {
-      skipping = knownIds[contextHeader.kind].has(contextHeader.id);
-    } else if (/^\s*\[[^\]]+\]\s*$/.test(line)) {
-      skipping = false;
-    }
-    if (!skipping) kept.push(line);
-  }
-
-  return ensureTrailingNewline(kept.join("\n").trimEnd());
-}
-
-function tomlRootKeyFromLine(line: string): string | null {
-  if (!line || line.startsWith("#")) return null;
-  const index = line.indexOf("=");
-  if (index < 0) return null;
-  const key = line.slice(0, index).trim();
-  return key || null;
-}
-
-function contextHeaderFromLine(line: string): { kind: ContextKind; id: string } | null {
-  const path = tomlTablePathFromLine(line);
-  if (!path || path.length !== 2) return null;
-  const option = contextKindOptions.find((item) => item.tableName === path[0]);
-  return option ? { kind: option.kind, id: path[1] } : null;
-}
-
-function applyContextLimitPreview(configContents: string, profile: RelayProfile): string {
-  const replacements: Array<[string, string]> = [
-    ["model_context_window", profile.contextWindow],
-    ["model_auto_compact_token_limit", profile.autoCompactLimit],
-  ];
-  let lines = configContents.split(/\r?\n/);
-
-  for (const [key, value] of replacements) {
-    const trimmed = value.trim();
-    if (!trimmed) continue;
-    let replaced = false;
-    lines = lines.map((line) => {
-      if (!replaced && new RegExp(`^\\s*${key}\\s*=`).test(line)) {
-        replaced = true;
-        return `${key} = ${trimmed}`;
-      }
-      return line;
-    });
-    if (!replaced) {
-      const firstTable = lines.findIndex((line) => /^\s*\[[^\]]+\]\s*$/.test(line));
-      const insertAt = firstTable >= 0 ? firstTable : lines.length;
-      lines.splice(insertAt, 0, `${key} = ${trimmed}`);
-    }
-  }
-
-  return ensureTrailingNewline(lines.join("\n").trimEnd());
-}
-
-function removeRootTomlKey(contents: string, key: string): string {
-  const lines: string[] = [];
-  let inRoot = true;
-  for (const line of contents.split(/\r?\n/)) {
-    if (/^\s*\[[^\]]+\]\s*$/.test(line)) inRoot = false;
-    if (inRoot && new RegExp(`^\\s*${key}\\s*=`).test(line)) continue;
-    lines.push(line);
-  }
-  return ensureTrailingNewline(lines.join("\n").trimEnd());
-}
-
-function joinTomlSections(sections: string[]): string {
-  return ensureTrailingNewline(
-    sections
-      .map((section) => section.trim())
-      .filter(Boolean)
-      .join("\n\n"),
-  );
-}
-
-function joinTomlSectionsRootFirst(sections: string[]): string {
-  const rootParts: string[] = [];
-  const tableParts: string[] = [];
-
-  for (const section of sections) {
-    const { root, tables } = splitTomlRootAndTables(section);
-    if (root.trim()) rootParts.push(root.trim());
-    if (tables.trim()) tableParts.push(tables.trim());
-  }
-
-  return normalizeDuplicateTomlTables(joinTomlSections([...dedupeTomlRootLines(rootParts), ...tableParts]));
-}
-
-function normalizeDuplicateTomlTables(contents: string): string {
-  const seenHeaders = new Set<string>();
-  const kept: string[] = [];
-  let skipping = false;
-
-  for (const line of contents.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (/^\[[^\]]+\]$/.test(trimmed)) {
-      skipping = seenHeaders.has(trimmed);
-      seenHeaders.add(trimmed);
-      if (skipping) continue;
-    }
-    if (!skipping) kept.push(line);
-  }
-
-  return ensureTrailingNewline(kept.join("\n").trimEnd());
-}
-
-function dedupeTomlRootLines(rootParts: string[]): string[] {
-  const rootLines = rootParts
-    .join("\n")
-    .split(/\r?\n/)
-    .map((line) => line.trimEnd());
-  const rootSeen = new Set<string>();
-  const kept: string[] = [];
-
-  for (let index = rootLines.length - 1; index >= 0; index -= 1) {
-    const line = rootLines[index];
-    const key = tomlRootKeyFromLine(line.trim());
-    if (key) {
-      if (rootSeen.has(key)) continue;
-      rootSeen.add(key);
-    }
-    kept.push(line);
-  }
-
-  const normalized = kept.reverse().join("\n").trim();
-  return normalized ? [normalized] : [];
-}
-
-function splitTomlRootAndTables(section: string): { root: string; tables: string } {
-  const lines = section.trim().split(/\r?\n/);
-  const firstTable = lines.findIndex((line) => /^\s*\[[^\]]+\]\s*$/.test(line));
-  if (firstTable < 0) return { root: lines.join("\n"), tables: "" };
-  return {
-    root: lines.slice(0, firstTable).join("\n"),
-    tables: lines.slice(firstTable).join("\n"),
-  };
-}
-
-function tomlKey(key: string): string {
-  return /^[A-Za-z0-9_-]+$/.test(key) ? key : `"${tomlString(key)}"`;
-}
-
-
-function contextSelectionForAllEntries(settings: BackendSettings): RelayContextSelection {
-  const entries = contextEntriesFromSettings(settings);
-  return {
-    mcpServers: entries.mcpServers.map((entry) => entry.id),
-    skills: entries.skills.map((entry) => entry.id),
-    plugins: entries.plugins.map((entry) => entry.id),
-  };
-}
+// Labels are the shell's; the table names come from the module that reads the file.
+const contextKindLabels: Record<ContextKind, string> = { mcp: "MCP", skill: "Skills", plugin: t("插件") };
+const contextKindOptions = CONTEXT_KIND_TABLES.map((option) => ({
+  ...option,
+  label: contextKindLabels[option.kind],
+}));
 
 function relayProfileEditorStatus(profile: RelayProfile, form: BackendSettings, isNew: boolean) {
   if (isNew) return t("新建供应商需要先保存到列表");
@@ -4326,199 +3312,8 @@ function truncateSessionDeletePreview(value: string) {
   return normalized.length > 20 ? `${normalized.slice(0, 20)}...` : normalized;
 }
 
-
-function normalizeSettings(settings: BackendSettings): BackendSettings {
-  const backendAggregates = new Map(
-    (settings.aggregateRelayProfiles ?? []).map((aggregate) => [aggregate.id, aggregate] as const),
-  );
-  const splitCommon = splitContextConfigText(settings.relayCommonConfigContents || "");
-  const relayCommonConfigContents = splitCommon.common;
-  const relayContextConfigContents = joinTomlSectionsRootFirst([
-    settings.relayContextConfigContents || "",
-    splitCommon.context,
-  ]);
-  const defaultContextSelection = contextSelectionForAllEntries({
-    ...settings,
-    relayCommonConfigContents,
-    relayContextConfigContents,
-  });
-  const profiles =
-    settings.relayProfiles?.length
-      ? settings.relayProfiles.map((profile) =>
-          normalizeRelayProfile(hydrateAggregateRelayProfile(profile, backendAggregates.get(profile.id)), defaultContextSelection),
-        )
-      : [
-          {
-            id: settings.activeRelayId || "default",
-            name: t("默认中转"),
-            model: "",
-            baseUrl: settings.relayBaseUrl || defaultSettings.relayBaseUrl,
-            upstreamBaseUrl: settings.relayBaseUrl || defaultSettings.relayBaseUrl,
-            apiKey: settings.relayApiKey || "",
-            protocol: "responses" as RelayProtocol,
-            relayMode: "official" as RelayMode,
-            officialMixApiKey: false,
-            testModel: "",
-            configContents: "",
-            authContents: "",
-            useCommonConfig: true,
-            contextSelection: defaultContextSelection,
-            contextSelectionInitialized: true,
-            contextWindow: "",
-            autoCompactLimit: "",
-            modelList: "",
-            modelWindows: "",
-            userAgent: "",
-          },
-        ];
-  const activeRelayId = profiles.some((profile) => profile.id === settings.activeRelayId)
-    ? settings.activeRelayId
-    : profiles[0]?.id || "default";
-  return syncLegacyRelayFields({
-    ...defaultSettings,
-    ...settings,
-    relayProfilesEnabled: settings.relayProfilesEnabled !== false,
-    computerUseGuardEnabled: settings.computerUseGuardEnabled === true,
-    codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),
-    codexAppImageOverlayFitMode: normalizeImageOverlayFitMode(settings.codexAppImageOverlayFitMode),
-    codexAppStepwiseMaxItems: clampNumber(settings.codexAppStepwiseMaxItems ?? 6, 0, 6),
-    codexAppStepwiseMaxInputChars: clampNumber(settings.codexAppStepwiseMaxInputChars || 6000, 1000, 24000),
-    codexAppStepwiseMaxOutputTokens: clampNumber(settings.codexAppStepwiseMaxOutputTokens || 500, 100, 4000),
-    codexAppStepwiseTimeoutMs: clampNumber(settings.codexAppStepwiseTimeoutMs || 8000, 1000, 60000),
-    relayCommonConfigContents,
-    relayContextConfigContents,
-    relayProfiles: profiles,
-    activeRelayId,
-    // There is no global test model any more; the next save retires whatever an older version left.
-    relayTestModel: "",
-  });
-}
-
-function clampNumber(value: number, min: number, max: number): number {
-  if (!Number.isFinite(value)) return min;
-  return Math.min(max, Math.max(min, Math.round(value)));
-}
-
-function normalizeImageOverlayFitMode(value: string | undefined): ImageOverlayFitMode {
-  return value === "fill" || value === "fit" || value === "stretch" || value === "tile" || value === "center"
-    ? value
-    : "fit";
-}
-
-
-function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = emptyContextSelection()): RelayProfile {
-  const legacyMixedApi = profile.relayMode === "mixedApi";
-  if (profile.relayMode === "aggregate" || profile.aggregate) {
-    return normalizeAggregateRelayProfile(
-      {
-        ...profile,
-        model: profile.model || "",
-        baseUrl: "",
-        upstreamBaseUrl: "",
-        apiKey: "",
-        protocol: "responses",
-        relayMode: "aggregate",
-        officialMixApiKey: false,
-        testModel: profile.testModel || "",
-        configContents: "",
-        authContents: "",
-        useCommonConfig: profile.useCommonConfig !== false,
-        contextSelection: profile.contextSelectionInitialized
-          ? normalizeContextSelection(profile.contextSelection)
-          : normalizeContextSelection(undefined, defaultContextSelection),
-        contextSelectionInitialized: true,
-        contextWindow: "",
-        autoCompactLimit: "",
-        modelList: "",
-        modelWindows: "",
-      },
-      null,
-    );
-  }
-  const relayMode = normalizeRelayMode(profile.relayMode);
-  const officialMixApiKey = profile.officialMixApiKey === true || legacyMixedApi;
-  let normalized: RelayProfile = {
-    ...profile,
-    model: profile.model || "",
-    baseUrl: profile.baseUrl || defaultSettings.relayBaseUrl,
-    upstreamBaseUrl: profile.upstreamBaseUrl || profile.baseUrl || "",
-    apiKey: profile.apiKey || "",
-    protocol: profile.protocol === "chatCompletions" ? "chatCompletions" : "responses",
-    relayMode,
-    officialMixApiKey,
-    // A provider is tested with the model it starts on, so an ordinary profile keeps no test
-    // model of its own. Clearing it on save retires a value an older version left behind, which
-    // the backend would otherwise keep preferring over the startup model. An aggregate profile
-    // has no startup model to follow and still shows the field, so it returns above this.
-    testModel: "",
-    configContents: relayMode === "official" && !officialMixApiKey ? "" : profile.configContents || "",
-    authContents: "",
-    useCommonConfig: profile.useCommonConfig !== false,
-    contextSelection: profile.contextSelectionInitialized
-      ? normalizeContextSelection(profile.contextSelection)
-      : normalizeContextSelection(undefined, defaultContextSelection),
-    contextSelectionInitialized: true,
-    contextWindow: profile.contextWindow || "",
-    autoCompactLimit: profile.autoCompactLimit || "",
-    modelList: profile.modelList || "",
-    modelWindows: profile.modelWindows || "",
-    userAgent: profile.userAgent || "",
-    aggregate: null,
-  };
-  return relayProfileUsesLiveFiles(normalized) ? deriveRelayProfileFromFiles(normalized) : normalized;
-}
-
-function hydrateAggregateRelayProfile(profile: RelayProfile, aggregate: AggregateRelayProfile | undefined): RelayProfile {
-  if (!aggregate) return profile;
-  return {
-    ...profile,
-    name: profile.name || aggregate.name,
-    relayMode: "aggregate",
-    aggregate: {
-      strategy: aggregate.strategy,
-      members: aggregate.members.map((member) => ({
-        profileId: member.relayId,
-        weight: clampAggregateWeight(member.weight),
-      })),
-    },
-  };
-}
-
-function activeRelayProfile(settings: BackendSettings): RelayProfile {
-  return (
-    settings.relayProfiles.find((profile) => profile.id === settings.activeRelayId) ||
-    settings.relayProfiles[0] ||
-    defaultSettings.relayProfiles[0]
-  );
-}
-
 function relayProtocolLabel(protocol: RelayProtocol): string {
   return protocol === "chatCompletions" ? t("Chat Completions 转 Responses") : "Responses API";
-}
-
-
-function normalizeRelayMode(mode: RelayMode | undefined): RelayMode {
-  if (mode === "aggregate") return mode;
-  if (mode === "pureApi") return mode;
-  return "official";
-}
-
-function normalizeContextSelection(
-  selection?: Partial<RelayContextSelection>,
-  fallback: RelayContextSelection = emptyContextSelection(),
-): RelayContextSelection {
-  if (!selection) {
-    return {
-      mcpServers: [...fallback.mcpServers],
-      skills: [...fallback.skills],
-      plugins: [...fallback.plugins],
-    };
-  }
-  return {
-    mcpServers: Array.isArray(selection?.mcpServers) ? selection.mcpServers.map(String) : [],
-    skills: Array.isArray(selection?.skills) ? selection.skills.map(String) : [],
-    plugins: Array.isArray(selection?.plugins) ? selection.plugins.map(String) : [],
-  };
 }
 
 function relayModeLabel(mode: RelayMode): string {
@@ -4526,7 +3321,6 @@ function relayModeLabel(mode: RelayMode): string {
   if (mode === "pureApi") return t("纯 API");
   return t("官方登录");
 }
-
 
 function relayProfileConfigBrief(profile: RelayProfile): string {
   if (isAggregateRelayProfile(profile)) {
@@ -4553,365 +3347,8 @@ function relayProfileModeHelp(profile: RelayProfile): string {
   return t("此供应商会保留官方登录模式，并把请求混入当前 API Key。");
 }
 
-
-function withGeneratedRelayFiles(
-  profile: RelayProfile,
-  contract: ProviderConfigTargetContract,
-): RelayProfile {
-  if (isAggregateRelayProfile(profile)) {
-    return { ...profile, configContents: "", authContents: "", aggregate: normalizeAggregateConfig(profile.aggregate, []) };
-  }
-  return {
-    ...withGeneratedRelayConfig(profile, contract),
-    authContents: "",
-  };
-}
-
-function providerConfigTargetContract(
-  profile: RelayProfile,
-  brandNew: boolean,
-): ProviderConfigTargetContract {
-  if (!brandNew) return { target: "preserveExisting", source: "existing" };
-  if (
-    profile.transientTarget === "nativePriority"
-    && profile.relayMode === "official"
-    && profile.officialMixApiKey
-    && profile.protocol === "responses"
-  ) {
-    return { target: "nativePriority", source: "brand-new-empty" };
-  }
-  if (profile.relayMode === "official" && !profile.officialMixApiKey) {
-    return { target: "pureOAuth", source: "brand-new-empty" };
-  }
-  if (profile.relayMode === "pureApi") {
-    return { target: "pureApi", source: "brand-new-empty" };
-  }
-  return { target: "compatibility", source: "brand-new-empty" };
-}
-
-function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
-  if (isAggregateRelayProfile(profile)) {
-    return normalizeAggregateRelayProfile(profile, null);
-  }
-  const configContents = profile.configContents || "";
-  const configBaseUrl = codexBaseUrlFromConfig(configContents);
-  const chatUpstreamBaseUrl = rootTomlStringValue(configContents, CHAT_UPSTREAM_BASE_URL_KEY);
-  const isProxyConfig = configBaseUrl === PROTOCOL_PROXY_BASE_URL;
-  const upstreamBaseUrl = profile.upstreamBaseUrl || chatUpstreamBaseUrl || (configBaseUrl && !isProxyConfig ? configBaseUrl : profile.baseUrl || "");
-  const configApiKey = codexExperimentalBearerTokenFromConfig(configContents);
-  const configModel = codexModelFromConfig(configContents);
-  // 如果用户输入了带后缀的模型名，优先保留在界面的「配置模型」字段中；
-  // config.toml 里实际写的是剥离后缀的 slug（由 applyRelayProfilePatchToFiles 处理）。
-  // An omitted field arrives as undefined, not "": read it the same way every other field here is.
-  const declaredModel = (profile.model || "").trim();
-  const model = /\[.+\]$/.test(declaredModel) ? declaredModel : configModel;
-  return {
-    ...profile,
-    model,
-    baseUrl: upstreamBaseUrl,
-    upstreamBaseUrl,
-    apiKey: configApiKey || profile.apiKey || "",
-    contextWindow: codexTopLevelIntFromConfig(configContents, "model_context_window"),
-    autoCompactLimit: codexTopLevelIntFromConfig(configContents, "model_auto_compact_token_limit"),
-    configContents,
-    authContents: "",
-  };
-}
-
-function applyRelayProfilePatchToFiles(
-  profile: RelayProfile,
-  patch: Partial<RelayProfile>,
-  options: {
-    allowGenerateFiles?: boolean;
-    target: ProviderConfigTargetContract;
-  },
-): RelayProfile {
-  let next: RelayProfile = { ...profile, ...patch };
-  if (isAggregateRelayProfile(next)) {
-    return normalizeAggregateRelayProfile(next, null);
-  }
-  if (
-    options.target.source === "existing"
-    && providerConfigPatchRequiresBackendTransform(patch)
-  ) {
-    return { ...profile, authContents: "" };
-  }
-  const shouldHaveFiles =
-    next.relayMode !== "official" || next.officialMixApiKey || next.configContents.trim();
-  if (options.allowGenerateFiles && shouldHaveFiles && !next.configContents.trim()) {
-    next = withGeneratedRelayFiles(next, options.target);
-  }
-  next = applyProviderConfigPatch(next, patch, options.target);
-  if ("relayMode" in patch || "officialMixApiKey" in patch) {
-    if (next.relayMode === "official" && !next.officialMixApiKey) {
-      next.configContents = "";
-      next.authContents = "";
-    } else if (options.allowGenerateFiles && !next.configContents.trim()) {
-      next = withGeneratedRelayFiles(next, options.target);
-    }
-  }
-
-  next.authContents = "";
-  if (!next.configContents.trim()) return next;
-  return deriveRelayProfileFromFiles(next);
-}
-
-function codexModelFromConfig(contents: string): string {
-  for (const line of contents.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    if (trimmed.startsWith("[")) break;
-    const match = /^model\s*=\s*(["'])(.*)\1\s*$/.exec(trimmed);
-    if (match) return match[2].replace(/\\(["'\\])/g, "$1");
-  }
-  return "";
-}
-
-function codexBaseUrlFromConfig(contents: string): string {
-  return codexProviderStringFromConfig(contents, "base_url");
-}
-
-function codexExperimentalBearerTokenFromConfig(contents: string): string {
-  return codexProviderStringFromConfig(contents, "experimental_bearer_token");
-}
-
-function codexProviderStringFromConfig(contents: string, key: string): string {
-  const provider = rootTomlStringValue(contents, "model_provider");
-  const targetSection = provider ? `model_providers.${provider}` : "";
-  const lines = contents.split(/\r?\n/);
-  let currentSection = "";
-  const matches: string[] = [];
-
-  for (const line of lines) {
-    const section = tomlSectionName(line);
-    if (section !== null) {
-      currentSection = section;
-      continue;
-    }
-    const value = tomlStringAssignmentValue(line, key);
-    if (value === null) continue;
-    if (targetSection && currentSection === targetSection) return value;
-    if (!currentSection || !currentSection.startsWith("model_providers.")) matches.push(value);
-  }
-
-  return matches.length === 1 ? matches[0] : "";
-}
-
-function codexTopLevelIntFromConfig(contents: string, key: string): string {
-  const topLevel = splitTomlRootAndTables(contents).root;
-  const pattern = new RegExp(`^\\s*${key}\\s*=\\s*(\\d+)\\s*(?:#.*)?$`);
-  for (const line of topLevel.split(/\r?\n/)) {
-    const match = pattern.exec(line);
-    if (match) return match[1];
-  }
-  return "";
-}
-
-function rootTomlStringValue(contents: string, key: string): string {
-  const topLevel = splitTomlRootAndTables(contents).root;
-  for (const line of topLevel.split(/\r?\n/)) {
-    const value = tomlStringAssignmentValue(line, key);
-    if (value !== null) return value;
-  }
-  return "";
-}
-
-function tomlSectionName(line: string): string | null {
-  const match = /^\s*\[([^\]]+)\]\s*$/.exec(line);
-  return match ? match[1].trim() : null;
-}
-
-function tomlStringAssignmentValue(line: string, key: string): string | null {
-  const match = new RegExp(`^\\s*${key}\\s*=\\s*([\"'])(.*)\\1\\s*(?:#.*)?$`).exec(line.trim());
-  if (!match) return null;
-  return match[2].replace(/\\(["'\\])/g, "$1");
-}
-
-function relayProfileSwitchValidation(profile: RelayProfile): string | null {
-  if (isAggregateRelayProfile(profile)) {
-    return aggregateRelayProfileValidation(profile);
-  }
-  if (profile.relayMode === "official" && !profile.officialMixApiKey) return null;
-  if (!profile.configContents.trim()) {
-    return tf("供应商「{0}」缺少独立 config.toml，已停止切换，避免继续显示上一套配置文件。请先在该供应商详情里保存 config.toml。", [profile.name || profile.id]);
-  }
-  return null;
-}
-
-function relayProfileUsesLiveFiles(profile: RelayProfile): boolean {
-  return profile.relayMode !== "official" || profile.officialMixApiKey;
-}
-
-function tomlString(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
-
-function syncLegacyRelayFields(settings: BackendSettings): BackendSettings {
-  const relayProfiles = settings.relayProfiles.map((profile) =>
-    isAggregateRelayProfile(profile) ? normalizeAggregateRelayProfile(profile, { ...settings, relayProfiles: settings.relayProfiles }) : deriveRelayProfileFromFiles(profile),
-  );
-  const active = activeRelayProfile({ ...settings, relayProfiles });
-  const aggregateRelayProfiles = normalizeAggregateProfilesFromRelayProfiles(relayProfiles);
-  const activeAggregateRelayId = isAggregateRelayProfile(active) ? active.id : "";
-  return {
-    ...settings,
-    relayProfiles,
-    activeRelayId: active.id,
-    relayBaseUrl: isAggregateRelayProfile(active) ? PROTOCOL_PROXY_BASE_URL : active.baseUrl,
-    relayApiKey: active.apiKey,
-    aggregateRelayProfiles,
-    activeAggregateRelayId,
-  };
-}
-
-function normalizeAggregateProfilesFromRelayProfiles(profiles: RelayProfile[]): AggregateRelayProfile[] {
-  const candidates = profiles.filter((profile) => !isAggregateRelayProfile(profile));
-  return profiles.filter(isAggregateRelayProfile).map((profile) => {
-    const aggregate = normalizeAggregateConfig(profile.aggregate, candidates);
-    return {
-      id: profile.id,
-      name: profile.name || t("聚合供应商"),
-      strategy: aggregate.strategy,
-      members: aggregate.members.map((member) => ({
-        relayId: member.profileId,
-        weight: clampAggregateWeight(member.weight),
-      })),
-    };
-  });
-}
-function updateRelayProfile(settings: BackendSettings, id: string, patch: Partial<RelayProfile>): BackendSettings {
-  if (patch.relayMode === "aggregate" || patch.aggregate) {
-    return syncLegacyRelayFields({
-      ...settings,
-      relayProfiles: settings.relayProfiles.map((profile) =>
-        profile.id === id ? normalizeAggregateRelayProfile({ ...profile, ...patch }, settings) : profile,
-      ),
-    });
-  }
-  return syncLegacyRelayFields({
-    ...settings,
-    relayProfiles: settings.relayProfiles.map((profile) => {
-      if (profile.id !== id) return profile;
-      return deriveRelayProfileFromFiles({ ...profile, ...patch });
-    }),
-  });
-}
-
-function createRelayProfile(settings: BackendSettings): RelayProfile {
-  const id = `relay-${Date.now().toString(36)}`;
-  const contextSelection = contextSelectionForAllEntries(settings);
-  return createNewRelayProfileDraft({ id, contextSelection });
-}
-
-function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
-  const id = `aggregate-${Date.now().toString(36)}`;
-  const contextSelection = contextSelectionForAllEntries(settings);
-  const candidates = aggregateMemberCandidates(settings, id);
-  return normalizeAggregateRelayProfile(
-    {
-      id,
-      name: tf("聚合供应商 {0}", [settings.relayProfiles.filter(isAggregateRelayProfile).length + 1]),
-      model: "",
-      baseUrl: "",
-      upstreamBaseUrl: "",
-      apiKey: "",
-      protocol: "responses",
-      relayMode: "aggregate",
-      officialMixApiKey: false,
-      testModel: "",
-      configContents: "",
-      authContents: "",
-      useCommonConfig: true,
-      contextSelection,
-      contextSelectionInitialized: true,
-      contextWindow: "",
-      autoCompactLimit: "",
-      modelList: "",
-      modelWindows: "",
-      userAgent: "",
-      aggregate: {
-        strategy: "failover",
-        members: candidates.slice(0, 1).map((profile) => ({ profileId: profile.id, weight: 1 })),
-      },
-    },
-    settings,
-  );
-}
-
-function addRelayProfile(settings: BackendSettings, profile: RelayProfile): BackendSettings {
-  const nextWithFiles = isAggregateRelayProfile(profile)
-    ? normalizeAggregateRelayProfile(profile, settings)
-    : deriveRelayProfileFromFiles(
-        profile.configContents.trim()
-          ? profile
-          : withGeneratedRelayFiles(profile, providerConfigTargetContract(profile, true)),
-      );
-  const activeId = settings.relayProfiles.some((item) => item.id === settings.activeRelayId)
-    ? settings.activeRelayId
-    : activeRelayProfile(settings).id;
-  return syncLegacyRelayFields({
-    ...settings,
-    relayProfiles: [...settings.relayProfiles, nextWithFiles],
-    activeRelayId: activeId,
-  });
-}
-
-function duplicateRelayProfile(settings: BackendSettings, id: string): BackendSettings {
-  const sourceIndex = settings.relayProfiles.findIndex((profile) => profile.id === id);
-  const source = settings.relayProfiles[sourceIndex] || activeRelayProfile(settings);
-  const nextId = `relay-${Date.now().toString(36)}`;
-  const next = {
-    ...source,
-    id: nextId,
-    name: tf("{0} 副本", [source.name || t("未命名供应商")]),
-  };
-  const normalizedNext = isAggregateRelayProfile(next) ? normalizeAggregateRelayProfile(next, settings) : next;
-  const relayProfiles = [...settings.relayProfiles];
-  relayProfiles.splice(sourceIndex >= 0 ? sourceIndex + 1 : relayProfiles.length, 0, normalizedNext);
-  return syncLegacyRelayFields({
-    ...settings,
-    relayProfiles,
-  });
-}
-
-function reorderRelayProfiles(settings: BackendSettings, sourceId: string, targetId: string): BackendSettings {
-  if (sourceId === targetId) return settings;
-  const sourceIndex = settings.relayProfiles.findIndex((profile) => profile.id === sourceId);
-  const targetIndex = settings.relayProfiles.findIndex((profile) => profile.id === targetId);
-  if (sourceIndex < 0 || targetIndex < 0) return settings;
-  const relayProfiles = [...settings.relayProfiles];
-  const [moved] = relayProfiles.splice(sourceIndex, 1);
-  relayProfiles.splice(targetIndex, 0, moved);
-  return syncLegacyRelayFields({
-    ...settings,
-    relayProfiles,
-  });
-}
-
-function removeRelayProfile(settings: BackendSettings, id: string): BackendSettings {
-  const profiles = settings.relayProfiles.filter((profile) => profile.id !== id);
-  const scrubbedProfiles = profiles.map((profile) =>
-    isAggregateRelayProfile(profile)
-      ? normalizeAggregateRelayProfile(
-          {
-            ...profile,
-            aggregate: {
-              ...normalizeAggregateConfig(profile.aggregate, []),
-              members: normalizeAggregateConfig(profile.aggregate, []).members.filter((member) => member.profileId !== id),
-            },
-          },
-          { ...settings, relayProfiles: profiles },
-        )
-      : profile,
-  );
-  return syncLegacyRelayFields({
-    ...settings,
-    relayProfiles: scrubbedProfiles.length ? scrubbedProfiles : defaultSettings.relayProfiles,
-    activeRelayId: settings.activeRelayId === id ? scrubbedProfiles[0]?.id || "default" : settings.activeRelayId,
-  });
-}
-
-const aggregateStrategyOptions: Array<{ value: RelayAggregateStrategy; label: string; description: string }> = [
+// Labels are the shell's; the set of valid values comes from the module that stores them.
+const aggregateStrategyLabels: Array<{ value: RelayAggregateStrategy; label: string; description: string }> = [
   {
     value: "failover",
     label: t("失败切换"),
@@ -4933,62 +3370,9 @@ const aggregateStrategyOptions: Array<{ value: RelayAggregateStrategy; label: st
     description: t("按成员权重分配请求，权重越高承担越多。"),
   },
 ];
-
-function isAggregateRelayProfile(profile: Pick<RelayProfile, "relayMode" | "aggregate">): boolean {
-  return profile.relayMode === "aggregate" || !!profile.aggregate;
-}
-
-function normalizeAggregateRelayProfile(profile: RelayProfile, settings: BackendSettings | null): RelayProfile {
-  const candidates = settings ? aggregateMemberCandidates(settings, profile.id) : [];
-  const aggregate = normalizeAggregateConfig(profile.aggregate, candidates);
-  return {
-    ...profile,
-    baseUrl: "",
-    upstreamBaseUrl: "",
-    apiKey: "",
-    protocol: "responses",
-    relayMode: "aggregate",
-    officialMixApiKey: false,
-    configContents: "",
-    authContents: "",
-    aggregate,
-  };
-}
-
-function normalizeAggregateConfig(
-  aggregate: RelayAggregateConfig | null | undefined,
-  candidates: RelayProfile[],
-): RelayAggregateConfig {
-  const candidateIds = new Set(candidates.map((profile) => profile.id));
-  const seen = new Set<string>();
-  const strategy: RelayAggregateStrategy =
-    aggregate?.strategy && aggregateStrategyOptions.some((option) => option.value === aggregate.strategy)
-      ? aggregate.strategy
-      : "failover";
-  const members = (aggregate?.members ?? [])
-    .filter((member) => member.profileId && !seen.has(member.profileId))
-    .filter((member) => !candidateIds.size || candidateIds.has(member.profileId))
-    .map((member) => {
-      seen.add(member.profileId);
-      return { profileId: member.profileId, weight: clampAggregateWeight(member.weight) };
-    });
-  return { strategy, members };
-}
-
-function aggregateMemberCandidates(settings: BackendSettings, aggregateId: string): RelayProfile[] {
-  return settings.relayProfiles.filter(
-    (profile) => profile.id !== aggregateId && !isAggregateRelayProfile(profile) && isApiRelayProfile(profile),
-  );
-}
-
-function isApiRelayProfile(profile: RelayProfile): boolean {
-  return Boolean(profile.baseUrl.trim() && profile.apiKey.trim());
-}
-
-function clampAggregateWeight(value: number): number {
-  if (!Number.isFinite(value)) return 1;
-  return Math.max(1, Math.min(999, Math.round(value)));
-}
+const aggregateStrategyOptions = AGGREGATE_STRATEGIES.map(
+  (value) => aggregateStrategyLabels.find((option) => option.value === value)!,
+);
 
 function aggregateStrategyLabel(strategy: RelayAggregateStrategy): string {
   return aggregateStrategyOptions.find((option) => option.value === strategy)?.label ?? t("失败切换");
@@ -5000,12 +3384,6 @@ function aggregateStrategyHelp(strategy: RelayAggregateStrategy): string {
   if (strategy === "requestRoundRobin") return t("按请求轮转会逐请求切换成员，适合供应商能力接近的场景。");
   return t("权重轮转会读取每个成员的权重值，权重越高的成员获得更多请求。");
 }
-
-function aggregateRelayProfileValidation(profile: RelayProfile): string | null {
-  const aggregate = normalizeAggregateConfig(profile.aggregate, []);
-  return aggregate.members.length >= 1 ? null : t("聚合供应商至少需要勾选 1 个已填写 Base URL / Key 的 API 供应商。");
-}
-
 
 function formatTime(value: number) {
   if (!value) return "-";
@@ -5070,7 +3448,6 @@ function catalogDraftErrorLabel(error: string | null): string {
   if (error === "empty-catalog") return t("模型列表不能为空，至少保留一个模型。");
   return "";
 }
-
 
 function stringifyError(error: unknown) {
   if (error instanceof Error) return error.message;

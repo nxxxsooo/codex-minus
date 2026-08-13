@@ -16,6 +16,9 @@ on:
     tags: ["v*"]
   pull_request:
     branches: [master]
+  # A queued merge is tested as the merged result, not as the branch. Without this trigger the
+  # queue would wait forever for checks that never start.
+  merge_group:
   # Build any branch on demand, so testing a change on Windows needs no local MSVC toolchain,
   # no merge to master, and no tag.
   workflow_dispatch:
@@ -43,6 +46,11 @@ jobs:
 
       - name: Install npm dependencies
         run: npm ci
+
+      # The frontend is platform-independent, so it is verified once, on the fastest runner,
+      # rather than three times. Until now none of this ran in CI at all.
+      - name: Verify frontend
+        run: npm run verify
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable

@@ -1,0 +1,9 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": ["src/**/*.test.ts"],
+  "project": ["src/**/*.{ts,tsx}", "*.config.ts"],
+  "ignore": ["src/components/ui/**"],
+  "rules": {
+    "types": "warn"
+  }
+}

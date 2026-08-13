@@ -61,7 +61,7 @@ export function tf(key: string, args: Array<string | number>): string {
 }
 
 /** Persist a new language and reload so every literal re-evaluates under it. */
-export function setLanguage(language: Language): void {
+function setLanguage(language: Language): void {
   try {
     window.localStorage.setItem(STORAGE_KEY, language);
   } catch {
