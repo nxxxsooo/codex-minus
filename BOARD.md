@@ -138,6 +138,10 @@
   - why: the editor exposed switches, evidence panels, and a raw TOML editor that a non-technical user could not act on, while a save could hang at 「保存中」 forever and a stale or absent CLI catalog cache could strand a managed profile
   - verified: 171 Rust lib + 41 integration tests pass with the live OAuth test intentionally ignored, including bounded-helper, panic-settlement, coordinator-poison-recovery, bundled-baseline, and pinned-core `OpenAI` round-trip regressions; 149 frontend tests, TypeScript, Vite build, `cargo fmt --check`, and GitHub Actions macOS arm64 + Windows x64 + Windows arm64 all pass; the renamed bundle installed and launched on macOS and in the Windows ARM64 VM, and live `auth.json` and `config.toml` stayed byte-identical throughout
   - refs: OpenSpec `simplify-into-codex-minus`, `src-tauri/assets/official-model-catalog.json`, `src-tauri/src/platform_command.rs`, `src-tauri/src/commands.rs`, `src-tauri/src/model_catalog.rs`, `src/App.tsx`, `.github/workflows/build.yml`
+- **docs/windows**: corrected and redelivered Eva's Windows Sub2API guide with the assigned `gpt-5.6-terra` model, an explicit `[model_providers.custom]` → `[model_providers.OpenAI]` migration, Windows/UAC recovery steps, and mandatory API-key redaction guidance
+  - why: Eva's live config retained the old `gpt-5` model and `custom` provider table while selecting `OpenAI`, and the resulting setup failure exposed gaps in the original merge instructions
+  - verified: the local Markdown passes `git diff --check`; the FIT Feishu Docx was updated in place and read back with the corrected model, provider migration, Windows setup troubleshooting, and key-rotation warning
+  - refs: `docs/eva-windows-sub2api-manual.md`, https://favhej6sxti.feishu.cn/docx/KeLBdvZEPolp3yx6MyqcFVXXnpc
 
 ### 2026-08-12
 
