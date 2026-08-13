@@ -61,9 +61,7 @@ import {
   addCatalogCandidate,
   adoptionPreviewSummary,
   appModelLabel,
-  catalogDiffSummary,
   catalogModePresentation,
-  catalogRefreshGate,
   defaultCatalogMode,
   externalVersionRequiresAcceptance,
   managedContextConflictKeys,
@@ -1030,21 +1028,6 @@ export function App() {
     }
   };
 
-  const refreshOfficialModelCatalog = async () => {
-    if (modelCatalogLoading) return null;
-    setModelCatalogLoading(true);
-    try {
-      const result = await run(() => call<ModelCatalogStatusResult>("refresh_official_model_catalog"));
-      if (result) {
-        setModelCatalog(result);
-        showNotice(t("官方模型目录"), result.message, result.status);
-      }
-      return result;
-    } finally {
-      setModelCatalogLoading(false);
-    }
-  };
-
   const adoptExternalModelCatalog = async (
     profileId: string,
     commit = false,
@@ -1708,7 +1691,6 @@ export function App() {
       refreshRelay,
       refreshRelayFiles,
       refreshModelCatalog,
-      refreshOfficialModelCatalog,
       refreshManagerNetworkPolicy,
       saveManagerNetworkPolicy,
       testManagerNetworkPolicy,
@@ -1882,7 +1864,6 @@ type Actions = {
   refreshRelay: () => Promise<void>;
   refreshRelayFiles: () => Promise<RelayFilesResult | null>;
   refreshModelCatalog: (silent?: boolean) => Promise<ModelCatalogStatusResult | null>;
-  refreshOfficialModelCatalog: () => Promise<ModelCatalogStatusResult | null>;
   refreshManagerNetworkPolicy: (silent?: boolean) => Promise<NetworkPolicyStatusResult | null>;
   saveManagerNetworkPolicy: (draft: NetworkPolicyDraft) => Promise<NetworkPolicyStatusResult | null>;
   testManagerNetworkPolicy: () => Promise<NetworkPolicyTestResult | null>;
@@ -2011,11 +1992,6 @@ function RelayScreen({
 
   return (
     <>
-      <OfficialCatalogStatusBand
-        loading={modelCatalogLoading}
-        status={modelCatalog}
-        onRefresh={() => void actions.refreshOfficialModelCatalog()}
-      />
       <ManagerNetworkPanel
         loading={networkPolicyLoading}
         status={networkPolicy}
@@ -2081,62 +2057,6 @@ function RelayScreen({
         </CardContent>
       </Panel>
     </>
-  );
-}
-
-function OfficialCatalogStatusBand({
-  status,
-  loading,
-  onRefresh,
-}: {
-  status: ModelCatalogStatusResult | null;
-  loading: boolean;
-  onRefresh: () => void;
-}) {
-  const refreshGate = catalogRefreshGate({
-    refreshAvailable: status?.refreshAvailable ?? false,
-    credentialAction: status?.credentialAction ?? null,
-    loading,
-  });
-  const freshnessLabel = status
-    ? ({
-        current: t("当前"),
-        stale: t("待刷新"),
-        "scope-stale": t("范围已变化"),
-        missing: t("尚未建立"),
-      }[status.freshness] ?? status.freshness)
-    : t("加载中");
-  return (
-    <section className="catalog-status-band" aria-busy={loading}>
-      <div className="catalog-status-main">
-        <span className={`catalog-status-icon ${status?.freshness === "current" ? "good" : "warn"}`}>
-          {status?.freshness === "current" ? <ShieldCheck className="h-4 w-4" /> : <ShieldAlert className="h-4 w-4" />}
-        </span>
-        <div>
-          <strong>{t("官方模型目录")}</strong>
-          <span>
-            {status?.targetClientVersion || t("未找到目标版本")} · {freshnessLabel} · {status?.visibleCount ?? 0}/{status?.totalCount ?? 0}
-          </span>
-        </div>
-      </div>
-      <div className="catalog-status-meta">
-        <span>{status?.lastSuccessfulRefreshAtMs ? formatTime(status.lastSuccessfulRefreshAtMs) : t("暂无成功刷新")}</span>
-        {status?.credentialAction ? <span className="catalog-action-required">{status.credentialAction}</span> : null}
-        {status && (status.diff.added.length || status.diff.updated.length || status.diff.removed.length) ? (
-          <span title={catalogDiffSummary(status.diff)}>{tf("新增 {0} · 更新 {1} · 移除 {2}", [status.diff.added.length, status.diff.updated.length, status.diff.removed.length])}</span>
-        ) : null}
-      </div>
-      <Button
-        disabled={refreshGate.disabled}
-        onClick={onRefresh}
-        size="sm"
-        title={status?.credentialAction || (!status?.refreshAvailable ? t("目标 CLI 未通过能力或信任校验") : t("刷新官方目录"))}
-        variant="secondary"
-      >
-        <RefreshCw className={`h-4 w-4 ${loading ? "spin" : ""}`} />
-        {loading ? t("刷新中") : t("刷新")}
-      </Button>
-    </section>
   );
 }
 
