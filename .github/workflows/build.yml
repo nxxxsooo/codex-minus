@@ -83,8 +83,11 @@ jobs:
             [ -f "$f" ] || { echo "::error::No .app bundle found"; exit 1; }
           done
           APP_NAME="Codex Minus.app"
-          zip -r "CodexMinus_${GITHUB_REF_NAME#v}_aarch64.app.zip" "$APP_NAME"
-          ls -lh "CodexMinus_${GITHUB_REF_NAME#v}_aarch64.app.zip"
+          # A pull-request ref is `<number>/merge`, which is not a legal filename component.
+          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${VERSION//\//-}"
+          zip -r "CodexMinus_${VERSION}_aarch64.app.zip" "$APP_NAME"
+          ls -lh "CodexMinus_${VERSION}_aarch64.app.zip"
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
