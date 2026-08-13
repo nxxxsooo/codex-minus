@@ -1977,8 +1977,15 @@ fn run_isolated_refresh(
 }
 
 fn validate_effective_catalog_offline(catalog: &Value) -> anyhow::Result<()> {
-    let target = verify_target_cli_fresh()?;
-    ensure!(target.capability_available, "目标 CLI 不支持静态目录验证");
+    // Loading the generated catalog with the real CLI is the strongest available check, but it is
+    // not a prerequisite for a correct save: the baseline now ships with the application, so a
+    // machine without a discoverable target must still be able to save its own provider.
+    let Ok(target) = verify_target_cli_fresh() else {
+        return Ok(());
+    };
+    if !target.capability_available {
+        return Ok(());
+    }
     let root = codex_plus_core::paths::default_app_state_dir().join("catalog-validation");
     live_state::ensure_owner_only_dir(&root)?;
     let nonce = SystemTime::now()
@@ -3386,6 +3393,55 @@ mod tests {
             "mismatch"
         );
         assert!(!catalog_client_version_compatible("0.145.0", "0.147.0"));
+    }
+
+    #[test]
+    fn the_bundled_baseline_carries_every_field_materialization_needs() {
+        // The baseline is authored from the CLI's own hydrated output. Shipping the raw cache
+        // instead omits `base_instructions`, and every managed save then depends on finding a
+        // target CLI to hydrate it — which is exactly the dependency bundling removes.
+        let snapshot = bundled_official_snapshot().expect("the bundled baseline must parse");
+        assert!(!snapshot.client_version.is_empty());
+        assert_eq!(snapshot.source, "bundled");
+        let models = catalog_models(&snapshot.raw_catalog).unwrap();
+        assert!(models.len() >= 5, "the baseline ships a usable model list");
+        for model in models {
+            let slug = model
+                .get("slug")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            assert!(
+                model
+                    .get("base_instructions")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.is_empty()),
+                "{slug} has no hydrated instructions"
+            );
+            assert!(model.get("display_name").and_then(Value::as_str).is_some());
+            assert!(
+                model
+                    .get("context_window")
+                    .and_then(Value::as_u64)
+                    .is_some()
+            );
+        }
+        validate_effective_catalog_structure_for_test(&snapshot.raw_catalog);
+    }
+
+    fn validate_effective_catalog_structure_for_test(catalog: &Value) {
+        validate_catalog_structure(catalog).expect("the baseline is structurally valid");
+    }
+
+    #[test]
+    fn the_prefilled_default_model_is_representable_by_the_bundled_baseline() {
+        // A new provider is created with this default; if the baseline cannot represent it, the
+        // very first save fails as catalog-unavailable.
+        let snapshot = bundled_official_snapshot().unwrap();
+        let slugs = catalog_slugs(&snapshot.raw_catalog).unwrap();
+        assert!(
+            slugs.contains("gpt-5.6-terra") || slugs.contains("gpt-5.6-sol"),
+            "the baseline carries a slug the new-provider prefill can default to: {slugs:?}"
+        );
     }
 
     #[test]
