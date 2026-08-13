@@ -649,8 +649,6 @@ fn model_catalog_status_blocking() -> CommandResult<CatalogStatusPayload> {
 fn refresh_official_model_catalog_blocking() -> CommandResult<CatalogStatusPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let result = (|| -> anyhow::Result<CatalogStatusPayload> {
-        let network = crate::network_policy::resolve_current_policy()?;
-        network.ensure_supported()?;
         let _guard = live_state::lock()?;
         live_state::prepare_secret_paths(&home)?;
         live_state::recover_locked()?;
@@ -661,7 +659,7 @@ fn refresh_official_model_catalog_blocking() -> CommandResult<CatalogStatusPaylo
         ensure!(target.capability_available, "{}", target.capability_message);
         let auth_path = home.join("auth.json");
         let auth = snapshot_live_auth(&auth_path, &state.scope_salt)?;
-        let raw = run_isolated_refresh(&target, &auth.projection, &network)?;
+        let raw = run_isolated_refresh(&target, &auth.projection)?;
         let cache = raw.cache;
         let output = raw.output;
         validate_catalog(&output, &target.client_version)?;
@@ -1550,7 +1548,6 @@ fn verify_target_cli_with_cache(
             None,
             CAPABILITY_TIMEOUT,
             false,
-            None,
         )?;
         let version = parse_cli_version(&version_output.stdout)?;
         let supported = semver::Version::parse(&version)
@@ -1565,7 +1562,6 @@ fn verify_target_cli_with_cache(
             None,
             CAPABILITY_TIMEOUT,
             true,
-            None,
         );
         let capability_available = supported
             && capability
@@ -1905,10 +1901,14 @@ struct IsolatedRefreshResult {
     cache: Value,
 }
 
+/// Runs the target CLI against an isolated CODEX_HOME.
+///
+/// The child inherits no proxy settings: its environment is cleared and rebuilt from a short
+/// allow-list. The Manager used to hand it a configurable proxy snapshot; that control is gone
+/// along with the panel that set it, and this path has no entry point left in the UI.
 fn run_isolated_refresh(
     target: &VerifiedTargetIdentity,
     auth_projection: &Value,
-    network: &crate::network_policy::ResolvedNetworkPolicy,
 ) -> anyhow::Result<IsolatedRefreshResult> {
     let root = codex_plus_core::paths::default_app_state_dir().join("catalog-refresh");
     live_state::ensure_owner_only_dir(&root)?;
@@ -1937,9 +1937,8 @@ fn run_isolated_refresh(
             Some(&home),
             REFRESH_TIMEOUT,
             true,
-            Some(network),
         )
-        .with_context(|| format!("Manager 网络请求失败（来源：{}）", network.source))?;
+        .context("目标 Codex CLI 拉取官方模型目录失败")?;
         let projected_after: Value = serde_json::from_slice(&fs::read(home.join("auth.json"))?)?;
         let projected_tokens = projected_after
             .get("tokens")
@@ -1956,8 +1955,7 @@ fn run_isolated_refresh(
         let cache_path = home.join("models_cache.json");
         ensure!(
             cache_path.is_file(),
-            "目标 CLI 未创建远端模型缓存，已回退 bundled 模型；Manager 网络来源：{}。请先在 Manager 网络中测试连接",
-            network.source
+            "目标 CLI 未创建远端模型缓存，已回退 bundled 模型"
         );
         let command_json: Value = serde_json::from_slice(&output.stdout)
             .context("target CLI model output is malformed")?;
@@ -2009,7 +2007,6 @@ fn validate_effective_catalog_offline(catalog: &Value) -> anyhow::Result<()> {
             Some(&home),
             CAPABILITY_TIMEOUT,
             true,
-            None,
         )?;
         ensure!(
             !home.join("auth.json").exists(),
@@ -2042,7 +2039,6 @@ fn run_bounded_command(
     codex_home: Option<&Path>,
     timeout: Duration,
     clear_environment: bool,
-    network: Option<&crate::network_policy::ResolvedNetworkPolicy>,
 ) -> anyhow::Result<BoundedOutput> {
     let output_root = codex_plus_core::paths::default_app_state_dir().join("command-output");
     live_state::ensure_owner_only_dir(&output_root)?;
@@ -2064,7 +2060,7 @@ fn run_bounded_command(
         .stderr(stderr_file);
     if clear_environment {
         command.env_clear();
-        for (name, value) in isolated_child_environment(std::env::vars_os(), network) {
+        for (name, value) in safe_non_network_child_environment(std::env::vars_os()) {
             command.env(name, value);
         }
         command.env("LANG", "C.UTF-8");
@@ -2104,17 +2100,6 @@ fn run_bounded_command(
     let _ = fs::remove_file(&stdout_path);
     let _ = fs::remove_file(&stderr_path);
     result
-}
-
-fn isolated_child_environment(
-    source: impl IntoIterator<Item = (OsString, OsString)>,
-    network: Option<&crate::network_policy::ResolvedNetworkPolicy>,
-) -> Vec<(OsString, OsString)> {
-    let mut environment = safe_non_network_child_environment(source);
-    if let Some(network) = network {
-        environment.extend(network.environment.iter().cloned());
-    }
-    environment
 }
 
 fn safe_non_network_child_environment(
@@ -3149,18 +3134,6 @@ mod tests {
 
     static FAKE_REFRESH_TEST_LOCK: Mutex<()> = Mutex::new(());
 
-    fn direct_network() -> crate::network_policy::ResolvedNetworkPolicy {
-        crate::network_policy::ResolvedNetworkPolicy {
-            mode: crate::network_policy::NetworkPolicyMode::Direct,
-            source: "direct".to_string(),
-            environment: Vec::new(),
-            endpoint: None,
-            bypass_count: 0,
-            supported: true,
-            action_required: None,
-        }
-    }
-
     fn official_catalog() -> Value {
         json!({
             "models": [
@@ -3273,7 +3246,10 @@ mod tests {
         assert_eq!(deleted["base_instructions"], "keep exactly");
         let (visible_count, total_count) = catalog_counts(&output).unwrap();
         assert_eq!(total_count, 3);
-        assert_eq!(visible_count, 1, "only the model the user kept reaches the picker");
+        assert_eq!(
+            visible_count, 1,
+            "only the model the user kept reaches the picker"
+        );
     }
 
     /// The generator refuses a catalog nothing can be started on, so the editor has to say so first.
@@ -4440,8 +4416,12 @@ http_headers = {{ {actor}"x-unrelated" = "{unrelated_header}" }}
         assert!(validate_catalog(&incomplete_output, "0.147.0-alpha.6.5").is_err());
     }
 
+    /// The isolated child gets an allow-list, never the ambient environment.
+    ///
+    /// It used to also receive a configurable proxy snapshot from the Manager network panel. That
+    /// panel is gone, so the only route left is direct — and the values below must still not leak.
     #[test]
-    fn isolated_child_environment_uses_only_the_resolved_proxy_snapshot() {
+    fn the_isolated_child_inherits_no_proxy_and_no_credentials() {
         let source = vec![
             (
                 OsString::from("HTTPS_PROXY"),
@@ -4463,48 +4443,21 @@ http_headers = {{ {actor}"x-unrelated" = "{unrelated_header}" }}
                 OsString::from("aws-secret"),
             ),
         ];
-        let direct = direct_network();
-        let filtered = isolated_child_environment(source.clone(), Some(&direct))
+        let filtered = safe_non_network_child_environment(source)
             .into_iter()
             .map(|(name, _)| name.to_string_lossy().to_string())
             .collect::<BTreeSet<_>>();
         assert!(filtered.contains("SSL_CERT_FILE"));
-        assert!(!filtered.contains("HTTPS_PROXY"));
-        assert!(!filtered.contains("NO_PROXY"));
-        assert!(!filtered.contains("OPENAI_API_KEY"));
-        assert!(!filtered.contains("OPENAI_BASE_URL"));
-        assert!(!filtered.contains("CODEX_AUTHAPI_BASE_URL"));
-        assert!(!filtered.contains("AWS_ACCESS_KEY_ID"));
-
-        let custom = crate::network_policy::ResolvedNetworkPolicy {
-            mode: crate::network_policy::NetworkPolicyMode::Custom,
-            source: "custom".to_string(),
-            environment: vec![
-                (
-                    OsString::from("HTTPS_PROXY"),
-                    OsString::from("http://resolved:7890"),
-                ),
-                (
-                    OsString::from("https_proxy"),
-                    OsString::from("http://resolved:7890"),
-                ),
-            ],
-            endpoint: Some("http://resolved:7890".to_string()),
-            bypass_count: 0,
-            supported: true,
-            action_required: None,
-        };
-        let proxied = isolated_child_environment(source, Some(&custom))
-            .into_iter()
-            .collect::<BTreeMap<_, _>>();
-        assert_eq!(
-            proxied.get(&OsString::from("HTTPS_PROXY")),
-            Some(&OsString::from("http://resolved:7890"))
-        );
-        assert_ne!(
-            proxied.get(&OsString::from("HTTPS_PROXY")),
-            Some(&OsString::from("http://ambient:7890"))
-        );
+        for leaked in [
+            "HTTPS_PROXY",
+            "NO_PROXY",
+            "OPENAI_API_KEY",
+            "OPENAI_BASE_URL",
+            "CODEX_AUTHAPI_BASE_URL",
+            "AWS_ACCESS_KEY_ID",
+        ] {
+            assert!(!filtered.contains(leaked), "{leaked} reached the child");
+        }
     }
 
     #[cfg(unix)]
@@ -4548,7 +4501,7 @@ http_headers = {{ {actor}"x-unrelated" = "{unrelated_header}" }}
                     .collect::<BTreeSet<_>>()
             })
             .unwrap_or_default();
-        let result = run_isolated_refresh(&target, &projection, &direct_network()).unwrap();
+        let result = run_isolated_refresh(&target, &projection).unwrap();
         assert_eq!(
             catalog_slugs(&result.output).unwrap(),
             BTreeSet::from(["m".to_string()])
@@ -4575,7 +4528,7 @@ http_headers = {{ {actor}"x-unrelated" = "{unrelated_header}" }}
             ..VerifiedTargetIdentity::default()
         };
         let projection = json!({"auth_mode":"chatgpt","tokens":{"id_token":"id","access_token":"access","refresh_token":""}});
-        let error = run_isolated_refresh(&target, &projection, &direct_network()).unwrap_err();
+        let error = run_isolated_refresh(&target, &projection).unwrap_err();
         assert!(error.to_string().contains("bundled"));
 
         let (_temp, malformed) =
@@ -4584,12 +4537,10 @@ http_headers = {{ {actor}"x-unrelated" = "{unrelated_header}" }}
             cli_path: malformed.to_string_lossy().to_string(),
             ..VerifiedTargetIdentity::default()
         };
-        assert!(run_isolated_refresh(&target, &projection, &direct_network()).is_err());
+        assert!(run_isolated_refresh(&target, &projection).is_err());
 
         let (_temp, slow) = fake_cli("#!/bin/sh\nsleep 2\n");
-        assert!(
-            run_bounded_command(&slow, &[], None, Duration::from_millis(30), true, None).is_err()
-        );
+        assert!(run_bounded_command(&slow, &[], None, Duration::from_millis(30), true).is_err());
 
         let (_temp, rejected) = fake_cli("#!/bin/sh\nexit 23\n");
         let projection_before = projection.clone();
@@ -4597,7 +4548,7 @@ http_headers = {{ {actor}"x-unrelated" = "{unrelated_header}" }}
             cli_path: rejected.to_string_lossy().to_string(),
             ..VerifiedTargetIdentity::default()
         };
-        assert!(run_isolated_refresh(&target, &projection, &direct_network()).is_err());
+        assert!(run_isolated_refresh(&target, &projection).is_err());
         assert_eq!(projection, projection_before);
     }
 
@@ -4622,7 +4573,7 @@ http_headers = {{ {actor}"x-unrelated" = "{unrelated_header}" }}
             ..VerifiedTargetIdentity::default()
         };
         let projection = json!({"auth_mode":"chatgpt","tokens":{"id_token":"id","access_token":"access","refresh_token":""}});
-        let refreshed = run_isolated_refresh(&target, &projection, &direct_network()).unwrap();
+        let refreshed = run_isolated_refresh(&target, &projection).unwrap();
         assert_eq!(
             catalog_slugs(&refreshed.output).unwrap(),
             BTreeSet::from(["m".to_string()])

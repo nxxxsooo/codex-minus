@@ -32,7 +32,6 @@ import {
   Languages,
   MessageCircle,
   Moon,
-  Network,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -94,16 +93,6 @@ import {
   type ProviderMutationKind,
 } from "./provider-commit";
 import { providerConfigDraft, RelayConfigPanels } from "./relay-config-panels";
-import {
-  networkPolicyDirty,
-  networkPolicyDraft,
-  networkPolicyPresentation,
-  networkTestCategoryLabel,
-  validateNetworkPolicyDraft,
-  type NetworkPolicyDraft,
-  type NetworkPolicyModeValue,
-  type NetworkPolicyStatusView,
-} from "./network-policy-ui";
 import {
   createNewRelayProfileDraft,
   PRO_MODEL_SLUGS,
@@ -698,18 +687,6 @@ type EnvConflictsResult = CommandResult<{
   conflicts: EnvConflict[];
 }>;
 
-type NetworkPolicyStatusResult = CommandResult<NetworkPolicyStatusView>;
-
-type NetworkPolicyTestResult = CommandResult<{
-  source: string;
-  endpoint: string | null;
-  bypassCount: number;
-  supported: boolean;
-  category: string;
-  durationMs: number;
-  actionRequired: string | null;
-}>;
-
 type RemoveEnvConflictsResult = CommandResult<{
   removed: Array<{
     name: string;
@@ -909,9 +886,6 @@ export function App() {
   const [relayFiles, setRelayFiles] = useState<RelayFilesResult | null>(null);
   const [modelCatalog, setModelCatalog] = useState<ModelCatalogStatusResult | null>(null);
   const [modelCatalogLoading, setModelCatalogLoading] = useState(false);
-  const [networkPolicy, setNetworkPolicy] = useState<NetworkPolicyStatusResult | null>(null);
-  const [networkPolicyTest, setNetworkPolicyTest] = useState<NetworkPolicyTestResult | null>(null);
-  const [networkPolicyLoading, setNetworkPolicyLoading] = useState(false);
   const [envConflicts, setEnvConflicts] = useState<EnvConflictsResult | null>(null);
   const [localSessions, setLocalSessions] = useState<LocalSessionsResult | null>(null);
   const [sessionArchiveView, setSessionArchiveView] = useState(false);
@@ -991,50 +965,6 @@ export function App() {
       return result;
     } finally {
       setModelCatalogLoading(false);
-    }
-  };
-
-  const refreshManagerNetworkPolicy = async (silent = false) => {
-    const result = await run(() => call<NetworkPolicyStatusResult>("manager_network_policy_status"));
-    if (result) {
-      setNetworkPolicy(result);
-      if (!silent && !isSuccessStatus(result.status)) showNotice(t("Manager 网络"), result.message, result.status);
-    }
-    return result;
-  };
-
-  const saveManagerNetworkPolicy = async (draft: NetworkPolicyDraft) => {
-    if (networkPolicyLoading) return null;
-    setNetworkPolicyLoading(true);
-    try {
-      const result = await run(() =>
-        call<NetworkPolicyStatusResult>("save_manager_network_policy", { request: draft }),
-      );
-      if (result) {
-        if (isSuccessStatus(result.status)) {
-          setNetworkPolicy(result);
-          setNetworkPolicyTest(null);
-        }
-        showNotice(t("Manager 网络"), result.message, result.status);
-      }
-      return result;
-    } finally {
-      setNetworkPolicyLoading(false);
-    }
-  };
-
-  const testManagerNetworkPolicy = async () => {
-    if (networkPolicyLoading) return null;
-    setNetworkPolicyLoading(true);
-    try {
-      const result = await run(() => call<NetworkPolicyTestResult>("test_manager_network_policy"));
-      if (result) {
-        setNetworkPolicyTest(result);
-        showNotice(t("Manager 网络测试"), result.message, result.status);
-      }
-      return result;
-    } finally {
-      setNetworkPolicyLoading(false);
     }
   };
 
@@ -1313,7 +1243,6 @@ export function App() {
         refreshRelayFiles(true),
         refreshEnvConflicts(true),
         refreshModelCatalog(true),
-        refreshManagerNetworkPolicy(true),
       ]);
     }
     if (next === "sessions") {
@@ -1694,7 +1623,6 @@ export function App() {
       refreshRelayFiles(true),
       refreshEnvConflicts(true),
       refreshModelCatalog(true),
-      refreshManagerNetworkPolicy(true),
     ]);
     const scheduleMaintenance = () => {
       void refreshSessionLifecycle(true).then((result) => {
@@ -1734,9 +1662,6 @@ export function App() {
       refreshRelay,
       refreshRelayFiles,
       refreshModelCatalog,
-      refreshManagerNetworkPolicy,
-      saveManagerNetworkPolicy,
-      testManagerNetworkPolicy,
       adoptExternalModelCatalog,
       refreshEnvConflicts,
       removeEnvConflicts,
@@ -1774,7 +1699,6 @@ export function App() {
       localSessions,
       envConflicts,
       modelCatalogLoading,
-      networkPolicyLoading,
       relaySwitching,
       sessionArchiveView,
       sessionLifecycle,
@@ -1851,9 +1775,6 @@ export function App() {
               relayFiles={relayFiles}
               modelCatalog={modelCatalog}
               modelCatalogLoading={modelCatalogLoading}
-              networkPolicy={networkPolicy}
-              networkPolicyTest={networkPolicyTest}
-              networkPolicyLoading={networkPolicyLoading}
               envConflicts={envConflicts}
               form={settingsForm}
               onFormChange={setSettingsForm}
@@ -1907,9 +1828,6 @@ type Actions = {
   refreshRelay: () => Promise<void>;
   refreshRelayFiles: () => Promise<RelayFilesResult | null>;
   refreshModelCatalog: (silent?: boolean) => Promise<ModelCatalogStatusResult | null>;
-  refreshManagerNetworkPolicy: (silent?: boolean) => Promise<NetworkPolicyStatusResult | null>;
-  saveManagerNetworkPolicy: (draft: NetworkPolicyDraft) => Promise<NetworkPolicyStatusResult | null>;
-  testManagerNetworkPolicy: () => Promise<NetworkPolicyTestResult | null>;
   adoptExternalModelCatalog: (profileId: string, commit?: boolean, preview?: AdoptionPreviewResult, acceptVersionMismatch?: boolean, confirmContextCleanup?: boolean) => Promise<AdoptionPreviewResult | null>;
   refreshEnvConflicts: (silent?: boolean) => Promise<EnvConflictsResult | null>;
   removeEnvConflicts: (names: string[]) => Promise<void>;
@@ -1945,9 +1863,6 @@ function RelayScreen({
   relayFiles,
   modelCatalog,
   modelCatalogLoading,
-  networkPolicy,
-  networkPolicyTest,
-  networkPolicyLoading,
   envConflicts,
   form,
   onFormChange,
@@ -1957,9 +1872,6 @@ function RelayScreen({
   relayFiles: RelayFilesResult | null;
   modelCatalog: ModelCatalogStatusResult | null;
   modelCatalogLoading: boolean;
-  networkPolicy: NetworkPolicyStatusResult | null;
-  networkPolicyTest: NetworkPolicyTestResult | null;
-  networkPolicyLoading: boolean;
   envConflicts: EnvConflictsResult | null;
   form: BackendSettings;
   onFormChange: (value: BackendSettings) => void;
@@ -2035,13 +1947,6 @@ function RelayScreen({
 
   return (
     <>
-      <ManagerNetworkPanel
-        loading={networkPolicyLoading}
-        status={networkPolicy}
-        testResult={networkPolicyTest}
-        onSave={(draft) => void actions.saveManagerNetworkPolicy(draft)}
-        onTest={() => void actions.testManagerNetworkPolicy()}
-      />
       <Panel>
         <CardHead title={t("供应商列表")} detail={tf("{0} 个供应商配置；可拖动排序，点编辑进入详情", [normalized.relayProfiles.length])} />
         <CardContent>
@@ -2091,150 +1996,6 @@ function RelayScreen({
       </Panel>
     </>
   );
-}
-
-function ManagerNetworkPanel({
-  status,
-  testResult,
-  loading,
-  onSave,
-  onTest,
-}: {
-  status: NetworkPolicyStatusResult | null;
-  testResult: NetworkPolicyTestResult | null;
-  loading: boolean;
-  onSave: (draft: NetworkPolicyDraft) => void;
-  onTest: () => void;
-}) {
-  const [draft, setDraft] = useState<NetworkPolicyDraft>(() => networkPolicyDraft(status));
-  useEffect(() => {
-    setDraft(networkPolicyDraft(status));
-  }, [status?.mode, status?.customProxyUrl, status?.customNoProxy]);
-  const presentation = networkPolicyPresentation(status);
-  const validationError = validateNetworkPolicyDraft(draft);
-  const dirty = networkPolicyDirty(draft, status);
-  const modeOptions: Array<{ value: NetworkPolicyModeValue; label: string }> = [
-    { value: "auto", label: t("自动") },
-    { value: "direct", label: t("直连") },
-    { value: "custom", label: t("自定义") },
-  ];
-
-  return (
-    <section className={`manager-network-panel ${presentation.state}`} aria-busy={loading}>
-      <div className="manager-network-head">
-        <span className="manager-network-icon"><Network className="h-4 w-4" /></span>
-        <div>
-          <strong>{t("Manager 网络")}</strong>
-          <span>{t("仅用于 Manager 连接测试和隔离的官方目录刷新；不会修改系统代理或 Codex 对话路由。")}</span>
-        </div>
-        <UiBadge variant={status?.supported === false ? "outline" : "secondary"}>
-          {status ? (status.supported ? t("已解析") : t("需要处理")) : t("读取中")}
-        </UiBadge>
-      </div>
-      <div className="manager-network-body">
-        <div className="segmented manager-network-modes" role="group" aria-label={t("Manager 网络模式")}>
-          {modeOptions.map((option) => (
-            <button
-              className={draft.mode === option.value ? "active" : ""}
-              key={option.value}
-              onClick={() => setDraft({ ...draft, mode: option.value })}
-              type="button"
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-        {draft.mode === "custom" ? (
-          <div className="manager-network-custom">
-            <label>
-              <span>{t("代理地址")}</span>
-              <Input
-                onChange={(event) => setDraft({ ...draft, customProxyUrl: event.currentTarget.value })}
-                placeholder="http://127.0.0.1:7890"
-                value={draft.customProxyUrl}
-              />
-            </label>
-            <label>
-              <span>NO_PROXY</span>
-              <Input
-                onChange={(event) => setDraft({ ...draft, customNoProxy: event.currentTarget.value })}
-                placeholder="localhost,127.0.0.1,.local"
-                value={draft.customNoProxy}
-              />
-            </label>
-          </div>
-        ) : null}
-        <div className="manager-network-resolution">
-          <span>{t("来源")}：<strong>{networkPolicySourceLabel(presentation.source)}</strong></span>
-          <span>{t("端点")}：<strong>{presentation.endpoint || t("无")}</strong></span>
-          <span>{t("绕过条目")}：<strong>{status?.bypassCount ?? 0}</strong></span>
-        </div>
-        {validationError ? <div className="manager-network-error">{networkPolicyDraftErrorLabel(validationError)}</div> : null}
-        {!validationError && status?.actionRequired ? <div className="manager-network-error">{t(status.actionRequired)}</div> : null}
-        {testResult ? (
-          <div className={`manager-network-test ${isSuccessStatus(testResult.status) ? "ok" : "failed"}`}>
-            <strong>{networkTestCategoryText(networkTestCategoryLabel(testResult.category))}</strong>
-            <span>{t(testResult.message)} · {testResult.durationMs} ms</span>
-          </div>
-        ) : null}
-      </div>
-      <div className="manager-network-actions">
-        <Button
-          disabled={loading || !dirty || !!validationError}
-          onClick={() => onSave(draft)}
-          size="sm"
-          title={validationError ? networkPolicyDraftErrorLabel(validationError) : t("保存 Manager 网络策略")}
-          variant="secondary"
-        >
-          <Save className="h-4 w-4" />
-          {loading ? t("处理中") : t("保存")}
-        </Button>
-        <Button
-          disabled={loading || dirty || !!validationError || !status}
-          onClick={onTest}
-          size="sm"
-          title={dirty ? t("请先保存网络策略") : t("测试 Manager 网络")}
-          variant="secondary"
-        >
-          <TestTube className="h-4 w-4" />
-          {t("测试连接")}
-        </Button>
-      </div>
-    </section>
-  );
-}
-
-function networkPolicySourceLabel(source: string): string {
-  return ({
-    "process-environment": t("进程环境"),
-    "macos-system": t("macOS 系统代理"),
-    "windows-system": t("Windows 系统代理"),
-    custom: t("自定义代理"),
-    direct: t("直连"),
-    "direct-fallback": t("自动直连"),
-  } as Record<string, string>)[source] ?? (source || t("读取中"));
-}
-
-function networkPolicyDraftErrorLabel(error: string): string {
-  if (error === "custom-proxy-required") return t("自定义模式必须填写代理地址。")
-  if (error === "custom-proxy-scheme") return t("代理地址仅支持 HTTP、HTTPS、SOCKS5 或 SOCKS5H。")
-  if (error === "custom-proxy-credentials") return t("v1 不支持在代理地址中保存用户名、密码或令牌。")
-  if (error === "custom-bypass-invalid") return t("NO_PROXY 条目过多或过长。")
-  return t("代理地址无效；请只填写协议、主机和端口。")
-}
-
-function networkTestCategoryText(category: string): string {
-  return ({
-    ok: t("连接成功"),
-    dns: t("DNS 失败"),
-    "proxy-connect": t("代理连接失败"),
-    "proxy-auth-unsupported": t("代理认证不受支持"),
-    tls: t("TLS 失败"),
-    timeout: t("连接超时"),
-    "unsupported-policy": t("策略不受支持"),
-    "bundled-fallback": t("已回退 bundled 模型"),
-    other: t("连接失败"),
-  } as Record<string, string>)[category] ?? t("连接失败");
 }
 
 function CatalogProfileEditor({
