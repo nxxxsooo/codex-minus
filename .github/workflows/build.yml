@@ -3,6 +3,7 @@
 # Triggered by:
 #   - push/PR to master
 #   - tags matching v*
+#   - manual dispatch on any branch
 #
 # macOS: builds aarch64 .app bundle (ad-hoc signed)
 # Windows: builds native x64 and arm64 .msi + .exe (NSIS) installers
@@ -15,6 +16,9 @@ on:
     tags: ["v*"]
   pull_request:
     branches: [master]
+  # Build any branch on demand, so testing a change on Windows needs no local MSVC toolchain,
+  # no merge to master, and no tag.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
