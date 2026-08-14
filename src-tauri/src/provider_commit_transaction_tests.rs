@@ -1890,6 +1890,12 @@ fn unified_provider_commit_rejects_unreviewed_external_to_managed_transition() {
     .unwrap_err();
 
     assert_eq!(error.code(), ProviderCommitErrorCode::InvalidDraft);
+    // The rejection names the ownership rule, not the "draft validation" family fallback that
+    // used to blame the form for a rule the form cannot see.
+    assert_eq!(
+        error.reason(),
+        "external catalog ownership requires the reviewed adoption command"
+    );
     assert_eq!(fixture.file_generation(), before);
 }
 

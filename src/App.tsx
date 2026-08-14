@@ -82,7 +82,7 @@ import {
   catalogDraftAvailability,
   managedCatalogCapable,
   providerDeleteAvailable,
-  providerCommitFailureMessage,
+  providerCommitFailureNotice,
   providerCommitFailureShouldReconcileForm,
   registerProviderCommit,
   settleProviderCommit,
@@ -231,7 +231,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
 export function App() {
   const [theme, setTheme] = useState<Theme>(() => loadInitialTheme());
   const [route, setRoute] = useState<Route>(() => loadInitialRoute());
-  const [notice, setNotice] = useState<{ title: string; message: string; status?: Status } | null>(null);
+  const [notice, setNotice] = useState<{ title: string; message: string; detail?: string | null; status?: Status } | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{
     title: string;
     message: string;
@@ -270,7 +270,7 @@ export function App() {
     try {
       return await task();
     } catch (error) {
-      showNotice(t("调用失败"), stringifyError(error), "failed");
+      showErrorNotice(t("调用失败"), error);
       return null;
     }
   };
@@ -744,7 +744,7 @@ export function App() {
       providerCommitState.current = settled.state;
       if (settled.disposition === "report") {
         await reconcileTopologyFailure(settled.disposition);
-        showNotice(t("调用失败"), stringifyError(error), "failed");
+        showErrorNotice(t("调用失败"), error);
       }
       return false;
     }
@@ -771,7 +771,8 @@ export function App() {
     if (settled.disposition === "ignore") return false;
     if (settled.disposition === "report") {
       await reconcileTopologyFailure(settled.disposition);
-      showNotice(t("保存供应商"), providerCommitFailureMessage(result.message, result.errorCode, t, result.reason), result.status);
+      const failure = providerCommitFailureNotice(result.message, result.errorCode, result.reason);
+      showNotice(t("保存供应商"), failure.sentence, result.status, failure.detail);
       return false;
     }
     if (!nextBaseline || !selectedSettings) return false;
@@ -834,7 +835,7 @@ export function App() {
         : buildProviderMutationInvocation({ ...common, kind });
       return await submitProviderCommit(invocation);
     } catch (error) {
-      showNotice(t("保存供应商"), stringifyError(error), "failed");
+      showErrorNotice(t("保存供应商"), error);
       return false;
     }
   };
@@ -860,7 +861,7 @@ export function App() {
       });
       return await submitProviderCommit(invocation);
     } catch (error) {
-      showNotice(t("保存供应商"), stringifyError(error), "failed");
+      showErrorNotice(t("保存供应商"), error);
       return false;
     }
   };
@@ -957,8 +958,14 @@ export function App() {
     }
   };
 
-  const showNotice = (title: string, message: string, status?: Status) => {
-    setNotice({ title, message: t(message), status });
+  const showNotice = (title: string, message: string, status?: Status, detail?: string | null) => {
+    setNotice({ title, message: t(message), detail: detail ?? null, status });
+  };
+
+  // A raw thrown error is diagnostic, not a sentence: lead with plain language, keep the raw
+  // text copyable behind 详情.
+  const showErrorNotice = (title: string, error: unknown) => {
+    showNotice(title, t("调用后端失败，请重试一次；原始错误在详情里。"), "failed", stringifyError(error));
   };
 
   const showResultNotice = (
@@ -1041,7 +1048,7 @@ export function App() {
       commitProviderDetail,
       switchRelayProfile,
       relaySwitching,
-      showMessage: async (title: string, message: string, status?: Status) => showNotice(title, message, status),
+      showMessage: async (title: string, message: string, status?: Status, detail?: string | null) => showNotice(title, message, status, detail),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
     [
@@ -1207,7 +1214,7 @@ type Actions = {
   commitProviderDetail: (settings: BackendSettings, focusedProfileId: string, catalogDraft: ProfileCatalogDraft | null, focusedProfileWasPersisted: boolean, kind: "detailSave" | "setCurrent", confirmContextCleanup?: boolean) => Promise<boolean>;
   switchRelayProfile: (settings: BackendSettings, previousActiveRelayId?: string, catalogDraftOverride?: ProfileCatalogDraft) => Promise<void>;
   relaySwitching: boolean;
-  showMessage: (title: string, message: string, status?: Status) => Promise<void>;
+  showMessage: (title: string, message: string, status?: Status, detail?: string | null) => Promise<void>;
   toggleTheme: () => void;
 };
 
@@ -2309,7 +2316,7 @@ function RelayProfileDetail({
       );
       if (settled.report) {
         updateDetailState(settled.state);
-        void actions.showMessage(t("供应商配置转换"), stringifyError(error), "failed");
+        void actions.showMessage(t("供应商配置转换"), t("调用后端失败，请重试一次；原始错误在详情里。"), "failed", stringifyError(error));
       }
       return false;
     });
@@ -2367,7 +2374,7 @@ function RelayProfileDetail({
         transition,
       });
     } catch (error) {
-      void actions.showMessage(t("供应商配置转换"), stringifyError(error), "failed");
+      void actions.showMessage(t("供应商配置转换"), t("调用后端失败，请重试一次；原始错误在详情里。"), "failed", stringifyError(error));
       return;
     }
     void dispatchProviderDetailStep(step);
@@ -2381,7 +2388,7 @@ function RelayProfileDetail({
         ),
       );
     } catch (error) {
-      void actions.showMessage(t("旧供应商 ID"), stringifyError(error), "failed");
+      void actions.showMessage(t("旧供应商 ID"), t("调用后端失败，请重试一次；原始错误在详情里。"), "failed", stringifyError(error));
     }
   };
   const cancelLegacyProviderIdDraft = () => {
@@ -2474,7 +2481,7 @@ function RelayProfileDetail({
     } catch (error) {
       // The click handler discards this rejection, so an unreported throw would look like a save
       // that simply did nothing.
-      await actions.showMessage(t("保存供应商"), stringifyError(error), "failed");
+      await actions.showMessage(t("保存供应商"), t("调用后端失败，请重试一次；原始错误在详情里。"), "failed", stringifyError(error));
     } finally {
       savingRef.current = false;
       setSaving(false);
@@ -3108,24 +3115,34 @@ function NoticeDialog({
   notice,
   onClose,
 }: {
-  notice: { title: string; message: string; status?: Status };
+  notice: { title: string; message: string; detail?: string | null; status?: Status };
   onClose: () => void;
 }) {
+  const failed = notice.status === "failed";
   useEffect(() => {
+    // A failure stays until dismissed: its 详情 exists to be expanded, read, and screenshotted,
+    // none of which survives a 4-second toast.
+    if (failed) return;
     const timer = window.setTimeout(onClose, 4200);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [failed]);
 
   return (
     <div className="toast-wrap" role="status" aria-live="polite">
-      <div className={`toast-card ${notice.status === "failed" ? "failed" : ""}`}>
-        <div className="toast-progress" />
+      <div className={`toast-card ${failed ? "failed" : ""}`}>
+        {failed ? null : <div className="toast-progress" />}
         <div className="toast-icon">
-          {notice.status === "failed" ? <Bell className="h-5 w-5" /> : <CheckCircle2 className="h-5 w-5" />}
+          {failed ? <Bell className="h-5 w-5" /> : <CheckCircle2 className="h-5 w-5" />}
         </div>
         <div className="toast-body">
           <h2>{notice.title}</h2>
           <p>{notice.message}</p>
+          {notice.detail ? (
+            <details className="toast-detail" data-notice-detail="true">
+              <summary>{t("详情")}</summary>
+              <pre>{notice.detail}</pre>
+            </details>
+          ) : null}
         </div>
         <button className="toast-close" onClick={onClose} type="button">×</button>
       </div>

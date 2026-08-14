@@ -39,7 +39,7 @@ describe("a provider save always settles", () => {
         `${step} runs inside the try so a throw still resets the button`,
       );
     }
-    assert.match(saveDraft, /\} catch \(error\) \{[\s\S]*?showMessage\([\s\S]*?"failed"\)/);
+    assert.match(saveDraft, /\} catch \(error\) \{[\s\S]*?showMessage\([\s\S]*?"failed"/);
     assert.match(saveDraft, /\} finally \{\s*savingRef\.current = false;\s*setSaving\(false\);/);
   });
 

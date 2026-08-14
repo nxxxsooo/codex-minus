@@ -2513,19 +2513,22 @@ pub fn commit_provider_detail_from_paths_observed(
             &persisted_state,
             &request,
         )
-        .map_err(|_| {
+        .map_err(|error| {
             provider_commit_failure(
                 ProviderCommitErrorCode::InvalidDraft,
-                "provider draft validation failed",
+                sanitized_provider_validation_error(&error, "provider draft validation failed"),
             )
         })?;
     } else {
         validate_provider_topology_mutation_scope(&persisted_settings, &persisted_state, &request)?;
         validate_provider_topology_request(&persisted_settings, &persisted_state, &request)
-            .map_err(|_| {
+            .map_err(|error| {
                 provider_commit_failure(
                     ProviderCommitErrorCode::InvalidDraft,
-                    "provider topology validation failed",
+                    sanitized_provider_validation_error(
+                        &error,
+                        "provider topology validation failed",
+                    ),
                 )
             })?;
     }
@@ -2660,10 +2663,10 @@ pub fn commit_provider_detail_from_paths_observed(
             &persisted_state,
             &normalized_request,
         )
-        .map_err(|_| {
+        .map_err(|error| {
             provider_commit_failure(
                 ProviderCommitErrorCode::InvalidDraft,
-                "normalized provider draft is invalid",
+                sanitized_provider_validation_error(&error, "normalized provider draft is invalid"),
             )
         })?;
         plan_provider_detail_commit_with_readiness(
@@ -3051,6 +3054,65 @@ fn sanitized_provider_normalization_error(error: &anyhow::Error) -> &'static str
         }
     }
     "provider draft normalization failed"
+}
+
+/// Interns a request-validation error back to the static rule that rejected it.
+///
+/// `validate_provider_detail_request` and its helpers reject with literal rule messages, but the
+/// payload's `reason` must stay `&'static str` so no dynamic content reaches the user without a
+/// redaction pass. Matching the message against the known rule set keeps that property while
+/// naming the actual gate instead of the family fallback — the fallback previously blamed "draft
+/// validation" for rules like external-pointer preservation that have nothing to do with the form.
+/// A message outside the set (a dynamic TOML parse error bubbled through a pointer read) stays
+/// behind the fallback.
+fn sanitized_provider_validation_error(
+    error: &anyhow::Error,
+    fallback: &'static str,
+) -> &'static str {
+    const KNOWN_RULES: &[&str] = &[
+        "focused provider profile is required",
+        "focused provider profile is missing from the topology draft",
+        "setCurrent must select the focused provider profile",
+        "save cannot change the active provider profile",
+        "focused provider profile must carry exactly the catalog drafts its capability supports",
+        "topology request cannot select a focused provider profile",
+        "topology request supports save only",
+        "draft revision must be a positive correlation value",
+        "provider state changed; reload or merge before saving",
+        "previous active provider does not match the compare-and-swap snapshot",
+        "provider profile id is empty",
+        "duplicate provider profile id",
+        "incoming authContents is prohibited",
+        "aggregate profile id is empty",
+        "duplicate aggregate profile id",
+        "aggregate profile metadata has no matching relay profile",
+        "aggregate profile members are empty",
+        "aggregate member weight must be positive",
+        "duplicate aggregate member",
+        "aggregate member references a missing provider profile",
+        "aggregate member must reference an ordinary provider profile",
+        "aggregate relay profiles and aggregate metadata must be one-to-one",
+        "active aggregate profile is missing from the topology draft",
+        "active provider profile is missing from the topology draft",
+        "active provider and active aggregate ids are inconsistent",
+        "duplicate catalog draft for provider profile",
+        "catalog draft references a missing provider profile",
+        "catalog-incapable provider profiles cannot carry catalog drafts",
+        "external catalog draft requires a pointer",
+        "external catalog pointer must exactly match profile configContents",
+        "managed or native catalog draft cannot carry an external pointer",
+        "external catalog ownership requires the reviewed adoption command",
+        "ordinary save must preserve external catalog ownership identity",
+        "persisted external catalog ownership is missing its pointer",
+        "ordinary save must preserve every external catalog pointer",
+        "new provider profile requires one complete catalog draft",
+    ];
+    let message = error.to_string();
+    KNOWN_RULES
+        .iter()
+        .copied()
+        .find(|rule| *rule == message)
+        .unwrap_or(fallback)
 }
 
 /// Decides compare-and-swap once, at the boundary, and returns the canonical baseline fingerprint.
