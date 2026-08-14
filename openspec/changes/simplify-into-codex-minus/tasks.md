@@ -58,3 +58,11 @@
 - [ ] 7.1 Full suites green (Rust lib + integration, TypeScript, `cargo fmt --check`, `npm run check`, Vite build, macOS bundle build; Windows x64 cross-build).
 - [ ] 7.2 On-screen verification of the seven-step flow on macOS and in the Windows VM: fresh provider with only URL+key, save, activate, restart guidance, `auth.json` hash equality; a forced backend stall (injected) ends in a plain-language failure, never a stuck 保存中.
 - [ ] 7.3 Strict OpenSpec validation; reconcile every scenario; BOARD entry; archive.
+
+## 8. Tooling and shell thinning (recorded retroactively; see design D7a)
+
+- [x] 8.1 Thin `src/App.tsx` into a wiring file — 5088 → 3464 lines, 100 pure functions → 33, every move bytes-identical into a module beside its own test — and add the `app-shell-budget.test.ts` ratchet (fails on a 34th rule, on a stale list entry, and above 3500 lines).
+- [x] 8.2 Extract the wire shapes into `backend-types.ts` (79 shapes; 27 found dead and deleted, including the plugin-marketplace trio, ads, script market, watcher/install/update, and every shape of the removed launcher).
+- [x] 8.3 Run the frontend checks in CI for the first time (tsc, node tests, knip with `rules: { types: "warn" }`) across the three platform builds on every PR.
+- [x] 8.4 Script the release: `scripts/release.sh` + `scripts/release-tag.sh` own the four-file version bump (`package.json`, `tauri.conf.json`, `Cargo.toml`, `Cargo.lock`) with a test asserting the four agree.
+- [x] 8.5 Write the workflow down: GitHub Flow, strict branch protection, squash merges to `master`; `docs/workflow.md` and the AGENTS baseline carry it.

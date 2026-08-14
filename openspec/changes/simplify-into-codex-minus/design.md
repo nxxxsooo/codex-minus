@@ -41,6 +41,35 @@ Hidden or removed (all default to canonical-contract values): preset selector, �
 
 `productName` → "Codex Minus" plus `mainBinaryName: "codex-minus"` in `tauri.conf.json` (pins the executable name; makes the `lib.rs:235` single-instance check correct); window titles (`lib.rs:43`, `tauri.conf.json:17`, `index.html:6`, `App.tsx:1723`), brand div (`App.tsx:1801`), two user-facing error strings (`commands.rs:2242, 5482`), warning copy (`App.tsx:4202`), doc comments, and the 18 CI lines in `.github/workflows/build.yml` (70/81 hardcode `Codex-- Manager.app` for codesign/zip — the build breaks if missed). Unchanged: identifier `fun.mjshao.codex-minus`, settings dir, `codex-minus-` catalog prefix and `.codex-minus-*.tmp` markers (on-disk contracts), BOARD.md history. Residual: old and new app bundles coexist until the old one is removed by hand.
 
+## D7a. Tooling and shell thinning (recorded retroactively, executed 2026-08-13)
+
+The simplification's editor and catalog work kept colliding in one 5088-line `App.tsx` that CI never
+type-checked or tested, so the workstream widened to the substrate before continuing. Recorded here
+because it happened inside this change's lifetime and its constraints now bind the remaining tasks:
+
+- **The shell is wiring, not rules.** 100 pure functions in `App.tsx` became 33; every extracted rule
+  moved bytes-identical into a module beside its own test (`backend-types.ts` — 79 wire shapes, 27
+  found dead and deleted — `codex-toml.ts`, `codex-context-entries.ts`, `relay-settings.ts`).
+  `app-shell-budget.test.ts` is a ratchet, not a snapshot: it fails on a 34th rule in the shell,
+  fails when a listed name has left, and caps the file at 3500 lines — so the thinning cannot
+  silently regress and later tasks (4.4's presentation split, the preset cards) were forced into
+  leaf modules from the start.
+- **Node-importable leaves.** Anything a test imports must stay off the `@/i18n` Vite alias; rules
+  that need translation return Chinese literals and the shell wraps them in `t()`. This constraint
+  decided where 2.3's patcher and the failure-presentation helpers landed.
+- **CI gates what a laptop used to.** The frontend suite (tsc, node tests, knip) runs in CI for the
+  first time; knip holds the dead-export floor with `rules: { types: "warn" }`; three platforms
+  build every PR.
+- **Release is scripted.** The version lives in four files nothing synchronises (`package.json`,
+  `tauri.conf.json`, `Cargo.toml`, `Cargo.lock` — the last forgotten because only cargo writes it);
+  `scripts/release.sh <version>` + `scripts/release-tag.sh <version>` own the bump-tag-push chain,
+  and a frontend test asserts the four agree.
+- **Workflow is written down.** GitHub Flow with strict branch protection, PR-only merges to
+  `master`, squash merges; `docs/workflow.md` and the AGENTS baseline carry it.
+
+No spec delta: none of this changes a requirement the product specs state; it changes what a
+violation costs — a broken invariant now fails a test or a merge gate instead of surviving review.
+
 ## D7. What survives untouched
 
 Context 保护罩 and the owner-only transaction journal; the provider-owned commit transaction with compare-and-swap and dual-baseline acceptance; golden no-rewrite guarantees (startup/inspection/bystander); OAuth ownership and hash-only observation; typed failure payload shape; restart/new-task guidance; the built-in Pro prefill invariant (default must be representable in the bundled baseline); dead-path warnings for Chat Completions/aggregate.
