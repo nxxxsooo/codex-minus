@@ -67,7 +67,12 @@ describe("provider command registration boundary", () => {
       "inspect_provider_native_capabilities",
       "transform_provider_native_capability_draft",
     ]);
-    assert.match(handler, /model_catalog::refresh_official_model_catalog/);
+    // The catalog surface is `model_catalog`'s, and it is now two commands: reading status, and
+    // adopting a catalog the user points at. A third — `refresh_official_model_catalog` — used to
+    // be here, and its absence is the point: the baseline ships with the application, so no
+    // command fetches one at runtime.
+    const catalogCommands = [...handler.matchAll(/model_catalog::([a-z_]+)/g)].map((match) => match[1]);
+    assert.deepEqual(catalogCommands, ["model_catalog_status", "adopt_external_model_catalog"]);
 
     assert.deepEqual(nativeCatalogAuthorityViolations(nativeCapabilitySource), []);
   });

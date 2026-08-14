@@ -960,7 +960,6 @@ export const EN_BACKEND: Record<string, string> = {
 // Checked when EN_BACKEND exact match fails — covers messages with dynamic values.
 export const EN_BACKEND_PATTERNS: Array<[RegExp, string]> = [
   [/^检测到互相冲突的 (.+) 大小写环境变量；请统一后重启 Manager。$/, "Conflicting case variants of $1 are set. Make them consistent and restart Manager."],
-  [/^官方模型目录刷新失败：目标 CLI 未创建远端模型缓存，已回退 bundled 模型$/, "Official catalog refresh failed: the target CLI created no remote cache and fell back to bundled models."],
   [/^启动静默入口失败：(.+)$/, "Failed to launch silent entrypoint: $1"],
   [/^无法启动 (.+?)：(.+)$/, "Cannot launch $1: $2"],
   [/^设置已保存。(.*)$/, "Settings saved.$1"],

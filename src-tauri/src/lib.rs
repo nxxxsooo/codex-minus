@@ -75,7 +75,6 @@ pub fn run() {
             commands::scan_provider_compatibility,
             commands::adapt_active_sessions_to_current_provider,
             model_catalog::model_catalog_status,
-            model_catalog::refresh_official_model_catalog,
             model_catalog::adopt_external_model_catalog,
             provider_native_capability::inspect_provider_native_capabilities,
             provider_native_capability::transform_provider_native_capability_draft,

@@ -2,16 +2,14 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
-#[cfg(any(target_os = "macos", test))]
-use std::process::Command;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, ensure};
 use base64::Engine;
 use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, SettingsStore};
-use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -23,9 +21,11 @@ const STATE_VERSION: u32 = 3;
 const STATE_FILE: &str = "model-catalog-state.json";
 const GENERATED_DIR: &str = "model-catalogs";
 const GENERATED_PREFIX: &str = "codex-minus-";
-const REFRESH_TIMEOUT: Duration = Duration::from_secs(45);
 const CAPABILITY_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_COMMAND_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Distinguishes concurrent target-CLI captures inside one process.
+static COMMAND_CAPTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const MIN_SUPPORTED_CLI: &str = "0.147.0-alpha.1";
 pub(crate) const CATALOG_READINESS_ACTION: &str = "catalog-readiness-unavailable";
 
@@ -45,12 +45,7 @@ pub(crate) fn bundled_official_snapshot() -> anyhow::Result<OfficialSnapshot> {
         .unwrap_or_default()
         .to_string();
     let raw_catalog = json!({ "models": asset.get("models").cloned().unwrap_or(json!([])) });
-    let models = catalog_models(&raw_catalog)?;
-    let total_count = models.len();
-    let visible_count = models
-        .iter()
-        .filter(|model| model.get("visibility").and_then(Value::as_str) != Some("hide"))
-        .count();
+    let (visible_count, total_count) = catalog_counts(&raw_catalog)?;
     let content_hash = canonical_json_hash(&raw_catalog)?;
     Ok(OfficialSnapshot {
         source: "bundled".to_string(),
@@ -66,14 +61,9 @@ pub(crate) fn bundled_official_snapshot() -> anyhow::Result<OfficialSnapshot> {
         total_count,
     })
 }
-#[cfg(any(target_os = "macos", test))]
-const OPENAI_MAC_TEAM_IDS: &[&str] = &["2DC432GLL2"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TargetVerificationCacheKey {
-    app_path: PathBuf,
-    app_len: u64,
-    app_modified: Option<SystemTime>,
     cli_path: PathBuf,
     cli_len: u64,
     cli_modified: Option<SystemTime>,
@@ -147,13 +137,19 @@ impl Default for OfficialSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
+/// The Codex CLI this manager probes.
+///
+/// It used to also carry a publisher signature and a `trusted` flag, verified by shelling out to
+/// `codesign` or `Get-AuthenticodeSignature` on every status read. That existed because the
+/// manager handed the CLI a projection of the user's OAuth tokens and had to know whose binary it
+/// was handing them to. Nothing is handed over any more — the CLI is asked its version, asked
+/// whether it can list bundled models, and asked to load a catalog file this manager wrote into an
+/// empty home with no `auth.json` — so a signature check would gate those three credential-free
+/// probes on a slow `--deep` verification that answers a question nobody now asks.
 pub struct VerifiedTargetIdentity {
-    pub app_path: String,
     pub cli_path: String,
     pub client_version: String,
-    pub publisher: String,
     pub identity_hash: String,
-    pub trusted: bool,
     pub capability_available: bool,
     pub capability_message: String,
 }
@@ -308,14 +304,9 @@ pub struct CatalogStatusPayload {
     pub source: String,
     pub target_client_version: Option<String>,
     pub target_cli_path: Option<String>,
-    pub target_trusted: bool,
-    pub refresh_available: bool,
-    pub last_successful_refresh_at_ms: Option<i64>,
     pub visible_count: usize,
     pub total_count: usize,
-    pub freshness: String,
     pub credential_action: Option<String>,
-    pub diff: CatalogDiff,
     pub official_models: Vec<OfficialModelSummary>,
     pub profiles: Vec<ProfileCatalogSummary>,
 }
@@ -391,11 +382,15 @@ pub struct ActiveCatalogPlan {
     pub mutations: Vec<FileMutation>,
 }
 
+/// Which ChatGPT account the live login belongs to — nothing more.
+///
+/// This used to also carry a hash of the whole file and a token projection, because the manager
+/// wrote a copy of the credentials into an isolated CODEX_HOME and had to prove the file had not
+/// changed underneath the child. Nothing is projected any more, so the only thing left worth
+/// reading out of `auth.json` is the account identity a generated catalog is scoped to.
 #[derive(Debug, Clone)]
 struct AuthSnapshot {
-    generation_hash: String,
     scope_identity: String,
-    projection: Value,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -589,10 +584,6 @@ fn default_model_is_representable(
             .any(|model| model.slug == default_model))
 }
 
-pub(crate) fn verify_current_target_cli() -> anyhow::Result<VerifiedTargetIdentity> {
-    verify_target_cli()
-}
-
 pub(crate) fn current_activation_scope_hash_at(
     state: &CatalogState,
     auth_path: &Path,
@@ -605,21 +596,9 @@ pub(crate) fn current_activation_scope_hash_at(
     )))
 }
 
-fn auth_snapshot_matches(expected: &AuthSnapshot, current: &AuthSnapshot) -> bool {
-    expected.generation_hash == current.generation_hash
-        && expected.scope_identity == current.scope_identity
-}
-
 #[tauri::command]
 pub async fn model_catalog_status() -> CommandResult<CatalogStatusPayload> {
     tauri::async_runtime::spawn_blocking(model_catalog_status_blocking)
-        .await
-        .expect("blocking command panicked")
-}
-
-#[tauri::command]
-pub async fn refresh_official_model_catalog() -> CommandResult<CatalogStatusPayload> {
-    tauri::async_runtime::spawn_blocking(refresh_official_model_catalog_blocking)
         .await
         .expect("blocking command panicked")
 }
@@ -644,91 +623,6 @@ fn model_catalog_status_blocking() -> CommandResult<CatalogStatusPayload> {
         status_payload(&state, &settings, &home)
     })();
     command_result(result, "模型目录状态已加载。", "模型目录状态读取失败")
-}
-
-fn refresh_official_model_catalog_blocking() -> CommandResult<CatalogStatusPayload> {
-    let home = codex_plus_core::relay_config::default_codex_home_dir();
-    let result = (|| -> anyhow::Result<CatalogStatusPayload> {
-        let _guard = live_state::lock()?;
-        live_state::prepare_secret_paths(&home)?;
-        live_state::recover_locked()?;
-        let settings = sanitized_settings()?;
-        let mut state = load_and_migrate_state(&settings, &home)?;
-        let target = verify_target_cli_fresh()?;
-        ensure!(target.trusted, "目标 Codex CLI 未通过平台信任校验");
-        ensure!(target.capability_available, "{}", target.capability_message);
-        let auth_path = home.join("auth.json");
-        let auth = snapshot_live_auth(&auth_path, &state.scope_salt)?;
-        let raw = run_isolated_refresh(&target, &auth.projection)?;
-        let cache = raw.cache;
-        let output = raw.output;
-        validate_catalog(&output, &target.client_version)?;
-        validate_refresh_cache(&cache, &target.client_version)?;
-        validate_refresh_cache_matches_output(&output, &cache)?;
-        let current_auth = snapshot_live_auth(&auth_path, &state.scope_salt)?;
-        ensure!(
-            auth_snapshot_matches(&auth, &current_auth),
-            "官方客户端认证在刷新期间发生变化，已丢弃结果"
-        );
-
-        let scope_hash = hash_text(&format!("{}:{}", state.scope_salt, auth.scope_identity));
-        let content_hash = canonical_json_hash(&output)?;
-        let mut diff = diff_catalogs(
-            state.official.as_ref().map(|item| &item.raw_catalog),
-            &output,
-        )?;
-        let refreshed_slugs = catalog_slugs(&output)?;
-        diff.collisions = normalize_slugs(state.profiles.values().flat_map(|profile| {
-            profile
-                .overlay
-                .custom
-                .iter()
-                .filter(|custom| refreshed_slugs.contains(&custom.slug))
-                .map(|custom| custom.slug.clone())
-                .collect::<Vec<_>>()
-        }));
-        let (visible_count, total_count) = catalog_counts(&output)?;
-        state.operation_generation = state.operation_generation.saturating_add(1);
-        state.target = Some(target.clone());
-        state.last_diff = diff;
-        state.official = Some(OfficialSnapshot {
-            source: "verified-target-cli".to_string(),
-            fetched_at_ms: now_ms(),
-            etag: cache
-                .get("etag")
-                .and_then(Value::as_str)
-                .map(ToString::to_string),
-            client_version: target.client_version.clone(),
-            content_hash,
-            scope_hash,
-            raw_catalog: output,
-            visible_count,
-            total_count,
-        });
-
-        let mut mutations = materialize_inactive_profiles(&mut state, &settings, &home)?;
-        let live_config = fs::read_to_string(home.join("config.toml")).unwrap_or_default();
-        match plan_active_profile_with_state(&home, &settings, &live_config, &mut state, false) {
-            Ok(plan) => {
-                mutations.extend(plan.mutations);
-                if plan.config_contents != live_config {
-                    mutations.push(FileMutation::text(
-                        home.join("config.toml"),
-                        plan.config_contents,
-                    ));
-                }
-            }
-            Err(error) => {
-                if let Some(active) = state.profiles.get_mut(&settings.active_relay_id) {
-                    active.action_required = Some(error.to_string());
-                }
-            }
-        }
-        mutations.push(state_mutation(&state)?);
-        live_state::commit_locked(&mutations)?;
-        status_payload(&state, &settings, &home)
-    })();
-    command_result(result, "官方模型目录已刷新。", "官方模型目录刷新失败")
 }
 
 fn validate_adoption_commit_binding(
@@ -1397,26 +1291,10 @@ fn status_payload(
     settings: &BackendSettings,
     home: &Path,
 ) -> anyhow::Result<CatalogStatusPayload> {
-    let target = verify_target_cli().ok().or_else(|| state.target.clone());
-    let auth_snapshot = snapshot_live_auth(&home.join("auth.json"), &state.scope_salt);
-    let auth_action = auth_snapshot
-        .as_ref()
+    let target = verify_target_cli().ok();
+    let auth_action = snapshot_live_auth(&home.join("auth.json"), &state.scope_salt)
         .err()
         .map(|_| "请在官方 Codex/ChatGPT 客户端中登录或刷新认证后重试。".to_string());
-    let target_stale = match (&state.official, &target) {
-        (Some(official), Some(target)) => official.client_version != target.client_version,
-        (Some(_), None) => true,
-        (None, _) => true,
-    };
-    let scope_stale = state.official.as_ref().is_some_and(|official| {
-        auth_snapshot.as_ref().map_or(true, |auth| {
-            hash_text(&format!("{}:{}", state.scope_salt, auth.scope_identity))
-                != official.scope_hash
-        })
-    });
-    let age_stale = state.official.as_ref().is_some_and(|official| {
-        now_ms().saturating_sub(official.fetched_at_ms) > 7 * 24 * 60 * 60 * 1000
-    });
     let profiles = settings
         .relay_profiles
         .iter()
@@ -1501,25 +1379,9 @@ fn status_payload(
             .unwrap_or_else(|| "none".to_string()),
         target_client_version: target.as_ref().map(|item| item.client_version.clone()),
         target_cli_path: target.as_ref().map(|item| item.cli_path.clone()),
-        target_trusted: target.as_ref().is_some_and(|item| item.trusted),
-        refresh_available: target
-            .as_ref()
-            .is_some_and(|item| item.trusted && item.capability_available),
-        last_successful_refresh_at_ms: official.map(|item| item.fetched_at_ms),
         visible_count: official.map(|item| item.visible_count).unwrap_or(0),
         total_count: official.map(|item| item.total_count).unwrap_or(0),
-        freshness: if official.is_none() {
-            "missing"
-        } else if target_stale || scope_stale {
-            "scope-stale"
-        } else if age_stale {
-            "stale"
-        } else {
-            "current"
-        }
-        .to_string(),
         credential_action: auth_action,
-        diff: state.last_diff.clone(),
         official_models,
         profiles,
     })
@@ -1538,10 +1400,7 @@ fn verify_target_cli_with_cache(
 ) -> anyhow::Result<VerifiedTargetIdentity> {
     let cli = discover_target_codex_cli()?;
     let canonical_cli = fs::canonicalize(&cli)?;
-    let app = application_bundle_for_cli(&canonical_cli)?;
-    let canonical_app = fs::canonicalize(&app)?;
-    verify_bundle_relationship(&canonical_app, &canonical_cli)?;
-    let cache_key = target_verification_cache_key(&canonical_app, &canonical_cli)?;
+    let cache_key = target_verification_cache_key(&canonical_cli)?;
     if let Some(result) = cached_target_verification(&cache_key, reuse_cached_failure) {
         return result;
     }
@@ -1560,7 +1419,6 @@ fn verify_target_cli_with_cache(
             .zip(semver::Version::parse(MIN_SUPPORTED_CLI).ok())
             .is_some_and(|(current, minimum)| current >= minimum);
 
-        let (trusted, publisher) = verify_platform_publisher(&canonical_app, &canonical_cli)?;
         let capability = run_bounded_command(
             &canonical_cli,
             &["debug", "models", "--bundled"],
@@ -1575,19 +1433,11 @@ fn verify_target_cli_with_cache(
                 .and_then(|result| serde_json::from_slice::<Value>(&result.stdout).ok())
                 .and_then(|value| value.get("models").and_then(Value::as_array).map(Vec::len))
                 .is_some_and(|count| count > 0);
-        let identity_hash = hash_text(&format!(
-            "{}:{}:{}",
-            canonical_cli.display(),
-            version,
-            publisher
-        ));
+        let identity_hash = hash_text(&format!("{}:{}", canonical_cli.display(), version));
         Ok(VerifiedTargetIdentity {
-            app_path: canonical_app.to_string_lossy().to_string(),
             cli_path: canonical_cli.to_string_lossy().to_string(),
             client_version: version,
-            publisher,
             identity_hash,
-            trusted,
             capability_available,
             capability_message: if !supported {
                 format!("目标 CLI 版本低于支持下限 {MIN_SUPPORTED_CLI}")
@@ -1602,16 +1452,9 @@ fn verify_target_cli_with_cache(
     result
 }
 
-fn target_verification_cache_key(
-    app: &Path,
-    cli: &Path,
-) -> anyhow::Result<TargetVerificationCacheKey> {
-    let app_metadata = fs::metadata(app)?;
+fn target_verification_cache_key(cli: &Path) -> anyhow::Result<TargetVerificationCacheKey> {
     let cli_metadata = fs::metadata(cli)?;
     Ok(TargetVerificationCacheKey {
-        app_path: app.to_path_buf(),
-        app_len: app_metadata.len(),
-        app_modified: app_metadata.modified().ok(),
         cli_path: cli.to_path_buf(),
         cli_len: cli_metadata.len(),
         cli_modified: cli_metadata.modified().ok(),
@@ -1656,139 +1499,6 @@ fn remember_target_verification(
     }
 }
 
-fn application_bundle_for_cli(cli: &Path) -> anyhow::Result<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        cli.ancestors()
-            .find(|path| path.extension().and_then(|value| value.to_str()) == Some("app"))
-            .map(Path::to_path_buf)
-            .context("目标 CLI 不在 .app bundle 内")
-    }
-    #[cfg(windows)]
-    {
-        cli.parent()
-            .map(Path::to_path_buf)
-            .context("目标 CLI 缺少应用目录")
-    }
-    #[cfg(not(any(target_os = "macos", windows)))]
-    {
-        let _ = cli;
-        anyhow::bail!("当前平台未实现 credential-bearing target trust verifier")
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn verify_bundle_relationship(app: &Path, cli: &Path) -> anyhow::Result<()> {
-    let expected_root = app.join("Contents").join("Resources");
-    ensure!(cli.starts_with(&expected_root), "目标 CLI 逃逸应用 bundle");
-    ensure!(
-        cli == expected_root.join("codex"),
-        "目标 CLI 不是 bundle 内固定 codex 路径"
-    );
-    Ok(())
-}
-
-#[cfg(windows)]
-fn verify_bundle_relationship(app: &Path, cli: &Path) -> anyhow::Result<()> {
-    ensure!(cli.parent() == Some(app), "目标 CLI 逃逸应用目录");
-    ensure!(
-        cli.file_name().and_then(|value| value.to_str()) == Some("codex.exe"),
-        "目标 CLI 不是应用目录内固定 codex.exe 路径"
-    );
-    Ok(())
-}
-
-#[cfg(not(any(target_os = "macos", windows)))]
-fn verify_bundle_relationship(_app: &Path, _cli: &Path) -> anyhow::Result<()> {
-    anyhow::bail!("当前平台未实现 target bundle relationship verifier")
-}
-
-#[cfg(target_os = "macos")]
-fn verify_platform_publisher(app: &Path, cli: &Path) -> anyhow::Result<(bool, String)> {
-    let app_status = crate::platform_command::status_bounded(
-        Command::new("/usr/bin/codesign")
-            .args(["--verify", "--deep", "--strict"])
-            .arg(app),
-        crate::platform_command::HELPER_TIMEOUT,
-        "the signature verifier",
-    )?;
-    ensure!(
-        app_status.success(),
-        "codesign verification failed for {}",
-        app.display()
-    );
-    let cli_status = crate::platform_command::status_bounded(
-        Command::new("/usr/bin/codesign")
-            .args(["--verify", "--strict"])
-            .arg(cli),
-        crate::platform_command::HELPER_TIMEOUT,
-        "the signature verifier",
-    )?;
-    ensure!(
-        cli_status.success(),
-        "codesign verification failed for {}",
-        cli.display()
-    );
-    let output = crate::platform_command::output_bounded(
-        Command::new("/usr/bin/codesign")
-            .args(["-dv", "--verbose=4"])
-            .arg(cli),
-        crate::platform_command::HELPER_TIMEOUT,
-        "the signature verifier",
-    )?;
-    ensure!(output.status.success(), "cannot inspect CLI signature");
-    let detail = String::from_utf8_lossy(&output.stderr);
-    let team_id = detail
-        .lines()
-        .find_map(|line| line.strip_prefix("TeamIdentifier="))
-        .map(str::trim)
-        .context("CLI signature has no TeamIdentifier")?;
-    ensure!(supported_mac_team_id(team_id), "unsupported CLI publisher");
-    Ok((true, format!("OpenAI Team {team_id}")))
-}
-
-#[cfg(any(target_os = "macos", test))]
-fn supported_mac_team_id(team_id: &str) -> bool {
-    OPENAI_MAC_TEAM_IDS.contains(&team_id)
-}
-
-#[cfg(windows)]
-fn verify_platform_publisher(app: &Path, cli: &Path) -> anyhow::Result<(bool, String)> {
-    let _ = app;
-    let script = format!(
-        "$s=Get-AuthenticodeSignature -LiteralPath '{}'; Write-Output $s.Status; Write-Output $s.SignerCertificate.Subject",
-        cli.to_string_lossy().replace('\'', "''")
-    );
-    let output = crate::platform_command::output_bounded(
-        crate::platform_command::captured_output_command("powershell").args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-WindowStyle",
-            "Hidden",
-            "-Command",
-            &script,
-        ]),
-        crate::platform_command::HELPER_TIMEOUT,
-        "the signature verifier",
-    )?;
-    ensure!(output.status.success(), "Authenticode verification failed");
-    let text = String::from_utf8_lossy(&output.stdout);
-    ensure!(
-        text.lines().next() == Some("Valid"),
-        "CLI signature is not valid"
-    );
-    ensure!(
-        text.to_ascii_lowercase().contains("openai"),
-        "unsupported CLI publisher"
-    );
-    Ok((true, "OpenAI Authenticode publisher".to_string()))
-}
-
-#[cfg(not(any(target_os = "macos", windows)))]
-fn verify_platform_publisher(_app: &Path, _cli: &Path) -> anyhow::Result<(bool, String)> {
-    Ok((false, "unsupported platform".to_string()))
-}
-
 fn parse_cli_version(output: &[u8]) -> anyhow::Result<String> {
     let text = String::from_utf8(output.to_vec())?;
     text.split_whitespace()
@@ -1824,8 +1534,6 @@ fn snapshot_live_auth(path: &Path, scope_salt: &str) -> anyhow::Result<AuthSnaps
         .and_then(Value::as_object)
         .context("live auth 不含 chatgpt token 数据")?;
     let id_token = token_string(tokens, &["id_token", "idToken"])?;
-    let access_token = token_string(tokens, &["access_token", "accessToken"])?;
-    validate_access_token_expiry(&access_token)?;
     let claims = jwt_claims(&id_token).unwrap_or_default();
     let account_id = token_optional_string(tokens, &["account_id", "accountId"])
         .or_else(|| {
@@ -1839,23 +1547,8 @@ fn snapshot_live_auth(path: &Path, scope_salt: &str) -> anyhow::Result<AuthSnaps
     let workspace_id = token_optional_string(tokens, &["workspace_id", "workspaceId"])
         .or_else(|| json_path_string(&claims, &["workspace_id"]))
         .unwrap_or_default();
-    let scope_identity = hash_text(&format!("{scope_salt}:{account_id}:{workspace_id}"));
-    let mut projected_tokens = Map::new();
-    projected_tokens.insert("id_token".to_string(), Value::String(id_token));
-    projected_tokens.insert("access_token".to_string(), Value::String(access_token));
-    projected_tokens.insert("refresh_token".to_string(), Value::String(String::new()));
-    projected_tokens.insert("account_id".to_string(), Value::String(account_id));
-    if !workspace_id.is_empty() {
-        projected_tokens.insert("workspace_id".to_string(), Value::String(workspace_id));
-    }
     Ok(AuthSnapshot {
-        generation_hash: content_hash(&bytes),
-        scope_identity,
-        projection: json!({
-            "auth_mode": "chatgpt",
-            "tokens": projected_tokens,
-            "last_refresh": chrono::Utc::now().to_rfc3339(),
-        }),
+        scope_identity: hash_text(&format!("{scope_salt}:{account_id}:{workspace_id}")),
     })
 }
 
@@ -1878,16 +1571,6 @@ fn jwt_claims(token: &str) -> anyhow::Result<Value> {
     Ok(serde_json::from_slice(&bytes)?)
 }
 
-fn validate_access_token_expiry(token: &str) -> anyhow::Result<()> {
-    let claims = jwt_claims(token)?;
-    let exp = claims
-        .get("exp")
-        .and_then(Value::as_i64)
-        .context("access token 缺少 exp")?;
-    ensure!(exp > now_ms() / 1000 + 60, "access token 已过期或即将过期");
-    Ok(())
-}
-
 fn json_path_string(value: &Value, path: &[&str]) -> Option<String> {
     let mut current = value;
     for key in path {
@@ -1898,85 +1581,6 @@ fn json_path_string(value: &Value, path: &[&str]) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
-}
-
-#[derive(Debug)]
-struct IsolatedRefreshResult {
-    output: Value,
-    cache: Value,
-}
-
-/// Runs the target CLI against an isolated CODEX_HOME.
-///
-/// The child inherits no proxy settings: its environment is cleared and rebuilt from a short
-/// allow-list. The Manager used to hand it a configurable proxy snapshot; that control is gone
-/// along with the panel that set it, and this path has no entry point left in the UI.
-fn run_isolated_refresh(
-    target: &VerifiedTargetIdentity,
-    auth_projection: &Value,
-) -> anyhow::Result<IsolatedRefreshResult> {
-    let root = codex_plus_core::paths::default_app_state_dir().join("catalog-refresh");
-    live_state::ensure_owner_only_dir(&root)?;
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let home = root.join(format!("refresh-{}-{nonce}", std::process::id()));
-    live_state::ensure_owner_only_dir(&home)?;
-    let result = (|| -> anyhow::Result<IsolatedRefreshResult> {
-        live_state::atomic_write_owner_only(
-            &home.join("config.toml"),
-            b"forced_login_method = \"chatgpt\"\n",
-        )?;
-        live_state::atomic_write_owner_only(
-            &home.join("auth.json"),
-            &serde_json::to_vec_pretty(auth_projection)?,
-        )?;
-        ensure!(
-            !home.join("models_cache.json").exists(),
-            "temporary cache was not empty"
-        );
-        let output = run_bounded_command(
-            Path::new(&target.cli_path),
-            &["debug", "models"],
-            Some(&home),
-            REFRESH_TIMEOUT,
-            true,
-        )
-        .context("目标 Codex CLI 拉取官方模型目录失败")?;
-        let projected_after: Value = serde_json::from_slice(&fs::read(home.join("auth.json"))?)?;
-        let projected_tokens = projected_after
-            .get("tokens")
-            .and_then(Value::as_object)
-            .context("isolated auth projection was replaced")?;
-        ensure!(
-            token_optional_string(projected_tokens, &["refresh_token", "refreshToken"]).is_none(),
-            "target CLI persisted a usable refresh credential"
-        );
-        ensure!(
-            projected_after.get("OPENAI_API_KEY").is_none(),
-            "target CLI persisted an API key"
-        );
-        let cache_path = home.join("models_cache.json");
-        ensure!(
-            cache_path.is_file(),
-            "目标 CLI 未创建远端模型缓存，已回退 bundled 模型"
-        );
-        let command_json: Value = serde_json::from_slice(&output.stdout)
-            .context("target CLI model output is malformed")?;
-        let cache_json: Value = serde_json::from_slice(&fs::read(cache_path)?)
-            .context("isolated model cache is malformed")?;
-        Ok(IsolatedRefreshResult {
-            output: command_json,
-            cache: cache_json,
-        })
-    })();
-    let cleanup = fs::remove_dir_all(&home);
-    match (result, cleanup) {
-        (Ok(value), Ok(())) => Ok(value),
-        (Ok(_), Err(error)) => Err(error).context("failed to clean isolated refresh home"),
-        (Err(error), _) => Err(error),
-    }
 }
 
 fn validate_effective_catalog_offline(catalog: &Value) -> anyhow::Result<()> {
@@ -2051,8 +1655,14 @@ fn run_bounded_command(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let stdout_path = output_root.join(format!("stdout-{}-{nonce}", std::process::id()));
-    let stderr_path = output_root.join(format!("stderr-{}-{nonce}", std::process::id()));
+    // The clock and the pid do not separate two captures: Windows advances the wall clock in
+    // ~15.6 ms steps, and every thread reports the same pid, so probes started together derive one
+    // name and the first to finish deletes the files the other is still reading. The sequence is
+    // what makes each capture its own.
+    let sequence = COMMAND_CAPTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let stem = format!("{}-{nonce}-{sequence}", std::process::id());
+    let stdout_path = output_root.join(format!("stdout-{stem}"));
+    let stderr_path = output_root.join(format!("stderr-{stem}"));
     create_private_empty_file(&stdout_path)?;
     create_private_empty_file(&stderr_path)?;
     let stdout_file = OpenOptions::new().append(true).open(&stdout_path)?;
@@ -2131,74 +1741,6 @@ fn create_private_empty_file(path: &Path) -> anyhow::Result<()> {
     live_state::atomic_write_owner_only(path, b"")
 }
 
-fn validate_catalog(value: &Value, client_version: &str) -> anyhow::Result<()> {
-    validate_catalog_structure(value)?;
-    validate_catalog_client_version(value, client_version)?;
-    let models = catalog_models(value)?;
-    for model in models {
-        validate_rich_model(model)?;
-        ensure!(
-            model
-                .get("base_instructions")
-                .and_then(Value::as_str)
-                .is_some(),
-            "model has no instructions"
-        );
-    }
-    Ok(())
-}
-
-fn validate_refresh_cache(value: &Value, client_version: &str) -> anyhow::Result<()> {
-    validate_catalog_structure(value)?;
-    validate_catalog_client_version(value, client_version)?;
-    for model in catalog_models(value)? {
-        validate_rich_model(model)?;
-        ensure!(
-            model
-                .get("base_instructions")
-                .is_none_or(|instructions| instructions.is_null() || instructions.is_string()),
-            "cached model has invalid instructions"
-        );
-    }
-    Ok(())
-}
-
-fn validate_catalog_client_version(value: &Value, client_version: &str) -> anyhow::Result<()> {
-    if let Some(version) = value
-        .get("client_version")
-        .or_else(|| value.get("clientVersion"))
-        .and_then(Value::as_str)
-    {
-        ensure!(
-            catalog_client_version_compatible(version, client_version),
-            "catalog client version mismatch: catalog={version}, target={client_version}"
-        );
-    }
-    Ok(())
-}
-
-fn validate_rich_model(model: &Value) -> anyhow::Result<()> {
-    ensure!(
-        model.get("display_name").and_then(Value::as_str).is_some(),
-        "model is not rich"
-    );
-    ensure!(
-        model
-            .get("context_window")
-            .and_then(Value::as_u64)
-            .is_some(),
-        "model has no context window"
-    );
-    Ok(())
-}
-
-fn catalog_client_version_compatible(catalog: &str, target: &str) -> bool {
-    let (Ok(catalog), Ok(target)) = (Version::parse(catalog), Version::parse(target)) else {
-        return false;
-    };
-    catalog.major == target.major && catalog.minor == target.minor && catalog.patch == target.patch
-}
-
 pub(crate) fn validate_catalog_structure(value: &Value) -> anyhow::Result<()> {
     let models = catalog_models(value)?;
     ensure!(!models.is_empty(), "model catalog is empty");
@@ -2249,42 +1791,6 @@ fn catalog_slugs(value: &Value) -> anyhow::Result<BTreeSet<String>> {
         .collect())
 }
 
-fn validate_refresh_cache_matches_output(output: &Value, cache: &Value) -> anyhow::Result<()> {
-    let output = model_value_map(output)?;
-    let cache = model_value_map(cache)?;
-    ensure!(
-        output.keys().eq(cache.keys()),
-        "目标 CLI 输出与隔离缓存的模型集合不一致"
-    );
-    for (slug, cached_model) in cache {
-        let mut output_model = output
-            .get(&slug)
-            .cloned()
-            .context("目标 CLI 输出缺少缓存模型")?;
-        let mut cached_model = cached_model;
-        // The CLI may hydrate instructions omitted by its raw cache. A supplied cache value
-        // remains authoritative for this comparison and must still match exactly.
-        if cached_model
-            .get("base_instructions")
-            .is_none_or(Value::is_null)
-        {
-            output_model
-                .as_object_mut()
-                .context("目标 CLI 输出模型不是对象")?
-                .remove("base_instructions");
-            cached_model
-                .as_object_mut()
-                .context("隔离缓存模型不是对象")?
-                .remove("base_instructions");
-        }
-        ensure!(
-            output_model == cached_model,
-            "目标 CLI 输出与隔离缓存不一致：{slug}"
-        );
-    }
-    Ok(())
-}
-
 fn catalog_compatibility_projection(
     value: &Value,
 ) -> anyhow::Result<BTreeMap<String, (String, String, Option<u64>, Option<u64>)>> {
@@ -2313,30 +1819,6 @@ fn catalog_compatibility_projection(
             ))
         })
         .collect())
-}
-
-fn diff_catalogs(previous: Option<&Value>, next: &Value) -> anyhow::Result<CatalogDiff> {
-    let previous = previous
-        .map(model_value_map)
-        .transpose()?
-        .unwrap_or_default();
-    let next = model_value_map(next)?;
-    let mut diff = CatalogDiff::default();
-    for (slug, value) in &next {
-        match previous.get(slug) {
-            None => diff.added.push(slug.clone()),
-            Some(previous) if canonical_json_hash(previous)? != canonical_json_hash(value)? => {
-                diff.updated.push(slug.clone())
-            }
-            _ => {}
-        }
-    }
-    for slug in previous.keys() {
-        if !next.contains_key(slug) {
-            diff.removed.push(slug.clone());
-        }
-    }
-    Ok(diff)
 }
 
 fn model_value_map(value: &Value) -> anyhow::Result<BTreeMap<String, Value>> {
@@ -2677,43 +2159,6 @@ fn validate_slug(slug: &str) -> anyhow::Result<()> {
         "model slug contains control characters"
     );
     Ok(())
-}
-
-fn materialize_inactive_profiles(
-    state: &mut CatalogState,
-    settings: &BackendSettings,
-    home: &Path,
-) -> anyhow::Result<Vec<FileMutation>> {
-    materialize_inactive_profiles_with_validator(
-        state,
-        settings,
-        home,
-        validate_effective_catalog_offline,
-    )
-}
-
-fn materialize_inactive_profiles_with_validator(
-    state: &mut CatalogState,
-    settings: &BackendSettings,
-    home: &Path,
-    validate_effective: impl Fn(&Value) -> anyhow::Result<()> + Copy,
-) -> anyhow::Result<Vec<FileMutation>> {
-    let mut mutations = Vec::new();
-    for profile in &settings.relay_profiles {
-        if profile.id == settings.active_relay_id {
-            continue;
-        }
-        match materialize_profile_with_validator(state, profile, home, validate_effective) {
-            Ok(Some(mutation)) => mutations.push(mutation),
-            Ok(None) => {}
-            Err(error) => {
-                if let Some(item) = state.profiles.get_mut(&profile.id) {
-                    item.action_required = Some(error.to_string());
-                }
-            }
-        }
-    }
-    Ok(mutations)
 }
 
 fn materialize_profile(
@@ -3073,14 +2518,9 @@ impl Default for CatalogStatusPayload {
             source: "none".to_string(),
             target_client_version: None,
             target_cli_path: None,
-            target_trusted: false,
-            refresh_available: false,
-            last_successful_refresh_at_ms: None,
             visible_count: 0,
             total_count: 0,
-            freshness: "missing".to_string(),
             credential_action: None,
-            diff: CatalogDiff::default(),
             official_models: Vec::new(),
             profiles: Vec::new(),
         }
@@ -3450,7 +2890,6 @@ mod tests {
             external_version_status(Some("0.145.0"), "0.147.0"),
             "mismatch"
         );
-        assert!(!catalog_client_version_compatible("0.145.0", "0.147.0"));
     }
 
     #[test]
@@ -3654,9 +3093,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("auth.json");
         live_state::atomic_write_owner_only(&path, &serde_json::to_vec(&value).unwrap()).unwrap();
-        let snapshot = snapshot_live_auth(&path, "salt").unwrap();
-        assert_eq!(snapshot.projection["tokens"]["refresh_token"], "");
-        assert!(snapshot.projection.get("OPENAI_API_KEY").is_none());
+        snapshot_live_auth(&path, "salt").expect("a file-based ChatGPT login is readable");
 
         let mut with_api_key = value;
         with_api_key["OPENAI_API_KEY"] = json!("sk-live-key");
@@ -3830,7 +3267,7 @@ mod tests {
     }
 
     #[test]
-    fn inactive_materialization_failure_keeps_last_valid_generation() {
+    fn a_failed_materialization_keeps_the_last_valid_generation() {
         let profile = RelayProfile {
             id: "inactive".to_string(),
             config_contents: "model = \"same\"\n".to_string(),
@@ -3866,16 +3303,22 @@ mod tests {
             ..BackendSettings::default()
         };
         let home = tempfile::tempdir().unwrap();
-        let mutations = materialize_inactive_profiles(&mut state, &settings, home.path()).unwrap();
-        assert!(mutations.is_empty());
+        let profile = &settings.relay_profiles[0];
+        let error =
+            materialize_profile_with_validator(&mut state, profile, home.path(), |_| Ok(()))
+                .unwrap_err();
+
+        assert!(
+            !error.to_string().is_empty(),
+            "the failure says something: {error}"
+        );
         let retained = &state.profiles["inactive"];
         assert_eq!(retained.generated_hash.as_deref(), Some("last-valid-hash"));
         assert_eq!(retained.generation, 7);
-        assert!(retained.action_required.is_some());
     }
 
     #[test]
-    fn valid_inactive_materialization_clears_only_catalog_readiness_action_on_matching_artifact() {
+    fn materializing_a_matching_artifact_clears_only_the_catalog_readiness_action() {
         let profile = RelayProfile {
             id: "inactive".to_string(),
             config_contents: "model = \"task-seven-recovery\"\n".to_string(),
@@ -3923,15 +3366,15 @@ mod tests {
             ..BackendSettings::default()
         };
 
-        let mutations = materialize_inactive_profiles_with_validator(
+        let mutation = materialize_profile_with_validator(
             &mut state,
-            &settings,
+            &settings.relay_profiles[0],
             home.path(),
             |_| Ok(()),
         )
         .unwrap();
 
-        assert!(mutations.is_empty());
+        assert!(mutation.is_none());
         let recovered = &state.profiles["inactive"];
         assert!(
             recovered.action_required.is_none(),
@@ -3944,14 +3387,14 @@ mod tests {
 
         state.profiles.get_mut("inactive").unwrap().action_required =
             Some("provider-needs-review".to_string());
-        let mutations = materialize_inactive_profiles_with_validator(
+        let mutation = materialize_profile_with_validator(
             &mut state,
-            &settings,
+            &settings.relay_profiles[0],
             home.path(),
             |_| Ok(()),
         )
         .unwrap();
-        assert!(mutations.is_empty());
+        assert!(mutation.is_none());
         assert_eq!(
             state.profiles["inactive"].action_required.as_deref(),
             Some("provider-needs-review")
@@ -4357,70 +3800,6 @@ http_headers = {{ {actor}"x-unrelated" = "{unrelated_header}" }}
         assert!(state_mutation(&state).is_err());
     }
 
-    #[test]
-    fn whole_cli_version_and_publisher_allowlist_are_strict() {
-        assert_eq!(
-            parse_cli_version(b"codex-cli 0.147.0-alpha.1.2\n").unwrap(),
-            "0.147.0-alpha.1.2"
-        );
-        assert!(catalog_client_version_compatible(
-            "0.147.0",
-            "0.147.0-alpha.1.2"
-        ));
-        assert!(catalog_client_version_compatible(
-            "0.147.0-alpha.1.2",
-            "0.147.0-alpha.1.2"
-        ));
-        assert!(!catalog_client_version_compatible(
-            "0.147.1",
-            "0.147.0-alpha.1.2"
-        ));
-        assert!(!catalog_client_version_compatible(
-            "invalid",
-            "0.147.0-alpha.1.2"
-        ));
-        assert!(supported_mac_team_id("2DC432GLL2"));
-        assert!(!supported_mac_team_id("UNTRUSTED"));
-    }
-
-    #[test]
-    fn refresh_cache_may_omit_only_cli_hydrated_instructions() {
-        let output = official_catalog();
-        let mut cache = output.clone();
-        cache["models"][0]
-            .as_object_mut()
-            .unwrap()
-            .remove("base_instructions");
-        cache["models"][1]["base_instructions"] = Value::Null;
-
-        validate_catalog(&output, "0.147.0-alpha.6.5").unwrap();
-        validate_refresh_cache(&cache, "0.147.0-alpha.6.5").unwrap();
-        validate_refresh_cache_matches_output(&output, &cache).unwrap();
-
-        let mut conflicting_instructions = cache.clone();
-        conflicting_instructions["models"][0]["base_instructions"] = json!("different");
-        assert!(validate_refresh_cache_matches_output(&output, &conflicting_instructions).is_err());
-
-        let mut conflicting_metadata = cache.clone();
-        conflicting_metadata["models"][0]["context_window"] = json!(999);
-        assert!(validate_refresh_cache_matches_output(&output, &conflicting_metadata).is_err());
-
-        let mut missing_model = cache.clone();
-        missing_model["models"].as_array_mut().unwrap().pop();
-        assert!(validate_refresh_cache_matches_output(&output, &missing_model).is_err());
-
-        let mut invalid_instructions = cache.clone();
-        invalid_instructions["models"][0]["base_instructions"] = json!(false);
-        assert!(validate_refresh_cache(&invalid_instructions, "0.147.0-alpha.6.5").is_err());
-
-        let mut incomplete_output = output.clone();
-        incomplete_output["models"][0]
-            .as_object_mut()
-            .unwrap()
-            .remove("base_instructions");
-        assert!(validate_catalog(&incomplete_output, "0.147.0-alpha.6.5").is_err());
-    }
-
     /// The isolated child gets an allow-list, never the ambient environment.
     ///
     /// It used to also receive a configurable proxy snapshot from the Manager network panel. That
@@ -4465,6 +3844,29 @@ http_headers = {{ {actor}"x-unrelated" = "{unrelated_header}" }}
         }
     }
 
+    #[test]
+    fn target_cli_captures_taken_inside_one_clock_tick_still_get_their_own_files() {
+        // Windows advances the wall clock in ~15.6 ms steps, so a burst of probes reads the same
+        // nanosecond value, and every thread reports the same pid. Names must still differ, or the
+        // first probe to finish deletes the output the next one is still reading.
+        //
+        // This guarded `platform_command`'s capture helper until the publisher-signature shell-out
+        // — its only caller — was removed. The same naming lives on in `run_bounded_command`, so
+        // the test follows it here rather than leaving the rule unenforced.
+        let mut seen = BTreeSet::new();
+        for _ in 0..64 {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let sequence = COMMAND_CAPTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            assert!(
+                seen.insert(format!("{}-{nonce}-{sequence}", std::process::id())),
+                "each capture named its own files"
+            );
+        }
+    }
+
     #[cfg(unix)]
     fn fake_cli(contents: &str) -> (tempfile::TempDir, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
@@ -4475,124 +3877,17 @@ http_headers = {{ {actor}"x-unrelated" = "{unrelated_header}" }}
         (temp, cli)
     }
 
-    #[cfg(unix)]
     #[test]
-    fn isolated_refresh_uses_empty_refresh_projection_and_cleans_up() {
-        let _guard = FAKE_REFRESH_TEST_LOCK.lock().unwrap();
-        let payload = r#"{"models":[{"slug":"m","display_name":"M","visibility":"list","context_window":1000,"base_instructions":"x"}]}"#;
-        let script = format!(
-            "#!/bin/sh\nprintf '%s' '{payload}' > \"$CODEX_HOME/models_cache.json\"\nprintf '%s' '{payload}'\n"
-        );
-        let (_temp, cli) = fake_cli(&script);
-        let target = VerifiedTargetIdentity {
-            cli_path: cli.to_string_lossy().to_string(),
-            ..VerifiedTargetIdentity::default()
-        };
-        let projection = json!({
-            "auth_mode": "chatgpt",
-            "tokens": {
-                "id_token": "id",
-                "access_token": "access",
-                "refresh_token": ""
-            }
-        });
-        let root = codex_plus_core::paths::default_app_state_dir().join("catalog-refresh");
-        let before = fs::read_dir(&root)
-            .ok()
-            .map(|items| {
-                items
-                    .filter_map(Result::ok)
-                    .map(|item| item.path())
-                    .collect::<BTreeSet<_>>()
-            })
-            .unwrap_or_default();
-        let result = run_isolated_refresh(&target, &projection).unwrap();
-        assert_eq!(
-            catalog_slugs(&result.output).unwrap(),
-            BTreeSet::from(["m".to_string()])
-        );
-        let after = fs::read_dir(&root)
-            .ok()
-            .map(|items| {
-                items
-                    .filter_map(Result::ok)
-                    .map(|item| item.path())
-                    .collect::<BTreeSet<_>>()
-            })
-            .unwrap_or_default();
-        assert_eq!(before, after);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn isolated_refresh_rejects_missing_cache_malformed_output_and_timeout() {
-        let _guard = FAKE_REFRESH_TEST_LOCK.lock().unwrap();
-        let (_temp, missing_cache) = fake_cli("#!/bin/sh\nprintf '{\"models\":[]}'\n");
-        let target = VerifiedTargetIdentity {
-            cli_path: missing_cache.to_string_lossy().to_string(),
-            ..VerifiedTargetIdentity::default()
-        };
-        let projection = json!({"auth_mode":"chatgpt","tokens":{"id_token":"id","access_token":"access","refresh_token":""}});
-        let error = run_isolated_refresh(&target, &projection).unwrap_err();
-        assert!(error.to_string().contains("bundled"));
-
-        let (_temp, malformed) =
-            fake_cli("#!/bin/sh\nprintf '{'\nprintf '{' > \"$CODEX_HOME/models_cache.json\"\n");
-        let target = VerifiedTargetIdentity {
-            cli_path: malformed.to_string_lossy().to_string(),
-            ..VerifiedTargetIdentity::default()
-        };
-        assert!(run_isolated_refresh(&target, &projection).is_err());
-
-        let (_temp, slow) = fake_cli("#!/bin/sh\nsleep 2\n");
-        assert!(run_bounded_command(&slow, &[], None, Duration::from_millis(30), true).is_err());
-
-        let (_temp, rejected) = fake_cli("#!/bin/sh\nexit 23\n");
-        let projection_before = projection.clone();
-        let target = VerifiedTargetIdentity {
-            cli_path: rejected.to_string_lossy().to_string(),
-            ..VerifiedTargetIdentity::default()
-        };
-        assert!(run_isolated_refresh(&target, &projection).is_err());
-        assert_eq!(projection, projection_before);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn isolated_refresh_does_not_stop_an_active_target_process() {
-        let _guard = FAKE_REFRESH_TEST_LOCK.lock().unwrap();
-        let payload = r#"{"models":[{"slug":"m","display_name":"M","visibility":"list","context_window":1000,"base_instructions":"x"}]}"#;
-        let script = format!(
-            "#!/bin/sh\nif [ \"$1\" = \"--hold\" ]; then sleep 5; exit 0; fi\nprintf '%s' '{payload}' > \"$CODEX_HOME/models_cache.json\"\nprintf '%s' '{payload}'\n"
-        );
-        let (_temp, cli) = fake_cli(&script);
-        let mut active = Command::new(&cli)
-            .arg("--hold")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        let target = VerifiedTargetIdentity {
-            cli_path: cli.to_string_lossy().to_string(),
-            ..VerifiedTargetIdentity::default()
-        };
-        let projection = json!({"auth_mode":"chatgpt","tokens":{"id_token":"id","access_token":"access","refresh_token":""}});
-        let refreshed = run_isolated_refresh(&target, &projection).unwrap();
-        assert_eq!(
-            catalog_slugs(&refreshed.output).unwrap(),
-            BTreeSet::from(["m".to_string()])
-        );
-        assert!(active.try_wait().unwrap().is_none());
-        active.kill().unwrap();
-        active.wait().unwrap();
-    }
-
-    #[test]
-    fn expired_or_missing_file_auth_fails_closed() {
+    fn unreadable_auth_fails_closed_while_a_stale_access_token_does_not() {
         let temp = tempfile::tempdir().unwrap();
         assert!(snapshot_live_auth(&temp.path().join("missing.json"), "salt").is_err());
-        let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
+
+        // An expired access token used to be rejected here, because the manager was about to hand
+        // a copy of it to the official CLI and needed it to still work. Nothing is handed over any
+        // more: the only thing read out of this file is which account it belongs to, and the
+        // official client refreshes its own tokens. Refusing a save because a token is between
+        // refreshes would block the user on a condition that resolves itself.
+        let expired = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(serde_json::to_vec(&json!({ "exp": now_ms() / 1000 - 1 })).unwrap());
         let id_claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(serde_json::to_vec(&json!({ "chatgpt_account_id": "acct" })).unwrap());
@@ -4600,60 +3895,28 @@ http_headers = {{ {actor}"x-unrelated" = "{unrelated_header}" }}
             "auth_mode": "chatgpt",
             "tokens": {
                 "id_token": format!("x.{id_claims}.x"),
-                "access_token": format!("x.{claims}.x"),
+                "access_token": format!("x.{expired}.x"),
                 "refresh_token": "refresh"
             }
         });
         let path = temp.path().join("auth.json");
         live_state::atomic_write_owner_only(&path, &serde_json::to_vec(&auth).unwrap()).unwrap();
+        snapshot_live_auth(&path, "salt").expect("a stale access token still names its account");
+
+        // What still fails closed is a file that cannot answer the question at all.
+        let anonymous = json!({ "auth_mode": "chatgpt", "tokens": { "id_token": "x.x.x" } });
+        live_state::atomic_write_owner_only(&path, &serde_json::to_vec(&anonymous).unwrap())
+            .unwrap();
         assert!(snapshot_live_auth(&path, "salt").is_err());
     }
 
-    #[test]
-    fn concurrent_auth_generation_or_account_change_is_rejected() {
-        let original = AuthSnapshot {
-            generation_hash: "generation-a".to_string(),
-            scope_identity: "account-a".to_string(),
-            projection: Value::Null,
-        };
-        let same = original.clone();
-        let rotated = AuthSnapshot {
-            generation_hash: "generation-b".to_string(),
-            ..original.clone()
-        };
-        let account_changed = AuthSnapshot {
-            scope_identity: "account-b".to_string(),
-            ..original.clone()
-        };
-        assert!(auth_snapshot_matches(&original, &same));
-        assert!(!auth_snapshot_matches(&original, &rotated));
-        assert!(!auth_snapshot_matches(&original, &account_changed));
-    }
-
     #[cfg(target_os = "macos")]
     #[test]
-    fn bundle_relationship_rejects_symlink_escape() {
-        use std::os::unix::fs::symlink;
-        let temp = tempfile::tempdir().unwrap();
-        let app = temp.path().join("Fake.app");
-        let resources = app.join("Contents/Resources");
-        fs::create_dir_all(&resources).unwrap();
-        let outside = temp.path().join("outside-codex");
-        fs::write(&outside, "binary").unwrap();
-        symlink(&outside, resources.join("codex")).unwrap();
-        let canonical_app = fs::canonicalize(app).unwrap();
-        let canonical_cli = fs::canonicalize(resources.join("codex")).unwrap();
-        assert!(verify_bundle_relationship(&canonical_app, &canonical_cli).is_err());
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn installed_target_is_trusted_and_accepts_static_catalog_offline() {
+    fn installed_target_accepts_a_static_catalog_offline() {
         if discover_target_codex_cli().is_err() {
             return;
         }
         let target = verify_target_cli().unwrap();
-        assert!(target.trusted);
         assert!(target.capability_available);
         assert!(semver::Version::parse(&target.client_version).is_ok());
         let catalog = codex_plus_core::model_suffix::build_model_catalog_json(
@@ -4666,43 +3929,6 @@ http_headers = {{ {actor}"x-unrelated" = "{unrelated_header}" }}
         );
         let catalog: Value = serde_json::from_str(&catalog).unwrap();
         validate_effective_catalog_offline(&catalog).unwrap();
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    #[ignore = "requires explicit approval for a live OAuth model-catalog request"]
-    fn live_refresh_preserves_auth_and_is_idempotent() {
-        assert_eq!(
-            std::env::var("CODEX_MINUS_LIVE_REFRESH").as_deref(),
-            Ok("1"),
-            "set CODEX_MINUS_LIVE_REFRESH=1 only after explicit live-request approval"
-        );
-        let home = codex_plus_core::relay_config::default_codex_home_dir();
-        let auth_path = home.join("auth.json");
-        let auth_before = fs::read(&auth_path).unwrap();
-
-        let first = refresh_official_model_catalog_blocking();
-        assert_eq!(first.status, "ok", "{}", first.message);
-        assert!(first.payload.target_trusted);
-        assert!(first.payload.total_count > 0);
-        assert_eq!(fs::read(&auth_path).unwrap(), auth_before);
-        for profile in first.payload.profiles.iter().filter(|profile| {
-            matches!(
-                profile.mode,
-                CatalogMode::OfficialPlusCustom | CatalogMode::CustomOnly
-            )
-        }) {
-            assert!(profile.action_required.is_none(), "{profile:?}");
-            assert!(profile.generated_path.is_some(), "{profile:?}");
-            assert!(profile.effective_hash.is_some(), "{profile:?}");
-        }
-
-        let second = refresh_official_model_catalog_blocking();
-        assert_eq!(second.status, "ok", "{}", second.message);
-        assert!(second.payload.diff.added.is_empty());
-        assert!(second.payload.diff.updated.is_empty());
-        assert!(second.payload.diff.removed.is_empty());
-        assert_eq!(fs::read(&auth_path).unwrap(), auth_before);
     }
 }
 

@@ -390,19 +390,9 @@ export type ModelCatalogStatusResult = CommandResult<{
   source: string;
   targetClientVersion: string | null;
   targetCliPath: string | null;
-  targetTrusted: boolean;
-  refreshAvailable: boolean;
-  lastSuccessfulRefreshAtMs: number | null;
   visibleCount: number;
   totalCount: number;
-  freshness: "missing" | "current" | "stale" | "scope-stale" | string;
   credentialAction: string | null;
-  diff: {
-    added: string[];
-    updated: string[];
-    removed: string[];
-    collisions: string[];
-  };
   officialModels: OfficialModelSummary[];
   profiles: ProfileCatalogSummary[];
 }>;
