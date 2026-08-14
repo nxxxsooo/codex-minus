@@ -6,7 +6,9 @@
 #   - manual dispatch on any branch
 #
 # macOS: builds aarch64 .app bundle (ad-hoc signed)
-# Windows: builds native x64 and arm64 .msi + .exe (NSIS) installers
+# Windows: builds native x64 and arm64 .exe (NSIS) installers — NSIS only, because the
+# in-app updater applies NSIS packages and a second format would only invite installing
+# through the channel updates cannot ride.
 
 name: Build
 
@@ -70,10 +72,12 @@ jobs:
         working-directory: src-tauri
         run: cargo test --target aarch64-apple-darwin
 
+      # The updater private key exists only on the owner's machine and in this secret; a
+      # missing secret fails the build loudly rather than shipping unsigned artifacts.
       - name: Build Tauri macOS bundle
         run: npx tauri build --bundles app --target aarch64-apple-darwin
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ""
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
 
       - name: Ad-hoc sign and verify macOS bundle
@@ -83,7 +87,7 @@ jobs:
           codesign --force --deep --sign - "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
 
-      - name: Package macOS .app.zip
+      - name: Package macOS .app.zip and updater artifact
         shell: bash
         run: |
           cd src-tauri/target/aarch64-apple-darwin/release/bundle/macos
@@ -95,13 +99,22 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           VERSION="${VERSION//\//-}"
           zip -r "CodexMinus_${VERSION}_aarch64.app.zip" "$APP_NAME"
-          ls -lh "CodexMinus_${VERSION}_aarch64.app.zip"
+          # The updater payload is the tar.gz the build produced from the ad-hoc-signed
+          # bundle, plus its detached signature — both must exist on every build.
+          [ -f "$APP_NAME.tar.gz" ] || { echo "::error::Updater tar.gz missing"; exit 1; }
+          [ -f "$APP_NAME.tar.gz.sig" ] || { echo "::error::Updater signature missing"; exit 1; }
+          mv "$APP_NAME.tar.gz" "CodexMinus_${VERSION}_aarch64.app.tar.gz"
+          mv "$APP_NAME.tar.gz.sig" "CodexMinus_${VERSION}_aarch64.app.tar.gz.sig"
+          ls -lh CodexMinus_*
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
           name: CodexMinus-macOS-arm64
-          path: src-tauri/target/aarch64-apple-darwin/release/bundle/macos/CodexMinus_*.app.zip
+          path: |
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/CodexMinus_*.app.zip
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/CodexMinus_*.app.tar.gz
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/CodexMinus_*.app.tar.gz.sig
           if-no-files-found: error
 
   # ─── Windows (x64 + arm64) ─────────────────────────────────────────────
@@ -158,25 +171,19 @@ jobs:
         working-directory: src-tauri
         run: cargo check --target ${{ matrix.target }}
 
-      - name: Build Tauri Windows bundle (MSI + NSIS)
-        run: npx tauri build --bundles msi,nsis --target ${{ matrix.target }}
+      - name: Build Tauri Windows bundle (NSIS)
+        run: npx tauri build --bundles nsis --target ${{ matrix.target }}
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ""
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
-
-      - name: Upload Windows MSI artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: CodexMinus-Windows-${{ matrix.arch }}-MSI
-          path: src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
-          compression-level: 0
-          if-no-files-found: error
 
       - name: Upload Windows NSIS artifact
         uses: actions/upload-artifact@v4
         with:
           name: CodexMinus-Windows-${{ matrix.arch }}-NSIS
-          path: src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
+            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe.sig
           compression-level: 0
           if-no-files-found: error
 
@@ -205,33 +212,61 @@ jobs:
           shopt -s nullglob
           mkdir -p dist
 
-          # macOS: copy the pre-built .app.zip
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          # macOS: copy the pre-built .app.zip plus the updater tar.gz and its signature.
           MAC_DIR="CodexMinus-macOS-arm64"
           if [ -d "$MAC_DIR" ]; then
             cp "$MAC_DIR"/CodexMinus_*.app.zip dist/ 2>/dev/null || true
+            cp "$MAC_DIR"/CodexMinus_*.app.tar.gz dist/ 2>/dev/null || true
+            cp "$MAC_DIR"/CodexMinus_*.app.tar.gz.sig dist/ 2>/dev/null || true
           fi
 
-          # Windows: require one MSI and one NSIS installer per architecture.
+          # Windows: require one signed NSIS installer per architecture. The installer
+          # and its signature are renamed together so the manifest URLs match.
           for WIN_ARCH in x64 arm64; do
-            WIN_MSI_DIR="CodexMinus-Windows-${WIN_ARCH}-MSI"
-            MSI_SOURCES=( "$WIN_MSI_DIR"/*.msi )
-            [ "${#MSI_SOURCES[@]}" -eq 1 ] || { echo "::error::Expected one Windows ${WIN_ARCH} MSI artifact"; exit 1; }
-            cp "${MSI_SOURCES[0]}" "dist/CodexMinus_${GITHUB_REF_NAME#v}_${WIN_ARCH}.msi"
-
             WIN_NSIS_DIR="CodexMinus-Windows-${WIN_ARCH}-NSIS"
             EXE_SOURCES=( "$WIN_NSIS_DIR"/*.exe )
             [ "${#EXE_SOURCES[@]}" -eq 1 ] || { echo "::error::Expected one Windows ${WIN_ARCH} NSIS artifact"; exit 1; }
-            cp "${EXE_SOURCES[0]}" "dist/CodexMinus_${GITHUB_REF_NAME#v}_${WIN_ARCH}-setup.exe"
+            cp "${EXE_SOURCES[0]}" "dist/CodexMinus_${VERSION}_${WIN_ARCH}-setup.exe"
+            EXE_SIG_SOURCES=( "$WIN_NSIS_DIR"/*.exe.sig )
+            [ "${#EXE_SIG_SOURCES[@]}" -eq 1 ] || { echo "::error::Expected one Windows ${WIN_ARCH} NSIS signature"; exit 1; }
+            cp "${EXE_SIG_SOURCES[0]}" "dist/CodexMinus_${VERSION}_${WIN_ARCH}-setup.exe.sig"
           done
 
           cd dist
           MAC_FILES=( *.app.zip )
-          MSI_FILES=( *.msi )
-          EXE_FILES=( *.exe )
+          MAC_TAR_FILES=( *.app.tar.gz )
+          EXE_FILES=( *-setup.exe )
+          SIG_FILES=( *.sig )
           [ "${#MAC_FILES[@]}" -eq 1 ] || { echo "::error::Expected one macOS app archive"; exit 1; }
-          [ "${#MSI_FILES[@]}" -eq 2 ] || { echo "::error::Expected two Windows MSI files"; exit 1; }
+          [ "${#MAC_TAR_FILES[@]}" -eq 1 ] || { echo "::error::Expected one macOS updater archive"; exit 1; }
           [ "${#EXE_FILES[@]}" -eq 2 ] || { echo "::error::Expected two Windows NSIS installers"; exit 1; }
-          sha256sum "${MAC_FILES[@]}" "${MSI_FILES[@]}" "${EXE_FILES[@]}" > SHA256SUMS
+          [ "${#SIG_FILES[@]}" -eq 3 ] || { echo "::error::Expected three updater signatures"; exit 1; }
+          sha256sum "${MAC_FILES[@]}" "${MAC_TAR_FILES[@]}" "${EXE_FILES[@]}" > SHA256SUMS
+
+          # The update manifest: released apps poll releases/latest/download/latest.json;
+          # artifact URLs are tag-pinned so a later release never retargets this one's links.
+          BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          jq -n \
+            --arg version "$VERSION" \
+            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg mac_url "${BASE_URL}/CodexMinus_${VERSION}_aarch64.app.tar.gz" \
+            --arg mac_sig "$(cat "CodexMinus_${VERSION}_aarch64.app.tar.gz.sig")" \
+            --arg x64_url "${BASE_URL}/CodexMinus_${VERSION}_x64-setup.exe" \
+            --arg x64_sig "$(cat "CodexMinus_${VERSION}_x64-setup.exe.sig")" \
+            --arg arm64_url "${BASE_URL}/CodexMinus_${VERSION}_arm64-setup.exe" \
+            --arg arm64_sig "$(cat "CodexMinus_${VERSION}_arm64-setup.exe.sig")" \
+            '{
+              version: $version,
+              pub_date: $pub_date,
+              platforms: {
+                "darwin-aarch64": { url: $mac_url, signature: $mac_sig },
+                "windows-x86_64": { url: $x64_url, signature: $x64_sig },
+                "windows-aarch64": { url: $arm64_url, signature: $arm64_sig }
+              }
+            }' > latest.json
+          jq . latest.json
           ls -lh
 
       - name: Create Release
@@ -246,8 +281,8 @@ jobs:
             | 平台 | 架构 | 格式 |
             |------|------|------|
             | macOS | arm64 | .app.zip |
-            | Windows | x64 | .msi / .exe (NSIS) |
-            | Windows | arm64 | .msi / .exe (NSIS) |
+            | Windows | x64 | -setup.exe (NSIS) |
+            | Windows | arm64 | -setup.exe (NSIS) |
 
             各平台的安装包与本页面的 `SHA256SUMS` 已作为附件附加到本 Release。
 
@@ -262,7 +297,11 @@ jobs:
 
             **macOS**: 解压后将 `Codex Minus.app` 移入 `/Applications`。首次启动如被拦截，在「系统设置 → 隐私与安全性」中选择「仍要打开」。
 
-            **Windows**: ARM 设备请选择 `arm64`，Intel／AMD 设备请选择 `x64`；运行对应的 `.msi` 或 `.exe` 安装程序。
+            **Windows**: ARM 设备请选择 `arm64`，Intel／AMD 设备请选择 `x64`，运行 `-setup.exe` 安装。此前用旧版 `.msi` 安装过的机器，请先在「设置 → 应用」卸载旧版再安装，避免留下重复条目（用户数据在 `~/.codex-session-delete/`，卸载不受影响）。
+
+            ### 应用内更新
+
+            装好本版本后，应用启动时会自动检查新版本，有新版会出现横幅，点「更新并重启」即可，之后无需再手动下载安装。`latest.json` 与 `.sig` 文件是更新通道的组成部分，请勿删除。
           files: |
             artifacts/dist/*
           fail_on_unmatched_files: true

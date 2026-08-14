@@ -17,6 +17,13 @@ import { CSS } from "@dnd-kit/utilities";
 import { invoke } from "@tauri-apps/api/core";
 import { } from "@tauri-apps/api/event";
 import { } from "@tauri-apps/plugin-dialog";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check as checkForAppUpdate, type Update as AvailableAppUpdate } from "@tauri-apps/plugin-updater";
+import {
+  appUpdateBanner,
+  appUpdatePhaseAfterEvent,
+  type AppUpdatePhase,
+} from "./app-update";
 import {
   ArrowLeft,
   Archive,
@@ -972,6 +979,35 @@ export function App() {
     showNotice(title, result.message, result.status);
   };
 
+  // In-app update: one silent check at startup. A failed check (offline, endpoint
+  // unreachable) is silence, not a notice; an explicit install failure reports normally.
+  const [appUpdate, setAppUpdate] = useState<{ update: AvailableAppUpdate; phase: AppUpdatePhase } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    checkForAppUpdate()
+      .then((update) => {
+        if (cancelled || !update) return;
+        setAppUpdate({ update, phase: { kind: "available", version: update.version } });
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const installAppUpdate = async () => {
+    if (!appUpdate) return;
+    const { update } = appUpdate;
+    try {
+      await update.downloadAndInstall((event) => {
+        setAppUpdate((current) => (current ? { update, phase: appUpdatePhaseAfterEvent(current.phase, event) } : current));
+      });
+      await relaunch();
+    } catch (error) {
+      setAppUpdate({ update, phase: { kind: "failed", version: update.version } });
+      showErrorNotice(t("应用更新"), error);
+    }
+  };
+
   useEffect(() => {
     void Promise.all([
       refreshSettings(true),
@@ -1124,6 +1160,16 @@ export function App() {
             </Button>
           </div>
         </header>
+        {appUpdate ? (
+          <div className="update-banner" data-app-update-banner="true">
+            <span>{tf(appUpdateBanner(appUpdate.phase).text.key, appUpdateBanner(appUpdate.phase).text.args)}</span>
+            {appUpdateBanner(appUpdate.phase).action ? (
+              <Button onClick={() => void installAppUpdate()} size="sm" variant="outline">
+                {t(appUpdateBanner(appUpdate.phase).action ?? "")}
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
         <section className="screen">
           <div className={route === "relay" ? undefined : "hidden"}>
             <RelayScreen

@@ -410,6 +410,7 @@ export const EN_PLAIN: Record<string, string> = {
   "市场状态": "Marketplace status",
   "市场脚本": "Marketplace scripts",
   "序列化字段": "Serialized fields",
+  "应用更新": "App update",
   "应用路径已保存，之后启动会自动复用。": "App path saved; future launches reuse it automatically.",
   "应用路径留空时使用已保存路径；没有保存路径时使用自动探测": "When the app path is empty, the saved path is used; with no saved path, auto-detection is used",
   "应用路径覆盖": "App path override",
@@ -512,6 +513,7 @@ export const EN_PLAIN: Record<string, string> = {
   "暂无项目。": "No projects.",
   "更多选项": "More options",
   "更新": "Update",
+  "更新并重启": "Update and restart",
   "更新安装": "Update install",
   "最新版本": "Latest version",
   "最近启动": "Recent launches",
@@ -742,6 +744,7 @@ export const EN_PLAIN: Record<string, string> = {
   "配置文件": "Config file",
   "配置模型": "Config model",
   "重启 Codex++": "Restart Codex++",
+  "重试": "Retry",
   "重新安装": "Reinstall",
   "重新生成": "Regenerate",
   "重置背景": "Reset background",
@@ -811,6 +814,11 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "发现新版本 {0}，可以直接更新到这一版。": "Version {0} is available; you can update right here.",
+  "正在下载 {0} …": "Downloading {0}…",
+  "正在下载 {0} … {1}%": "Downloading {0}… {1}%",
+  "正在安装 {0}，装好后会自动重启。": "Installing {0}; the app restarts when it is done.",
+  "更新到 {0} 没有成功，可以重试。": "The update to {0} did not complete; you can retry.",
   "切换到纯 OAuth 将删除自定义供应商 {0} 及其全部配置字段（{1}）。确认后只更新草稿，仍需点击保存或设为当前才会生效。是否继续？":
     "Switching to pure OAuth deletes custom provider {0} and all of its configuration fields ({1}). Confirmation updates only the draft; click Save or Set as current to apply it. Continue?",
   "\n...以及另外 {0} 个会话": "\n...and {0} more session(s)",
