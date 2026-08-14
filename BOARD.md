@@ -6,6 +6,21 @@
 
 ## Changelog
 
+### 2026-08-14
+
+- **fix/providers**: a catalog pointer an older version left in a profile's stored config no longer makes that profile permanently unsaveable
+  - why: migration read *any* `model_catalog_json` as「用户拥有的外部目录」, and the rule that an ordinary save must preserve every external pointer then rejected every native or managed draft — which is all of them, since the editor has no way to send a pointer; the profile deadlocked, because correcting the mode is itself a save, and the failure surfaced as a bare `InvalidDraft` with a misattributed message
+  - verified: 170 Rust lib + 17 + 24 integration tests pass with the live OAuth test intentionally ignored; the regression was confirmed red without the fix rather than merely green with it; a pointer the user actually chose is still preserved, since the discriminator is equality with the exact path this manager generates for this exact profile — `manager_owned_pointer_path` cannot answer that question here, as it asks the state for a generated path while that state is still being built
+  - refs: `src-tauri/src/model_catalog.rs`, `src-tauri/src/provider_commit_transaction_tests.rs`, OpenSpec `prioritize-native-capabilities-for-mixed-providers` 3b.7, PR #9
+- **test/providers**: pinned the compare-and-swap invariant that the fingerprint a save returns is the one the next save is judged against
+  - why: the reported `staleState` had two candidate explanations — backend fingerprint accounting and frontend baseline adoption — and neither could be ruled out by reading alone
+  - verified: the returned fingerprint, the fingerprint of the returned settings, and the fingerprint of the settings re-read from disk agree across a catalog-generating save, for both「official mixed with an API key」and「official OAuth only」profile shapes; this rules the backend out, leaving the two fingerprints an actual session sends as the remaining unknown
+  - refs: `src-tauri/src/provider_commit_transaction_tests.rs`
+- **refactor**: one TOML escaper instead of three, and the one that escapes newlines
+  - why: `codex-toml.ts` escaped backslash and double-quote and stopped, while `provider-config-draft.ts` and `provider-onboarding.ts` both used the `JSON.stringify` form — and the difference is not cosmetic, because a TOML basic string may not span lines, so a value carrying a newline does not read back slightly wrong, it leaves Codex unable to parse its own config
+  - verified: `npm run verify` green — TypeScript, 174 frontend tests, knip; JSON's escapes are a subset of TOML's basic-string escapes, so the surviving implementation is correct for every input; the escaping had no test in any of the three copies and now has one, including the asymmetry that the reader undoes only quote and backslash escapes
+  - refs: `src/codex-toml.ts`, `src/codex-toml.test.ts`, `src/provider-config-draft.ts`, `src/provider-onboarding.ts`, PR #9
+
 ### 2026-08-13
 
 - **refactor**: made `src/App.tsx` a wiring file and added a ratchet that keeps it one — 5088 → 3464 lines, 100 pure functions → 33
