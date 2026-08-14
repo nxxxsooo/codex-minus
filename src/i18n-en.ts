@@ -787,6 +787,9 @@ export const EN_PLAIN: Record<string, string> = {
   "恢复会话": "Restore session",
   "供应商兼容性": "Provider compatibility",
   "适配活动会话": "Adapt active sessions",
+  "切换供应商后自动适配": "Auto-adapt after provider switch",
+  "仅活动会话，写前自动备份；归档不受影响": "Active sessions only, backed up before writing; archives untouched",
+  "会话设置": "Session settings",
   "会话生命周期": "Session lifecycle",
   "活动会话与原生归档": "Active sessions and native archives",
   "活动会话": "Active sessions",
@@ -904,8 +907,9 @@ export const EN_BACKEND: Record<string, string> = {
   "自动归档检查已完成，没有符合条件的会话。": "Automatic archive check completed; no sessions were eligible.",
   "自动归档部分完成，请查看失败计数。": "Automatic archiving completed partially; review the failure count.",
   "活动会话供应商兼容性已检查。": "Active session provider compatibility checked.",
-  "当前上游 provider-sync 尚无 active-only 范围；为避免扫描或改写归档历史，适配写入已禁用。":
-    "Upstream provider sync does not yet support an active-only scope. Adaptation writes are disabled to avoid scanning or rewriting archived history.",
+  "适配会逐个改写这些活动会话自己的记录文件与数据库行，写前自动备份；归档历史不会被读取或写入。":
+    "Adaptation rewrites each active session's own rollout file and database row, backing them up first; archived history is never read or written.",
+  "兼容性检查结果已过期，请重新检查。": "The compatibility scan is stale; re-check first.",
   "目标 Codex 支持原生归档与恢复。": "The target Codex installation supports native archive and restore operations.",
   "目标 Codex CLI 不支持 archive/unarchive，请先更新目标客户端。":
     "The target Codex CLI does not support archive/unarchive. Update the target client first.",

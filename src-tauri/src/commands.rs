@@ -136,6 +136,9 @@ pub struct SessionLifecycleSettings {
     pub first_run_reviewed: bool,
     pub retention_days: u32,
     pub last_completed_at_ms: Option<i64>,
+    // Runs the active-only session adaptation automatically after a provider switch. Defaults
+    // on — the write is backed up and active-only — and serde-default keeps old files loading.
+    pub auto_adapt_provider_on_switch: bool,
 }
 
 impl Default for SessionLifecycleSettings {
@@ -145,6 +148,7 @@ impl Default for SessionLifecycleSettings {
             first_run_reviewed: false,
             retention_days: 30,
             last_completed_at_ms: None,
+            auto_adapt_provider_on_switch: true,
         }
     }
 }
@@ -5556,8 +5560,8 @@ fn provider_compatibility_from_sessions(
         missing_provider_count,
         scan_generation: format!("{:016x}", generation.finish()),
         encrypted_content_warning: None,
-        adaptation_available: false,
-        adaptation_message: "当前上游 provider-sync 尚无 active-only 范围；为避免扫描或改写归档历史，适配写入已禁用。".to_string(),
+        adaptation_available: mismatch_count > 0,
+        adaptation_message: "适配会逐个改写这些活动会话自己的记录文件与数据库行，写前自动备份；归档历史不会被读取或写入。".to_string(),
         scan_elapsed_ms: 0,
         archived_rollouts_traversed: 0,
     }
@@ -5597,16 +5601,67 @@ pub async fn adapt_active_sessions_to_current_provider(
     scan_generation: String,
 ) -> CommandResult<ProviderCompatibilityPayload> {
     tauri::async_runtime::spawn_blocking(move || {
-        let payload = provider_compatibility_payload();
-        let message = if scan_generation != payload.scan_generation {
-            "兼容性检查结果已过期，请重新检查。"
-        } else {
-            "当前上游 provider-sync 不能限定为活动会话；Codex Minus 已阻止全历史回退，升级上游接口后才会开放适配。"
-        };
-        CommandResult {
-            status: "not_implemented".to_string(),
-            message: message.to_string(),
-            payload,
+        let before = provider_compatibility_payload();
+        if scan_generation != before.scan_generation {
+            return failed("兼容性检查结果已过期，请重新检查。", before);
+        }
+        if before.mismatch_count == 0 {
+            return ok("活动会话的 provider 已兼容当前配置。", before);
+        }
+        let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+        let (_, sessions, _) = load_local_session_inventory();
+        match crate::session_adaptation::adapt_active_sessions_to_provider(
+            &home,
+            &before.current_provider,
+            &sessions,
+        ) {
+            Ok(outcome) => {
+                let mut payload = provider_compatibility_payload();
+                if outcome.encrypted_sessions > 0 {
+                    payload.encrypted_content_warning = Some(format!(
+                        "{} 个会话带有上一供应商的 encrypted_content：标记已适配，但继续或压缩这些对话可能失败；需要可靠续聊时请切回原供应商或开新会话。",
+                        outcome.encrypted_sessions
+                    ));
+                }
+                log_manager_event(
+                    "manager.provider_compatibility.adapt",
+                    json!({
+                        "targetProvider": payload.current_provider,
+                        "adapted": outcome.adapted,
+                        "skippedLocked": outcome.skipped_locked,
+                        "failed": outcome.failed,
+                        "encryptedSessions": outcome.encrypted_sessions,
+                        "backupDir": outcome
+                            .backup_dir
+                            .as_ref()
+                            .map(|path| path.to_string_lossy().to_string()),
+                    }),
+                );
+                let mut message = format!("已适配 {} 个活动会话，写前已备份。", outcome.adapted);
+                if outcome.skipped_locked > 0 {
+                    message.push_str(&format!(
+                        "另有 {} 个被运行中的 Codex 占用，已跳过；关闭 Codex 后可重试。",
+                        outcome.skipped_locked
+                    ));
+                }
+                if let Some(warning) = &payload.encrypted_content_warning {
+                    message.push_str(warning);
+                }
+                if outcome.failed > 0 {
+                    return failed(
+                        &format!(
+                            "{} 个会话适配失败，其改动已回退。{message}",
+                            outcome.failed
+                        ),
+                        payload,
+                    );
+                }
+                ok(&message, payload)
+            }
+            Err(error) => {
+                let payload = provider_compatibility_payload();
+                failed(&format!("适配未执行：{error}"), payload)
+            }
         }
     })
     .await
@@ -5740,7 +5795,26 @@ mod session_lifecycle_tests {
         assert_eq!(result.mismatch_count, 2);
         assert_eq!(result.missing_provider_count, 1);
         assert_eq!(result.archived_rollouts_traversed, 0);
-        assert!(!result.adaptation_available);
+        assert!(result.adaptation_available);
+
+        let matching = vec![session("matching", false, Some(3), "OpenAI")];
+        let clean = provider_compatibility_from_sessions("OpenAI".to_string(), &matching);
+        assert!(!clean.adaptation_available);
+    }
+
+    #[test]
+    fn lifecycle_settings_predating_the_adapt_toggle_load_with_it_on() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("session-lifecycle.json");
+        std::fs::write(
+            &path,
+            r#"{"archiveEnabled":true,"firstRunReviewed":true,"retentionDays":20,"lastCompletedAtMs":null}"#,
+        )
+        .unwrap();
+        let settings = read_session_lifecycle_settings_from(&path).unwrap();
+        assert!(settings.auto_adapt_provider_on_switch);
+        assert!(settings.archive_enabled);
+        assert_eq!(settings.retention_days, 20);
     }
 
     #[test]

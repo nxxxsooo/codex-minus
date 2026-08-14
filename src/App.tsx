@@ -421,20 +421,22 @@ export function App() {
     return result;
   };
 
-  const saveSessionLifecycle = async (next: SessionLifecycleSettingsResult) => {
+  const saveSessionLifecycle = async (patch: Partial<SessionLifecycleSettingsResult>) => {
     const result = await run(() =>
       call<SessionLifecycleSettingsResult>("save_session_lifecycle_settings", {
         settings: {
-          archiveEnabled: next.archiveEnabled,
-          firstRunReviewed: next.firstRunReviewed,
-          retentionDays: next.retentionDays,
-          lastCompletedAtMs: next.lastCompletedAtMs,
+          archiveEnabled: patch.archiveEnabled ?? sessionLifecycle?.archiveEnabled ?? false,
+          firstRunReviewed: patch.firstRunReviewed ?? sessionLifecycle?.firstRunReviewed ?? false,
+          retentionDays: patch.retentionDays ?? sessionLifecycle?.retentionDays ?? 30,
+          lastCompletedAtMs: patch.lastCompletedAtMs ?? sessionLifecycle?.lastCompletedAtMs ?? null,
+          autoAdaptProviderOnSwitch:
+            patch.autoAdaptProviderOnSwitch ?? sessionLifecycle?.autoAdaptProviderOnSwitch ?? true,
         },
       }),
     );
     if (result) {
       setSessionLifecycle(result);
-      showNotice(t("自动归档"), result.message, result.status);
+      showNotice(t("会话设置"), result.message, result.status);
     }
     return result;
   };
@@ -454,14 +456,7 @@ export function App() {
       ]),
     );
     if (!confirmed) return;
-    const saved = await saveSessionLifecycle({
-      status: "ok",
-      message: "",
-      archiveEnabled: true,
-      firstRunReviewed: true,
-      retentionDays,
-      lastCompletedAtMs: sessionLifecycle?.lastCompletedAtMs ?? null,
-    });
+    const saved = await saveSessionLifecycle({ archiveEnabled: true, firstRunReviewed: true, retentionDays });
     if (saved && isSuccessStatus(saved.status)) await runArchiveMaintenance();
   };
 
@@ -514,17 +509,25 @@ export function App() {
     }
   };
 
-  const adaptActiveSessions = async () => {
-    if (!providerCompatibility) return;
+  const adaptActiveSessions = async (scan = providerCompatibility) => {
+    if (!scan?.adaptationAvailable) return;
     const result = await run(() =>
       call<ProviderCompatibilityResult>("adapt_active_sessions_to_current_provider", {
-        scanGeneration: providerCompatibility.scanGeneration,
+        scanGeneration: scan.scanGeneration,
       }),
     );
     if (result) {
       setProviderCompatibility(result);
       showNotice(t("适配活动会话"), result.message, result.status);
     }
+  };
+
+  // The automatic pass never blocks the switch: it runs after the switch reports, scans fresh so
+  // the compare-and-swap acts on what it just counted, and reports through its own notice.
+  const adaptSessionsAfterSwitch = async () => {
+    const scan = await refreshProviderCompatibility(true);
+    if (sessionLifecycle?.autoAdaptProviderOnSwitch === false) return;
+    if (scan?.mismatchCount) await adaptActiveSessions(scan);
   };
 
   const requestDeleteLocalSession = (session: LocalSession) =>
@@ -947,7 +950,7 @@ export function App() {
         launchMode: switchSettings.launchMode,
         status: "ok",
       });
-      await refreshProviderCompatibility(true);
+      await adaptSessionsAfterSwitch();
     } finally {
       setRelaySwitching(false);
     }
@@ -1236,7 +1239,7 @@ type Actions = {
   refreshLocalSessions: (silent?: boolean, archived?: boolean, cursor?: string) => Promise<LocalSessionsResult | null>;
   refreshSessionLifecycle: (silent?: boolean) => Promise<SessionLifecycleSettingsResult | null>;
   refreshArchivePreview: (retentionDays?: number, silent?: boolean) => Promise<ArchivePreviewResult | null>;
-  saveSessionLifecycle: (settings: SessionLifecycleSettingsResult) => Promise<SessionLifecycleSettingsResult | null>;
+  saveSessionLifecycle: (patch: Partial<SessionLifecycleSettingsResult>) => Promise<SessionLifecycleSettingsResult | null>;
   enableSessionArchiving: (retentionDays: number) => Promise<void>;
   runArchiveMaintenance: () => Promise<ArchiveMaintenanceResult | null>;
   archiveOrRestoreSession: (session: LocalSession, archived: boolean) => Promise<void>;
@@ -1764,25 +1767,11 @@ function SessionsScreen({
       await actions.enableSessionArchiving(retentionDays);
       return;
     }
-    await actions.saveSessionLifecycle({
-      status: "ok",
-      message: "",
-      archiveEnabled: false,
-      firstRunReviewed: lifecycle?.firstRunReviewed ?? false,
-      retentionDays,
-      lastCompletedAtMs: lifecycle?.lastCompletedAtMs ?? null,
-    });
+    await actions.saveSessionLifecycle({ archiveEnabled: false, retentionDays });
   };
 
   const saveRetentionDays = async () => {
-    await actions.saveSessionLifecycle({
-      status: "ok",
-      message: "",
-      archiveEnabled: lifecycle?.archiveEnabled ?? false,
-      firstRunReviewed: lifecycle?.firstRunReviewed ?? false,
-      retentionDays,
-      lastCompletedAtMs: lifecycle?.lastCompletedAtMs ?? null,
-    });
+    await actions.saveSessionLifecycle({ retentionDays });
     await actions.refreshArchivePreview(retentionDays, true);
   };
 
@@ -1871,6 +1860,18 @@ function SessionsScreen({
               {t("适配到当前 provider")}
             </Button>
           </Toolbar>
+          <label className="feature-toggle">
+            <input
+              checked={lifecycle?.autoAdaptProviderOnSwitch ?? true}
+              onChange={(event) => void actions.saveSessionLifecycle({ autoAdaptProviderOnSwitch: event.currentTarget.checked })}
+              type="checkbox"
+            />
+            <span>
+              <strong>{t("切换供应商后自动适配")}</strong>
+              <small>{t("仅活动会话，写前自动备份；归档不受影响")}</small>
+            </span>
+            <span className="toggle-switch-visual" aria-hidden="true"><span className="toggle-switch-thumb" /></span>
+          </label>
           {providerCompatibility ? (
             <div className="hint-line">
               <Info className="h-4 w-4" />

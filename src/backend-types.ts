@@ -246,6 +246,7 @@ export type SessionLifecycleSettingsResult = CommandResult<{
   firstRunReviewed: boolean;
   retentionDays: number;
   lastCompletedAtMs: number | null;
+  autoAdaptProviderOnSwitch: boolean;
 }>;
 
 export type ArchivePreviewResult = CommandResult<{
