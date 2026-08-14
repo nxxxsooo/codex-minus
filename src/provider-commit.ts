@@ -429,6 +429,8 @@ export const PROVIDER_COMMIT_REASON_SENTENCES: Record<string, string> = {
     "该供应商的配置指向一个外部模型目录文件，本次保存会丢失它；请先在模型目录设置中处理外部目录。",
   "external catalog ownership requires the reviewed adoption command":
     "该供应商的模型目录由外部文件所有，请先走目录采用流程再保存。",
+  "active provider default model is absent from the bundled baseline":
+    "启动模型已不在本版本的官方目录中；请在模型列表中重新选择启动模型后再保存。",
 };
 
 export interface ProviderCommitFailureNotice {

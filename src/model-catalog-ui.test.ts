@@ -2,6 +2,7 @@ import assert from "node:assert";
 import { describe, it } from "node:test";
 
 import {
+  catalogActionRequiredLabel,
   addCatalogCandidate,
   adoptionPreviewSummary,
   catalogCandidateSlugs,
@@ -304,7 +305,7 @@ describe("the model table shows the list Codex will show", () => {
     { slug: "gpt-5.5", visible: true },
     { slug: "gpt-5.4", visible: false },
     { slug: "gpt-5.4-mini", visible: false },
-    { slug: "gpt-5.2", visible: true },
+    { slug: "gpt-5.3-codex-spark", visible: true },
   ];
   const pro = ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.5", "gpt-5.3-codex-spark"];
   const visibleList = (overlay: CatalogOverlayDraft) => [
@@ -316,7 +317,7 @@ describe("the model table shows the list Codex will show", () => {
     // Codex hides the retired pair, so a table that listed every official entry offered two models
     // the picker does not have.
     assert.equal(officialModelIsVisible(emptyOverlay(), { slug: "gpt-5.4", visible: false }), false);
-    assert.equal(officialModelIsVisible(emptyOverlay(), { slug: "gpt-5.2", visible: true }), true);
+    assert.equal(officialModelIsVisible(emptyOverlay(), { slug: "gpt-5.3-codex-spark", visible: true }), true);
     const shown = { official: { "gpt-5.4": override({ visible: true }) }, custom: [] };
     assert.equal(officialModelIsVisible(shown, { slug: "gpt-5.4", visible: false }), true);
   });
@@ -331,12 +332,12 @@ describe("the model table shows the list Codex will show", () => {
   });
 
   it("turns a deletion into the managed catalog that can express it", () => {
-    const deleted = { official: { "gpt-5.2": override({ visible: false }) }, custom: [] };
+    const deleted = { official: { "gpt-5.3-codex-spark": override({ visible: false }) }, custom: [] };
     assert.equal(catalogModeForOverlay("native-official", deleted), "official-plus-custom");
   });
 
   it("offers a deleted model back and never offers one the table already shows", () => {
-    const deleted = { official: { "gpt-5.2": override({ visible: false }) }, custom: [] };
+    const deleted = { official: { "gpt-5.3-codex-spark": override({ visible: false }) }, custom: [] };
     const candidates = catalogCandidateSlugs({
       overlay: deleted,
       officialModels,
@@ -344,7 +345,7 @@ describe("the model table shows the list Codex will show", () => {
       // would put two rows with the same slug into one generated catalog.
       providerCandidates: ["gpt-5.6-sol", "gpt-5.3-codex-spark", "gpt-4o-audio-preview"],
     });
-    assert.ok(candidates.includes("gpt-5.2"), "a deleted model can be added back");
+    assert.ok(candidates.includes("gpt-5.3-codex-spark"), "a deleted model can be added back");
     assert.ok(candidates.includes("gpt-5.4"), "a model the baseline hides can be added");
     assert.ok(!candidates.includes("gpt-5.6-sol"), "a visible official row is not offered again");
     assert.deepEqual(
@@ -354,16 +355,20 @@ describe("the model table shows the list Codex will show", () => {
     );
   });
 
+  // Today's baseline lists exactly the Pro set, so a listed-but-unwanted official row — the case
+  // the restore must hide — needs a hypothetical future baseline entry to exist at all.
+  const officialModelsWithExtra = [...officialModels, { slug: "gpt-future-extra", visible: true }];
+
   it("restores the Pro list without forgetting the context windows already typed", () => {
     const before: CatalogOverlayDraft = {
       official: { "gpt-5.6-sol": override({ contextWindow: 372000 }) },
       custom: addCatalogCandidate(emptyOverlay(), "some-experiment").custom,
     };
-    const after = restoreCatalogList({ overlay: before, officialModels, wanted: pro });
+    const after = restoreCatalogList({ overlay: before, officialModels: officialModelsWithExtra, wanted: pro });
     assert.deepEqual(visibleList(after).sort(), [...pro].sort());
     assert.equal(after.official["gpt-5.6-sol"].contextWindow, 372000);
     assert.equal(after.official["gpt-5.6-sol"].visible, null, "a Pro model keeps the baseline answer");
-    assert.equal(after.official["gpt-5.2"].visible, false);
+    assert.equal(after.official["gpt-future-extra"].visible, false);
     assert.equal(after.official["gpt-5.4"], undefined, "a model already hidden needs no override");
   });
 
@@ -373,22 +378,32 @@ describe("the model table shows the list Codex will show", () => {
       custom: addCatalogCandidate(emptyOverlay(), "some-experiment").custom,
     };
     assert.deepEqual(
-      catalogRestoreLosses({ overlay: before, officialModels, wanted: pro }).sort(),
-      ["gpt-5.2", "some-experiment"],
+      catalogRestoreLosses({ overlay: before, officialModels: officialModelsWithExtra, wanted: pro }).sort(),
+      ["gpt-future-extra", "some-experiment"],
     );
-    const restored = restoreCatalogList({ overlay: before, officialModels, wanted: pro });
-    assert.deepEqual(catalogRestoreLosses({ overlay: restored, officialModels, wanted: pro }), []);
+    const restored = restoreCatalogList({ overlay: before, officialModels: officialModelsWithExtra, wanted: pro });
+    assert.deepEqual(catalogRestoreLosses({ overlay: restored, officialModels: officialModelsWithExtra, wanted: pro }), []);
   });
 
   it("refuses a startup model the user deleted, and a list with nothing left in it", () => {
-    const deleted = { official: { "gpt-5.2": override({ visible: false }) }, custom: [] };
+    const deleted = { official: { "gpt-5.3-codex-spark": override({ visible: false }) }, custom: [] };
     const slugs = officialModels.filter((model) => model.visible).map((model) => model.slug);
-    assert.equal(validateCatalogDraft(deleted, "official-plus-custom", "gpt-5.2", slugs), "invalid-default-model");
+    assert.equal(validateCatalogDraft(deleted, "official-plus-custom", "gpt-5.3-codex-spark", slugs), "invalid-default-model");
     assert.equal(validateCatalogDraft(deleted, "official-plus-custom", "gpt-5.5", slugs), null);
     // The generator refuses a catalog with no visible model; the editor says so before the save.
     assert.equal(validateCatalogDraft(emptyOverlay(), "official-plus-custom", "", []), "empty-catalog");
     assert.equal(validateCatalogDraft(emptyOverlay(), "custom-only", "", slugs), "empty-catalog");
     assert.equal(validateCatalogDraft(emptyOverlay(), "native-official", "", []), null);
+  });
+});
+
+describe("the readiness sentinel reaches the screen as a sentence", () => {
+  it("maps the persisted code and passes real sentences through", () => {
+    // `catalog-readiness-unavailable` is a stable persisted sentinel; rendering it raw put a bare
+    // code on screen. Every other actionRequired value the backend writes is already a sentence.
+    assert.notEqual(catalogActionRequiredLabel("catalog-readiness-unavailable"), "catalog-readiness-unavailable");
+    assert.match(catalogActionRequiredLabel("catalog-readiness-unavailable"), /。$/);
+    assert.equal(catalogActionRequiredLabel("该供应商依赖未提供的代理能力。"), "该供应商依赖未提供的代理能力。");
   });
 });
 

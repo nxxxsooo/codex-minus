@@ -4883,3 +4883,120 @@ fn a_profile_carrying_a_stale_catalog_pointer_can_still_be_saved() {
     )
     .expect("a leftover catalog pointer must not make a profile unsaveable");
 }
+
+/// Builds a managed profile whose default model an application update's bundled baseline no
+/// longer carries at all, with a generation already on disk — the state an app update leaves
+/// behind. `gpt-5.2` is the real instance: one shipped asset carried it listed, the corrected
+/// asset does not carry it, and any profile saved against the old asset wakes up exactly here.
+fn stranded_default_fixture(active: &str) -> (Fixture, Vec<u8>) {
+    let stranded = canonical_profile(
+        "stranded",
+        "gpt-5.2",
+        "https://stranded.example/v1",
+        "provider-key",
+    );
+    let other = pure_oauth_profile("main");
+    let initial = settings_with(vec![stranded, other], active);
+    let mut state = state_with_official();
+    let generated_path = crate::model_catalog::generated_relative_path("stranded");
+    state.profiles.insert(
+        "stranded".to_string(),
+        crate::model_catalog::ProfileCatalogState {
+            mode: CatalogMode::OfficialPlusCustom,
+            mode_explicit: true,
+            generated_path: Some(generated_path.clone()),
+            generated_hash: Some("hash-from-the-previous-app-version".to_string()),
+            generation: 3,
+            ..crate::model_catalog::ProfileCatalogState::default()
+        },
+    );
+    let fixture = Fixture::new(&initial, &state);
+    let artifact = fixture.paths.codex_home.join(&generated_path);
+    fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+    let effective_catalog = b"{\"models\":[{\"slug\":\"gpt-5.2\"}]}".to_vec();
+    fs::write(&artifact, &effective_catalog).unwrap();
+    (fixture, effective_catalog)
+}
+
+fn stranded_default_request(persisted: &BackendSettings, revision: u64) -> ProviderCommitRequest {
+    let mut draft = catalog_draft("stranded");
+    draft.mode_explicit = true;
+    ProviderCommitRequest {
+        topology: ProviderOwnedTopologyDraft::from_settings(persisted),
+        catalog_drafts: vec![draft],
+        focused_profile_id: Some("stranded".to_string()),
+        action: ProviderCommitAction::Save,
+        previous_active_relay_id: persisted.active_relay_id.clone(),
+        confirm_context_cleanup: false,
+        draft_revision: revision,
+        expected_provider_fingerprint: provider_owned_fingerprint(
+            &ProviderOwnedTopologyDraft::from_settings(persisted),
+        )
+        .unwrap(),
+    }
+}
+
+#[test]
+fn a_bundled_update_that_retires_the_default_model_keeps_the_catalog_for_continuity() {
+    let (fixture, effective_catalog) = stranded_default_fixture("main");
+    let persisted = fixture.read_settings();
+    let generated_path = crate::model_catalog::generated_relative_path("stranded");
+
+    commit_provider_detail_from_paths(&fixture.paths, stranded_default_request(&persisted, 7))
+        .expect("a retired default on an inactive profile must not block the save");
+
+    // The profile is reported as needing a replacement default, not silently invalidated: the
+    // last valid generation — file, hash, path, and counter — survives untouched.
+    let state = fixture.read_state();
+    let profile_state = state.profiles.get("stranded").unwrap();
+    assert_eq!(
+        profile_state.action_required.as_deref(),
+        Some("catalog-readiness-unavailable")
+    );
+    assert_eq!(profile_state.mode, CatalogMode::OfficialPlusCustom);
+    assert_eq!(
+        profile_state.generated_path.as_deref(),
+        Some(generated_path.as_str())
+    );
+    assert_eq!(
+        profile_state.generated_hash.as_deref(),
+        Some("hash-from-the-previous-app-version")
+    );
+    assert_eq!(profile_state.generation, 3);
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join(&generated_path)).unwrap(),
+        effective_catalog,
+        "the effective catalog the user is running on must survive the update"
+    );
+}
+
+#[test]
+fn a_bundled_update_that_retires_the_active_default_model_names_the_repair() {
+    let (fixture, effective_catalog) = stranded_default_fixture("stranded");
+    let persisted = fixture.read_settings();
+    let before = fixture.file_generation();
+
+    let error =
+        commit_provider_detail_from_paths(&fixture.paths, stranded_default_request(&persisted, 8))
+            .unwrap_err();
+
+    // The active profile cannot commit against a catalog that lost its default, but the failure
+    // names the repair — pick a replacement default — instead of the generic not-ready family.
+    assert_eq!(error.code(), ProviderCommitErrorCode::CatalogUnavailable);
+    assert_eq!(
+        error.reason(),
+        "active provider default model is absent from the bundled baseline"
+    );
+    assert_eq!(fixture.file_generation(), before, "nothing on disk moved");
+    assert_eq!(
+        fs::read(
+            fixture
+                .paths
+                .codex_home
+                .join(crate::model_catalog::generated_relative_path("stranded"))
+        )
+        .unwrap(),
+        effective_catalog,
+        "the catalog Codex is running on stays in place for continuity"
+    );
+}

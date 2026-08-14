@@ -42,6 +42,10 @@ export const EN_PLAIN: Record<string, string> = {
     "This provider's config points at an external model-catalog file that this save would lose; resolve the external catalog in the catalog settings first.",
   "该供应商的模型目录由外部文件所有，请先走目录采用流程再保存。":
     "This provider's model catalog is owned by an external file; go through the catalog adoption flow before saving.",
+  "启动模型已不在本版本的官方目录中；请在模型列表中重新选择启动模型后再保存。":
+    "The startup model is no longer in this version's official catalog; pick a new startup model from the model list and save again.",
+  "模型目录当前无法生成；请检查启动模型是否仍在本版本的目录中。":
+    "The model catalog cannot be generated right now; check whether the startup model is still in this version's catalog.",
   "原生能力优先": "Native-capability priority",
   "高级兼容路径": "Advanced compatibility path",
   "当前为 native-official；仅使用官方 OAuth，不会自动转换为混合供应商。":

@@ -52,6 +52,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  catalogActionRequiredLabel,
   addCatalogCandidate,
   adoptionPreviewSummary,
   appModelLabel,
@@ -1378,7 +1379,7 @@ function CatalogProfileEditor({
         <div className="catalog-editor-head">
           <div>
             <strong>{t("模型目录")}</strong>
-            <span>{summary?.actionRequired || t("此供应商模式不支持托管模型目录。")}</span>
+            <span>{summary?.actionRequired ? t(catalogActionRequiredLabel(summary.actionRequired)) : t("此供应商模式不支持托管模型目录。")}</span>
           </div>
           <UiBadge variant="outline">{t("不可用")}</UiBadge>
         </div>
@@ -1500,7 +1501,7 @@ function CatalogProfileEditor({
           </Button>
         </div>
       </div>
-      {summary?.actionRequired || draftError ? <div className="catalog-inline-error">{summary?.actionRequired || catalogDraftErrorLabel(draftError)}</div> : null}
+      {summary?.actionRequired || draftError ? <div className="catalog-inline-error">{summary?.actionRequired ? t(catalogActionRequiredLabel(summary.actionRequired)) : catalogDraftErrorLabel(draftError)}</div> : null}
       {summary?.mode === "native-official" && mode !== "native-official" ? (
         <div className="hint-line">
           <Info className="h-4 w-4" />
