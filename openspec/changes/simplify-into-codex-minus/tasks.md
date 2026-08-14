@@ -33,7 +33,8 @@
 - [x] 3b.3 Settle `load_settings`/`save_settings` through `settle_blocking` so a panic answers the caller.
 - [x] 3b.4 Give each bounded helper capture its own temp files (Windows clock granularity + shared pid collided, so one helper deleted another's output).
 - [x] 3b.5 Normalize a backend-returned profile at the editor boundary; the wire omits empty strings, so `.trim()` on an absent field crashed every save on such a profile.
-- [ ] 3b.6 Root-cause the reported in-session `staleState` on a second consecutive save. Backend two-save round-trip is ruled out by test in both native and managed modes; the invariant test is a guard, not a fix.
+- [ ] 3b.6 Root-cause the reported in-session `staleState` on a second consecutive save. Ruled out by test: the fingerprint a save returns matches both the settings it returns and the generation on disk, for official-mixed and OAuth-only profiles, including a save that generates a catalog — so the backend's fingerprint accounting is not the cause. Also ruled out by reading: `settleProviderCommit` adopts the returned baseline on every success regardless of disposition, and `refreshAfterCommit` does not re-read settings, so the editor cannot lose or overwrite it. Remaining: instrument the two fingerprints actually sent from a real session.
+- [ ] 3b.7 Decide and implement what a save does with a leftover `model_catalog_json` in a profile's stored config — clear it, or name the key to remove. Today it answers `InvalidDraft: provider draft validation failed`, which is both unactionable and misattributed: `validate_provider_detail_request` returns `Ok(())` for the same input, so the rejection comes from a different step than the message names. Reproduction banked as an ignored test.
 
 ## 4. Foolproof editor
 

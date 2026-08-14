@@ -4731,3 +4731,147 @@ fn a_context_override_on_a_native_profile_generates_the_catalog_it_needs() {
         "a new generation only reaches Codex after a restart"
     );
 }
+
+/// The fingerprint a save answers with must be the fingerprint the next save is judged against.
+///
+/// The editor keeps whatever the last save returned as its compare-and-swap baseline. If that value
+/// described the draft the transaction planned rather than the generation now on disk, every later
+/// save in the session would report stale state and only restarting the application — which reads
+/// the settings fresh — would clear it. That is the reported failure, so this pins the invariant
+/// even though it currently holds: the accounting has three chances to disagree (the plan, the
+/// sanitized payload, and the file) and only one of them is what a later save is compared against.
+#[test]
+fn the_fingerprint_a_save_returns_is_the_one_the_next_save_is_judged_against() {
+    let context_draft = || {
+        let mut draft = catalog_draft("relay-a");
+        draft.mode = CatalogMode::NativeOfficial;
+        draft.mode_explicit = true;
+        draft.overlay.official.insert(
+            "gpt-5.6-sol".to_string(),
+            crate::model_catalog::OfficialOverride {
+                context_window: Some(372_000),
+                ..Default::default()
+            },
+        );
+        draft
+    };
+
+    let shapes: Vec<(&str, RelayProfile)> = vec![
+        (
+            "official mixed with an API key",
+            canonical_profile(
+                "relay-a",
+                "gpt-5.6-sol",
+                "https://a.example/v1",
+                "provider-key-a",
+            ),
+        ),
+        ("official OAuth only", pure_oauth_profile("relay-a")),
+    ];
+
+    for (shape, profile) in shapes {
+        let initial = settings_with(vec![profile], "relay-a");
+        let fixture = Fixture::new(&initial, &state_with_official());
+        let persisted = fixture.read_settings();
+
+        let payload = commit_provider_detail_from_paths(
+            &fixture.paths,
+            ProviderCommitRequest {
+                topology: ProviderOwnedTopologyDraft::from_settings(&persisted),
+                catalog_drafts: vec![context_draft()],
+                focused_profile_id: Some("relay-a".to_string()),
+                action: ProviderCommitAction::Save,
+                previous_active_relay_id: persisted.active_relay_id.clone(),
+                confirm_context_cleanup: false,
+                draft_revision: 1,
+                expected_provider_fingerprint: provider_owned_fingerprint(
+                    &ProviderOwnedTopologyDraft::from_settings(&persisted),
+                )
+                .unwrap(),
+            },
+        )
+        .unwrap_or_else(|error| panic!("{shape}: first save failed: {error:?}"));
+
+        // The settings handed back must describe the same generation as the fingerprint handed
+        // back, or the editor's next request carries a topology that fingerprint does not cover.
+        let returned = payload
+            .settings
+            .clone()
+            .expect("a successful save answers with settings");
+        assert_eq!(
+            provider_owned_fingerprint(&ProviderOwnedTopologyDraft::from_settings(&returned))
+                .unwrap(),
+            payload.provider_fingerprint,
+            "{shape}: the returned settings and fingerprint describe different generations",
+        );
+
+        // And it must match the generation the next save is actually compared against: the settings
+        // as they are read back from disk.
+        let reread = fixture.read_settings();
+        assert_eq!(
+            payload.provider_fingerprint,
+            provider_owned_fingerprint(&ProviderOwnedTopologyDraft::from_settings(&reread))
+                .unwrap(),
+            "{shape}: the editor was handed a fingerprint no later save can match",
+        );
+    }
+}
+
+/// A banked reproduction, not a passing expectation.
+///
+/// A profile whose stored `configContents` already carries `model_catalog_json` — which the
+/// reporting machine's `relay-mrewdbn2` does, left by an older version — cannot be saved: the
+/// command answers `InvalidDraft: provider draft validation failed`, which the user can do nothing
+/// with. The message is also misattributed: calling `validate_provider_detail_request` directly
+/// with the same persisted settings and state returns `Ok(())`, so the rejection comes from a
+/// different step than the one the message names.
+///
+/// Ignored because the correct behaviour is not yet decided — the save should either clear the
+/// stale pointer or say which key to remove, and choosing between those is not a test's call.
+/// Un-ignore it when that is settled; it fails today for the reason above.
+#[test]
+#[ignore = "reproduction for an undecided behaviour; see the doc comment"]
+fn a_profile_carrying_a_stale_catalog_pointer_can_still_be_saved() {
+    let mut profile = canonical_profile(
+        "relay-a",
+        "gpt-5.6-sol",
+        "https://a.example/v1",
+        "provider-key-a",
+    );
+    profile.config_contents = format!(
+        "model_catalog_json = \"/tmp/codex-minus-stale-catalog.json\"\n{}",
+        profile.config_contents
+    );
+    let initial = settings_with(vec![profile], "relay-a");
+    let fixture = Fixture::new(&initial, &state_with_official());
+    let persisted = fixture.read_settings();
+
+    let mut draft = catalog_draft("relay-a");
+    draft.mode = CatalogMode::NativeOfficial;
+    draft.mode_explicit = true;
+    draft.overlay.official.insert(
+        "gpt-5.6-sol".to_string(),
+        crate::model_catalog::OfficialOverride {
+            context_window: Some(372_000),
+            ..Default::default()
+        },
+    );
+
+    commit_provider_detail_from_paths(
+        &fixture.paths,
+        ProviderCommitRequest {
+            topology: ProviderOwnedTopologyDraft::from_settings(&persisted),
+            catalog_drafts: vec![draft],
+            focused_profile_id: Some("relay-a".to_string()),
+            action: ProviderCommitAction::Save,
+            previous_active_relay_id: persisted.active_relay_id.clone(),
+            confirm_context_cleanup: false,
+            draft_revision: 1,
+            expected_provider_fingerprint: provider_owned_fingerprint(
+                &ProviderOwnedTopologyDraft::from_settings(&persisted),
+            )
+            .unwrap(),
+        },
+    )
+    .expect("a leftover catalog pointer must not make a profile unsaveable");
+}
