@@ -170,7 +170,7 @@ export function rootTomlStringValue(contents: string, key: string): string {
   return "";
 }
 
-function tomlSectionName(line: string): string | null {
+export function tomlSectionName(line: string): string | null {
   const match = /^\s*\[([^\]]+)\]\s*$/.exec(line);
   return match ? match[1].trim() : null;
 }
@@ -181,8 +181,17 @@ function tomlStringAssignmentValue(line: string, key: string): string | null {
   return match[2].replace(/\\(["'\\])/g, "$1");
 }
 
-function tomlString(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+/// Escape a string for the inside of a TOML basic string — the `"..."` form, not the literal
+/// `'...'` one.
+///
+/// JSON does the work because TOML's basic-string escapes are a superset of JSON's: both spell
+/// `\"`, `\\`, `\b`, `\f`, `\n`, `\r`, `\t`, and `\uXXXX` the same way, and TOML adds only `\U`
+/// for astral code points, which JSON encodes as a surrogate pair of `\uXXXX` that TOML also
+/// accepts. Escaping by hand instead — replacing backslash and quote and stopping there — leaves a
+/// raw newline sitting inside the quotes, and a basic string may not span lines, so Codex fails to
+/// parse its own config rather than reading a slightly wrong value.
+export function tomlString(value: string): string {
+  return JSON.stringify(value).slice(1, -1);
 }
 
 export function codexModelFromConfig(contents: string): string {

@@ -1049,13 +1049,18 @@ pub(crate) fn load_and_migrate_state_from_path(
         let state_has_profile = state.profiles.contains_key(&profile.id);
         let entry = state.profiles.entry(profile.id.clone()).or_default();
         if !state_has_profile {
-            entry.mode = default_mode(
-                profile,
-                existing_pointer.as_deref(),
-                entry.upstream_topology,
-            );
+            // A pointer at the exact path this manager generates for this exact profile is our own
+            // leftover, not a catalog the user owns — an older version wrote it into the stored
+            // config. Reading it as external ownership deadlocks the profile: every save is then
+            // rejected for not preserving a pointer the editor has no way to send, and correcting
+            // the mode requires a save. `manager_owned_pointer_path` cannot answer this, because it
+            // asks the state for a generated path and the state is what is being built here.
+            let user_owned_pointer = existing_pointer
+                .as_deref()
+                .filter(|pointer| *pointer != generated_relative_path(&profile.id));
+            entry.mode = default_mode(profile, user_owned_pointer, entry.upstream_topology);
             if entry.mode == CatalogMode::External {
-                entry.external_pointer = existing_pointer.clone();
+                entry.external_pointer = user_owned_pointer.map(ToString::to_string);
             }
             entry.overlay = migrate_legacy_overlay(profile, &official_slugs)?;
         } else if !entry.mode_explicit {

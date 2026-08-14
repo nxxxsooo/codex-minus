@@ -1,3 +1,5 @@
+import { tomlString } from "./codex-toml.ts";
+
 export type NewProviderFieldErrors = Partial<
   Record<"baseUrl" | "apiKey" | "model", "required">
 >;
@@ -133,10 +135,6 @@ function requiredNewProviderFields(profile: {
   if (!profile.apiKey.trim()) missing.push("apiKey");
   if (!profile.model.trim()) missing.push("model");
   return missing;
-}
-
-function tomlString(value: string): string {
-  return JSON.stringify(value).slice(1, -1);
 }
 
 export function validateNewProviderDraft(profile: {
