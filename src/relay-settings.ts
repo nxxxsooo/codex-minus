@@ -33,15 +33,12 @@ import {
 } from "./codex-toml";
 import {
   applyProviderConfigPatch,
-  withGeneratedRelayConfig,
+  CHAT_UPSTREAM_BASE_URL_KEY,
+  PROTOCOL_PROXY_BASE_URL,
+  providerConfigPatchRequiresBackendTransform,
   type ProviderConfigTargetContract,
-} from "./provider-config-draft";
-import { providerConfigPatchRequiresBackendTransform } from "./provider-config-transform-router";
+} from "./provider-config-transform-router";
 import { createNewRelayProfileDraft } from "./provider-onboarding";
-
-export const PROTOCOL_PROXY_BASE_URL = "http://127.0.0.1:57321/v1";
-
-export const CHAT_UPSTREAM_BASE_URL_KEY = "codex_plus_chat_base_url";
 
 const emptyContextSelection = (): RelayContextSelection => ({
   mcpServers: [],
@@ -337,7 +334,7 @@ export function withGeneratedRelayFiles(
     return { ...profile, configContents: "", authContents: "", aggregate: normalizeAggregateConfig(profile.aggregate, []) };
   }
   return {
-    ...withGeneratedRelayConfig(profile, contract),
+    ...applyProviderConfigPatch(profile, {}, contract),
     authContents: "",
   };
 }
@@ -347,21 +344,11 @@ export function providerConfigTargetContract(
   brandNew: boolean,
 ): ProviderConfigTargetContract {
   if (!brandNew) return { target: "preserveExisting", source: "existing" };
-  if (
-    profile.transientTarget === "nativePriority"
-    && profile.relayMode === "official"
-    && profile.officialMixApiKey
-    && profile.protocol === "responses"
-  ) {
-    return { target: "nativePriority", source: "brand-new-empty" };
-  }
-  if (profile.relayMode === "official" && !profile.officialMixApiKey) {
-    return { target: "pureOAuth", source: "brand-new-empty" };
-  }
-  if (profile.relayMode === "pureApi") {
-    return { target: "pureApi", source: "brand-new-empty" };
-  }
-  return { target: "compatibility", source: "brand-new-empty" };
+  // Every brand-new draft is native-priority by construction: `createNewRelayProfileDraft` fixes
+  // mode, protocol, and key mixing, so provenance is the whole decision left to make. The profile
+  // parameter stays because a contract is decided per profile, and callers should keep saying
+  // which one they mean.
+  return { target: "nativePriority", source: "brand-new-empty" };
 }
 
 export function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {

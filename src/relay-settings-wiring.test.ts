@@ -26,7 +26,7 @@ describe("provider config draft wiring", () => {
 
     assert.match(create, /return createNewRelayProfileDraft\(\{ id, contextSelection \}\)/);
     assert.doesNotMatch(create, /withGeneratedRelayFiles/);
-    assert.match(generate, /withGeneratedRelayConfig\(profile, contract\)/);
+    assert.match(generate, /applyProviderConfigPatch\(profile, \{\}, contract\)/);
     assert.match(patch, /withGeneratedRelayFiles\(next, options\.target\)/);
     assert.match(patch, /applyProviderConfigPatch\(next, patch, options\.target\)/);
     assert.match(
@@ -36,9 +36,12 @@ describe("provider config draft wiring", () => {
     assert.doesNotMatch(source + shell, /ensureCodexProviderDefaults/);
   });
 
-  it("uses preserveExisting for every saved profile edit", () => {
+  it("decides the contract by provenance alone", () => {
     const target = functionSource("providerConfigTargetContract");
     assert.match(target, /if \(!brandNew\) return \{ target: "preserveExisting", source: "existing" \}/);
     assert.match(target, /target: "nativePriority", source: "brand-new-empty"/);
+    // The retired four-target picker branched on profile fields; provenance must be the only
+    // condition left.
+    assert.doesNotMatch(target, /profile\.(relayMode|officialMixApiKey|protocol|transientTarget)/);
   });
 });

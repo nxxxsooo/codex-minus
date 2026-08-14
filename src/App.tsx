@@ -99,11 +99,6 @@ import {
   type NewProviderTransientTarget,
 } from "./provider-onboarding";
 import {
-  applyProviderConfigPatch,
-  withGeneratedRelayConfig,
-  type ProviderConfigTargetContract,
-} from "./provider-config-draft";
-import {
   applyProviderDetailInspection,
   beginProviderDetailEdit,
   beginProviderDetailInspection,
@@ -126,9 +121,6 @@ import {
   type ProviderDetailTransformInvocation,
   type ProviderDetailTransformResponse,
 } from "./provider-detail-draft-state";
-import {
-  providerConfigPatchRequiresBackendTransform,
-} from "./provider-config-transform-router";
 import {
   deriveProviderNativeCapabilityView,
   providerTransitionDecisionForStructuredPatch,

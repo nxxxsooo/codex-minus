@@ -14,7 +14,7 @@ import {
   type ProviderDraftTransformConfirmation,
   type ProviderDraftTransition,
 } from "./provider-config-transform-router.ts";
-import type { ProviderConfigTargetContract } from "./provider-config-draft.ts";
+import type { ProviderConfigTargetContract } from "./provider-config-transform-router.ts";
 
 export type ProviderDetailProfile = ProviderRelayProfileSource & ProviderConfigRoutableProfile;
 
