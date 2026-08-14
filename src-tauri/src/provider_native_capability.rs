@@ -102,8 +102,6 @@ pub enum NativeCapabilityReason {
     DestructiveExitConfirmationRequired,
     CapabilityLossConfirmationRequired,
     RawProviderContractChangeRequiresExplicitAction,
-    RawProviderSourceRequired,
-    RawProviderSourceInvalid,
     MalformedContextLimit,
 }
 
@@ -111,7 +109,6 @@ pub enum NativeCapabilityReason {
 #[serde(rename_all = "camelCase")]
 pub enum NativeCapabilityDraftAction {
     Inspect,
-    ValidateRawEdit,
     EnableNativePriority,
     ExitPureApi,
     ExitLegacyCompatibility,
@@ -769,9 +766,6 @@ pub fn draft_provider_native_capability_with_boundary(
             request.catalog_mode,
             ProviderNativeCapabilityDraftPreview::default(),
         ),
-        NativeCapabilityDraftAction::ValidateRawEdit => {
-            validate_raw_provider_config_edit(request, boundary)
-        }
         NativeCapabilityDraftAction::EnableNativePriority => {
             enable_native_priority_draft(request, boundary)
         }
@@ -816,10 +810,7 @@ pub fn transform_provider_native_capability_draft_from_paths(
     request: ProviderNativeCapabilityDraftRequest,
 ) -> ProviderNativeCapabilityDraftPayload {
     if !action_requires_persisted_catalog_ownership(request.action) {
-        return transform_provider_native_capability_draft_from_settings_path(
-            settings_path,
-            request,
-        );
+        return draft_provider_native_capability(&request);
     }
 
     let trusted_mode = std::fs::read(settings_path)
@@ -855,24 +846,6 @@ pub fn transform_provider_native_capability_draft_from_paths(
         );
     }
     draft_provider_native_capability(&trusted_request)
-}
-
-pub fn transform_provider_native_capability_draft_from_settings_path(
-    settings_path: &Path,
-    request: ProviderNativeCapabilityDraftRequest,
-) -> ProviderNativeCapabilityDraftPayload {
-    if request.action == NativeCapabilityDraftAction::ValidateRawEdit
-        && !raw_source_matches_persisted(settings_path, &request)
-    {
-        return unchanged_draft_payload(
-            &request,
-            &EvaluatorDraftReadOnlyBoundary,
-            NativeCapabilityDraftStatus::Blocked,
-            vec![NativeCapabilityReason::RawProviderSourceInvalid],
-            ProviderNativeCapabilityDraftPreview::default(),
-        );
-    }
-    draft_provider_native_capability(&request)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -954,38 +927,6 @@ fn raw_provider_contract_projection(document: &DocumentMut) -> RawProviderContra
     }
 }
 
-fn raw_source_matches_persisted(
-    settings_path: &Path,
-    request: &ProviderNativeCapabilityDraftRequest,
-) -> bool {
-    let Some(source_config_contents) = request.source_config_contents.as_deref() else {
-        return false;
-    };
-    let Ok(settings_bytes) = std::fs::read(settings_path) else {
-        return false;
-    };
-    let Ok(settings) = serde_json::from_slice::<BackendSettings>(&settings_bytes) else {
-        return false;
-    };
-    let Some(persisted_profile) = settings
-        .relay_profiles
-        .iter()
-        .find(|profile| profile.id == request.profile.id)
-    else {
-        return false;
-    };
-    let Ok(persisted_document) = persisted_profile.config_contents.parse::<DocumentMut>() else {
-        return false;
-    };
-    let Ok(source_document) = source_config_contents.parse::<DocumentMut>() else {
-        return false;
-    };
-    raw_source_is_structurally_valid(&persisted_document)
-        && raw_source_is_structurally_valid(&source_document)
-        && raw_provider_contract_projection(&persisted_document)
-            == raw_provider_contract_projection(&source_document)
-}
-
 fn raw_source_is_structurally_valid(document: &DocumentMut) -> bool {
     let Some(provider_id) = document
         .get("model_provider")
@@ -1050,82 +991,6 @@ fn project_raw_provider_fields(
     profile.auto_compact_limit =
         raw_integer_projection(document, "model_auto_compact_token_limit")?;
     Ok(())
-}
-
-fn validate_raw_provider_config_edit(
-    request: &ProviderNativeCapabilityDraftRequest,
-    boundary: &dyn ProviderNativeCapabilityDraftReadOnlyBoundary,
-) -> ProviderNativeCapabilityDraftPayload {
-    let Some(source_config_contents) = request.source_config_contents.as_deref() else {
-        return unchanged_draft_payload(
-            request,
-            boundary,
-            NativeCapabilityDraftStatus::Blocked,
-            vec![NativeCapabilityReason::RawProviderSourceRequired],
-            ProviderNativeCapabilityDraftPreview::default(),
-        );
-    };
-    let source_document = match source_config_contents.parse::<DocumentMut>() {
-        Ok(document) => document,
-        Err(_) => {
-            return unchanged_draft_payload(
-                request,
-                boundary,
-                NativeCapabilityDraftStatus::Blocked,
-                vec![NativeCapabilityReason::RawProviderSourceInvalid],
-                ProviderNativeCapabilityDraftPreview::default(),
-            );
-        }
-    };
-    if !raw_source_is_structurally_valid(&source_document) {
-        return unchanged_draft_payload(
-            request,
-            boundary,
-            NativeCapabilityDraftStatus::Blocked,
-            vec![NativeCapabilityReason::RawProviderSourceInvalid],
-            ProviderNativeCapabilityDraftPreview::default(),
-        );
-    }
-    let candidate_document = match request.profile.config_contents.parse::<DocumentMut>() {
-        Ok(document) => document,
-        Err(_) => {
-            return unchanged_draft_payload(
-                request,
-                boundary,
-                NativeCapabilityDraftStatus::Blocked,
-                vec![NativeCapabilityReason::MalformedToml],
-                ProviderNativeCapabilityDraftPreview::default(),
-            );
-        }
-    };
-    if raw_provider_contract_projection(&source_document)
-        != raw_provider_contract_projection(&candidate_document)
-    {
-        return unchanged_draft_payload(
-            request,
-            boundary,
-            NativeCapabilityDraftStatus::Blocked,
-            vec![NativeCapabilityReason::RawProviderContractChangeRequiresExplicitAction],
-            ProviderNativeCapabilityDraftPreview::default(),
-        );
-    }
-    let mut profile = request.profile.clone();
-    if let Err(reason) = project_raw_provider_fields(&mut profile, &candidate_document) {
-        return unchanged_draft_payload(
-            request,
-            boundary,
-            NativeCapabilityDraftStatus::Blocked,
-            vec![reason],
-            ProviderNativeCapabilityDraftPreview::default(),
-        );
-    }
-    ready_draft_payload(
-        request,
-        boundary,
-        profile,
-        request.catalog_mode,
-        ProviderNativeCapabilityDraftPreview::default(),
-    )
 }
 
 fn enable_native_priority_draft(

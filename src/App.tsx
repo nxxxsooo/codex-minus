@@ -51,7 +51,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import {
   addCatalogCandidate,
   adoptionPreviewSummary,
@@ -92,7 +91,7 @@ import {
   type ProviderCommitUiState,
   type ProviderMutationKind,
 } from "./provider-commit";
-import { providerConfigDraft, RelayConfigPanels } from "./relay-config-panels";
+import { LiveConfigPanel } from "./relay-config-panels";
 import {
   createNewRelayProfileDraft,
   PRO_MODEL_SLUGS,
@@ -110,7 +109,6 @@ import {
   beginProviderDetailInspection,
   beginProviderDetailLegacyIdUpgrade,
   beginProviderDetailNativePriorityUpgrade,
-  beginProviderDetailRawConfigEdit,
   cancelProviderDetailLegacyProviderIdResolution,
   cancelProviderDetailTransition,
   confirmProviderDetailTransition,
@@ -2132,10 +2130,7 @@ function RelayProfileDetail({
     ? normalizeAggregateRelayProfile(profile, form)
     : deriveRelayProfileFromFiles({
         ...profile,
-        configContents: providerConfigDraft(
-          profile.configContents,
-          relayFiles?.configContents ?? "",
-        ),
+        configContents: profile.configContents,
         authContents: "",
       });
   const authoritativeCapabilityProfileRevision = JSON.stringify(
@@ -2183,7 +2178,7 @@ function RelayProfileDetail({
       ? normalizeAggregateRelayProfile(profile, form)
       : deriveRelayProfileFromFiles({
           ...profile,
-          configContents: providerConfigDraft(profile.configContents, relayFiles?.configContents ?? ""),
+          configContents: profile.configContents,
           authContents: "",
         });
     const nextCatalogDraft = isNew || catalogProfile
@@ -2240,10 +2235,7 @@ function RelayProfileDetail({
           ? normalizeAggregateRelayProfile(profile, form)
           : deriveRelayProfileFromFiles({
               ...profile,
-              configContents: providerConfigDraft(
-                profile.configContents,
-                relayFiles?.configContents ?? "",
-              ),
+              configContents: profile.configContents,
               authContents: "",
             }),
       );
@@ -2398,15 +2390,6 @@ function RelayProfileDetail({
     );
     setLegacyReplacementProviderId("");
   };
-  const editProviderConfigDraft = (configContents: string) => {
-    const current = detailStateRef.current;
-    const step = beginProviderDetailRawConfigEdit(current, {
-      configContents,
-      catalogMode: current.catalogDraft?.mode
-        ?? defaultCatalogMode(current.profile.relayMode, current.profile.officialMixApiKey),
-    });
-    void dispatchProviderDetailStep(step);
-  };
   const newProviderFieldErrors = isNew && !isAggregateRelayProfile(draft)
     ? validateNewProviderDraft(draft)
     : {};
@@ -2416,12 +2399,10 @@ function RelayProfileDetail({
       ? t("请填写所有必填字段。")
       : detailState.pendingTransformRevision !== null
         ? t("供应商配置转换中。")
-        : detailState.rawConfigContents !== null
-          ? t("供应商配置尚未通过后端验证。")
-          : detailState.pendingConfirmation !== null
-            ? t("请先确认或取消供应商兼容模式转换。")
-            : detailState.pendingLegacyProviderIdResolution !== null
-              ? t("请先完成或取消旧供应商 ID 重命名。")
+        : detailState.pendingConfirmation !== null
+          ? t("请先确认或取消供应商兼容模式转换。")
+          : detailState.pendingLegacyProviderIdResolution !== null
+            ? t("请先完成或取消旧供应商 ID 重命名。")
             : detailState.blockers.length
               ? t("供应商草稿被后端验证阻止，请处理提示后重试。")
               : null;
@@ -2504,7 +2485,6 @@ function RelayProfileDetail({
       isNew
       || !form.relayProfilesEnabled
       || detailState.pendingTransformRevision !== null
-      || detailState.rawConfigContents !== null
       || detailState.pendingConfirmation !== null
       || detailState.pendingLegacyProviderIdResolution !== null
       || detailState.blockers.length > 0
@@ -2584,7 +2564,7 @@ function RelayProfileDetail({
           ) : null}
         </section>
       )}
-        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={replaceDraft} onProfileEdit={editDraft} onSwitch={switchDraft} actions={actions} catalogProfile={catalogProfile} draftCommitBlocked={detailState.pendingTransformRevision !== null || detailState.rawConfigContents !== null || detailState.pendingConfirmation !== null || detailState.pendingLegacyProviderIdResolution !== null || detailState.blockers.length > 0} />
+        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={replaceDraft} onProfileEdit={editDraft} onSwitch={switchDraft} actions={actions} catalogProfile={catalogProfile} draftCommitBlocked={detailState.pendingTransformRevision !== null || detailState.pendingConfirmation !== null || detailState.pendingLegacyProviderIdResolution !== null || detailState.blockers.length > 0} />
       {!managedCatalogCapable(draft) ? null : catalogDraft ? (
         <CatalogProfileEditor
           catalog={modelCatalog}
@@ -2608,14 +2588,9 @@ function RelayProfileDetail({
         </section>
       )}
       {isAggregateRelayProfile(draft) ? null : (
-      <RelayFileEditors
-        profile={detailState.rawConfigContents === null
-          ? draft
-          : { ...draft, configContents: detailState.rawConfigContents }}
+      <RelayLiveFilePanels
         authStatus={isActive ? relayFiles?.authStatus ?? null : null}
         liveConfigContents={relayFiles?.configContents ?? ""}
-        onProviderConfigChange={editProviderConfigDraft}
-        providerReadOnly={isNew}
       />
       )}
     </div>
@@ -2981,36 +2956,19 @@ function AggregateRelayProfileEditor({
   );
 }
 
-function RelayFileEditors({
-  profile,
+function RelayLiveFilePanels({
   authStatus,
   liveConfigContents,
-  onProviderConfigChange,
-  providerReadOnly = false,
 }: {
-  profile: RelayProfile;
   authStatus: RelayFilesResult["authStatus"] | null;
   liveConfigContents: string;
-  onProviderConfigChange: (configContents: string) => void;
-  providerReadOnly?: boolean;
 }) {
-  const nativeOfficial = profile.relayMode === "official" && !profile.officialMixApiKey;
-  const providerConfig = profile.configContents;
   return (
     <div className="relay-file-grid">
-      <RelayConfigPanels
+      <LiveConfigPanel
         liveConfig={liveConfigContents}
-        liveHelp={t("直接读取 Codex 当前文件；Manager 不保存副本，切换时只替换供应商字段。")}
+        liveHelp={t("直接读取 Codex 当前文件；Manager 不保存副本，切换时只替换供应商字段。密钥以 ●● 遮蔽。")}
         liveTitle={t("实时 config.toml")}
-        nativeOfficial={nativeOfficial}
-        nativeProviderMessage={t("官方原生模式无独立供应商配置；运行时使用右侧实时 config.toml。")}
-        onProviderConfigChange={onProviderConfigChange}
-        providerConfig={providerConfig}
-        providerHelp={providerReadOnly
-          ? t("新供应商首次统一保存前，此处仅预览 canonical TOML；保存后可编辑。")
-          : t("只保存模型、供应商、Base URL、目录指针和供应商表；全局配置实时读取。")}
-        providerReadOnly={providerReadOnly}
-        providerTitle={t("供应商配置")}
         unavailableLiveMessage={t("当前 live config.toml 不可用")}
       />
       <div className="relay-file-panel">

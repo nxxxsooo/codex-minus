@@ -46,7 +46,6 @@ export type ProviderDetailDraftState<P extends ProviderDetailProfile> = {
   inspection: ProviderDetailInspectionMetadata | null;
   preview: ProviderDetailTransformPreview | null;
   blockers: string[];
-  rawConfigContents: string | null;
 };
 
 export type ProviderDetailTransitionIntent = {
@@ -109,7 +108,6 @@ export function createProviderDetailDraftState<P extends ProviderDetailProfile>(
     inspection: null,
     preview: null,
     blockers: [],
-    rawConfigContents: null,
   };
 }
 
@@ -122,9 +120,6 @@ export function beginProviderDetailEdit<P extends ProviderDetailProfile>(
   },
 ): ProviderDetailStep<P> {
   assertActive(state);
-  if (state.rawConfigContents !== null) {
-    throw new Error("Verify the raw provider config draft before editing structured fields.");
-  }
   const revision = state.latestTransformRevision + 1;
   const routed = routeProviderConfigDraftEdit({
     profile: state.profile,
@@ -316,55 +311,6 @@ export function cancelProviderDetailLegacyProviderIdResolution<
   };
 }
 
-export function beginProviderDetailRawConfigEdit<P extends ProviderDetailProfile>(
-  state: ProviderDetailDraftState<P>,
-  input: {
-    configContents: string;
-    catalogMode: ProviderDraftTransformRequest<P>["catalogMode"];
-  },
-): ProviderDetailStep<P> {
-  assertActive(state);
-  const revision = state.latestTransformRevision + 1;
-  const correlation = {
-    sessionToken: state.sessionToken,
-    profileId: state.profile.id,
-    revision,
-  };
-  return {
-    state: {
-      ...state,
-      latestTransformRevision: revision,
-      pendingTransformRevision: revision,
-      pendingTransition: null,
-      pendingConfirmation: null,
-      pendingLegacyProviderIdResolution: null,
-      inspection: null,
-      preview: null,
-      blockers: [],
-      rawConfigContents: input.configContents,
-    },
-    effects: [{
-      kind: "transform",
-      invocation: {
-        command: "transform_provider_native_capability_draft",
-        request: {
-          draftRevision: revision,
-          profile: {
-            ...state.profile,
-            configContents: input.configContents,
-            authContents: "",
-          },
-          catalogMode: input.catalogMode,
-          action: "validateRawEdit",
-          confirmations: [],
-          sourceConfigContents: state.profile.configContents,
-        },
-      },
-      correlation,
-    }],
-  };
-}
-
 export type ProviderDetailTransformResponse<P extends ProviderDetailProfile> =
   ProviderDraftTransformResponse<P> & {
     inspection: ProviderDetailInspectionMetadata;
@@ -439,7 +385,6 @@ export function settleProviderDetailTransform<P extends ProviderDetailProfile>(
       inspection: response.inspection,
       preview: response.preview,
       blockers: [],
-      rawConfigContents: null,
     },
     effects: [],
     disposition: "applied",
@@ -517,7 +462,6 @@ export function replaceProviderDetailProfile<P extends ProviderDetailProfile>(
     inspection: null,
     preview: null,
     blockers: [],
-    rawConfigContents: null,
   };
 }
 
@@ -645,9 +589,6 @@ export function buildProviderDetailCommitEffect<P extends ProviderDetailProfile>
   }
   if (state.pendingTransformRevision !== null) {
     throw new Error("Cannot commit while a provider draft transform is pending.");
-  }
-  if (state.rawConfigContents !== null) {
-    throw new Error("Cannot commit an unverified raw provider config draft.");
   }
   if (state.pendingConfirmation !== null) {
     throw new Error("Cannot commit before confirming or cancelling the provider transition preview.");

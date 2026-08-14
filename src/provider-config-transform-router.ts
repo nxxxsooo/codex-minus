@@ -9,7 +9,6 @@ export type ProviderCatalogMode = CatalogModeValue;
 
 export type ProviderDraftTransformAction =
   | "inspect"
-  | "validateRawEdit"
   | "enableNativePriority"
   | "exitPureApi"
   | "exitLegacyCompatibility"

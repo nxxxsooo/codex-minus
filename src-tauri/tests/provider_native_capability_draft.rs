@@ -1,17 +1,15 @@
 use std::cell::Cell;
 
 use codex_minus_lib::provider_native_capability::{
-    CatalogMode, MANAGED_ACTOR_HEADER_NAME, MANAGED_ACTOR_HEADER_VALUE,
-    NativeCapabilityDraftAction, NativeCapabilityDraftConfirmation, NativeCapabilityDraftStatus,
-    NativeCapabilityReason, ProviderNativeCapabilityDraftReadOnlyBoundary,
-    ProviderNativeCapabilityDraftRequest, draft_provider_native_capability,
-    draft_provider_native_capability_with_boundary, inspect_profile,
-    transform_provider_native_capability_draft,
+    CatalogMode, NativeCapabilityDraftAction, NativeCapabilityDraftConfirmation,
+    NativeCapabilityDraftStatus, NativeCapabilityReason,
+    ProviderNativeCapabilityDraftReadOnlyBoundary, ProviderNativeCapabilityDraftRequest,
+    draft_provider_native_capability, draft_provider_native_capability_with_boundary,
+    inspect_profile, transform_provider_native_capability_draft,
     transform_provider_native_capability_draft_from_paths,
-    transform_provider_native_capability_draft_from_settings_path,
 };
 use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol};
-use toml_edit::{DocumentMut, Item, value};
+use toml_edit::{DocumentMut, Item};
 
 fn mixed_profile(id: &str, api_key: &str, config_contents: &str) -> RelayProfile {
     RelayProfile {
@@ -77,22 +75,16 @@ fn typescript_transform_request_shape_deserializes_through_the_real_serde_bounda
     });
     assert!(serde_json::from_value::<ProviderNativeCapabilityDraftRequest>(wrong_case).is_err());
 
-    let raw_source = canonical_source("inline");
-    let raw_wire = serde_json::json!({
+    // `validateRawEdit` is deliberately absent: the raw provider-TOML editor that sent it is
+    // gone, so the wire no longer carries an action that accepts hand-written config.
+    let retired = serde_json::json!({
         "draftRevision": 75,
-        "profile": mixed_profile("serde-raw", "same-secret", &raw_source),
+        "profile": mixed_profile("serde-raw", "same-secret", &canonical_source("inline")),
         "catalogMode": "official-plus-custom",
         "action": "validateRawEdit",
         "confirmations": [],
-        "sourceConfigContents": raw_source,
     });
-    let raw_request: ProviderNativeCapabilityDraftRequest =
-        serde_json::from_value(raw_wire).unwrap();
-    assert_eq!(
-        raw_request.action,
-        NativeCapabilityDraftAction::ValidateRawEdit
-    );
-    assert!(raw_request.source_config_contents.is_some());
+    assert!(serde_json::from_value::<ProviderNativeCapabilityDraftRequest>(retired).is_err());
 }
 
 fn parsed(
@@ -105,21 +97,6 @@ fn provider<'a>(document: &'a DocumentMut, provider_id: &str) -> &'a dyn toml_ed
     document["model_providers"][provider_id]
         .as_table_like()
         .unwrap()
-}
-
-fn raw_edit_request(
-    source_profile: &RelayProfile,
-    candidate_config: String,
-) -> ProviderNativeCapabilityDraftRequest {
-    let mut profile = source_profile.clone();
-    profile.config_contents = candidate_config;
-    let mut request = request(
-        profile,
-        CatalogMode::OfficialPlusCustom,
-        NativeCapabilityDraftAction::ValidateRawEdit,
-    );
-    request.source_config_contents = Some(source_profile.config_contents.clone());
-    request
 }
 
 fn canonical_source(header_shape: &str) -> String {
@@ -1161,272 +1138,6 @@ fn direct_command_rejects_auth_contents_and_never_echoes_them() {
         let serialized = serde_json::to_string(&payload).unwrap();
         assert!(!serialized.contains(auth_contents));
     }
-}
-
-#[test]
-fn raw_edit_backend_adopts_only_parsed_non_contract_changes() {
-    let upgraded = draft_provider_native_capability(&request(
-        mixed_profile("raw-edit", "same-secret", &canonical_source("inline")),
-        CatalogMode::NativeOfficial,
-        NativeCapabilityDraftAction::EnableNativePriority,
-    ));
-    assert_eq!(upgraded.status, NativeCapabilityDraftStatus::Ready);
-    let source = upgraded.draft.profile;
-    let candidate = source
-        .config_contents
-        .replace("gpt-5", "gpt-5.6")
-        .replace("https://relay.example/v1", "https://new.example/v1")
-        .replace("keep-root", "changed-root")
-        .replace("keep-me", "changed-header");
-    let payload = draft_provider_native_capability(&raw_edit_request(&source, candidate.clone()));
-
-    assert_eq!(payload.status, NativeCapabilityDraftStatus::Ready);
-    assert!(payload.blockers.is_empty());
-    assert_eq!(payload.draft.profile.config_contents, candidate);
-    assert_eq!(payload.draft.profile.model, "gpt-5.6");
-    assert_eq!(payload.draft.profile.base_url, "https://new.example/v1");
-    assert_eq!(
-        payload.draft.profile.upstream_base_url,
-        "https://new.example/v1"
-    );
-    assert!(
-        payload
-            .draft
-            .profile
-            .config_contents
-            .contains("local-image-extension")
-    );
-
-    let without_required_values = candidate
-        .lines()
-        .filter(|line| !line.starts_with("model = ") && !line.starts_with("base_url = "))
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n";
-    let missing = draft_provider_native_capability(&raw_edit_request(
-        &payload.draft.profile,
-        without_required_values,
-    ));
-    assert_eq!(missing.status, NativeCapabilityDraftStatus::Ready);
-    assert!(missing.draft.profile.model.is_empty());
-    assert!(missing.draft.profile.base_url.is_empty());
-    assert!(missing.draft.profile.upstream_base_url.is_empty());
-}
-
-#[test]
-fn raw_edit_backend_blocks_malformed_and_owned_contract_changes_without_secret_errors() {
-    let upgraded = draft_provider_native_capability(&request(
-        mixed_profile("raw-blocked", "same-secret", &canonical_source("inline")),
-        CatalogMode::NativeOfficial,
-        NativeCapabilityDraftAction::EnableNativePriority,
-    ));
-    let source = upgraded.draft.profile;
-    let mut actor_removed = source.config_contents.parse::<DocumentMut>().unwrap();
-    actor_removed["model_providers"]["RelayOne"]["http_headers"]
-        .as_table_like_mut()
-        .unwrap()
-        .remove(MANAGED_ACTOR_HEADER_NAME);
-    let mut actor_non_string = source.config_contents.parse::<DocumentMut>().unwrap();
-    actor_non_string["model_providers"]["RelayOne"]["http_headers"]
-        .as_table_like_mut()
-        .unwrap()
-        .insert(MANAGED_ACTOR_HEADER_NAME, value(7));
-    let mut actor_duplicate = source.config_contents.parse::<DocumentMut>().unwrap();
-    actor_duplicate["model_providers"]["RelayOne"]["http_headers"]
-        .as_table_like_mut()
-        .unwrap()
-        .insert(
-            "X-OpenAI-Actor-Authorization",
-            value(MANAGED_ACTOR_HEADER_VALUE),
-        );
-    let cases = [
-        (
-            "malformed",
-            "broken = \"provider-secret-sentinel".to_string(),
-            NativeCapabilityReason::MalformedToml,
-        ),
-        (
-            "actor",
-            source
-                .config_contents
-                .replace("local-image-extension", "provider-secret-sentinel"),
-            NativeCapabilityReason::RawProviderContractChangeRequiresExplicitAction,
-        ),
-        (
-            "actor removed",
-            actor_removed.to_string(),
-            NativeCapabilityReason::RawProviderContractChangeRequiresExplicitAction,
-        ),
-        (
-            "actor non-string",
-            actor_non_string.to_string(),
-            NativeCapabilityReason::RawProviderContractChangeRequiresExplicitAction,
-        ),
-        (
-            "actor duplicate",
-            actor_duplicate.to_string(),
-            NativeCapabilityReason::RawProviderContractChangeRequiresExplicitAction,
-        ),
-        (
-            "requires auth",
-            source.config_contents.replace(
-                "requires_openai_auth = false",
-                "requires_openai_auth = true",
-            ),
-            NativeCapabilityReason::RawProviderContractChangeRequiresExplicitAction,
-        ),
-        (
-            "bearer",
-            source
-                .config_contents
-                .replace("same-secret", "provider-secret-sentinel"),
-            NativeCapabilityReason::RawProviderContractChangeRequiresExplicitAction,
-        ),
-        (
-            "provider identity",
-            source.config_contents.replace(
-                "model_provider = \"RelayOne\"",
-                "model_provider = \"Other\"",
-            ),
-            NativeCapabilityReason::RawProviderContractChangeRequiresExplicitAction,
-        ),
-        (
-            "provider name",
-            source
-                .config_contents
-                .replace("name = \"OpenAI\"", "name = \"custom\""),
-            NativeCapabilityReason::RawProviderContractChangeRequiresExplicitAction,
-        ),
-        (
-            "wire api",
-            source
-                .config_contents
-                .replace("wire_api = \"responses\"", "wire_api = \"chat\""),
-            NativeCapabilityReason::RawProviderContractChangeRequiresExplicitAction,
-        ),
-        (
-            "malformed model",
-            source
-                .config_contents
-                .replace("model = \"gpt-5\"", "model = 7"),
-            NativeCapabilityReason::MalformedModel,
-        ),
-        (
-            "malformed base URL",
-            source
-                .config_contents
-                .replace("base_url = \"https://relay.example/v1\"", "base_url = 7"),
-            NativeCapabilityReason::MalformedBaseUrl,
-        ),
-        (
-            "malformed context limit",
-            format!("model_context_window = \"bad\"\n{}", source.config_contents),
-            NativeCapabilityReason::MalformedContextLimit,
-        ),
-    ];
-
-    for (label, candidate, reason) in cases {
-        let payload = draft_provider_native_capability(&raw_edit_request(&source, candidate));
-        assert_eq!(
-            payload.status,
-            NativeCapabilityDraftStatus::Blocked,
-            "{label}"
-        );
-        assert_eq!(payload.blockers, vec![reason], "{label}");
-        let operational = serde_json::to_string(&(&payload.blockers, &payload.preview)).unwrap();
-        assert!(!operational.contains("provider-secret-sentinel"), "{label}");
-    }
-
-    let legacy_source = mixed_profile("raw-add-actor", "same-secret", &canonical_source("inline"));
-    let mut actor_added = legacy_source
-        .config_contents
-        .parse::<DocumentMut>()
-        .unwrap();
-    actor_added["model_providers"]["RelayOne"]["http_headers"]
-        .as_table_like_mut()
-        .unwrap()
-        .insert(MANAGED_ACTOR_HEADER_NAME, value(MANAGED_ACTOR_HEADER_VALUE));
-    let added = draft_provider_native_capability(&raw_edit_request(
-        &legacy_source,
-        actor_added.to_string(),
-    ));
-    assert_eq!(added.status, NativeCapabilityDraftStatus::Blocked);
-    assert_eq!(
-        added.blockers,
-        vec![NativeCapabilityReason::RawProviderContractChangeRequiresExplicitAction]
-    );
-
-    for invalid_source in [
-        source
-            .config_contents
-            .replace("model_provider = \"RelayOne\"\n", ""),
-        source
-            .config_contents
-            .replace("model_provider = \"RelayOne\"", "model_provider = 7"),
-        source
-            .config_contents
-            .replace("[model_providers.RelayOne]", "[model_providers.Other]"),
-    ] {
-        let invalid_profile = mixed_profile("invalid-source", "same-secret", &invalid_source);
-        let payload = draft_provider_native_capability(&raw_edit_request(
-            &invalid_profile,
-            invalid_source.clone(),
-        ));
-        assert_eq!(payload.status, NativeCapabilityDraftStatus::Blocked);
-        assert_eq!(
-            payload.blockers,
-            vec![NativeCapabilityReason::RawProviderSourceInvalid]
-        );
-    }
-}
-
-#[test]
-fn raw_edit_command_binds_the_source_contract_to_persisted_settings() {
-    let upgraded = draft_provider_native_capability(&request(
-        mixed_profile("persisted-raw", "same-secret", &canonical_source("inline")),
-        CatalogMode::NativeOfficial,
-        NativeCapabilityDraftAction::EnableNativePriority,
-    ));
-    let persisted = upgraded.draft.profile;
-    let mut settings = BackendSettings::default();
-    settings.relay_profiles.push(persisted.clone());
-    let temp = tempfile::tempdir().unwrap();
-    let settings_path = temp.path().join("settings.json");
-    std::fs::write(&settings_path, serde_json::to_vec(&settings).unwrap()).unwrap();
-
-    let ordinary_candidate = persisted
-        .config_contents
-        .replace("keep-root", "changed-root");
-    let accepted = transform_provider_native_capability_draft_from_settings_path(
-        &settings_path,
-        raw_edit_request(&persisted, ordinary_candidate),
-    );
-    assert_eq!(accepted.status, NativeCapabilityDraftStatus::Ready);
-
-    let actor_candidate = persisted
-        .config_contents
-        .replace("local-image-extension", "forged-actor");
-    let forged_source = mixed_profile("persisted-raw", "same-secret", &actor_candidate);
-    let rejected = transform_provider_native_capability_draft_from_settings_path(
-        &settings_path,
-        raw_edit_request(&forged_source, actor_candidate),
-    );
-    assert_eq!(rejected.status, NativeCapabilityDraftStatus::Blocked);
-    assert_eq!(
-        rejected.blockers,
-        vec![NativeCapabilityReason::RawProviderSourceInvalid]
-    );
-
-    let missing_profile = mixed_profile("not-persisted", "same-secret", &persisted.config_contents);
-    let missing = transform_provider_native_capability_draft_from_settings_path(
-        &settings_path,
-        raw_edit_request(&missing_profile, missing_profile.config_contents.clone()),
-    );
-    assert_eq!(missing.status, NativeCapabilityDraftStatus::Blocked);
-    assert_eq!(
-        missing.blockers,
-        vec![NativeCapabilityReason::RawProviderSourceInvalid]
-    );
 }
 
 #[test]
