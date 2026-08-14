@@ -341,6 +341,7 @@ export type OfficialCatalogOverride = {
 export type CustomCatalogModel = {
   slug: string;
   displayName: string;
+  description?: string;
   contextWindow: number;
   effectiveContextWindowPercent: number;
   visible: boolean;

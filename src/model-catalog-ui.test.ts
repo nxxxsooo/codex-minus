@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   catalogActionRequiredLabel,
+  customDisplayNameFollowsSlug,
   addCatalogCandidate,
   adoptionPreviewSummary,
   catalogCandidateSlugs,
@@ -394,6 +395,73 @@ describe("the model table shows the list Codex will show", () => {
     assert.equal(validateCatalogDraft(emptyOverlay(), "official-plus-custom", "", []), "empty-catalog");
     assert.equal(validateCatalogDraft(emptyOverlay(), "custom-only", "", slugs), "empty-catalog");
     assert.equal(validateCatalogDraft(emptyOverlay(), "native-official", "", []), null);
+  });
+});
+
+describe("known relay model cards in the editor", () => {
+  it("offers every preset that is not already a row, beside provider candidates", () => {
+    const candidates = catalogCandidateSlugs({
+      overlay: emptyOverlay(),
+      officialModels: [],
+      providerCandidates: [],
+    });
+    for (const slug of ["claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]) {
+      assert.ok(candidates.includes(slug), `${slug} preset is offered`);
+    }
+  });
+
+  it("stops offering a preset once its slug is a row, and dedups a provider report of it", () => {
+    const withFable = addCatalogCandidate(emptyOverlay(), "claude-fable-5");
+    const candidates = catalogCandidateSlugs({
+      overlay: withFable,
+      officialModels: [],
+      providerCandidates: ["claude-fable-5", "claude-opus-5"],
+    });
+    assert.ok(!candidates.includes("claude-fable-5"), "an added preset is not offered again");
+    assert.deepEqual(
+      candidates.filter((slug) => slug === "claude-opus-5"),
+      ["claude-opus-5"],
+      "a provider report of a preset is one chip, not two",
+    );
+  });
+
+  it("adds a preset as its complete card, not template defaults", () => {
+    const overlay = addCatalogCandidate(emptyOverlay(), "claude-fable-5");
+    assert.deepEqual(overlay.custom, [{
+      slug: "claude-fable-5",
+      displayName: "Fable 5",
+      description: "Creative-writing model via the Sub2API Responses bridge.",
+      contextWindow: 1_000_000,
+      effectiveContextWindowPercent: 95,
+      visible: true,
+      order: 0,
+      supportedReasoningLevels: [
+        { effort: "low", description: "Fast responses with lighter reasoning" },
+        { effort: "medium", description: "Balances speed and reasoning depth for everyday tasks" },
+        { effort: "high", description: "Greater reasoning depth for complex problems" },
+        { effort: "xhigh", description: "Extra high reasoning depth for complex problems" },
+      ],
+      defaultReasoningLevel: "medium",
+      supportedTools: [],
+      toolCapabilities: null,
+      templateProvenance: "known-relay-model",
+    }]);
+  });
+
+  it("keeps the plain default shape for a slug no card knows", () => {
+    const overlay = addCatalogCandidate(emptyOverlay(), "some-provider-model");
+    assert.equal(overlay.custom[0].displayName, "some-provider-model");
+    assert.equal(overlay.custom[0].contextWindow, 272000);
+    assert.equal(overlay.custom[0].templateProvenance, "provider-candidate");
+    assert.deepEqual(overlay.custom[0].supportedReasoningLevels, []);
+  });
+
+  it("lets a display name follow the slug only until it is edited independently", () => {
+    // A hand-typed row: the name mirrors the slug while untouched, so typing the slug names it.
+    assert.equal(customDisplayNameFollowsSlug("", ""), true);
+    assert.equal(customDisplayNameFollowsSlug("claude-fab", "claude-fab"), true);
+    // A card's name, or one the user edited, must survive a slug correction.
+    assert.equal(customDisplayNameFollowsSlug("Fable 5", "claude-fable-5"), false);
   });
 });
 

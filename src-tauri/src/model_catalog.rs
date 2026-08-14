@@ -250,6 +250,9 @@ impl Default for ReasoningLevel {
 pub struct CustomModel {
     pub slug: String,
     pub display_name: String,
+    /// Shown in Codex's model picker under the display name. Serde-defaulted so state written
+    /// before the field existed still loads.
+    pub description: String,
     pub context_window: u64,
     pub effective_context_window_percent: u8,
     pub visible: bool,
@@ -266,6 +269,7 @@ impl Default for CustomModel {
         Self {
             slug: String::new(),
             display_name: String::new(),
+            description: String::new(),
             context_window: 272_000,
             effective_context_window_percent: 100,
             visible: true,
@@ -1953,6 +1957,9 @@ pub(crate) fn compose_profile_catalog(
                 model["visibility"] = json!(if custom.visible { "list" } else { "hide" });
                 model["priority"] = json!(custom.order);
                 strip_official_only_capabilities(&mut model);
+                if !custom.description.trim().is_empty() {
+                    model["description"] = json!(custom.description.trim());
+                }
                 model["effective_context_window_percent"] =
                     json!(custom.effective_context_window_percent);
                 if !custom.supported_reasoning_levels.is_empty() {
@@ -2388,6 +2395,11 @@ fn overlay_from_catalog(
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let description = model
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
         let tool_capabilities = model.get("tool_capabilities").cloned();
         if let Some(base) = official_map.get(&slug) {
             let base_window = base.get("context_window").and_then(Value::as_u64);
@@ -2425,6 +2437,7 @@ fn overlay_from_catalog(
             overlay.custom.push(CustomModel {
                 slug: slug.clone(),
                 display_name,
+                description,
                 context_window,
                 effective_context_window_percent: effective_percent,
                 visible,
@@ -3142,6 +3155,76 @@ mod tests {
         assert_eq!(promoted[0]["context_window"], 444000);
         assert_eq!(promoted[0]["visibility"], "hide");
         assert_eq!(promoted[0]["unknown_future_field"]["kept"], true);
+    }
+
+    #[test]
+    fn a_preset_shaped_custom_row_round_trips_into_the_generated_catalog() {
+        // The card shape a known-relay-model preset prefills: big context, its own reasoning
+        // ladder and default, an effective percent, and a description for Codex's picker.
+        let mut state = CatalogState::default();
+        state.official = Some(OfficialSnapshot {
+            raw_catalog: official_catalog(),
+            ..OfficialSnapshot::default()
+        });
+        let profile = RelayProfile {
+            id: "p".to_string(),
+            config_contents: "model = \"official-a\"\n".to_string(),
+            ..RelayProfile::default()
+        };
+        let profile_state = ProfileCatalogState {
+            mode: CatalogMode::OfficialPlusCustom,
+            overlay: CatalogOverlay {
+                custom: vec![CustomModel {
+                    slug: "claude-fable-5".to_string(),
+                    display_name: "Fable 5".to_string(),
+                    description: "Creative-writing model via the Sub2API Responses bridge."
+                        .to_string(),
+                    context_window: 1_000_000,
+                    effective_context_window_percent: 95,
+                    supported_reasoning_levels: vec![
+                        ReasoningLevel {
+                            effort: "low".to_string(),
+                            description: "Fast responses with lighter reasoning".to_string(),
+                        },
+                        ReasoningLevel {
+                            effort: "medium".to_string(),
+                            description: "Balances speed and reasoning depth for everyday tasks"
+                                .to_string(),
+                        },
+                    ],
+                    default_reasoning_level: Some("medium".to_string()),
+                    ..CustomModel::default()
+                }],
+                ..CatalogOverlay::default()
+            },
+            ..ProfileCatalogState::default()
+        };
+        let output = compose_profile_catalog(&state, &profile, &profile_state).unwrap();
+        let models = catalog_models(&output).unwrap();
+        let fable = models
+            .iter()
+            .find(|model| model["slug"] == "claude-fable-5")
+            .expect("the preset row is in the generated catalog");
+        assert_eq!(fable["display_name"], "Fable 5");
+        assert_eq!(
+            fable["description"],
+            "Creative-writing model via the Sub2API Responses bridge."
+        );
+        assert_eq!(fable["context_window"], 1_000_000);
+        assert_eq!(fable["effective_context_window_percent"], 95);
+        assert_eq!(fable["default_reasoning_level"], "medium");
+        assert_eq!(fable["supported_reasoning_levels"][1]["effort"], "medium");
+        assert_eq!(fable["visibility"], "list");
+
+        // State written before the field existed still loads, and its rows compose with the
+        // template's own description untouched.
+        let legacy: CustomModel = serde_json::from_value(json!({
+            "slug": "legacy-model",
+            "displayName": "Legacy",
+            "contextWindow": 272000,
+        }))
+        .expect("state without a description field still deserializes");
+        assert_eq!(legacy.description, "");
     }
 
     #[test]
