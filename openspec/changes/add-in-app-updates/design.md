@@ -33,13 +33,18 @@ standard failure notice with 详情 — never a spinner, never a bare code (D3 o
 simplification applies unchanged). Presentation rules live in a leaf module beside their test;
 App.tsx only wires.
 
-## D4. Windows updates install the NSIS package; MSI remains download-only
+## D4. One Windows format: NSIS only, and the MSI is dropped
 
-Tauri's updater applies NSIS packages. The MSI stays on the release page for hand installs, but a
-machine that wants in-app updates must have installed from the `-setup.exe` once — updating an
-MSI install with the NSIS package would leave two entries in "Apps". The release notes say so, and
-the fleet's 0.4.8 hand-install (the last one) uses the NSIS exe. `installMode: "passive"` shows
-the native progress UI without asking questions.
+Tauri's updater applies NSIS packages, so a machine that wants in-app updates must have installed
+from the `-setup.exe` — updating an MSI install with the NSIS package leaves two entries in
+"Apps". Keeping the MSI on the release page would therefore keep alive exactly one thing: the
+possibility of installing through the channel updates cannot ride. MSI's actual constituency —
+Group-Policy / enterprise silent deployment — does not exist in this fleet, so the MSI target,
+its WiX language config, and its build/packaging/assertion lines are removed rather than
+documented around (user decision 2026-08-14:「只留一个」). A machine that installed an older
+`.msi` uninstalls it before the 0.4.8 hand-install — the release notes say so, and user data
+under `~/.codex-session-delete/` survives uninstall by design. `installMode: "passive"` shows the
+native progress UI without asking questions; the NSIS installer carries SimpChinese and English.
 
 ## D5. macOS artifact: the ad-hoc-signed .app, tarred by the build
 

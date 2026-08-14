@@ -10,6 +10,7 @@ Every release today reaches the fleet by hand: the owner cuts a tag, downloads t
 - The app checks the manifest once at startup, silently; when a newer version exists it shows a persistent banner naming the version, with a one-click "更新并重启" that downloads, verifies the signature, installs, and relaunches.
 - Update failures (offline, signature mismatch, interrupted download) never block the app: the check is silent on failure and an explicit install attempt reports through the normal failure notice with 详情.
 - The verification public key is pinned in the app config; the private key lives only on the owner's machine and in the repository's CI secret.
+- The Windows MSI bundle is dropped end-to-end: NSIS (`-setup.exe`) is the only Windows format, because it is the only one the updater can apply, and a second format's sole remaining effect was making the wrong install channel possible.
 
 ## Capabilities
 

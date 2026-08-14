@@ -6,7 +6,9 @@
 #   - manual dispatch on any branch
 #
 # macOS: builds aarch64 .app bundle (ad-hoc signed)
-# Windows: builds native x64 and arm64 .msi + .exe (NSIS) installers
+# Windows: builds native x64 and arm64 .exe (NSIS) installers — NSIS only, because the
+# in-app updater applies NSIS packages and a second format would only invite installing
+# through the channel updates cannot ride.
 
 name: Build
 
@@ -169,19 +171,11 @@ jobs:
         working-directory: src-tauri
         run: cargo check --target ${{ matrix.target }}
 
-      - name: Build Tauri Windows bundle (MSI + NSIS)
-        run: npx tauri build --bundles msi,nsis --target ${{ matrix.target }}
+      - name: Build Tauri Windows bundle (NSIS)
+        run: npx tauri build --bundles nsis --target ${{ matrix.target }}
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
-
-      - name: Upload Windows MSI artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: CodexMinus-Windows-${{ matrix.arch }}-MSI
-          path: src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
-          compression-level: 0
-          if-no-files-found: error
 
       - name: Upload Windows NSIS artifact
         uses: actions/upload-artifact@v4
@@ -228,14 +222,9 @@ jobs:
             cp "$MAC_DIR"/CodexMinus_*.app.tar.gz.sig dist/ 2>/dev/null || true
           fi
 
-          # Windows: require one MSI and one signed NSIS installer per architecture. The
-          # installer and its signature are renamed together so the manifest URLs match.
+          # Windows: require one signed NSIS installer per architecture. The installer
+          # and its signature are renamed together so the manifest URLs match.
           for WIN_ARCH in x64 arm64; do
-            WIN_MSI_DIR="CodexMinus-Windows-${WIN_ARCH}-MSI"
-            MSI_SOURCES=( "$WIN_MSI_DIR"/*.msi )
-            [ "${#MSI_SOURCES[@]}" -eq 1 ] || { echo "::error::Expected one Windows ${WIN_ARCH} MSI artifact"; exit 1; }
-            cp "${MSI_SOURCES[0]}" "dist/CodexMinus_${VERSION}_${WIN_ARCH}.msi"
-
             WIN_NSIS_DIR="CodexMinus-Windows-${WIN_ARCH}-NSIS"
             EXE_SOURCES=( "$WIN_NSIS_DIR"/*.exe )
             [ "${#EXE_SOURCES[@]}" -eq 1 ] || { echo "::error::Expected one Windows ${WIN_ARCH} NSIS artifact"; exit 1; }
@@ -248,15 +237,13 @@ jobs:
           cd dist
           MAC_FILES=( *.app.zip )
           MAC_TAR_FILES=( *.app.tar.gz )
-          MSI_FILES=( *.msi )
           EXE_FILES=( *-setup.exe )
           SIG_FILES=( *.sig )
           [ "${#MAC_FILES[@]}" -eq 1 ] || { echo "::error::Expected one macOS app archive"; exit 1; }
           [ "${#MAC_TAR_FILES[@]}" -eq 1 ] || { echo "::error::Expected one macOS updater archive"; exit 1; }
-          [ "${#MSI_FILES[@]}" -eq 2 ] || { echo "::error::Expected two Windows MSI files"; exit 1; }
           [ "${#EXE_FILES[@]}" -eq 2 ] || { echo "::error::Expected two Windows NSIS installers"; exit 1; }
           [ "${#SIG_FILES[@]}" -eq 3 ] || { echo "::error::Expected three updater signatures"; exit 1; }
-          sha256sum "${MAC_FILES[@]}" "${MAC_TAR_FILES[@]}" "${MSI_FILES[@]}" "${EXE_FILES[@]}" > SHA256SUMS
+          sha256sum "${MAC_FILES[@]}" "${MAC_TAR_FILES[@]}" "${EXE_FILES[@]}" > SHA256SUMS
 
           # The update manifest: released apps poll releases/latest/download/latest.json;
           # artifact URLs are tag-pinned so a later release never retargets this one's links.
@@ -294,8 +281,8 @@ jobs:
             | 平台 | 架构 | 格式 |
             |------|------|------|
             | macOS | arm64 | .app.zip |
-            | Windows | x64 | .msi / .exe (NSIS) |
-            | Windows | arm64 | .msi / .exe (NSIS) |
+            | Windows | x64 | -setup.exe (NSIS) |
+            | Windows | arm64 | -setup.exe (NSIS) |
 
             各平台的安装包与本页面的 `SHA256SUMS` 已作为附件附加到本 Release。
 
@@ -310,7 +297,7 @@ jobs:
 
             **macOS**: 解压后将 `Codex Minus.app` 移入 `/Applications`。首次启动如被拦截，在「系统设置 → 隐私与安全性」中选择「仍要打开」。
 
-            **Windows**: ARM 设备请选择 `arm64`，Intel／AMD 设备请选择 `x64`。**推荐使用 `-setup.exe`（NSIS）安装**：应用内自动更新走 NSIS 通道，用 `.msi` 安装的机器应用内更新后会在「应用」列表留下重复条目。
+            **Windows**: ARM 设备请选择 `arm64`，Intel／AMD 设备请选择 `x64`，运行 `-setup.exe` 安装。此前用旧版 `.msi` 安装过的机器，请先在「设置 → 应用」卸载旧版再安装，避免留下重复条目（用户数据在 `~/.codex-session-delete/`，卸载不受影响）。
 
             ### 应用内更新
 

@@ -12,6 +12,7 @@
 ## 3. CI
 
 - [x] 3.1 Build jobs sign with the secret and upload `.sig` files beside the installers; release job renames installer+signature pairs, asserts one signature per slot, composes `latest.json`, uploads it; release notes state the NSIS exe is the auto-update path on Windows. (README's "no auto-updater" paragraph rewritten too.)
+- [x] 3.2 Drop the MSI target end-to-end — bundle targets, WiX language config, build/upload/packaging/assertion lines, README table, release notes (D4;「只留一个」). The NSIS installer carries SimpChinese and English.
 
 ## 4. Verification
 

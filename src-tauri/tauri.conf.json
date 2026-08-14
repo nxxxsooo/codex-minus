@@ -42,7 +42,6 @@
     "createUpdaterArtifacts": true,
     "targets": [
       "app",
-      "msi",
       "nsis"
     ],
     "icon": [
@@ -54,10 +53,12 @@
       "signingIdentity": "-"
     },
     "windows": {
-      "wix": {
-        "language": "zh-CN"
-      },
-      "nsis": null
+      "nsis": {
+        "languages": [
+          "SimpChinese",
+          "English"
+        ]
+      }
     }
   }
 }

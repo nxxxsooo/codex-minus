@@ -23,8 +23,8 @@ Codex Minus 是 [Codex++ Manager](https://github.com/BigPizzaV3/CodexPlusPlus) �
 
 | 平台 | 架构 | 格式 | 最新版本 |
 |------|------|------|----------|
-| macOS | arm64 | .app.zip | [v0.3.0](https://github.com/nxxxsooo/codex-minus/releases/latest) |
-| Windows | x86_64 | .msi / .exe | [v0.3.0](https://github.com/nxxxsooo/codex-minus/releases/latest) |
+| macOS | arm64 | .app.zip | [最新版](https://github.com/nxxxsooo/codex-minus/releases/latest) |
+| Windows | x64 / arm64 | -setup.exe (NSIS) | [最新版](https://github.com/nxxxsooo/codex-minus/releases/latest) |
 
 - [前往 Release 页面下载](https://github.com/nxxxsooo/codex-minus/releases)
 - [查看项目页面](https://mjshao.fun/codex-minus/)
@@ -99,7 +99,7 @@ shasum -a 256 -c SHA256SUMS
 
 ## 更新与卸载
 
-应用启动时会自动检查 GitHub Release 上的新版本：有新版会在窗口顶部出现横幅，点「更新并重启」即可完成下载、签名校验、安装和重启，无需手动下载。检查失败（如离线）不会打扰使用。Windows 上应用内更新走 NSIS（`-setup.exe`）通道，首次安装请使用 `-setup.exe` 而不是 `.msi`。也可以随时手动下载新版覆盖安装。
+应用启动时会自动检查 GitHub Release 上的新版本：有新版会在窗口顶部出现横幅，点「更新并重启」即可完成下载、签名校验、安装和重启，无需手动下载。检查失败（如离线）不会打扰使用。也可以随时手动下载新版覆盖安装。此前用旧版 `.msi` 安装过的 Windows 机器，请先卸载旧版再装 `-setup.exe`，避免「应用」列表出现重复条目。
 
 用户设置位于 `~/.codex-session-delete/`，覆盖应用不会删除。卸载应用时可单独决定是否保留该目录。
 
@@ -134,7 +134,7 @@ npm run build
 完整 Tauri 构建会生成：
 
 - macOS: `src-tauri/target/release/bundle/macos/Codex Minus.app`
-- Windows: `src-tauri/target/release/bundle/msi/*.msi` 或 `src-tauri/target/release/bundle/nsis/*.exe`
+- Windows: `src-tauri/target/release/bundle/nsis/*.exe`
 
 ## License
 
