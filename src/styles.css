@@ -1130,6 +1130,16 @@ body {
   font-weight: 650;
 }
 
+.catalog-model-name-inputs {
+  display: grid;
+  gap: 4px;
+}
+
+.catalog-model-name-inputs input {
+  height: 28px;
+  font-size: 12px;
+}
+
 .catalog-model-row input[type="radio"] {
   justify-self: center;
   width: 15px;

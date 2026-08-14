@@ -28,6 +28,7 @@ export const EN_PLAIN: Record<string, string> = {
   "保存没有成功，原始错误在详情里。": "The save did not succeed; the raw error is under Details.",
   "调用后端失败，请重试一次；原始错误在详情里。": "The backend call failed; try once more. The raw error is under Details.",
   "详情": "Details",
+  "显示名": "Display name",
   "启动模型没有填写，请在模型列表中选择一个。": "No startup model is set; pick one from the model list.",
   "启动模型不合法，请重新选择。": "The startup model is invalid; pick it again.",
   "Base URL 没有填写。": "Base URL is empty.",

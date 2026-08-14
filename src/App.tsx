@@ -51,8 +51,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { knownRelayModel } from "./known-relay-models";
 import {
   catalogActionRequiredLabel,
+  customDisplayNameFollowsSlug,
   addCatalogCandidate,
   adoptionPreviewSummary,
   appModelLabel,
@@ -1438,7 +1440,8 @@ function CatalogProfileEditor({
   // would keep starting Codex on a model this catalog no longer contains.
   const renameCustom = (index: number, slug: string) => {
     const previous = overlay.custom[index]?.slug ?? "";
-    updateCustom(index, { slug, displayName: slug });
+    const follows = customDisplayNameFollowsSlug(overlay.custom[index]?.displayName ?? "", previous);
+    updateCustom(index, { slug, ...(follows ? { displayName: slug } : {}) });
     if (previous && selectedModel === previous) onProfileEdit({ model: slug });
   };
   const removeCustom = (index: number) => {
@@ -1462,6 +1465,7 @@ function CatalogProfileEditor({
     applyOverlay({ ...overlay, custom: [...overlay.custom, {
       slug: "",
       displayName: "",
+      description: "",
       contextWindow: 272000,
       effectiveContextWindowPercent: 100,
       visible: true,
@@ -1545,11 +1549,18 @@ function CatalogProfileEditor({
                 title={t("设为启动模型")}
                 type="radio"
               />
-              <Input
-                value={model.slug}
-                onChange={(event) => renameCustom(index, event.currentTarget.value)}
-                placeholder="model-id"
-              />
+              <span className="catalog-model-name catalog-model-name-inputs">
+                <Input
+                  value={model.displayName}
+                  onChange={(event) => updateCustom(index, { displayName: event.currentTarget.value })}
+                  placeholder={t("显示名")}
+                />
+                <Input
+                  value={model.slug}
+                  onChange={(event) => renameCustom(index, event.currentTarget.value)}
+                  placeholder="model-id"
+                />
+              </span>
               <Input
                 inputMode="numeric"
                 value={model.contextWindow}
@@ -1562,7 +1573,7 @@ function CatalogProfileEditor({
             {candidates.length ? (
               <div className="catalog-candidates">
                 {candidates.map((slug) => (
-                  <button key={slug} onClick={() => addCustom(slug)} type="button"><Plus className="h-3 w-3" />{slug}</button>
+                  <button key={slug} onClick={() => addCustom(slug)} title={knownRelayModel(slug)?.displayName ?? slug} type="button"><Plus className="h-3 w-3" />{slug}</button>
                 ))}
               </div>
             ) : <span />}

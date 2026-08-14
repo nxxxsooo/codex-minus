@@ -1,3 +1,5 @@
+import { KNOWN_RELAY_MODELS, knownRelayModel } from "./known-relay-models.ts";
+
 export type CatalogModeValue = "native-official" | "official-plus-custom" | "custom-only" | "external";
 
 export type CatalogOverlayDraft = {
@@ -15,6 +17,7 @@ export type CatalogOverlayDraft = {
   custom: Array<{
     slug: string;
     displayName: string;
+    description?: string;
     contextWindow: number;
     effectiveContextWindowPercent: number;
     visible: boolean;
@@ -63,10 +66,18 @@ export function officialVisibilityOverride(baselineVisible: boolean, wanted: boo
   return wanted === baselineVisible ? null : wanted;
 }
 
+/// While a display name has never been edited independently it simply mirrors the slug, so a
+/// slug edit carries it along; the moment it differs — a preset card's name, or a user's edit —
+/// a slug correction must not overwrite it.
+export function customDisplayNameFollowsSlug(displayName: string, previousSlug: string): boolean {
+  return displayName === previousSlug;
+}
+
 /// Slugs offered as one-click additions: everything known that the table is not already showing.
 ///
 /// Hidden official models belong here — deleting one has to be undoable, and the row it came from
-/// is gone. Slugs the table already carries do not: offering one would add a second row with the
+/// is gone. Known relay-model cards belong here too, whether or not the provider has reported
+/// them. Slugs the table already carries do not: offering one would add a second row with the
 /// same slug as an official model, which the generator reports as a collision.
 export function catalogCandidateSlugs(input: {
   overlay: CatalogOverlayDraft;
@@ -83,7 +94,8 @@ export function catalogCandidateSlugs(input: {
     const slug = custom.slug.trim();
     if (slug) shown.add(slug);
   }
-  return [...new Set([...hidden, ...input.providerCandidates])].filter((slug) => !shown.has(slug));
+  const known = KNOWN_RELAY_MODELS.map((card) => card.slug);
+  return [...new Set([...hidden, ...input.providerCandidates, ...known])].filter((slug) => !shown.has(slug));
 }
 
 /// The overlay whose visible list is exactly `wanted`.
@@ -308,23 +320,41 @@ export function addCatalogCandidate(
 ): CatalogOverlayDraft {
   const normalized = slug.trim();
   if (!normalized || overlay.custom.some((item) => item.slug === normalized)) return overlay;
+  // A slug the fleet has verified end to end arrives as a complete card, not template defaults.
+  // The card only prefills this draft; the saved profile owns its copy from here on.
+  const card = knownRelayModel(normalized);
   return {
     ...overlay,
     custom: [
       ...overlay.custom,
-      {
-        slug: normalized,
-        displayName: normalized,
-        contextWindow: 272000,
-        effectiveContextWindowPercent: 100,
-        visible: true,
-        order: overlay.custom.length,
-        supportedReasoningLevels: [],
-        defaultReasoningLevel: null,
-        supportedTools: [],
-        toolCapabilities: null,
-        templateProvenance: "provider-candidate",
-      },
+      card
+        ? {
+            slug: card.slug,
+            displayName: card.displayName,
+            description: card.description,
+            contextWindow: card.contextWindow,
+            effectiveContextWindowPercent: card.effectiveContextWindowPercent,
+            visible: true,
+            order: overlay.custom.length,
+            supportedReasoningLevels: card.supportedReasoningLevels.map((level) => ({ ...level })),
+            defaultReasoningLevel: card.defaultReasoningLevel,
+            supportedTools: [],
+            toolCapabilities: null,
+            templateProvenance: "known-relay-model",
+          }
+        : {
+            slug: normalized,
+            displayName: normalized,
+            contextWindow: 272000,
+            effectiveContextWindowPercent: 100,
+            visible: true,
+            order: overlay.custom.length,
+            supportedReasoningLevels: [],
+            defaultReasoningLevel: null,
+            supportedTools: [],
+            toolCapabilities: null,
+            templateProvenance: "provider-candidate",
+          },
     ],
   };
 }
