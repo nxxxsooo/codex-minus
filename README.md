@@ -99,7 +99,7 @@ shasum -a 256 -c SHA256SUMS
 
 ## 更新与卸载
 
-更新时先退出 Codex Minus，再下载最新版覆盖 `/Applications/Codex Minus.app`。应用不包含自动更新器，GitHub Release 不会自动更新本机副本。
+应用启动时会自动检查 GitHub Release 上的新版本：有新版会在窗口顶部出现横幅，点「更新并重启」即可完成下载、签名校验、安装和重启，无需手动下载。检查失败（如离线）不会打扰使用。Windows 上应用内更新走 NSIS（`-setup.exe`）通道，首次安装请使用 `-setup.exe` 而不是 `.msi`。也可以随时手动下载新版覆盖安装。
 
 用户设置位于 `~/.codex-session-delete/`，覆盖应用不会删除。卸载应用时可单独决定是否保留该目录。
 

@@ -329,6 +329,19 @@ body {
   gap: 8px;
 }
 
+.update-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 20px;
+  font-size: 13px;
+  border-bottom: 1px solid hsl(var(--border));
+  background: hsl(var(--accent));
+  color: hsl(var(--accent-foreground));
+}
+
 .screen {
   position: relative;
   display: grid;

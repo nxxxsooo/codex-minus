@@ -34,6 +34,8 @@ pub fn run() {
     commands::scrub_legacy_managed_config_store();
     let app_result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
             let url = "/index.html";
             let mut main_window_builder =
