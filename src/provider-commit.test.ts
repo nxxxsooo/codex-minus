@@ -1,4 +1,5 @@
 import assert from "node:assert";
+import fs from "node:fs";
 import { describe, it } from "node:test";
 
 import type { CatalogOverlayDraft } from "./model-catalog-ui.ts";
@@ -465,49 +466,96 @@ describe("provider-owned commit request", () => {
   });
 });
 
-describe("provider commit failure reporting", () => {
-  it("returns the backend message unchanged when no typed code is present", () => {
-    const failureMessage = commitModule?.providerCommitFailureMessage;
-    assert.ok(failureMessage);
-    assert.equal(failureMessage("提交失败。", null), "提交失败。");
-    assert.equal(failureMessage("提交失败。", "   "), "提交失败。");
-  });
+describe("provider commit failure presentation", () => {
+  /// The backend's generic transaction message, exactly as the payload carries it.
+  const BACKEND_MESSAGE = "供应商提交失败；已保留原有设置与 live 配置。";
 
-  it("appends the actionable hint and the stable typed code", () => {
-    const failureMessage = commitModule?.providerCommitFailureMessage;
-    assert.ok(failureMessage);
-    assert.equal(
-      failureMessage("提交失败。", "catalogScopeStale"),
-      "提交失败。官方模型目录与当前目标客户端或账号范围不一致，请先刷新官方模型目录后重试。（catalogScopeStale）",
+  // Full-object snapshots of the common failures: the sentence is plain language with no code or
+  // rule riding in it, and the detail carries the raw discriminator a bug report needs verbatim.
+  it("renders staleness as one sentence with the raw discriminator behind detail", () => {
+    const failureNotice = commitModule?.providerCommitFailureNotice;
+    assert.ok(failureNotice);
+    assert.deepEqual(
+      failureNotice(BACKEND_MESSAGE, "staleState", "provider state changed; reload or merge before saving"),
+      {
+        sentence: "供应商设置在本次编辑期间被其他写入改变，请重新加载后再保存。",
+        detail: "code: staleState\nreason: provider state changed; reload or merge before saving\nmessage: 供应商提交失败；已保留原有设置与 live 配置。",
+      },
     );
   });
 
-  it("appends the static backend reason so sibling rules stay distinguishable", () => {
-    const failureMessage = commitModule?.providerCommitFailureMessage;
-    assert.ok(failureMessage);
-    assert.equal(
-      failureMessage("提交失败。", "invalidDraft", (text) => text, "provider base URL conflict"),
-      "提交失败。本次草稿未通过校验。（invalidDraft: provider base URL conflict）",
-    );
-    assert.equal(
-      failureMessage("提交失败。", "invalidDraft", (text) => text, "   "),
-      "提交失败。本次草稿未通过校验。（invalidDraft）",
+  it("renders a staging rejection without implying the live config changed", () => {
+    const failureNotice = commitModule?.providerCommitFailureNotice;
+    assert.ok(failureNotice);
+    assert.deepEqual(
+      failureNotice(BACKEND_MESSAGE, "stagingRejected", "provider staging failed"),
+      {
+        sentence: "预写入校验拒绝了本次提交，live 配置未被修改。",
+        detail: "code: stagingRejected\nreason: provider staging failed\nmessage: 供应商提交失败；已保留原有设置与 live 配置。",
+      },
     );
   });
 
-  it("still reports an unmapped code so support never loses the discriminator", () => {
-    const failureMessage = commitModule?.providerCommitFailureMessage;
-    assert.ok(failureMessage);
-    assert.equal(failureMessage("提交失败。", "somethingNew"), "提交失败。（somethingNew）");
+  it("renders a contract gap by naming the field instead of blaming the draft", () => {
+    const failureNotice = commitModule?.providerCommitFailureNotice;
+    assert.ok(failureNotice);
+    assert.deepEqual(
+      failureNotice(BACKEND_MESSAGE, "invalidDraft", "provider model is required"),
+      {
+        sentence: "启动模型没有填写，请在模型列表中选择一个。",
+        detail: "code: invalidDraft\nreason: provider model is required\nmessage: 供应商提交失败；已保留原有设置与 live 配置。",
+      },
+    );
   });
 
-  it("translates the hint through the supplied translator without touching the code", () => {
-    const failureMessage = commitModule?.providerCommitFailureMessage;
-    assert.ok(failureMessage);
-    assert.equal(
-      failureMessage("Commit failed.", "transactionFailed", () => "Translated hint."),
-      "Commit failed.Translated hint.（transactionFailed）",
+  it("renders a transaction timeout with the rollback promise", () => {
+    const failureNotice = commitModule?.providerCommitFailureNotice;
+    assert.ok(failureNotice);
+    assert.deepEqual(
+      failureNotice(BACKEND_MESSAGE, "transactionFailed", "provider transaction failed"),
+      {
+        sentence: "写入事务失败或超时，已整体回滚，原有配置未受影响。",
+        detail: "code: transactionFailed\nreason: provider transaction failed\nmessage: 供应商提交失败；已保留原有设置与 live 配置。",
+      },
     );
+  });
+
+  it("falls back to the code-level sentence for a rule without a bespoke one", () => {
+    const failureNotice = commitModule?.providerCommitFailureNotice;
+    assert.ok(failureNotice);
+    assert.deepEqual(
+      failureNotice(BACKEND_MESSAGE, "invalidDraft", "duplicate provider profile id"),
+      {
+        sentence: "本次草稿未通过校验。",
+        detail: "code: invalidDraft\nreason: duplicate provider profile id\nmessage: 供应商提交失败；已保留原有设置与 live 配置。",
+      },
+    );
+    assert.deepEqual(
+      failureNotice(BACKEND_MESSAGE, "invalidDraft", "   "),
+      {
+        sentence: "本次草稿未通过校验。",
+        detail: "code: invalidDraft\nmessage: 供应商提交失败；已保留原有设置与 live 配置。",
+      },
+    );
+  });
+
+  it("keeps an unmapped code out of the sentence and inside the detail", () => {
+    const failureNotice = commitModule?.providerCommitFailureNotice;
+    assert.ok(failureNotice);
+    assert.deepEqual(
+      failureNotice("提交失败。", "somethingNew"),
+      {
+        sentence: "保存没有成功，原始错误在详情里。",
+        detail: "code: somethingNew\nmessage: 提交失败。",
+      },
+    );
+  });
+
+  it("returns the backend message alone when no typed code is present", () => {
+    const failureNotice = commitModule?.providerCommitFailureNotice;
+    assert.ok(failureNotice);
+    assert.deepEqual(failureNotice("提交失败。", null), { sentence: "提交失败。", detail: null });
+    assert.deepEqual(failureNotice("提交失败。", "   "), { sentence: "提交失败。", detail: null });
   });
 
   it("maps every typed backend failure code", () => {
@@ -523,5 +571,51 @@ describe("provider commit failure reporting", () => {
       "staleState",
       "transactionFailed",
     ]);
+  });
+
+  it("keeps every sentence a plain-language sentence, never a bare code", () => {
+    const hints = commitModule?.PROVIDER_COMMIT_FAILURE_HINTS;
+    const reasons = commitModule?.PROVIDER_COMMIT_REASON_SENTENCES;
+    assert.ok(hints && reasons);
+    const discriminators = [...Object.keys(hints), ...Object.keys(reasons)];
+    for (const [key, sentence] of [...Object.entries(hints), ...Object.entries(reasons)]) {
+      assert.match(sentence, /。$/, `${key} does not end as a sentence: ${sentence}`);
+      for (const discriminator of discriminators) {
+        assert.ok(
+          !sentence.includes(discriminator),
+          `${key} leaks the raw discriminator ${discriminator}: ${sentence}`,
+        );
+      }
+    }
+  });
+});
+
+describe("the shell renders failures as sentence plus 详情", () => {
+  const appSource = fs.readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+
+  it("routes the typed commit failure through the presentation split", () => {
+    assert.match(appSource, /providerCommitFailureNotice\(result\.message, result\.errorCode, result\.reason\)/);
+    assert.match(appSource, /showNotice\(t\("保存供应商"\), failure\.sentence, result\.status, failure\.detail\)/);
+    // The composed one-string renderer is gone; nothing concatenates a code into the sentence.
+    assert.doesNotMatch(appSource, /providerCommitFailureMessage/);
+  });
+
+  it("keeps every raw thrown error behind 详情 instead of leading with it", () => {
+    // `stringifyError` output is diagnostic, not a sentence. Every remaining use must ride in a
+    // detail argument, never as the notice message itself.
+    for (const line of appSource.split("\n").filter((text) => text.includes("stringifyError(error)"))) {
+      assert.match(
+        line,
+        /"failed", stringifyError\(error\)\)/,
+        `a raw error leads a notice instead of riding behind 详情: ${line.trim()}`,
+      );
+    }
+  });
+
+  it("renders the detail in a disclosure and lets a failure stay on screen", () => {
+    const dialog = appSource.match(/function NoticeDialog[\s\S]*?\n  \);\n\}/)?.[0] ?? "";
+    assert.match(dialog, /<details className="toast-detail"[\s\S]*?<pre>\{notice\.detail\}<\/pre>/);
+    // A failure must outlive the 4-second toast timer, or the 详情 cannot be read or captured.
+    assert.match(dialog, /if \(failed\) return;[\s\S]*?window\.setTimeout\(onClose/);
   });
 });

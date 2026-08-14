@@ -15,14 +15,33 @@ export const EN_PLAIN: Record<string, string> = {
     "This tool has no trustworthy runtime observer and never clears this notice on its own; whether the runtime adopted the change stays unknown.",
   "无法读取已保存的供应商设置。": "The saved provider settings could not be read.",
   "需要当前有效的官方 ChatGPT 登录。": "A currently valid official ChatGPT sign-in is required.",
-  "官方模型目录与当前目标客户端或账号范围不一致，请先刷新官方模型目录后重试。":
-    "The official model catalog does not match the current target client or account scope; refresh the official model catalog and retry.",
+  "官方模型目录与当前登录账号范围不一致。":
+    "The official model catalog does not match the currently signed-in account scope.",
   "供应商设置在本次编辑期间被其他写入改变，请重新加载后再保存。":
     "The provider settings changed under another write during this edit; reload before saving again.",
   "本次草稿未通过校验。": "This draft did not pass validation.",
   "模型目录状态不可用或无法生成。": "The model catalog state is unavailable or could not be generated.",
-  "预写入校验拒绝了本次提交。": "Pre-write validation rejected this commit.",
-  "写入事务失败，已回滚到上一代。": "The write transaction failed and rolled back to the previous generation.",
+  "预写入校验拒绝了本次提交，live 配置未被修改。":
+    "Pre-write validation rejected this commit; the live config was not modified.",
+  "写入事务失败或超时，已整体回滚，原有配置未受影响。":
+    "The write transaction failed or timed out and rolled back whole; the previous configuration is untouched.",
+  "保存没有成功，原始错误在详情里。": "The save did not succeed; the raw error is under Details.",
+  "调用后端失败，请重试一次；原始错误在详情里。": "The backend call failed; try once more. The raw error is under Details.",
+  "详情": "Details",
+  "启动模型没有填写，请在模型列表中选择一个。": "No startup model is set; pick one from the model list.",
+  "启动模型不合法，请重新选择。": "The startup model is invalid; pick it again.",
+  "Base URL 没有填写。": "Base URL is empty.",
+  "Base URL 不是合法的接口地址，请检查后重试。": "Base URL is not a valid endpoint address; check it and retry.",
+  "供应商名称没有填写。": "The provider name is empty.",
+  "API Key 没有填写。": "API Key is empty.",
+  "API Key 含有无法写入配置的内容，请重新粘贴。": "The API Key contains content that cannot be written into the config; paste it again.",
+  "配置里存在两个不同的 API Key，请删除多余的一个。": "The config carries two different API Keys; remove the extra one.",
+  "供应商配置不是合法的 TOML，无法解析。": "The provider config is not valid TOML and cannot be parsed.",
+  "需要先确认清理全局上下文设置，才能保存托管目录。": "Saving a managed catalog first requires confirming the global-context cleanup.",
+  "该供应商的配置指向一个外部模型目录文件，本次保存会丢失它；请先在模型目录设置中处理外部目录。":
+    "This provider's config points at an external model-catalog file that this save would lose; resolve the external catalog in the catalog settings first.",
+  "该供应商的模型目录由外部文件所有，请先走目录采用流程再保存。":
+    "This provider's model catalog is owned by an external file; go through the catalog adoption flow before saving.",
   "原生能力优先": "Native-capability priority",
   "高级兼容路径": "Advanced compatibility path",
   "当前为 native-official；仅使用官方 OAuth，不会自动转换为混合供应商。":

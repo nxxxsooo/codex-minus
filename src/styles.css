@@ -3179,6 +3179,31 @@ body {
   overflow-wrap: anywhere;
 }
 
+.toast-detail {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.toast-detail summary {
+  cursor: pointer;
+  color: hsl(var(--muted-foreground));
+  user-select: none;
+}
+
+.toast-detail pre {
+  margin: 6px 0 0;
+  padding: 8px;
+  border-radius: 6px;
+  background: hsl(var(--accent));
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  max-height: 180px;
+  overflow: auto;
+}
+
 .toast-close {
   border: 0;
   background: transparent;

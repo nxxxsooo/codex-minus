@@ -395,30 +395,66 @@ function implicitMixedCatalogDraft(profileId: string): ProfileCatalogDraft {
   };
 }
 
-/// Actionable hints for the backend's typed `ProviderCommitErrorCode`. The generic failure
-/// message alone cannot tell a user which gate rejected the commit, and the transaction writes
-/// no log entry on the failure path, so the discriminator has to reach the notice.
+/// One plain-language sentence per typed `ProviderCommitErrorCode`. The sentence is what the
+/// notice leads with; the raw code and rule ride behind 详情, because a user reports a failure by
+/// reading the sentence and a maintainer diagnoses it by copying the detail — neither should have
+/// to parse the other's half.
 export const PROVIDER_COMMIT_FAILURE_HINTS: Record<string, string> = {
   inputUnavailable: "无法读取已保存的供应商设置。",
   officialAuthRequired: "需要当前有效的官方 ChatGPT 登录。",
-  catalogScopeStale: "官方模型目录与当前目标客户端或账号范围不一致，请先刷新官方模型目录后重试。",
+  catalogScopeStale: "官方模型目录与当前登录账号范围不一致。",
   staleState: "供应商设置在本次编辑期间被其他写入改变，请重新加载后再保存。",
   invalidDraft: "本次草稿未通过校验。",
   catalogUnavailable: "模型目录状态不可用或无法生成。",
-  stagingRejected: "预写入校验拒绝了本次提交。",
-  transactionFailed: "写入事务失败，已回滚到上一代。",
+  stagingRejected: "预写入校验拒绝了本次提交，live 配置未被修改。",
+  transactionFailed: "写入事务失败或超时，已整体回滚，原有配置未受影响。",
 };
 
-export function providerCommitFailureMessage(
+/// Reason-level sentences for the static rules a user can act on more precisely than the code
+/// family suggests. Keys are the backend's interned reason strings; anything absent falls back to
+/// the code-level sentence above.
+export const PROVIDER_COMMIT_REASON_SENTENCES: Record<string, string> = {
+  "provider model is required": "启动模型没有填写，请在模型列表中选择一个。",
+  "provider model is malformed": "启动模型不合法，请重新选择。",
+  "provider base URL is required": "Base URL 没有填写。",
+  "provider base URL is malformed": "Base URL 不是合法的接口地址，请检查后重试。",
+  "provider name is required": "供应商名称没有填写。",
+  "provider key is required": "API Key 没有填写。",
+  "provider key is malformed": "API Key 含有无法写入配置的内容，请重新粘贴。",
+  "provider key conflict": "配置里存在两个不同的 API Key，请删除多余的一个。",
+  "provider config TOML is invalid": "供应商配置不是合法的 TOML，无法解析。",
+  "managed catalog context cleanup confirmation is required":
+    "需要先确认清理全局上下文设置，才能保存托管目录。",
+  "ordinary save must preserve every external catalog pointer":
+    "该供应商的配置指向一个外部模型目录文件，本次保存会丢失它；请先在模型目录设置中处理外部目录。",
+  "external catalog ownership requires the reviewed adoption command":
+    "该供应商的模型目录由外部文件所有，请先走目录采用流程再保存。",
+};
+
+export interface ProviderCommitFailureNotice {
+  /// A single Chinese literal, so `showNotice` can translate it as one `t()` key. The raw
+  /// discriminator never rides in it.
+  sentence: string;
+  /// Raw diagnostic for the 详情 disclosure: stable code, interned rule, backend message.
+  /// Never translated, never summarized — this is the part a bug report copies verbatim.
+  detail: string | null;
+}
+
+export function providerCommitFailureNotice(
   message: string,
   errorCode: string | null | undefined,
-  translate: (text: string) => string = (text) => text,
   reason?: string | null,
-): string {
+): ProviderCommitFailureNotice {
   const code = (errorCode ?? "").trim();
-  if (!code) return message;
-  const hint = PROVIDER_COMMIT_FAILURE_HINTS[code];
+  if (!code) return { sentence: message, detail: null };
   const rule = (reason ?? "").trim();
-  const discriminator = rule ? `${code}: ${rule}` : code;
-  return hint ? `${message}${translate(hint)}（${discriminator}）` : `${message}（${discriminator}）`;
+  const sentence = (rule ? PROVIDER_COMMIT_REASON_SENTENCES[rule] : undefined)
+    ?? PROVIDER_COMMIT_FAILURE_HINTS[code]
+    ?? "保存没有成功，原始错误在详情里。";
+  const detail = [
+    `code: ${code}`,
+    ...(rule ? [`reason: ${rule}`] : []),
+    ...(message.trim() ? [`message: ${message.trim()}`] : []),
+  ].join("\n");
+  return { sentence, detail };
 }
