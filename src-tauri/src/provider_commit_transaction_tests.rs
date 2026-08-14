@@ -4817,20 +4817,15 @@ fn the_fingerprint_a_save_returns_is_the_one_the_next_save_is_judged_against() {
     }
 }
 
-/// A banked reproduction, not a passing expectation.
+/// A leftover catalog pointer must not make a profile unsaveable.
 ///
-/// A profile whose stored `configContents` already carries `model_catalog_json` — which the
-/// reporting machine's `relay-mrewdbn2` does, left by an older version — cannot be saved: the
-/// command answers `InvalidDraft: provider draft validation failed`, which the user can do nothing
-/// with. The message is also misattributed: calling `validate_provider_detail_request` directly
-/// with the same persisted settings and state returns `Ok(())`, so the rejection comes from a
-/// different step than the one the message names.
-///
-/// Ignored because the correct behaviour is not yet decided — the save should either clear the
-/// stale pointer or say which key to remove, and choosing between those is not a test's call.
-/// Un-ignore it when that is settled; it fails today for the reason above.
+/// An older version wrote `model_catalog_json` into a profile's stored config. On the next load,
+/// migration read any pointer as external ownership, and an ordinary save must preserve every
+/// external pointer — but the editor sends a native or managed draft that carries none, so the save
+/// was rejected as `InvalidDraft`. The profile could not be repaired either, because correcting the
+/// mode is itself a save. Only a pointer at the path this manager generates for this profile is
+/// treated as our own leftover; a pointer the user chose still means what it says.
 #[test]
-#[ignore = "reproduction for an undecided behaviour; see the doc comment"]
 fn a_profile_carrying_a_stale_catalog_pointer_can_still_be_saved() {
     let mut profile = canonical_profile(
         "relay-a",
@@ -4838,8 +4833,10 @@ fn a_profile_carrying_a_stale_catalog_pointer_can_still_be_saved() {
         "https://a.example/v1",
         "provider-key-a",
     );
+    // The shape an older version actually left behind: our own generated path, in stored config.
     profile.config_contents = format!(
-        "model_catalog_json = \"/tmp/codex-minus-stale-catalog.json\"\n{}",
+        "model_catalog_json = \"{}\"\n{}",
+        crate::model_catalog::generated_relative_path("relay-a"),
         profile.config_contents
     );
     let initial = settings_with(vec![profile], "relay-a");
