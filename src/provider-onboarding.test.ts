@@ -1,4 +1,5 @@
 import assert from "node:assert";
+import fs from "node:fs";
 import { describe, it } from "node:test";
 
 import {
@@ -11,6 +12,16 @@ import {
   officialLoginGuide,
   validateNewProviderDraft,
 } from "./provider-onboarding.ts";
+
+/// Slug -> is-listed, straight from the shipped asset. The bundled baseline is what a brand-new
+/// profile's catalog can actually represent, so the Pro list is validated against it, not against
+/// another hand-maintained mirror.
+const bundledBaselineVisibility = new Map<string, boolean>(
+  (JSON.parse(
+    fs.readFileSync(new URL("../src-tauri/assets/official-model-catalog.json", import.meta.url), "utf8"),
+  ) as { models: Array<{ slug: string; visibility: string }> }).models
+    .map((model) => [model.slug, model.visibility !== "hide"]),
+);
 
 describe("provider onboarding", () => {
   it("creates only the official auth mixed Responses draft", () => {
@@ -144,7 +155,7 @@ describe("built-in Pro model list", () => {
     assert.equal(draft.model, list[0]);
     // The default must be a slug the official bundled catalog carries, or the first save of a
     // brand-new provider fails catalog planning with an unrepresentable default model.
-    assert.ok(list[0].startsWith("gpt-"));
+    assert.ok(bundledBaselineVisibility.get(list[0]) === true, `${list[0]} is not a listed baseline model`);
   });
 
   it("keeps the canonical native-priority target for a brand-new provider", () => {
@@ -166,5 +177,25 @@ describe("Pro model list maintenance", () => {
   it("records the retired slugs it guards against", () => {
     assert.ok((RETIRED_MODEL_SLUGS as readonly string[]).includes("gpt-5.4"));
     assert.ok((RETIRED_MODEL_SLUGS as readonly string[]).includes("gpt-5.4-mini"));
+  });
+
+  it("ships only models the bundled baseline actually lists", () => {
+    // Cross-referencing the two frontend lists is not enough: the asset once carried a listed
+    // gpt-5.2 while the Pro list shipped gpt-5.3-codex-spark, and nothing failed until a user's
+    // first save would have. The asset itself is the contract.
+    for (const slug of PRO_MODEL_SLUGS) {
+      assert.equal(
+        bundledBaselineVisibility.get(slug),
+        true,
+        `${slug} is shipped in the Pro list but the bundled baseline does not list it`,
+      );
+    }
+    for (const slug of RETIRED_MODEL_SLUGS) {
+      assert.equal(
+        bundledBaselineVisibility.get(slug),
+        false,
+        `${slug} is recorded as retired but the bundled baseline does not carry it hidden`,
+      );
+    }
   });
 });

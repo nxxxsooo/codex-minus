@@ -2675,10 +2675,13 @@ pub fn commit_provider_detail_from_paths_observed(
             &normalized_request,
             &catalog_readiness,
         )
-        .map_err(|_| {
+        .map_err(|error| {
             provider_commit_failure(
                 ProviderCommitErrorCode::CatalogUnavailable,
-                "normalized provider catalog planning failed",
+                sanitized_provider_validation_error(
+                    &error,
+                    "normalized provider catalog planning failed",
+                ),
             )
         })?
     } else {
@@ -2688,10 +2691,13 @@ pub fn commit_provider_detail_from_paths_observed(
             &normalized_request,
             &catalog_readiness,
         )
-        .map_err(|_| {
+        .map_err(|error| {
             provider_commit_failure(
                 ProviderCommitErrorCode::CatalogUnavailable,
-                "normalized provider topology planning failed",
+                sanitized_provider_validation_error(
+                    &error,
+                    "normalized provider topology planning failed",
+                ),
             )
         })?
     };
@@ -3106,6 +3112,8 @@ fn sanitized_provider_validation_error(
         "persisted external catalog ownership is missing its pointer",
         "ordinary save must preserve every external catalog pointer",
         "new provider profile requires one complete catalog draft",
+        "active provider catalog is not ready",
+        "active provider default model is absent from the bundled baseline",
     ];
     let message = error.to_string();
     KNOWN_RULES

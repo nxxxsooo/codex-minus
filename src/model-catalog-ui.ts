@@ -382,6 +382,15 @@ export function adoptionPreviewSummary(preview: {
   };
 }
 
+/// Maps the persisted readiness sentinel to a sentence. Every other value the backend writes
+/// into actionRequired is already plain language, so only the code needs mapping; the caller
+/// translates the result.
+export function catalogActionRequiredLabel(action: string): string {
+  return action === "catalog-readiness-unavailable"
+    ? "模型目录当前无法生成；请检查启动模型是否仍在本版本的目录中。"
+    : action;
+}
+
 export function profileCatalogFlags(profile: {
   restartRequired: boolean;
   actionRequired: string | null;

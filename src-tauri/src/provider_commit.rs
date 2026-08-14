@@ -845,6 +845,14 @@ fn plan_validated_request(
         );
         if catalog_readiness != model_catalog::ManagedCatalogReadiness::Ready {
             if settings.active_relay_id == draft.profile_id {
+                // A bundled-baseline update can retire the model an active profile starts on.
+                // That failure has its own repair — pick a replacement default — so it must not
+                // hide inside the generic not-ready family the user can do nothing about.
+                if catalog_readiness == model_catalog::ManagedCatalogReadiness::DefaultModelAbsent {
+                    anyhow::bail!(
+                        "active provider default model is absent from the bundled baseline"
+                    );
+                }
                 anyhow::bail!("active provider catalog is not ready");
             }
             let profile_state = catalog_state.profiles.get_mut(&draft.profile_id).unwrap();
