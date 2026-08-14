@@ -108,12 +108,9 @@ fn hash_text(value: &str) -> String {
 
 fn target_identity(version: &str, identity: &str) -> crate::model_catalog::VerifiedTargetIdentity {
     crate::model_catalog::VerifiedTargetIdentity {
-        app_path: "/Applications/ChatGPT.app".to_string(),
         cli_path: "/Applications/ChatGPT.app/Contents/Resources/codex".to_string(),
         client_version: version.to_string(),
-        publisher: "OpenAI Test Publisher".to_string(),
         identity_hash: identity.to_string(),
-        trusted: true,
         capability_available: true,
         capability_message: "available".to_string(),
     }
@@ -2052,9 +2049,17 @@ fn active_native_commit_requires_current_official_auth_and_catalog_scope() {
     assert_eq!(error.code(), ProviderCommitErrorCode::OfficialAuthRequired);
     assert_eq!(missing_auth.file_generation(), before);
 
+    // An expired access token is deliberately absent from this list. It used to belong here,
+    // because the commit projected that token into an isolated CODEX_HOME. Nothing is projected
+    // now, so a token between refreshes is not a reason to refuse a save; what still fails closed
+    // is auth that cannot be read or cannot name an account.
     for auth_bytes in [
         b"not-json".to_vec(),
-        official_auth_bytes_with_exp("account-a", "workspace-a", 1),
+        serde_json::to_vec(&serde_json::json!({
+            "auth_mode": "chatgpt",
+            "tokens": { "id_token": "x.x.x" },
+        }))
+        .unwrap(),
     ] {
         let invalid_auth = Fixture::new(&initial, &state_with_official());
         fs::write(invalid_auth.paths.codex_home.join("auth.json"), auth_bytes).unwrap();

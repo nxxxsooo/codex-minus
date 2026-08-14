@@ -100,6 +100,13 @@ pub(crate) fn status_bounded(
     wait_bounded(command, timeout, what)
 }
 
+/// The output half of this module is Windows-only in practice: `verify_windows_acl` in
+/// `live_state` is its one caller, and it is `#[cfg(windows)]`.
+///
+/// A macOS build therefore reports `captured_output_command`, `output_bounded`, `capture_paths`,
+/// `BoundedHelperOutput`, `MAX_HELPER_OUTPUT_BYTES`, and `HELPER_CAPTURE_SEQUENCE` as dead. They
+/// are not. Deleting them on that evidence breaks the Windows build and nothing else, so it gets
+/// found by CI rather than by a compiler — which is how it was found once already.
 pub(crate) struct BoundedHelperOutput {
     pub(crate) status: ExitStatus,
     pub(crate) stdout: Vec<u8>,
