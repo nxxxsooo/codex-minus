@@ -194,6 +194,46 @@ export function tomlString(value: string): string {
   return JSON.stringify(value).slice(1, -1);
 }
 
+/// Keys whose *value* is a credential rather than a setting.
+///
+/// `env_key` is deliberately absent: it names an environment variable, so showing it tells the
+/// user where their key is read from without showing the key.
+const SECRET_TOML_KEYS = [
+  "experimental_bearer_token",
+  "api_key",
+  "apiKey",
+  "OPENAI_API_KEY",
+  "bearer_token",
+  "authorization",
+  "Authorization",
+];
+
+export const REDACTED_SECRET = "••••••••";
+
+/// Replace every credential value in a `config.toml` with a mask, leaving the shape intact.
+///
+/// This exists because the config is shown back to the user as evidence of what Codex actually
+/// reads, and that file carries the provider bearer in plaintext. A key on screen is a key in a
+/// screenshot, in a screen share, and in whatever the terminal scrollback keeps — and the user
+/// already knows their own key, so rendering it buys nothing.
+///
+/// The shape survives on purpose: seeing `experimental_bearer_token = "••••••••"` answers "is a
+/// key configured at all", which is the question a reader of this panel actually has.
+export function redactTomlSecrets(contents: string): string {
+  const keys = SECRET_TOML_KEYS.map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  return contents
+    // `key = "value"` — the ordinary assignment, quoted either way.
+    .replace(
+      new RegExp(`(^\\s*(?:${keys})\\s*=\\s*)(["'])(?:\\\\.|(?!\\2).)*\\2`, "gm"),
+      (_match, head: string, quote: string) => `${head}${quote}${REDACTED_SECRET}${quote}`,
+    )
+    // `"key" = "value"` inside an inline table, e.g. an http_headers Authorization entry.
+    .replace(
+      new RegExp(`(["'](?:${keys})["']\\s*=\\s*)(["'])(?:\\\\.|(?!\\2).)*\\2`, "g"),
+      (_match, head: string, quote: string) => `${head}${quote}${REDACTED_SECRET}${quote}`,
+    );
+}
+
 export function codexModelFromConfig(contents: string): string {
   for (const line of contents.split(/\r?\n/)) {
     const trimmed = line.trim();

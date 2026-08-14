@@ -1,68 +1,44 @@
-import { createElement, Fragment, type ReactElement } from "react";
+import { createElement, type ReactElement } from "react";
 
-export function providerConfigDraft(savedProviderConfig: string, _liveConfig: string): string {
-  return savedProviderConfig;
-}
+import { redactTomlSecrets } from "./codex-toml.ts";
 
 function commentLine(message: string): string {
   return `# ${message.trim()}\n`;
 }
 
-export function RelayConfigPanels(props: {
-  nativeOfficial: boolean;
-  providerReadOnly?: boolean;
-  providerConfig: string;
+/// The live `config.toml`, shown as evidence and nothing more.
+///
+/// There used to be a second panel beside this one: an editable textarea holding the profile's own
+/// provider TOML. It was the last place in the editor where a user could produce a file Codex
+/// cannot parse, and every field it exposed now has a labelled input of its own — so what it
+/// offered was the chance to break a working provider by hand, and no way to succeed that the
+/// seven-step flow did not already offer.
+///
+/// What remains is read-only and redacted. The question this panel answers is "what is Codex
+/// actually reading right now", which needs the file's shape, not its secrets.
+export function LiveConfigPanel(props: {
   liveConfig: string;
-  nativeProviderMessage: string;
   unavailableLiveMessage: string;
-  providerTitle: string;
-  providerHelp: string;
   liveTitle: string;
   liveHelp: string;
-  onProviderConfigChange: (value: string) => void;
 }): ReactElement {
-  const providerValue = props.nativeOfficial
-    ? commentLine(props.nativeProviderMessage)
-    : props.providerConfig;
   const liveValue = props.liveConfig.trim()
-    ? props.liveConfig
+    ? redactTomlSecrets(props.liveConfig)
     : commentLine(props.unavailableLiveMessage);
 
-  return createElement(Fragment, null,
-    createElement("div", { className: "relay-file-panel" },
-      createElement("div", { className: "relay-file-head" },
-        createElement("div", null,
-          createElement("strong", null, props.providerTitle),
-          createElement("span", null, props.providerHelp),
-        ),
+  return createElement("div", { className: "relay-file-panel" },
+    createElement("div", { className: "relay-file-head" },
+      createElement("div", null,
+        createElement("strong", null, props.liveTitle),
+        createElement("span", null, props.liveHelp),
       ),
-      createElement("textarea", {
-        className: "relay-file-textarea",
-        "data-provider-config": "true",
-        onChange: (event: { currentTarget: { value: string } }) => {
-          if (!props.nativeOfficial && !props.providerReadOnly) {
-            props.onProviderConfigChange(event.currentTarget.value);
-          }
-        },
-        readOnly: props.nativeOfficial || !!props.providerReadOnly,
-        spellCheck: false,
-        value: providerValue,
-      }),
     ),
-    createElement("div", { className: "relay-file-panel" },
-      createElement("div", { className: "relay-file-head" },
-        createElement("div", null,
-          createElement("strong", null, props.liveTitle),
-          createElement("span", null, props.liveHelp),
-        ),
-      ),
-      createElement("textarea", {
-        className: "relay-file-textarea live-config-readonly",
-        "data-live-config": "true",
-        readOnly: true,
-        spellCheck: false,
-        value: liveValue,
-      }),
-    ),
+    createElement("textarea", {
+      className: "relay-file-textarea live-config-readonly",
+      "data-live-config": "true",
+      readOnly: true,
+      spellCheck: false,
+      value: liveValue,
+    }),
   );
 }

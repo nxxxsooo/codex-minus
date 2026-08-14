@@ -1,7 +1,13 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 
-import { rootTomlStringValue, tomlKey, tomlString } from "./codex-toml.ts";
+import {
+  REDACTED_SECRET,
+  redactTomlSecrets,
+  rootTomlStringValue,
+  tomlKey,
+  tomlString,
+} from "./codex-toml.ts";
 
 /// The escaping contract, pinned because three modules used to carry their own copy of it and two
 /// of the copies disagreed. Whatever `tomlString` emits is written between the quotes of a TOML
@@ -58,5 +64,51 @@ describe("quoting a TOML key", () => {
     assert.equal(tomlKey("has space"), '"has space"');
     assert.equal(tomlKey('has"quote'), '"has\\"quote"');
     assert.equal(tomlKey("has\nnewline"), '"has\\nnewline"');
+  });
+});
+
+describe("redacting the secrets out of a config", () => {
+  const KEY = "sk-live-abcdef0123456789";
+
+  it("masks the provider bearer", () => {
+    const redacted = redactTomlSecrets(`experimental_bearer_token = "${KEY}"\n`);
+    assert.equal(redacted, `experimental_bearer_token = "${REDACTED_SECRET}"\n`);
+  });
+
+  it("masks a bearer hidden in an inline header table", () => {
+    const redacted = redactTomlSecrets(`http_headers = { "Authorization" = "Bearer ${KEY}" }\n`);
+    assert.ok(!redacted.includes(KEY));
+    assert.equal(redacted, `http_headers = { "Authorization" = "${REDACTED_SECRET}" }\n`);
+  });
+
+  it("masks the other spellings a key arrives under", () => {
+    for (const key of ["api_key", "apiKey", "OPENAI_API_KEY", "bearer_token"]) {
+      const redacted = redactTomlSecrets(`${key} = "${KEY}"\n`);
+      assert.ok(!redacted.includes(KEY), `${key} was left in the clear`);
+    }
+  });
+
+  it("leaves everything that is not a credential alone", () => {
+    const config = [
+      'model = "gpt-5.6-sol"',
+      'base_url = "https://relay.example/v1"',
+      "[model_providers.OpenAI]",
+      'env_key = "OPENAI_API_KEY"',
+      "requires_openai_auth = false",
+      "",
+    ].join("\n");
+    // `env_key` names the variable a key is read from. Masking it would hide where to look
+    // without hiding anything secret.
+    assert.equal(redactTomlSecrets(config), config);
+  });
+
+  it("keeps the assignment readable so a reader can tell a key is set at all", () => {
+    const redacted = redactTomlSecrets(`  experimental_bearer_token   =   '${KEY}'\n`);
+    assert.equal(redacted, `  experimental_bearer_token   =   '${REDACTED_SECRET}'\n`);
+  });
+
+  it("does not mask a value that merely mentions a secret key's name", () => {
+    const config = 'model = "experimental_bearer_token"\n';
+    assert.equal(redactTomlSecrets(config), config);
   });
 });

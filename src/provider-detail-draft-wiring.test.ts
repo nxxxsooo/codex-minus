@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
-const relayFileEditorCall = source.match(/<RelayFileEditors[\s\S]*?\/>/)?.[0] ?? "";
+const liveFilePanelCall = source.match(/<RelayLiveFilePanels[\s\S]*?\/>/)?.[0] ?? "";
 
 describe("provider detail draft wiring", () => {
   it("keeps transform correlation local while sending only the invocation to Tauri", () => {
@@ -22,12 +22,10 @@ describe("provider detail draft wiring", () => {
   it("loads response-only inspection and closes the session without a provider commit", () => {
     assert.match(source, /inspectProviderNativeCapabilities\(profile\.id\)/);
     assert.match(source, /applyProviderDetailInspection/);
-    assert.match(source, /beginProviderDetailRawConfigEdit/);
-    assert.match(relayFileEditorCall, /onProviderConfigChange=\{editProviderConfigDraft\}/);
-    assert.match(relayFileEditorCall, /providerReadOnly=\{isNew\}/);
-    assert.doesNotMatch(relayFileEditorCall, /onProfileChange=\{replaceDraft\}/);
-    assert.match(source, /draftCommitBlocked=\{detailState\.pendingTransformRevision !== null \|\| detailState\.rawConfigContents !== null \|\| detailState\.pendingConfirmation !== null \|\| detailState\.pendingLegacyProviderIdResolution !== null \|\| detailState\.blockers\.length > 0\}/);
-    assert.match(source, /switchDraft[\s\S]*detailState\.rawConfigContents !== null[\s\S]*return;/);
+    // The live panel is evidence, not an editor: it receives no change handler and no draft.
+    assert.match(liveFilePanelCall, /liveConfigContents=\{relayFiles\?\.configContents \?\? ""\}/);
+    assert.doesNotMatch(liveFilePanelCall, /onProviderConfigChange|providerReadOnly|profile=/);
+    assert.match(source, /draftCommitBlocked=\{detailState\.pendingTransformRevision !== null \|\| detailState\.pendingConfirmation !== null \|\| detailState\.pendingLegacyProviderIdResolution !== null \|\| detailState\.blockers\.length > 0\}/);
     assert.match(source, /endProviderDetailSession\([^;]*"navigate"/s);
     assert.doesNotMatch(source, /nativeCapabilityInspection\s*:/);
   });

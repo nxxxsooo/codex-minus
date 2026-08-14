@@ -17,7 +17,7 @@ describe("provider mode presentation wiring", () => {
 
   it("marks the removed local aggregate path as advanced without changing its data", () => {
     const aggregate = appSource.match(
-      /function AggregateRelayProfileEditor[\s\S]*?(?=\nfunction RelayFileEditors)/,
+      /function AggregateRelayProfileEditor[\s\S]*?(?=\nfunction RelayLiveFilePanels)/,
     )?.[0] ?? "";
     assert.match(aggregate, /高级兼容路径/);
     assert.match(aggregate, /本地聚合（不可用）/);

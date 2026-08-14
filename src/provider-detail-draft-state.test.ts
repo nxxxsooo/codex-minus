@@ -8,7 +8,6 @@ import {
   beginProviderDetailInspection,
   beginProviderDetailEdit,
   beginProviderDetailNativePriorityUpgrade,
-  beginProviderDetailRawConfigEdit,
   buildProviderDetailCommitEffect,
   cancelProviderDetailTransition,
   confirmProviderDetailTransition,
@@ -619,118 +618,6 @@ describe("provider detail draft state", () => {
     );
     assert.equal(oldRevision.disposition, "stale");
     assert.equal(oldRevision.state.inspection, null);
-
-    const rawEdited = beginProviderDetailRawConfigEdit(current.state, {
-      configContents: config.replace("keep-provider", "newer-raw"),
-      catalogMode: "official-plus-custom",
-    });
-    const oldAfterRaw = applyProviderDetailInspection(
-      rawEdited.state,
-      reopenedCorrelation,
-      inspection,
-    );
-    assert.equal(oldAfterRaw.disposition, "stale");
-    assert.equal(oldAfterRaw.state.inspection, null);
-  });
-
-  it("routes raw provider TOML edits through one revisioned backend inspection", () => {
-    const state = draftState();
-    const changedConfig = config.replace("keep-provider", "raw-user-edit");
-    const step = beginProviderDetailRawConfigEdit(state, {
-      configContents: changedConfig,
-      catalogMode: "official-plus-custom",
-    });
-    assert.equal(step.state.profile.configContents, config);
-    assert.equal(step.state.rawConfigContents, changedConfig);
-    assert.equal(step.state.latestTransformRevision, 1);
-    assert.equal(step.state.pendingTransformRevision, 1);
-    assert.equal(step.effects.length, 1);
-    assert.equal(step.effects[0].kind, "transform");
-    if (step.effects[0].kind !== "transform") return;
-    assert.equal(step.effects[0].invocation.request.action, "validateRawEdit");
-    assert.equal(step.effects[0].invocation.request.sourceConfigContents, config);
-    assert.equal(step.effects[0].invocation.request.draftRevision, 1);
-    assert.equal(step.effects[0].invocation.request.profile.configContents, changedConfig);
-    assert.equal(step.effects[0].invocation.request.profile.authContents, "");
-
-    const verified = settleProviderDetailTransform(step.state, transformCorrelation(step), {
-      draftRevision: 1,
-      status: "ready",
-      draft: {
-        profile: { ...profile(), configContents: changedConfig },
-        structuredApiKey: "provider-key",
-        catalogMode: "official-plus-custom",
-      },
-      blockers: [],
-      inspection,
-      preview,
-    });
-    assert.equal(verified.disposition, "applied");
-    assert.equal(verified.state.profile.configContents, changedConfig);
-    assert.equal(verified.state.rawConfigContents, null);
-
-    const malformed = beginProviderDetailRawConfigEdit(step.state, {
-      configContents: `broken = "sk-provider-sentinel`,
-      catalogMode: "official-plus-custom",
-    });
-    assert.equal(malformed.state.profile.configContents, config);
-    const blocked = settleProviderDetailTransform(
-      malformed.state,
-      transformCorrelation(malformed),
-      {
-        draftRevision: 2,
-        status: "blocked",
-        draft: {
-          profile: { ...profile(), configContents: `broken = "sk-provider-sentinel` },
-          structuredApiKey: "provider-key",
-          catalogMode: "official-plus-custom",
-        },
-        blockers: ["malformedToml"],
-        inspection,
-        preview,
-      },
-    );
-    assert.equal(blocked.disposition, "notApplied");
-    assert.equal(blocked.state.profile.configContents, config);
-    assert.equal(blocked.state.rawConfigContents, `broken = "sk-provider-sentinel`);
-    const failed = settleProviderDetailTransformError(
-      malformed.state,
-      transformCorrelation(malformed),
-    );
-    assert.equal(failed.disposition, "error");
-    assert.equal(failed.report, true);
-    assert.equal(failed.state.rawConfigContents, `broken = "sk-provider-sentinel`);
-    assert.equal(JSON.stringify(failed.effects).includes("sk-provider-sentinel"), false);
-    assert.throws(
-      () => buildProviderDetailCommitEffect(failed.state, {
-        kind: "detailSave",
-        settings: settings(),
-        persistedSettings: settings(),
-        catalogDrafts: [catalogDraft],
-        focusedProfileWasPersisted: true,
-        previousActiveRelayId: "relay-old",
-        confirmContextCleanup: false,
-        expectedProviderFingerprint: "fingerprint-old",
-        draftRevision: 42,
-      }),
-      /unverified raw provider config/i,
-    );
-
-    const closed = endProviderDetailSession(malformed.state, "cancel");
-    const late = settleProviderDetailTransform(closed.state, transformCorrelation(malformed), {
-      draftRevision: 2,
-      status: "ready",
-      draft: {
-        profile: { ...profile(), configContents: `broken = "sk-provider-sentinel` },
-        structuredApiKey: "provider-key",
-        catalogMode: "official-plus-custom",
-      },
-      blockers: [],
-      inspection,
-      preview,
-    });
-    assert.equal(late.disposition, "stale");
-    assert.deepEqual(late.effects, []);
   });
 
   it("invalidates pending transforms when the controlled profile changes locally", () => {
