@@ -4,6 +4,7 @@ mod model_catalog;
 mod platform_command;
 pub mod provider_commit;
 pub mod provider_native_capability;
+mod session_adaptation;
 
 #[cfg(test)]
 mod provider_commit_transaction_tests;
