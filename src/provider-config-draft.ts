@@ -1,4 +1,10 @@
 import {
+  ensureTrailingNewline,
+  rootTomlStringValue,
+  tomlSectionName,
+  tomlString,
+} from "./codex-toml.ts";
+import {
   materializeNewProviderConfig,
   type NewProviderTransientTarget,
 } from "./provider-onboarding.ts";
@@ -158,11 +164,11 @@ function setRootTomlLine(contents: string, key: string, lineText: string): strin
   for (let index = 0; index < rootEnd; index += 1) {
     if (new RegExp(`^\\s*${key}\\s*=`).test(lines[index])) {
       lines[index] = lineText;
-      return trailingNewline(lines.join("\n").trimEnd());
+      return ensureTrailingNewline(lines.join("\n").trimEnd());
     }
   }
   lines.splice(key === "model" ? 0 : rootEnd, 0, lineText);
-  return trailingNewline(lines.join("\n").trimEnd());
+  return ensureTrailingNewline(lines.join("\n").trimEnd());
 }
 
 function setProviderStringKey(contents: string, key: string, value: string): string {
@@ -197,13 +203,13 @@ function setTomlSectionRawKey(
   for (let index = sectionStart + 1; index < sectionEnd; index += 1) {
     if (new RegExp(`^\\s*${key}\\s*=`).test(lines[index])) {
       lines[index] = replacement;
-      return trailingNewline(lines.join("\n").trimEnd());
+      return ensureTrailingNewline(lines.join("\n").trimEnd());
     }
   }
   let insertAt = sectionEnd;
   while (insertAt > sectionStart + 1 && lines[insertAt - 1].trim() === "") insertAt -= 1;
   lines.splice(insertAt, 0, replacement);
-  return trailingNewline(lines.join("\n").trimEnd());
+  return ensureTrailingNewline(lines.join("\n").trimEnd());
 }
 
 function removeTomlSectionKey(contents: string, sectionName: string, key: string): string {
@@ -220,7 +226,7 @@ function removeTomlSectionKey(contents: string, sectionName: string, key: string
     if (section === sectionName) sectionStart = index;
   }
   if (sectionStart < 0) return contents;
-  return trailingNewline(lines.filter((line, index) => (
+  return ensureTrailingNewline(lines.filter((line, index) => (
     index <= sectionStart
     || index >= sectionEnd
     || !new RegExp(`^\\s*${key}\\s*=`).test(line)
@@ -235,27 +241,6 @@ function removeRootTomlKey(contents: string, key: string): string {
     if (inRoot && new RegExp(`^\\s*${key}\\s*=`).test(line)) continue;
     lines.push(line);
   }
-  return trailingNewline(lines.join("\n").trimEnd());
+  return ensureTrailingNewline(lines.join("\n").trimEnd());
 }
 
-function rootTomlStringValue(contents: string, key: string): string {
-  for (const line of contents.split(/\r?\n/)) {
-    if (/^\s*\[[^\]]+\]\s*$/.test(line)) break;
-    const match = new RegExp(`^\\s*${key}\\s*=\\s*(["'])(.*)\\1\\s*(?:#.*)?$`).exec(line.trim());
-    if (match) return match[2].replace(/\\(["'\\])/g, "$1");
-  }
-  return "";
-}
-
-function tomlSectionName(line: string): string | null {
-  const match = /^\s*\[([^\]]+)\]\s*$/.exec(line);
-  return match ? match[1].trim() : null;
-}
-
-function tomlString(value: string): string {
-  return JSON.stringify(value).slice(1, -1);
-}
-
-function trailingNewline(value: string): string {
-  return value ? `${value}\n` : "";
-}
