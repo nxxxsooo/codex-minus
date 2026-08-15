@@ -8,6 +8,10 @@
 
 ### 2026-08-16
 
+- **release**: 0.4.11 — the sidebar-foot update banner ships (PR #25), closing the same night's walkthrough feedback loop
+  - why: the banner under the page header read as part of whichever screen was open; machines picking this update up through the 0.4.10 banner also re-exercise the instant-click-feedback fix that release carried
+  - verified: three-platform CI green on the release PR; release assets and `latest.json` checked after tagging
+  - refs: `scripts/release.sh`, PR #25
 - **release**: 0.4.10 — the session-screen cleanup and banner-click fix ride the updater the day after 0.4.9 (PR #23)
   - why: the fixes answer live walkthrough feedback on 0.4.9, and shipping them immediately exercises the update chain again — any 0.4.9 machine picking this banner up also demonstrates the new instant click feedback it carries
   - verified: three-platform CI green on the release PR; release assets and `latest.json` checked after tagging
