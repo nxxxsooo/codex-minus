@@ -8,6 +8,10 @@
 
 ### 2026-08-16
 
+- **verify/updater**: the 0.4.10→0.4.11 in-app upgrade completed on a real macOS machine — the macOS half of the updater's real-machine verification is done
+  - why: 0.4.9/0.4.10 exercised the chain through drills and CI; this is the first user-machine upgrade observed end to end (banner → download → signature verify → install → relaunch into 0.4.11)
+  - verified: v0.4.11 release published with all 9 assets and `latest.json` at 0.4.11 for all three platforms; the upgrade banner appeared in the 0.4.10 position as expected (the banner belongs to the version being upgraded *from*); noted en route: the client checks for updates exactly once at startup (`src/App.tsx` one-shot effect), so an instance launched before a release never sees it without a relaunch
+  - refs: OpenSpec `add-in-app-updates` 4.2
 - **release**: 0.4.11 — the sidebar-foot update banner ships (PR #25), closing the same night's walkthrough feedback loop
   - why: the banner under the page header read as part of whichever screen was open; machines picking this update up through the 0.4.10 banner also re-exercise the instant-click-feedback fix that release carried
   - verified: three-platform CI green on the release PR; release assets and `latest.json` checked after tagging
