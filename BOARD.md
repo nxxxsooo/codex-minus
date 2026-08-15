@@ -6,6 +6,13 @@
 
 ## Changelog
 
+### 2026-08-15
+
+- **release**: 0.4.9 — ships the active-only session adaptation (manual button + on-switch automatic, PR #21) the day after 0.4.8
+  - why: the fleet's two mismatched active sessions need the released build to clear, and this is the first release an installed updater can receive — both 0.4.8 machines updating through the banner is the real-machine half of `add-in-app-updates` 4.2, including the Windows side the drill hadn't covered yet
+  - verified: three-platform CI green on the release PR; release assets and `latest.json` checked after tagging
+  - refs: `scripts/release.sh`, OpenSpec `add-active-only-session-adaptation`, `add-in-app-updates` 4.2
+
 ### 2026-08-14
 
 - **feat/sessions**: the「适配到当前 provider」button is alive, and switching providers now carries active sessions along automatically (toggle, default on)
