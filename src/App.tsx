@@ -1137,6 +1137,16 @@ export function App() {
           );
           })}
         </nav>
+        {appUpdate ? (
+          <div className="update-banner" data-app-update-banner="true">
+            <span>{tf(appUpdateBanner(appUpdate.phase).text.key, appUpdateBanner(appUpdate.phase).text.args)}</span>
+            {appUpdateBanner(appUpdate.phase).action ? (
+              <Button onClick={() => void installAppUpdate()} size="sm" variant="outline">
+                {t(appUpdateBanner(appUpdate.phase).action ?? "")}
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
       </aside>
       <main className="workspace">
         <header className="topbar">
@@ -1166,16 +1176,6 @@ export function App() {
             </Button>
           </div>
         </header>
-        {appUpdate ? (
-          <div className="update-banner" data-app-update-banner="true">
-            <span>{tf(appUpdateBanner(appUpdate.phase).text.key, appUpdateBanner(appUpdate.phase).text.args)}</span>
-            {appUpdateBanner(appUpdate.phase).action ? (
-              <Button onClick={() => void installAppUpdate()} size="sm" variant="outline">
-                {t(appUpdateBanner(appUpdate.phase).action ?? "")}
-              </Button>
-            ) : null}
-          </div>
-        ) : null}
         <section className="screen">
           <div className={route === "relay" ? undefined : "hidden"}>
             <RelayScreen
