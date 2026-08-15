@@ -49,6 +49,7 @@ import {
   Sun,
   TestTube,
   Trash2,
+  TriangleAlert,
   type LucideIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
@@ -421,7 +422,7 @@ export function App() {
     return result;
   };
 
-  const saveSessionLifecycle = async (patch: Partial<SessionLifecycleSettingsResult>) => {
+  const saveSessionLifecycle = async (patch: Partial<SessionLifecycleSettingsResult>, silent = false) => {
     const result = await run(() =>
       call<SessionLifecycleSettingsResult>("save_session_lifecycle_settings", {
         settings: {
@@ -436,7 +437,7 @@ export function App() {
     );
     if (result) {
       setSessionLifecycle(result);
-      showNotice(t("会话设置"), result.message, result.status);
+      if (!silent || !isSuccessStatus(result.status)) showNotice(t("会话设置"), result.message, result.status);
     }
     return result;
   };
@@ -460,11 +461,11 @@ export function App() {
     if (saved && isSuccessStatus(saved.status)) await runArchiveMaintenance();
   };
 
-  const runArchiveMaintenance = async () => {
+  const runArchiveMaintenance = async (force = false) => {
     if (archiveMaintenanceRunning) return null;
     setArchiveMaintenanceRunning(true);
     try {
-      const result = await run(() => call<ArchiveMaintenanceResult>("run_session_archive_maintenance"));
+      const result = await run(() => call<ArchiveMaintenanceResult>("run_session_archive_maintenance", { force }));
       if (result) {
         setArchiveMaintenance(result);
         await Promise.all([refreshSessionLifecycle(true), refreshLocalSessions(true, sessionArchiveView)]);
@@ -612,7 +613,7 @@ export function App() {
       await Promise.all([
         refreshSettings(true),
         refreshLocalSessions(true, sessionArchiveView),
-        refreshSessionLifecycle(true),
+        refreshSessionLifecycle(true).then((lifecycle) => refreshArchivePreview(lifecycle?.retentionDays, true)),
         refreshProviderCompatibility(true),
       ]);
     }
@@ -998,8 +999,10 @@ export function App() {
     };
   }, []);
   const installAppUpdate = async () => {
-    if (!appUpdate) return;
+    if (!appUpdate || appUpdate.phase.kind === "downloading" || appUpdate.phase.kind === "installing") return;
     const { update } = appUpdate;
+    // Acknowledge the click at once — the first real download event is a network round-trip away.
+    setAppUpdate({ update, phase: { kind: "downloading", version: update.version, received: 0, total: null } });
     try {
       await update.downloadAndInstall((event) => {
         setAppUpdate((current) => (current ? { update, phase: appUpdatePhaseAfterEvent(current.phase, event) } : current));
@@ -1239,9 +1242,9 @@ type Actions = {
   refreshLocalSessions: (silent?: boolean, archived?: boolean, cursor?: string) => Promise<LocalSessionsResult | null>;
   refreshSessionLifecycle: (silent?: boolean) => Promise<SessionLifecycleSettingsResult | null>;
   refreshArchivePreview: (retentionDays?: number, silent?: boolean) => Promise<ArchivePreviewResult | null>;
-  saveSessionLifecycle: (patch: Partial<SessionLifecycleSettingsResult>) => Promise<SessionLifecycleSettingsResult | null>;
+  saveSessionLifecycle: (patch: Partial<SessionLifecycleSettingsResult>, silent?: boolean) => Promise<SessionLifecycleSettingsResult | null>;
   enableSessionArchiving: (retentionDays: number) => Promise<void>;
-  runArchiveMaintenance: () => Promise<ArchiveMaintenanceResult | null>;
+  runArchiveMaintenance: (force?: boolean) => Promise<ArchiveMaintenanceResult | null>;
   archiveOrRestoreSession: (session: LocalSession, archived: boolean) => Promise<void>;
   refreshProviderCompatibility: (silent?: boolean) => Promise<ProviderCompatibilityResult | null>;
   adaptActiveSessions: () => Promise<void>;
@@ -1742,18 +1745,11 @@ function SessionsScreen({
     });
   };
 
-  const selectAllSessions = () => {
-    setSelectionMode(true);
-    setSelectedSessionIds(new Set(items.map((session) => session.id)));
-  };
+  const selectAllSessions = () => setSelectedSessionIds(new Set(items.map((session) => session.id)));
 
   const clearSelectedSessions = () => setSelectedSessionIds(new Set());
 
   const deleteSelectedSessions = async () => {
-    if (!selectionMode) {
-      setSelectionMode(true);
-      return;
-    }
     setBulkDeleting(true);
     try {
       await actions.deleteLocalSessions(selectedSessions);
@@ -1770,10 +1766,16 @@ function SessionsScreen({
     await actions.saveSessionLifecycle({ archiveEnabled: false, retentionDays });
   };
 
-  const saveRetentionDays = async () => {
-    await actions.saveSessionLifecycle({ retentionDays });
-    await actions.refreshArchivePreview(retentionDays, true);
-  };
+  // The days input saves itself like the toggle does; the preview follows the saved value.
+  useEffect(() => {
+    if (!lifecycle || retentionDays === lifecycle.retentionDays) return;
+    const timer = window.setTimeout(() => {
+      void actions.saveSessionLifecycle({ retentionDays }, true).then((saved) => {
+        if (saved) void actions.refreshArchivePreview(retentionDays, true);
+      });
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [retentionDays, lifecycle, actions]);
 
   return (
     <>
@@ -1811,15 +1813,7 @@ function SessionsScreen({
             </Field>
           </div>
           <Toolbar>
-            <Button onClick={() => void actions.refreshArchivePreview(retentionDays)} variant="outline">
-              <Archive className="h-4 w-4" />
-              {t("预览")}
-            </Button>
-            <Button onClick={() => void saveRetentionDays()} variant="outline">
-              <Save className="h-4 w-4" />
-              {t("保存策略")}
-            </Button>
-            <Button disabled={!lifecycle?.archiveEnabled || archiveMaintenanceRunning} onClick={() => void actions.runArchiveMaintenance()}>
+            <Button disabled={!lifecycle?.archiveEnabled || archiveMaintenanceRunning} onClick={() => void actions.runArchiveMaintenance(true)}>
               <RefreshCw className="h-4 w-4" />
               {archiveMaintenanceRunning ? t("检查中…") : t("立即检查")}
             </Button>
@@ -1831,9 +1825,13 @@ function SessionsScreen({
             </div>
           ) : null}
           {archiveMaintenance ? (
-            <div className="hint-line">
-              <CheckCircle2 className="h-4 w-4" />
-              <span>{tf("候选 {0}，已归档 {1}，跳过 {2}，失败 {3}。", [archiveMaintenance.candidateCount, archiveMaintenance.archivedCount, archiveMaintenance.skippedCount, archiveMaintenance.failedCount])}</span>
+            <div className="hint-line" data-tone={archiveMaintenance.deferred || archiveMaintenance.failedCount ? "warn" : undefined}>
+              {archiveMaintenance.deferred || archiveMaintenance.failedCount ? <TriangleAlert className="h-4 w-4" /> : archiveMaintenance.due ? <CheckCircle2 className="h-4 w-4" /> : <Info className="h-4 w-4" />}
+              <span>
+                {archiveMaintenance.due && !archiveMaintenance.deferred
+                  ? tf("候选 {0}，已归档 {1}，跳过 {2}，失败 {3}。", [archiveMaintenance.candidateCount, archiveMaintenance.archivedCount, archiveMaintenance.skippedCount, archiveMaintenance.failedCount])
+                  : t(archiveMaintenance.message)}
+              </span>
             </div>
           ) : null}
         </CardContent>
@@ -1854,7 +1852,6 @@ function SessionsScreen({
             <Button
               disabled={!providerCompatibility?.adaptationAvailable || !providerCompatibility.mismatchCount}
               onClick={() => void actions.adaptActiveSessions()}
-              variant="outline"
             >
               <RefreshCw className="h-4 w-4" />
               {t("适配到当前 provider")}
@@ -1891,27 +1888,34 @@ function SessionsScreen({
               {t("已归档")} <small>{archivedCount}</small>
             </button>
           </div>
-          <Toolbar>
-            <Button onClick={() => void actions.refreshLocalSessions(false, archiveView)} variant="outline">
-              <RefreshCw className="h-4 w-4" />
-              {t("刷新")}
-            </Button>
-          </Toolbar>
           {items.length ? (
             <>
               <div className="session-list-toolbar">
-                <span className="session-selection-summary">{t("已选择")} {selectedCount} / {items.length} {t("个会话")}</span>
+                <span className="session-selection-summary">
+                  {selectionMode ? `${t("已选择")} ${selectedCount} / ${items.length} ${t("个会话")}` : null}
+                </span>
                 <div className="session-selection-actions">
-                  <Button disabled={allSelected || bulkDeleting} onClick={selectAllSessions} size="sm" variant="outline">
-                    {t("全选当前列表")}
-                  </Button>
-                  <Button disabled={!selectedCount || bulkDeleting} onClick={clearSelectedSessions} size="sm" variant="outline">
-                    {t("清空选择")}
-                  </Button>
-                  <Button disabled={(selectionMode && !selectedCount) || bulkDeleting} onClick={() => void deleteSelectedSessions()} size="sm" variant="outline">
-                    {selectionMode ? <Trash2 className="h-4 w-4" /> : null}
-                    {selectionMode ? (bulkDeleting ? t("正在删除…") : t("删除已选")) : t("多选")}
-                  </Button>
+                  {selectionMode ? (
+                    <>
+                      <Button disabled={allSelected || bulkDeleting} onClick={selectAllSessions} size="sm" variant="outline">
+                        {t("全选当前列表")}
+                      </Button>
+                      <Button disabled={!selectedCount || bulkDeleting} onClick={clearSelectedSessions} size="sm" variant="outline">
+                        {t("清空选择")}
+                      </Button>
+                      <Button disabled={!selectedCount || bulkDeleting} onClick={() => void deleteSelectedSessions()} size="sm" variant="outline">
+                        <Trash2 className="h-4 w-4" />
+                        {bulkDeleting ? t("正在删除…") : t("删除已选")}
+                      </Button>
+                      <Button disabled={bulkDeleting} onClick={() => { setSelectionMode(false); clearSelectedSessions(); }} size="sm" variant="ghost">
+                        {t("取消")}
+                      </Button>
+                    </>
+                  ) : (
+                    <Button onClick={() => setSelectionMode(true)} size="sm" variant="outline">
+                      {t("多选")}
+                    </Button>
+                  )}
                 </div>
               </div>
               <div className="session-list">

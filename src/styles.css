@@ -2627,6 +2627,10 @@ body {
   color: hsl(var(--primary));
 }
 
+.hint-line[data-tone="warn"] svg {
+  color: hsl(var(--destructive, 0 84% 60%));
+}
+
 .recommend-hero {
   display: flex;
   align-items: center;

@@ -36,6 +36,18 @@ describe("the update download phase reducer", () => {
     assert.deepEqual(phase, { kind: "downloading", version: "0.4.9", received: 750, total: 1000 });
   });
 
+  it("lets a click-initiated indeterminate phase adopt the real size when Started arrives", () => {
+    // The shell flips to downloading(0, null) on click for instant feedback; the plugin's
+    // Started event lands afterwards and must supersede it rather than accumulate.
+    const clicked: AppUpdatePhase = { kind: "downloading", version: "0.4.9", received: 0, total: null };
+    assert.deepEqual(appUpdatePhaseAfterEvent(clicked, { event: "Started", data: { contentLength: 1000 } }), {
+      kind: "downloading",
+      version: "0.4.9",
+      received: 0,
+      total: 1000,
+    });
+  });
+
   it("moves to installing when the download finishes", () => {
     const downloading: AppUpdatePhase = { kind: "downloading", version: "0.4.9", received: 1000, total: 1000 };
     assert.deepEqual(appUpdatePhaseAfterEvent(downloading, { event: "Finished" }), {
