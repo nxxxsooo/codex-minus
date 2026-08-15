@@ -1520,13 +1520,34 @@ fn target_client_running() -> Option<bool> {
 }
 
 #[tauri::command]
-pub async fn run_session_archive_maintenance() -> CommandResult<ArchiveMaintenancePayload> {
-    tauri::async_runtime::spawn_blocking(run_session_archive_maintenance_blocking)
-        .await
-        .expect("blocking command panicked")
+pub async fn run_session_archive_maintenance(
+    force: Option<bool>,
+) -> CommandResult<ArchiveMaintenancePayload> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_session_archive_maintenance_blocking(force.unwrap_or(false))
+    })
+    .await
+    .expect("blocking command panicked")
 }
 
-fn run_session_archive_maintenance_blocking() -> CommandResult<ArchiveMaintenancePayload> {
+// The daily interval only guards the automatic pass; a user-initiated check runs regardless,
+// because clicking a button and silently being told "not due yet" reads as a broken button.
+fn archive_maintenance_due(
+    settings: &SessionLifecycleSettings,
+    force: bool,
+    current_time_ms: i64,
+) -> bool {
+    settings.archive_enabled
+        && settings.first_run_reviewed
+        && (force
+            || settings.last_completed_at_ms.is_none_or(|last| {
+                current_time_ms.saturating_sub(last) >= ARCHIVE_CHECK_INTERVAL_MS
+            }))
+}
+
+fn run_session_archive_maintenance_blocking(
+    force: bool,
+) -> CommandResult<ArchiveMaintenancePayload> {
     let started = Instant::now();
     let current_time_ms = now_ms();
     let settings = match read_session_lifecycle_settings_from(&session_lifecycle_settings_path()) {
@@ -1548,11 +1569,7 @@ fn run_session_archive_maintenance_blocking() -> CommandResult<ArchiveMaintenanc
             );
         }
     };
-    let due = settings.archive_enabled
-        && settings.first_run_reviewed
-        && settings
-            .last_completed_at_ms
-            .is_none_or(|last| current_time_ms.saturating_sub(last) >= ARCHIVE_CHECK_INTERVAL_MS);
+    let due = archive_maintenance_due(&settings, force, current_time_ms);
     let cutoff_at_ms = archive_cutoff_at_ms(settings.retention_days, current_time_ms);
     let mut payload = ArchiveMaintenancePayload {
         due,
@@ -5815,6 +5832,25 @@ mod session_lifecycle_tests {
         assert!(settings.auto_adapt_provider_on_switch);
         assert!(settings.archive_enabled);
         assert_eq!(settings.retention_days, 20);
+    }
+
+    #[test]
+    fn forced_manual_check_bypasses_the_daily_interval_but_not_the_policy() {
+        let recently_checked = SessionLifecycleSettings {
+            archive_enabled: true,
+            first_run_reviewed: true,
+            retention_days: 30,
+            last_completed_at_ms: Some(1_000),
+            auto_adapt_provider_on_switch: true,
+        };
+        assert!(!archive_maintenance_due(&recently_checked, false, 2_000));
+        assert!(archive_maintenance_due(&recently_checked, true, 2_000));
+
+        let disabled = SessionLifecycleSettings {
+            archive_enabled: false,
+            ..recently_checked
+        };
+        assert!(!archive_maintenance_due(&disabled, true, 2_000));
     }
 
     #[test]
