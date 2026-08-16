@@ -38,8 +38,6 @@ const LOGIC_STILL_IN_THE_SHELL = [
   "positiveNumberOrDefault",
   "positiveNumberOrNull",
   "providerInitial",
-  "providerNativeCapabilityStateLabel",
-  "providerTransitionConfirmationMessage",
   "reasoningEffortsText",
   "relayModeLabel",
   "relayProfileConfigBrief",

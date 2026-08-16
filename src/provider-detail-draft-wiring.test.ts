@@ -3,6 +3,10 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+const confirmationSource = readFileSync(
+  new URL("./provider-transition-confirmation.ts", import.meta.url),
+  "utf8",
+);
 const liveFilePanelCall = source.match(/<RelayLiveFilePanels[\s\S]*?\/>/)?.[0] ?? "";
 
 describe("provider detail draft wiring", () => {
@@ -58,7 +62,7 @@ describe("provider detail draft wiring", () => {
     );
     assert.match(source, /renamedProviderFrom/);
     assert.match(source, /renamedProviderTo/);
-    assert.match(source, /只替换冲突的 Actor 标记/);
+    assert.match(confirmationSource, /只替换冲突的 Actor 标记/);
     assert.doesNotMatch(source, /replacementProviderId:\s*legacyReplacementProviderId/);
   });
 

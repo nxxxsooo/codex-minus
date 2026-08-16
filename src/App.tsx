@@ -14,6 +14,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { } from "@tauri-apps/api/event";
 import { } from "@tauri-apps/plugin-dialog";
@@ -104,6 +105,7 @@ import {
 } from "./provider-commit";
 import { LiveConfigPanel } from "./relay-config-panels";
 import { providerDoctorSteps } from "./provider-doctor-steps";
+import { providerTransitionConfirmationMessage } from "./provider-transition-confirmation";
 import {
   createNewRelayProfileDraft,
   PRO_MODEL_SLUGS,
@@ -999,6 +1001,32 @@ export function App() {
       cancelled = true;
     };
   }, []);
+  // Sidebar-foot version row: the installed version is always visible, and 检查更新
+  // re-runs the updater check on demand. A manual check that finds nothing says so
+  // (已是最新) instead of staying silent like the startup check; a manual failure
+  // invites a retry instead of hiding.
+  const [appVersion, setAppVersion] = useState("");
+  useEffect(() => {
+    getVersion()
+      .then(setAppVersion)
+      .catch(() => undefined);
+  }, []);
+  const [updateCheck, setUpdateCheck] = useState<"idle" | "checking" | "latest" | "failed">("idle");
+  const checkAppUpdateNow = async () => {
+    if (updateCheck === "checking") return;
+    setUpdateCheck("checking");
+    try {
+      const update = await checkForAppUpdate();
+      if (update) {
+        setAppUpdate({ update, phase: { kind: "available", version: update.version } });
+        setUpdateCheck("idle");
+      } else {
+        setUpdateCheck("latest");
+      }
+    } catch {
+      setUpdateCheck("failed");
+    }
+  };
   const installAppUpdate = async () => {
     if (!appUpdate || appUpdate.phase.kind === "downloading" || appUpdate.phase.kind === "installing") return;
     const { update } = appUpdate;
@@ -1148,6 +1176,24 @@ export function App() {
             ) : null}
           </div>
         ) : null}
+        <div className={appUpdate ? "version-foot has-banner" : "version-foot"} data-app-version-foot="true">
+          <span className="version-foot-label">{appVersion ? `v${appVersion}` : ""}</span>
+          <button
+            className="version-foot-check"
+            disabled={updateCheck === "checking"}
+            onClick={() => void checkAppUpdateNow()}
+            type="button"
+          >
+            <RefreshCw aria-hidden="true" className={updateCheck === "checking" ? "h-3 w-3 spin" : "h-3 w-3"} />
+            {updateCheck === "checking"
+              ? t("检查中…")
+              : updateCheck === "latest"
+                ? t("已是最新")
+                : updateCheck === "failed"
+                  ? t("检查失败，重试")
+                  : t("检查更新")}
+          </button>
+        </div>
       </aside>
       <main className="workspace">
         <header className="topbar">
@@ -2844,41 +2890,6 @@ function RelayProfileEditor({
   );
 }
 
-function providerTransitionConfirmationMessage(
-  state: ProviderDetailDraftState<RelayProfile>,
-): string {
-  const pending = state.pendingConfirmation;
-  if (!pending) return t("当前没有等待确认的供应商转换。");
-  if (pending.requiredConfirmation === "replaceActorHeader") {
-    return t("当前自定义 Actor 标记与原生能力优先标记冲突。确认后只替换冲突的 Actor 标记并更新草稿，仍需点击保存或设为当前才会生效。是否继续？");
-  }
-  if (pending.transition.action === "exitPureOAuth") {
-    const providerId = state.preview?.removedProviderId || t("当前自定义供应商");
-    const fields = state.preview?.removedProviderFields.join("、") || t("全部供应商字段");
-    return tf(
-      "切换到纯 OAuth 将删除自定义供应商 {0} 及其全部配置字段（{1}）。确认后只更新草稿，仍需点击保存或设为当前才会生效。是否继续？",
-      [providerId, fields],
-    );
-  }
-  return t("切换到兼容模式将失去原生能力优先配置。确认后只更新草稿，仍需点击保存或设为当前才会生效。是否继续？");
-}
-
-function providerNativeCapabilityStateLabel(state: string): string {
-  switch (state) {
-    case "nativePriority":
-      return t("配置就绪");
-    case "upgradeAvailable":
-      return t("可升级");
-    case "degraded":
-      return t("需要处理");
-    case "compatibility":
-      return t("兼容模式");
-    case "notApplicable":
-      return t("不适用");
-    default:
-      return t("状态未知");
-  }
-}
 
 function AggregateRelayProfileEditor({
   profile,
