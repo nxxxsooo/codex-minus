@@ -5000,3 +5000,41 @@ fn a_bundled_update_that_retires_the_active_default_model_names_the_repair() {
         "the catalog Codex is running on stays in place for continuity"
     );
 }
+
+#[test]
+fn provider_commit_uses_default_baseline_when_settings_file_is_absent() {
+    let fixture = Fixture::new(&BackendSettings::default(), &state_with_official());
+    fs::remove_file(&fixture.paths.settings_path).unwrap();
+
+    let persisted = BackendSettings::default();
+    let mut next = persisted.clone();
+    let new_profile = canonical_profile(
+        "sub2api",
+        "gpt-5.6-sol",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    next.relay_profiles.push(new_profile);
+
+    let result = commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(&persisted, &next, "sub2api", ProviderCommitAction::Save, 41),
+    );
+    match &result {
+        Ok(_) => {}
+        Err(error) => panic!(
+            "first-run provider save failed: {:?} {}",
+            error.code(),
+            error
+        ),
+    }
+
+    let saved: BackendSettings =
+        serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+    assert!(
+        saved
+            .relay_profiles
+            .iter()
+            .any(|profile| profile.id == "sub2api")
+    );
+}

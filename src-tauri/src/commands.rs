@@ -2512,14 +2512,19 @@ pub fn commit_provider_detail_from_paths_observed(
 
     // Validate the unmodified request first so compare-and-swap, structural catalog rules,
     // and authContents ownership are decided before normalization can change evidence.
-    let persisted_as_shown = serde_json::from_slice(&persisted_settings_bytes)
-        .map(sanitize_settings_for_output)
-        .map_err(|_| {
-            provider_commit_failure(
-                ProviderCommitErrorCode::InputUnavailable,
-                "provider settings are unavailable",
-            )
-        })?;
+    let persisted_as_shown = match persisted_settings_bytes.as_ref() {
+        Some(bytes) => serde_json::from_slice(bytes)
+            .map(sanitize_settings_for_output)
+            .map_err(|_| {
+                provider_commit_failure(
+                    ProviderCommitErrorCode::InputUnavailable,
+                    "provider settings are unavailable",
+                )
+            })?,
+        // First run: the settings file does not exist yet, so the editor was shown the same
+        // defaults `SettingsStore::load()` answers for a missing file.
+        None => sanitize_settings_for_output(BackendSettings::default()),
+    };
     let mut request = request;
     // Compare-and-swap is decided here and only here. Restating the accepted baseline keeps the
     // later validators comparing against one agreed generation instead of re-deciding staleness
@@ -2859,9 +2864,14 @@ pub fn commit_provider_detail_from_paths_observed(
             .map_err(transaction_failure)?,
     );
 
-    let settings_generation_matches = read_optional_bytes(&paths.settings_path)
-        .map_err(transaction_failure)?
-        .is_some_and(|current| current == persisted_settings_bytes);
+    let settings_generation_matches = match persisted_settings_bytes.as_ref() {
+        Some(expected) => read_optional_bytes(&paths.settings_path)
+            .map_err(transaction_failure)?
+            .is_some_and(|current| current == *expected),
+        None => read_optional_bytes(&paths.settings_path)
+            .map_err(transaction_failure)?
+            .is_none(),
+    };
     if !settings_generation_matches {
         return Err(provider_commit_failure(
             ProviderCommitErrorCode::StaleState,
@@ -2960,11 +2970,23 @@ fn current_official_catalog_scope(
     }
 }
 
-fn load_provider_commit_settings(path: &Path) -> anyhow::Result<(Vec<u8>, BackendSettings)> {
-    let bytes =
-        std::fs::read(path).map_err(|_| anyhow::anyhow!("provider settings unavailable"))?;
-    let mut settings: BackendSettings = serde_json::from_slice(&bytes)
-        .map_err(|_| anyhow::anyhow!("provider settings are invalid"))?;
+fn load_provider_commit_settings(
+    path: &Path,
+) -> anyhow::Result<(Option<Vec<u8>>, BackendSettings)> {
+    // A missing file is the first-run baseline, not a failure: `SettingsStore::load()` already
+    // answers defaults for it, so the editor legitimately holds a draft against those defaults.
+    // Any other read or parse failure still fails closed — overwriting an unreadable or corrupt
+    // settings file could destroy provider state we cannot see.
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => anyhow::bail!("provider settings unavailable"),
+    };
+    let mut settings: BackendSettings = match bytes.as_ref() {
+        Some(bytes) => serde_json::from_slice(bytes)
+            .map_err(|_| anyhow::anyhow!("provider settings are invalid"))?,
+        None => BackendSettings::default(),
+    };
     for profile in &mut settings.relay_profiles {
         migrate_persisted_legacy_api_key_auth(profile)?;
         codex_plus_core::relay_config::normalize_relay_profile_for_storage(profile)
