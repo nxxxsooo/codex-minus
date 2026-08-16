@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   appUpdateBanner,
+  appUpdateInstallFailureGuidance,
   appUpdatePhaseAfterEvent,
   downloadPercent,
   type AppUpdatePhase,
@@ -104,5 +105,17 @@ describe("the download percentage", () => {
   it("is indeterminate without a positive total", () => {
     assert.equal(downloadPercent(500, null), null);
     assert.equal(downloadPercent(500, 0), null);
+  });
+});
+
+describe("install failure guidance", () => {
+  it("names the quarantine fix for a read-only translocated install", () => {
+    assert.ok(appUpdateInstallFailureGuidance("Read-only file system (os error 30)"));
+    assert.ok(appUpdateInstallFailureGuidance("failed at /private/var/folders/x/AppTranslocation/y"));
+  });
+
+  it("stays silent for unrelated errors so the plain notice leads", () => {
+    assert.equal(appUpdateInstallFailureGuidance("connection reset by peer"), null);
+    assert.equal(appUpdateInstallFailureGuidance("signature verification failed"), null);
   });
 });

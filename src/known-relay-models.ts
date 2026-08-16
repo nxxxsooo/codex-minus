@@ -14,7 +14,7 @@ export type KnownRelayModel = {
   contextWindow: number;
   effectiveContextWindowPercent: number;
   supportedReasoningLevels: ReasoningLevel[];
-  defaultReasoningLevel: string;
+  defaultReasoningLevel: string | null;
 };
 
 const FOUR_LEVELS: ReasoningLevel[] = [
@@ -58,11 +58,11 @@ export const KNOWN_RELAY_MODELS: readonly KnownRelayModel[] = [
     description: "Fast model via the Sub2API Responses bridge.",
     contextWindow: 200_000,
     effectiveContextWindowPercent: 95,
-    supportedReasoningLevels: [
-      { effort: "low", description: "Fast responses with lighter reasoning" },
-      { effort: "high", description: "Greater reasoning depth for complex problems" },
-    ],
-    defaultReasoningLevel: "low",
+    // The Sub2API bridge rejects the `effort` parameter for Haiku ("This model does
+    // not support the effort parameter"), so the preset declares no reasoning levels
+    // and Codex offers no Effort menu.
+    supportedReasoningLevels: [],
+    defaultReasoningLevel: null,
   },
 ];
 

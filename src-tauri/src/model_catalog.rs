@@ -1962,12 +1962,20 @@ pub(crate) fn compose_profile_catalog(
                 }
                 model["effective_context_window_percent"] =
                     json!(custom.effective_context_window_percent);
-                if !custom.supported_reasoning_levels.is_empty() {
-                    model["supported_reasoning_levels"] =
-                        serde_json::to_value(&custom.supported_reasoning_levels)?;
-                }
-                if let Some(default) = custom.default_reasoning_level.as_deref() {
+                // The overlay is authoritative for reasoning levels. An empty list must
+                // materialize as `[]` with no default — inheriting the GPT template's levels
+                // made Codex offer Effort and send `effort` to upstreams that reject it.
+                model["supported_reasoning_levels"] =
+                    serde_json::to_value(&custom.supported_reasoning_levels)?;
+                if custom.supported_reasoning_levels.is_empty() {
+                    if let Some(object) = model.as_object_mut() {
+                        object.remove("default_reasoning_level");
+                    }
+                } else if let Some(default) = custom.default_reasoning_level.as_deref() {
                     model["default_reasoning_level"] = json!(default);
+                } else {
+                    model["default_reasoning_level"] =
+                        json!(custom.supported_reasoning_levels[0].effort);
                 }
                 if !custom.supported_tools.is_empty() {
                     model["supported_tools"] = json!(custom.supported_tools);
@@ -2665,6 +2673,57 @@ mod tests {
         assert!(models.iter().any(|model| model["slug"] == "hidden-b"));
         assert_eq!(models[0]["context_window"], 300000);
         assert_eq!(models[0]["effective_context_window_percent"], 95);
+    }
+
+    /// The bundled template entry carries GPT reasoning levels. A custom model that declares
+    /// none must materialize `[]` with no default, or Codex offers Effort and sends `effort`
+    /// to upstreams that reject it ("This model does not support the effort parameter").
+    #[test]
+    fn a_custom_model_without_declared_levels_materializes_no_reasoning_effort() {
+        let profile = RelayProfile {
+            id: "p".to_string(),
+            config_contents: "model = \"claude-haiku\"\n".to_string(),
+            ..RelayProfile::default()
+        };
+        let profile_state = ProfileCatalogState {
+            mode: CatalogMode::CustomOnly,
+            overlay: CatalogOverlay {
+                official: BTreeMap::new(),
+                custom: vec![
+                    CustomModel {
+                        slug: "claude-haiku".to_string(),
+                        display_name: "Haiku".to_string(),
+                        ..CustomModel::default()
+                    },
+                    CustomModel {
+                        slug: "claude-opus".to_string(),
+                        display_name: "Opus".to_string(),
+                        order: 1,
+                        supported_reasoning_levels: vec![ReasoningLevel {
+                            effort: "high".to_string(),
+                            description: "Deep".to_string(),
+                        }],
+                        ..CustomModel::default()
+                    },
+                ],
+            },
+            ..ProfileCatalogState::default()
+        };
+        let output =
+            compose_profile_catalog(&CatalogState::default(), &profile, &profile_state).unwrap();
+        let models = catalog_models(&output).unwrap();
+        let haiku = models
+            .iter()
+            .find(|model| model["slug"] == "claude-haiku")
+            .unwrap();
+        assert_eq!(haiku["supported_reasoning_levels"], json!([]));
+        assert!(haiku.get("default_reasoning_level").is_none());
+        let opus = models
+            .iter()
+            .find(|model| model["slug"] == "claude-opus")
+            .unwrap();
+        assert_eq!(opus["supported_reasoning_levels"][0]["effort"], "high");
+        assert_eq!(opus["default_reasoning_level"], "high");
     }
 
     /// Codex sorts its picker by `priority`, not file order. Official baseline priorities and

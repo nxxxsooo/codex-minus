@@ -2150,6 +2150,82 @@ pub fn open_external_url(url: String) -> CommandResult<Value> {
     }
 }
 
+/// Explicitly restart the target Codex/ChatGPT host so a changed contract or static
+/// catalog takes effect. Quit is always graceful (AppleScript `quit`, no signal): a host
+/// mid-write is never force-killed — if it does not exit in time the command reports
+/// failure and the user decides. Nothing calls this automatically.
+#[tauri::command]
+pub async fn restart_codex_host() -> CommandResult<Value> {
+    tauri::async_runtime::spawn_blocking(restart_codex_host_blocking)
+        .await
+        .unwrap_or_else(|_| failed("重启 Codex 中断；请手动确认 Codex 状态。", json!({})))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_codex_host_running(app_dir: &Path) -> bool {
+    let needle = app_dir.join("Contents/MacOS");
+    std::process::Command::new("pgrep")
+        .args(["-f", &needle.to_string_lossy()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn restart_codex_host_blocking() -> CommandResult<Value> {
+    #[cfg(target_os = "macos")]
+    {
+        let settings = SettingsStore::default().load().unwrap_or_default();
+        let saved = settings.codex_app_path.trim().to_string();
+        let Some(app_dir) = codex_plus_core::app_paths::resolve_codex_app_dir_with_saved(
+            None,
+            (!saved.is_empty()).then_some(saved.as_str()),
+        ) else {
+            return failed("未找到目标 Codex 或 ChatGPT 应用。", json!({}));
+        };
+        let app_name = app_dir
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("ChatGPT")
+            .to_string();
+        let was_running = macos_codex_host_running(&app_dir);
+        if was_running {
+            let quit = std::process::Command::new("osascript")
+                .args(["-e", &format!("tell application \"{app_name}\" to quit")])
+                .status();
+            if !quit.map(|status| status.success()).unwrap_or(false) {
+                return failed("请求退出 Codex 失败，请手动重启。", json!({}));
+            }
+            for _ in 0..30 {
+                if !macos_codex_host_running(&app_dir) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            if macos_codex_host_running(&app_dir) {
+                return failed("Codex 未在限时内退出；未强制结束，请手动重启。", json!({}));
+            }
+        }
+        let launched = std::process::Command::new("open").arg(&app_dir).status();
+        match launched {
+            Ok(status) if status.success() => ok(
+                if was_running {
+                    "已重启 Codex。"
+                } else {
+                    "Codex 未在运行，已直接启动。"
+                },
+                json!({ "wasRunning": was_running }),
+            ),
+            _ => failed("启动 Codex 失败，请手动打开。", json!({})),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        failed("当前平台暂不支持一键重启 Codex，请手动重启。", json!({}))
+    }
+}
+
 #[tauri::command]
 pub async fn relay_status() -> CommandResult<RelayPayload> {
     tauri::async_runtime::spawn_blocking(|| relay_status_blocking())

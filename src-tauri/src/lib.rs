@@ -65,6 +65,7 @@ pub fn run() {
             commands::restore_local_session,
             commands::run_session_archive_maintenance,
             commands::open_external_url,
+            commands::restart_codex_host,
             commands::relay_status,
             commands::read_relay_files,
             commands::check_env_conflicts,

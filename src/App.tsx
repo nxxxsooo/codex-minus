@@ -22,6 +22,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { check as checkForAppUpdate, type Update as AvailableAppUpdate } from "@tauri-apps/plugin-updater";
 import {
   appUpdateBanner,
+  appUpdateInstallFailureGuidance,
   appUpdatePhaseAfterEvent,
   type AppUpdatePhase,
 } from "./app-update";
@@ -105,6 +106,7 @@ import {
 } from "./provider-commit";
 import { LiveConfigPanel } from "./relay-config-panels";
 import { providerDoctorSteps } from "./provider-doctor-steps";
+import { isSuccessStatus, statusClass, statusLabel } from "./status-presentation";
 import { providerTransitionConfirmationMessage } from "./provider-transition-confirmation";
 import {
   createNewRelayProfileDraft,
@@ -1039,8 +1041,21 @@ export function App() {
       await relaunch();
     } catch (error) {
       setAppUpdate({ update, phase: { kind: "failed", version: update.version } });
-      showErrorNotice(t("应用更新"), error);
+      const guidance = appUpdateInstallFailureGuidance(String(error));
+      if (guidance) {
+        showNotice(t("应用更新"), guidance, "failed", stringifyError(error));
+      } else {
+        showErrorNotice(t("应用更新"), error);
+      }
     }
+  };
+
+  // Restart is always an explicit click with a confirm — the manager never restarts the
+  // official client on its own.
+  const restartCodexHost = async () => {
+    if (!window.confirm(t("重启 Codex 会中断正在运行的会话。现在退出并重新打开 Codex？"))) return;
+    const result = await run(() => call<CommandResult<unknown>>("restart_codex_host"));
+    if (result) showResultNotice(t("重启 Codex"), result);
   };
 
   useEffect(() => {
@@ -1089,6 +1104,7 @@ export function App() {
       refreshRelay,
       refreshRelayFiles,
       refreshModelCatalog,
+      restartCodexHost,
       adoptExternalModelCatalog,
       refreshEnvConflicts,
       removeEnvConflicts,
@@ -1178,6 +1194,15 @@ export function App() {
         ) : null}
         <div className={appUpdate ? "version-foot has-banner" : "version-foot"} data-app-version-foot="true">
           <span className="version-foot-label">{appVersion ? `v${appVersion}` : ""}</span>
+          <button
+            className="version-foot-check"
+            onClick={() => void restartCodexHost()}
+            title={t("退出并重新打开 Codex")}
+            type="button"
+          >
+            <RotateCcw aria-hidden="true" className="h-3 w-3" />
+            {t("重启 Codex")}
+          </button>
           <button
             className="version-foot-check"
             disabled={updateCheck === "checking"}
@@ -1283,6 +1308,7 @@ type Actions = {
   refreshRelay: () => Promise<void>;
   refreshRelayFiles: () => Promise<RelayFilesResult | null>;
   refreshModelCatalog: (silent?: boolean) => Promise<ModelCatalogStatusResult | null>;
+  restartCodexHost: () => Promise<void>;
   adoptExternalModelCatalog: (profileId: string, commit?: boolean, preview?: AdoptionPreviewResult, acceptVersionMismatch?: boolean, confirmContextCleanup?: boolean) => Promise<AdoptionPreviewResult | null>;
   refreshEnvConflicts: (silent?: boolean) => Promise<EnvConflictsResult | null>;
   removeEnvConflicts: (names: string[]) => Promise<void>;
@@ -1598,7 +1624,11 @@ function CatalogProfileEditor({
           <span>{t("这里就是 Codex 里能选到的模型；上下文留空表示用官方默认。")}</span>
         </div>
         <div className="catalog-editor-actions">
-          {presentation.restart ? <UiBadge variant="secondary">{t("需重启 Codex")}</UiBadge> : null}
+          {presentation.restart ? (
+            <Button onClick={() => void actions.restartCodexHost()} size="sm" variant="secondary">
+              <RotateCcw className="h-4 w-4" />{t("需重启 Codex · 点此重启")}
+            </Button>
+          ) : null}
           <Button disabled={!editingAvailability.editable} onClick={restoreProList} size="sm" variant="outline">
             <RotateCcw className="h-4 w-4" />{t("还原 Pro 列表")}
           </Button>
@@ -3296,33 +3326,8 @@ function providerInitial(name: string) {
   return Array.from(trimmed)[0]?.toUpperCase() || t("供");
 }
 
-function statusLabel(status: string) {
-  const labels: Record<string, string> = {
-    found: t("已找到"),
-    missing: t("缺失"),
-    installed: t("已安装"),
-    ok: t("正常"),
-    running: t("运行中"),
-    failed: t("失败"),
-    archived: t("已归档"),
-    accepted: t("已受理"),
-    not_checked: t("未检查"),
-    not_implemented: t("未实现"),
-    disabled: t("已禁用"),
-    unknown: t("未知"),
-  };
-  return labels[status] ?? status;
-}
 
-function statusClass(status: string) {
-  if (["found", "installed", "ok", "running"].includes(status)) return "good";
-  if (["failed", "missing"].includes(status)) return "bad";
-  return "warn";
-}
 
-function isSuccessStatus(status?: Status) {
-  return status === "ok" || status === "accepted";
-}
 
 function truncateSessionDeletePreview(value: string) {
   const normalized = value.trim();
