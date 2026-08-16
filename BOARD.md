@@ -8,6 +8,11 @@
 
 ### 2026-08-16 (late)
 
+- **fix/updates**: an install failure caused by macOS App Translocation (EROFS 「os error 30」、AppTranslocation 路径) now leads with the one-time fix — drag the app into Applications with Finder or clear the quarantine attribute — instead of the bare raw error
+  - why: an ad-hoc-signed download always carries quarantine; launched in place it runs on a read-only mount and the updater cannot replace its own bundle, which a colleague hit as an unexplained 「Read-only file system (os error 30)」
+  - verified: guidance matcher unit-tested (positive on os error 30 / AppTranslocation, silent otherwise); raw error stays behind 详情 per the notice contract test; tsc, 212 frontend tests, knip green
+  - refs: src/app-update.ts (`appUpdateInstallFailureGuidance`), src/App.tsx, src/i18n-en.ts
+
 - **feat/updates**: the sidebar foot always shows the installed version with a 检查更新 action — a manual check that finds nothing says 已是最新, a failure invites a retry, and a found update hands over to the existing banner
   - why: the updater checked exactly once at startup and silently; an instance launched before a release never learned of it without a relaunch, and nothing in the UI answered 「我现在装的是哪版」 (user: 「做一个查看版本和更新，可以左下角」)
   - verified: tsc, 210 frontend tests, knip, vite build green; `providerTransitionConfirmationMessage` moved out of the shell and dead `providerNativeCapabilityStateLabel` deleted to pay the line budget (3482 ≤ 3500)

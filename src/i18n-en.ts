@@ -412,6 +412,7 @@ export const EN_PLAIN: Record<string, string> = {
   "市场脚本": "Marketplace scripts",
   "序列化字段": "Serialized fields",
   "应用更新": "App update",
+  "更新无法写入：应用正从 macOS 隔离的只读位置运行。用 Finder 把 app 拖入「应用程序」后重新启动，或执行 xattr -dr com.apple.quarantine 后重试；处理一次后后续更新即可正常。": "The update cannot write to itself: the app is running from a read-only location created by macOS quarantine. Drag the app into Applications with Finder and relaunch, or run xattr -dr com.apple.quarantine and retry; after one fix, future updates work normally.",
   "应用路径已保存，之后启动会自动复用。": "App path saved; future launches reuse it automatically.",
   "应用路径留空时使用已保存路径；没有保存路径时使用自动探测": "When the app path is empty, the saved path is used; with no saved path, auto-detection is used",
   "应用路径覆盖": "App path override",

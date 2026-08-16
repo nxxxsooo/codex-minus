@@ -58,6 +58,17 @@ export function appUpdateBanner(phase: AppUpdatePhase): AppUpdateBanner {
   }
 }
 
+// A macOS app carrying the Gatekeeper quarantine attribute and launched from where it was
+// unzipped (or from a DMG) runs translocated on a read-only mount, so the updater cannot
+// replace its own bundle and fails with EROFS. The raw "os error 30" names the symptom but
+// not the one-time fix, which is worth a sentence of its own.
+export function appUpdateInstallFailureGuidance(rawError: string): string | null {
+  if (/os error 30|read-only file system|apptranslocation/i.test(rawError)) {
+    return "更新无法写入：应用正从 macOS 隔离的只读位置运行。用 Finder 把 app 拖入「应用程序」后重新启动，或执行 xattr -dr com.apple.quarantine 后重试；处理一次后后续更新即可正常。";
+  }
+  return null;
+}
+
 export function downloadPercent(received: number, total: number | null): number | null {
   if (total === null || total <= 0) return null;
   return Math.min(100, Math.floor((received / total) * 100));

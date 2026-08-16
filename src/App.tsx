@@ -22,6 +22,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { check as checkForAppUpdate, type Update as AvailableAppUpdate } from "@tauri-apps/plugin-updater";
 import {
   appUpdateBanner,
+  appUpdateInstallFailureGuidance,
   appUpdatePhaseAfterEvent,
   type AppUpdatePhase,
 } from "./app-update";
@@ -1039,7 +1040,12 @@ export function App() {
       await relaunch();
     } catch (error) {
       setAppUpdate({ update, phase: { kind: "failed", version: update.version } });
-      showErrorNotice(t("应用更新"), error);
+      const guidance = appUpdateInstallFailureGuidance(String(error));
+      if (guidance) {
+        showNotice(t("应用更新"), guidance, "failed", stringifyError(error));
+      } else {
+        showErrorNotice(t("应用更新"), error);
+      }
     }
   };
 
