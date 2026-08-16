@@ -8,6 +8,11 @@
 
 ### 2026-08-16 (late)
 
+- **feat/updates**: the sidebar foot always shows the installed version with a 检查更新 action — a manual check that finds nothing says 已是最新, a failure invites a retry, and a found update hands over to the existing banner
+  - why: the updater checked exactly once at startup and silently; an instance launched before a release never learned of it without a relaunch, and nothing in the UI answered 「我现在装的是哪版」 (user: 「做一个查看版本和更新，可以左下角」)
+  - verified: tsc, 210 frontend tests, knip, vite build green; `providerTransitionConfirmationMessage` moved out of the shell and dead `providerNativeCapabilityStateLabel` deleted to pay the line budget (3482 ≤ 3500)
+  - refs: src/App.tsx, src/styles.css, src/provider-transition-confirmation.ts, src/i18n-en.ts
+
 - **fix/catalog**: renumber materialized model `priority` sequentially over the final composed list (officials sorted, customs sorted by `order` and appended) so the Codex picker order always matches the manager list order
   - why: Codex sorts its picker by `priority`, not file order; official baseline priorities (1,1,2,3…) and custom orders (0,1,2,3) were two colliding 0-based sequences, interleaving Claude custom models between GPT officials at runtime
   - verified: new regression `runtime_priorities_are_sequential_so_customs_never_interleave_officials`; Rust 174+17+21 green

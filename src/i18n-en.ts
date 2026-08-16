@@ -558,6 +558,8 @@ export const EN_PLAIN: Record<string, string> = {
   "检查配置、供应商支持的模型和一次真实请求，定位供应商不可用原因。": "Check the config, the models this provider offers and one real request to find why it is unavailable.",
   "检查完成": "Check complete",
   "检查更新": "Check for updates",
+  "已是最新": "Up to date",
+  "检查失败，重试": "Check failed, retry",
   "检查问题、启动与快速修复": "Check issues, launch and quick fixes",
   "诊断供应商": "Diagnose provider",
   "检测": "Detect",

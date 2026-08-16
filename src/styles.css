@@ -348,6 +348,52 @@ body {
   color: hsl(var(--accent-foreground));
 }
 
+/* Below the banner (or alone) at the sidebar's very foot: the installed version and a
+   manual update check. */
+.version-foot {
+  flex: 0 0 auto;
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px 0;
+  font-size: 11.5px;
+  color: hsl(var(--muted-foreground));
+}
+
+.version-foot.has-banner {
+  margin-top: 8px;
+}
+
+.version-foot-label {
+  font-variant-numeric: tabular-nums;
+  user-select: text;
+}
+
+.version-foot-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: none;
+  background: none;
+  padding: 2px 4px;
+  font-size: 11.5px;
+  color: hsl(var(--muted-foreground));
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.version-foot-check:hover:not(:disabled) {
+  color: hsl(var(--foreground));
+  background: hsl(var(--accent));
+}
+
+.version-foot-check:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
 .screen {
   position: relative;
   display: grid;
