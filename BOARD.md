@@ -6,6 +6,29 @@
 
 ## Changelog
 
+### 2026-08-16 (late)
+
+- **fix/catalog**: renumber materialized model `priority` sequentially over the final composed list (officials sorted, customs sorted by `order` and appended) so the Codex picker order always matches the manager list order
+  - why: Codex sorts its picker by `priority`, not file order; official baseline priorities (1,1,2,3…) and custom orders (0,1,2,3) were two colliding 0-based sequences, interleaving Claude custom models between GPT officials at runtime
+  - verified: new regression `runtime_priorities_are_sequential_so_customs_never_interleave_officials`; Rust 174+17+21 green
+  - refs: src-tauri/src/model_catalog.rs (`compose_profile_catalog`)
+- **fix/providers**: mixed-auth (官方登录＋混入 API Key) keeps `requires_openai_auth = true` — the contract now accepts both values as canonical, the onboarding/upgrade transform writes `true`, and existing values are never repaired away
+  - why: forcing `false` silently downgraded working mixed-auth setups to pure-API runtime — the ChatGPT-attached login disappeared from Codex and plugins/account surfaces got limited (user: 「不可接受，那个模式下插件受限」); ExitPureApi still writes `false` because pure API is exactly what it names
+  - verified: contract tests updated (a value flip is no longer drift, a missing field still is); Rust 174+17+21, frontend 210, tsc, knip green
+  - refs: src-tauri/src/provider_native_capability.rs, src/provider-onboarding.ts
+- **fix/providers**: a pure-login profile (no provider table) is switchable regardless of the catalog mode its state carries, and a machine without a settings file bootstraps defaults instead of refusing every save; the three `inputUnavailable` causes now name themselves (unreadable file / invalid JSON / profile failed migration)
+  - why: switching to 「OpenAI Official」 died with `stagingRejected: provider runtime identity is incomplete` because the profile's state still carried `official-plus-custom` from an older version; a colleague machine hit `inputUnavailable` with no way to tell which of three causes it was (user: 「加了太多不该有的门禁」)
+  - verified: Rust 174+17+21 green including the runtime-fingerprint and commit-transaction suites
+  - refs: src-tauri/src/model_catalog.rs (`applied_runtime_fingerprint`), src-tauri/src/commands.rs (`load_provider_commit_settings`)
+- **feat/relay**: official-auth panel shows live auth status for every profile including new drafts (auth.json is global; new providers inherit the current login), gains a manual refresh button, and refreshes on detail open
+  - why: the status hid itself on non-active/new profiles with 「仅活动供应商显示实时认证状态」, implying login state was per-profile when it is machine-global
+  - verified: tsc, 210 frontend tests, knip green; `providerDoctorSteps` moved out of the shell to pay the App.tsx line budget (3470 ≤ 3500)
+  - refs: src/App.tsx (`RelayLiveFilePanels`), src/provider-doctor-steps.ts, src/i18n-en.ts
+- **ops/incident**: a stale local master (239 commits behind origin) was built as 0.3.1 and installed over the released 0.4.10, briefly rewriting settings with the old schema; recovered by resetting master to origin/master, restoring the official 0.4.11 release bundle from GitHub (checksum + signature verified), and repairing the catalog pointer plus `requires_openai_auth` flips in settings/config
+  - why: the build was made without fetching origin first — the release line had moved to GitHub PRs while the local checkout stayed on the pre-0.4 base
+  - verified: auth.json byte-untouched throughout (mtime + key shape); local-only work preserved (Eva-guide checkpoint cherry-picked, fixes re-landed on the 0.4.11 base); stale branch kept at `backup/stale-master-0.3.1`
+  - refs: BOARD 2026-08-13 docs/windows entry, this entry
+
 ### 2026-08-16
 
 - **verify/updater**: the 0.4.10→0.4.11 in-app upgrade completed on a real macOS machine — the macOS half of the updater's real-machine verification is done

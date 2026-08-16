@@ -2492,11 +2492,8 @@ pub fn commit_provider_detail_from_paths_observed(
     live_state::recover_locked_at(&paths.app_state).map_err(transaction_failure)?;
 
     let (persisted_settings_bytes, persisted_settings) =
-        load_provider_commit_settings(&paths.settings_path).map_err(|_| {
-            provider_commit_failure(
-                ProviderCommitErrorCode::InputUnavailable,
-                "provider settings are unavailable",
-            )
+        load_provider_commit_settings(&paths.settings_path).map_err(|reason| {
+            provider_commit_failure(ProviderCommitErrorCode::InputUnavailable, reason)
         })?;
     let persisted_state = crate::model_catalog::load_and_migrate_state_from_path(
         &persisted_settings,
@@ -2960,16 +2957,36 @@ fn current_official_catalog_scope(
     }
 }
 
-fn load_provider_commit_settings(path: &Path) -> anyhow::Result<(Vec<u8>, BackendSettings)> {
-    let bytes =
-        std::fs::read(path).map_err(|_| anyhow::anyhow!("provider settings unavailable"))?;
-    let mut settings: BackendSettings = serde_json::from_slice(&bytes)
-        .map_err(|_| anyhow::anyhow!("provider settings are invalid"))?;
+/// Reasons are static so the UI can only ever surface whitelisted text, and distinct so the
+/// user can tell a missing file from corrupt JSON from one profile failing migration — the
+/// previous single "provider settings are unavailable" hid which of the three it was.
+fn load_provider_commit_settings(path: &Path) -> Result<(Vec<u8>, BackendSettings), &'static str> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        // A machine that has never saved settings has no file yet. That is not broken
+        // input: bootstrap the defaults on disk so the very first provider save can
+        // proceed instead of refusing with "provider settings are unavailable".
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let defaults = serde_json::to_vec(&BackendSettings::default())
+                .map_err(|_| "provider settings bootstrap failed")?;
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|_| "provider settings bootstrap failed")?;
+            }
+            std::fs::write(path, &defaults).map_err(|_| "provider settings bootstrap failed")?;
+            defaults
+        }
+        Err(_) => return Err("provider settings file is unreadable"),
+    };
+    let mut settings: BackendSettings =
+        serde_json::from_slice(&bytes).map_err(|_| "provider settings are invalid JSON")?;
     for profile in &mut settings.relay_profiles {
-        migrate_persisted_legacy_api_key_auth(profile)?;
+        migrate_persisted_legacy_api_key_auth(profile)
+            .map_err(|_| "a saved provider profile failed auth migration")?;
         codex_plus_core::relay_config::normalize_relay_profile_for_storage(profile)
-            .map_err(|_| anyhow::anyhow!("persisted provider profile is invalid"))?;
-        sanitize_profile_after_core_normalize_fallible(profile)?;
+            .map_err(|_| "a saved provider profile failed normalization")?;
+        sanitize_profile_after_core_normalize_fallible(profile)
+            .map_err(|_| "a saved provider profile failed sanitization")?;
     }
     Ok((bytes, settings))
 }

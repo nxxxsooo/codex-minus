@@ -165,7 +165,7 @@ fn enabling_edits_only_owned_fields_and_preserves_nonlegacy_identity_evidence_an
         );
         assert_eq!(
             selected.get("requires_openai_auth").and_then(Item::as_bool),
-            Some(false)
+            Some(true)
         );
         assert_eq!(
             selected

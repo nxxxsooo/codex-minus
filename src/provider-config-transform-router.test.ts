@@ -68,7 +68,7 @@ describe("provider config transform router", () => {
     assert.equal(routed.kind, "synchronous");
     if (routed.kind !== "synchronous") return;
     assert.match(routed.profile.configContents, /name = "OpenAI"/);
-    assert.match(routed.profile.configContents, /requires_openai_auth = false/);
+    assert.match(routed.profile.configContents, /requires_openai_auth = true/);
     assert.match(
       routed.profile.configContents,
       /http_headers = \{ "x-openai-actor-authorization" = "local-image-extension" \}/,

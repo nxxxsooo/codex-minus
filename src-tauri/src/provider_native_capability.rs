@@ -450,12 +450,12 @@ fn evaluate_document(
             NativeCapabilityReason::MissingOpenAiAuthRequirement,
         ),
         Some(item) => match item.as_bool() {
+            // Both values are legitimate runtime choices: `true` keeps the ChatGPT-attached
+            // login (plugins and account surfaces stay available) while the bearer still
+            // authenticates requests; `false` runs as a pure API provider. Neither is a gap
+            // to repair — forcing `false` silently downgraded working mixed-auth setups.
             Some(false) => canonical(NativeCapabilityField::RequiresOpenAiAuth),
-            Some(true) => field(
-                NativeCapabilityField::RequiresOpenAiAuth,
-                NativeCapabilityOutcome::Mismatch,
-                NativeCapabilityReason::OpenAiAuthRequired,
-            ),
+            Some(true) => canonical(NativeCapabilityField::RequiresOpenAiAuth),
             None => field(
                 NativeCapabilityField::RequiresOpenAiAuth,
                 NativeCapabilityOutcome::Malformed,
@@ -1183,7 +1183,9 @@ fn enable_native_priority_draft(
         .expect("provider shape was validated before mutation");
     set_string_preserving_decor(provider, "name", MANAGED_PROVIDER_NAME);
     set_string_preserving_decor(provider, "wire_api", MANAGED_WIRE_API);
-    set_bool_preserving_decor(provider, "requires_openai_auth", false);
+    // Mixed auth keeps the official ChatGPT login attached (`true`): plugins and account
+    // surfaces stay available while the provider bearer authenticates the actual requests.
+    set_bool_preserving_decor(provider, "requires_openai_auth", true);
     if let Some(bearer) = bearer_to_write {
         set_string_preserving_decor(provider, "experimental_bearer_token", &bearer);
     }

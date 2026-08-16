@@ -26,7 +26,7 @@ describe("patching a provider config draft", () => {
 
     const complete = applyProviderConfigPatch(withUrl, { apiKey: "provider-key" }, nativeTarget);
     assert.match(complete.configContents, /name = "OpenAI"/);
-    assert.match(complete.configContents, /requires_openai_auth = false/);
+    assert.match(complete.configContents, /requires_openai_auth = true/);
     assert.match(complete.configContents, /experimental_bearer_token = "provider-key"/);
     assert.match(
       complete.configContents,
