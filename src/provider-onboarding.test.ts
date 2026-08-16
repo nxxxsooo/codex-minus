@@ -76,7 +76,7 @@ model_provider = "OpenAI"
 name = "OpenAI"
 base_url = "https://relay.example/v1"
 wire_api = "responses"
-requires_openai_auth = false
+requires_openai_auth = true
 experimental_bearer_token = "provider-key"
 http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
 `,

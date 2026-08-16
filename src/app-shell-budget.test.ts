@@ -37,7 +37,6 @@ const LOGIC_STILL_IN_THE_SHELL = [
   "parseReasoningLevels",
   "positiveNumberOrDefault",
   "positiveNumberOrNull",
-  "providerDoctorSteps",
   "providerInitial",
   "providerNativeCapabilityStateLabel",
   "providerTransitionConfirmationMessage",

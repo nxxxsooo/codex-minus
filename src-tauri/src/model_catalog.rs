@@ -509,13 +509,10 @@ pub(crate) fn applied_runtime_fingerprint(
                 manager_actor_authorized,
             )
         } else {
-            ensure!(
-                matches!(
-                    profile_state.mode,
-                    CatalogMode::NativeOfficial | CatalogMode::External
-                ),
-                "managed provider runtime identity is missing"
-            );
+            // No provider table means the official OpenAI runtime identity, regardless of
+            // which catalog mode the profile's state carries: a pure-login profile that once
+            // held a managed catalog (or inherited one from an older version) must still be
+            // switchable — refusing here turned a valid login-only profile into a dead end.
             (
                 "openai-native".to_string(),
                 "OpenAI".to_string(),
@@ -1916,7 +1913,7 @@ pub(crate) fn compose_profile_catalog(
             })
     });
 
-    let custom_entries = profile_state
+    let mut sorted_custom = profile_state
         .overlay
         .custom
         .iter()
@@ -1928,6 +1925,10 @@ pub(crate) fn compose_profile_catalog(
         .filter(|custom| {
             profile_state.mode == CatalogMode::CustomOnly || !official_slugs.contains(&custom.slug)
         })
+        .collect::<Vec<_>>();
+    sorted_custom.sort_by_key(|custom| custom.order);
+    let custom_entries = sorted_custom
+        .iter()
         .map(|custom| codex_plus_core::model_suffix::ModelCatalogEntry {
             slug: custom.slug.clone(),
             display_name: if custom.display_name.trim().is_empty() {
@@ -1955,7 +1956,6 @@ pub(crate) fn compose_profile_catalog(
                 .unwrap_or_default();
             if let Some(custom) = by_slug.get(slug) {
                 model["visibility"] = json!(if custom.visible { "list" } else { "hide" });
-                model["priority"] = json!(custom.order);
                 strip_official_only_capabilities(&mut model);
                 if !custom.description.trim().is_empty() {
                     model["description"] = json!(custom.description.trim());
@@ -1978,6 +1978,12 @@ pub(crate) fn compose_profile_catalog(
             }
             models.push(model);
         }
+    }
+    // Codex sorts its model picker by `priority`, not by file order. Officials
+    // and customs carry independent order sequences that collide, so renumber
+    // every model sequentially to make the runtime order match the list order.
+    for (index, model) in models.iter_mut().enumerate() {
+        model["priority"] = json!(index);
     }
     let output_slugs = models
         .iter()
@@ -2659,6 +2665,61 @@ mod tests {
         assert!(models.iter().any(|model| model["slug"] == "hidden-b"));
         assert_eq!(models[0]["context_window"], 300000);
         assert_eq!(models[0]["effective_context_window_percent"], 95);
+    }
+
+    /// Codex sorts its picker by `priority`, not file order. Official baseline priorities and
+    /// custom orders are independent sequences that collide, so composition renumbers every
+    /// model sequentially — otherwise customs interleave between officials at runtime.
+    #[test]
+    fn runtime_priorities_are_sequential_so_customs_never_interleave_officials() {
+        let mut state = CatalogState::default();
+        state.official = Some(OfficialSnapshot {
+            raw_catalog: official_catalog(),
+            ..OfficialSnapshot::default()
+        });
+        let profile = RelayProfile {
+            id: "p".to_string(),
+            config_contents: "model = \"official-a\"\n".to_string(),
+            ..RelayProfile::default()
+        };
+        let profile_state = ProfileCatalogState {
+            mode: CatalogMode::OfficialPlusCustom,
+            overlay: CatalogOverlay {
+                official: BTreeMap::new(),
+                custom: vec![
+                    // Custom orders (0, 1) collide with official priorities (1, 2); without
+                    // renumbering, Codex's priority sort interleaves the two sequences.
+                    CustomModel {
+                        slug: "custom-later".to_string(),
+                        display_name: "Custom Later".to_string(),
+                        order: 1,
+                        ..CustomModel::default()
+                    },
+                    CustomModel {
+                        slug: "custom-first".to_string(),
+                        display_name: "Custom First".to_string(),
+                        order: 0,
+                        ..CustomModel::default()
+                    },
+                ],
+            },
+            ..ProfileCatalogState::default()
+        };
+        let output = compose_profile_catalog(&state, &profile, &profile_state).unwrap();
+        let models = catalog_models(&output).unwrap();
+        let slugs = models
+            .iter()
+            .map(|model| model["slug"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            slugs,
+            vec!["official-a", "hidden-b", "custom-first", "custom-later"]
+        );
+        let priorities = models
+            .iter()
+            .map(|model| model["priority"].as_i64().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(priorities, vec![0, 1, 2, 3]);
     }
 
     /// Deleting a row in the editor is an official override, not a removal: the baseline entry stays

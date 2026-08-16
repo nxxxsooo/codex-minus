@@ -5,6 +5,7 @@
 - Windows 上继续保留当前 ChatGPT 登录身份；
 - Codex 的推理请求只使用分配给你的 Sub2API API Key；
 - Sub2API 在服务端账号池中选择 OAuth 或 API Key 上游账号；
+- 固定使用 FIT 当前分配的 `gpt-5.6-terra` 模型；
 - 自定义 provider 优先按 Codex 原生 OpenAI Responses 能力运行，并启用原生联网。
 
 本地只配置一个 Sub2API 地址和一枚 Sub2API API Key，不配置具体上游账号。使用 OAuth 账号还是 API Key 账号，由 Sub2API 服务端决定。
@@ -73,6 +74,7 @@ notepad %USERPROFILE%\.codex\config.toml
 这次固定使用大小写敏感的自定义 provider ID `OpenAI`。在当前文件中新增或更新以下内容：
 
 ```toml
+model = "gpt-5.6-terra"
 model_provider = "OpenAI"
 web_search = "live"
 
@@ -87,13 +89,15 @@ http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
 
 上面是**同一次配置合并**，不是两个方案：
 
-- 前两行放在文件开头、任何 `[……]` 配置段之前；如果已有 `web_search`，把原值改成 `"live"`，不要新增第二行；
+- 前三行放在文件开头、任何 `[……]` 配置段之前；如果已有 `model`、`model_provider` 或 `web_search`，直接把原值分别改成上面的值，不要新增第二行；
 - 从 `[model_providers.OpenAI]` 开始的内容，合并进文件里已经存在的同名配置段，不要再复制一份新的配置段；
+- 如果原文件只有 `[model_providers.custom]`，把这一行直接改成 `[model_providers.OpenAI]`；只把该段内的 `name` 改为 `"OpenAI"` 不算完成，因为真正的 provider ID 来自方括号里的表名；
 - `model_provider = "OpenAI"` 与 `[model_providers.OpenAI]` 的大小写必须完全一致；
 - 不要写成全小写 `openai`。全小写是 Codex 官方 OAuth 的内置保留 ID；这里的大写 `OpenAI` 是 Sub2API 使用的自定义 ID。
 
 这是把这些字段合并进现有 `config.toml`，不是用上面的片段替换整个文件。编辑时还要注意：
 
+- 已有 `model = "gpt-5"` 或其他旧模型时，直接改为 `model = "gpt-5.6-terra"`；
 - 已有 `name`、`base_url`、`wire_api`、`requires_openai_auth` 或 `experimental_bearer_token` 时，直接修改原值，不要再写第二份；
 - 把 `experimental_bearer_token` 的提示文字完整替换为实际分配给你的 Sub2API API Key；
 - 不要新增第二个同名 provider 表；
@@ -128,8 +132,9 @@ http_headers = { "原有请求头" = "原有值", "x-openai-actor-authorization"
 保存 `config.toml`，关闭记事本，然后：
 
 1. 重新打开 Stable「ChatGPT」；
-2. 新建一个任务，不要继续使用修改前已经打开的旧任务，也不要修复历史会话；
-3. 发送：
+2. 如果出现「完成 Windows 设置」，点击「重试 Windows 设置」，并在随后真正弹出的 Windows「用户账户控制」窗口中点击「是」。页面中间展示的「是／否」窗口只是操作示意图，不是可点击的真实弹窗；
+3. Windows 设置成功后，新建一个任务，不要继续使用修改前已经打开的旧任务，也不要修复历史会话；
+4. 发送：
 
 ```text
 只回复：SUB2API_ROUTE_OK
@@ -138,6 +143,13 @@ http_headers = { "原有请求头" = "原有值", "x-openai-actor-authorization"
 能够正常回复，说明基础推理请求已经通过 Sub2API。
 
 本次只在新任务中验收，无需修改或修复任何历史任务。
+
+如果反复显示「Windows 安装未完成」：
+
+1. 先重新检查 `model`、`model_provider` 和 provider 表名是否与本指南完全一致；
+2. 完全退出 ChatGPT，包括后台进程，再重新打开并重试；
+3. ChatGPT 自动生成的 `notify = [..., "turn-ended"]` 属于 Windows 本地能力配置，保留原样，不要删除或手工照抄他人电脑中的路径；
+4. 仍失败时，截取真实 UAC 弹窗或后续错误页面，而不是只重复截当前引导页。
 
 再发送：
 
@@ -153,6 +165,7 @@ http_headers = { "原有请求头" = "原有值", "x-openai-actor-authorization"
 
 | 配置／系统 | 作用 |
 |---|---|
+| `model = "gpt-5.6-terra"` | 使用 FIT 当前为 Eva 分配的模型；不要继续沿用旧的 `gpt-5` |
 | 本地 ChatGPT 登录 | 保持官方客户端的登录身份和账户计划状态；不作为当前自定义 provider 的推理凭据 |
 | `experimental_bearer_token` | 作为推理请求访问 Sub2API 的 API Key |
 | Sub2API 服务端组／账号池 | 在服务端决定本次请求由 OAuth 账号还是 API Key 账号处理 |
@@ -185,7 +198,7 @@ http_headers = { "原有请求头" = "原有值", "x-openai-actor-authorization"
 
 | 现象 | 优先检查 |
 |---|---|
-| 配置文件无法加载，或应用启动后立即报配置错误 | 是否重复写了 provider 表、字段或 `http_headers`；`model_provider` 与 provider 表 ID 是否一致；引号是否完整 |
+| 配置文件无法加载，或应用启动后立即报配置错误 | `model` 是否为 `gpt-5.6-terra`；是否仍保留 `[model_providers.custom]`；是否重复写了 provider 表、字段或 `http_headers`；`model_provider` 与 provider 表 ID 是否一致；引号是否完整 |
 | `401` 或 `INVALID_API_KEY` | Sub2API API Key 未粘贴完整、已失效、已被替换，或仍保留提示文字；这不代表本地 ChatGPT 登录失效 |
 | `403` | 先读取错误正文，再请管理员检查 Key、服务端组和模型权限 |
 | `404`、`model not found` 或 `503` | 请管理员检查模型映射、服务端路由和当前是否有可用上游账号 |
@@ -198,3 +211,5 @@ http_headers = { "原有请求头" = "原有值", "x-openai-actor-authorization"
 
 1. 完整错误码和错误正文；
 2. 已遮住 `experimental_bearer_token` 的 provider 配置片段。
+
+任何截图都必须先完整遮住 `experimental_bearer_token` 的值。若 Key 已经出现在聊天或截图中，请立即通知管理员废止旧 Key 并换新，不要继续使用。

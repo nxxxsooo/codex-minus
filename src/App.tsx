@@ -103,6 +103,7 @@ import {
   type ProviderMutationKind,
 } from "./provider-commit";
 import { LiveConfigPanel } from "./relay-config-panels";
+import { providerDoctorSteps } from "./provider-doctor-steps";
 import {
   createNewRelayProfileDraft,
   PRO_MODEL_SLUGS,
@@ -1325,7 +1326,7 @@ function RelayScreen({
     }
   }, [detailProfileId, newProfileDraft, normalized.relayProfiles]);
   useEffect(() => {
-    if (!newProfileDraft && detailProfileId === normalized.activeRelayId) {
+    if (detailProfileId || newProfileDraft) {
       void actions.refreshRelayFiles();
     }
   }, [detailProfileId, newProfileDraft, normalized.activeRelayId]);
@@ -2651,8 +2652,9 @@ function RelayProfileDetail({
       )}
       {isAggregateRelayProfile(draft) ? null : (
       <RelayLiveFilePanels
-        authStatus={isActive ? relayFiles?.authStatus ?? null : null}
+        authStatus={relayFiles?.authStatus ?? null}
         liveConfigContents={relayFiles?.configContents ?? ""}
+        onRefreshAuth={() => actions.refreshRelayFiles()}
       />
       )}
     </div>
@@ -3021,10 +3023,13 @@ function AggregateRelayProfileEditor({
 function RelayLiveFilePanels({
   authStatus,
   liveConfigContents,
+  onRefreshAuth,
 }: {
   authStatus: RelayFilesResult["authStatus"] | null;
   liveConfigContents: string;
+  onRefreshAuth: () => Promise<unknown>;
 }) {
+  const [authRefreshing, setAuthRefreshing] = useState(false);
   return (
     <div className="relay-file-grid">
       <LiveConfigPanel
@@ -3039,10 +3044,28 @@ function RelayLiveFilePanels({
             <strong>{t("官方认证")}</strong>
             <span>{t("登录与令牌刷新由官方 Codex/ChatGPT 客户端管理；供应商切换不会写入 auth.json。")}</span>
           </div>
+          <Button
+            aria-busy={authRefreshing}
+            disabled={authRefreshing}
+            onClick={async () => {
+              setAuthRefreshing(true);
+              try {
+                await onRefreshAuth();
+              } finally {
+                setAuthRefreshing(false);
+              }
+            }}
+            size="sm"
+            type="button"
+            variant="secondary"
+          >
+            <RefreshCw className={authRefreshing ? "h-4 w-4 spin" : "h-4 w-4"} />
+            {authRefreshing ? t("刷新中") : t("刷新")}
+          </Button>
         </div>
         <div className="relay-file-auth-status">
           <strong>{authStatus?.authenticated ? t("已登录") : t("需要登录")}</strong>
-          <span>{authStatus?.accountLabel || authStatus?.actionRequired || t("仅活动供应商显示实时认证状态。")}</span>
+          <span>{authStatus?.accountLabel || authStatus?.actionRequired || t("登录态全局共享；新建供应商继承当前登录。")}</span>
         </div>
       </div>
     </div>
@@ -3110,53 +3133,6 @@ function ProviderDoctorModal({
   );
 }
 
-type ProviderDoctorStepState = "pending" | "running" | "ok" | "warning" | "failed";
-
-function providerDoctorSteps(
-  result: ProviderDoctorResult | null,
-  running: boolean,
-): Array<{ id: string; title: string; detail: string; state: ProviderDoctorStepState }> {
-  const base = [
-    { id: "config", title: t("配置完整性"), pending: t("等待检查 Base URL / API Key。") },
-    { id: "models", title: t("供应商支持的模型"), pending: t("等待检查 /v1/models。") },
-    { id: "request", title: t("真实请求"), pending: t("等待发送一次测试请求。") },
-    { id: "recommendation", title: t("处理建议"), pending: t("等待生成建议。") },
-  ];
-  if (!result) {
-    return base.map((step, index) => ({
-      id: step.id,
-      title: step.title,
-      detail: index === 0 && running ? t("正在检查配置完整性…") : step.pending,
-      state: index === 0 && running ? "running" : "pending",
-    }));
-  }
-  const checks = new Map(result.checks.map((check) => [check.id, check]));
-  return base.map((step) => {
-    if (step.id === "recommendation") {
-      return {
-        id: step.id,
-        title: step.title,
-        detail: result.recommendation || step.pending,
-        state: result.status === "failed" ? "warning" : "ok",
-      };
-    }
-    const check = checks.get(step.id);
-    if (!check) {
-      return {
-        id: step.id,
-        title: step.title,
-        detail: step.id === "models" || step.id === "request" ? t("该步骤未执行。") : step.pending,
-        state: "pending",
-      };
-    }
-    return {
-      id: step.id,
-      title: check.title || step.title,
-      detail: check.detail,
-      state: check.status === "ok" ? "ok" : check.status === "warning" ? "warning" : "failed",
-    };
-  });
-}
 
 function ToggleVisual() {
   return (

@@ -118,7 +118,7 @@ model_provider = "${NEW_PROVIDER_ID}"
 name = "OpenAI"
 base_url = "${baseUrl}"
 wire_api = "responses"
-requires_openai_auth = false
+requires_openai_auth = true
 experimental_bearer_token = "${apiKey}"
 http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
 `,

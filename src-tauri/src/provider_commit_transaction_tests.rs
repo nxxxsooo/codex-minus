@@ -3168,10 +3168,17 @@ fn staged_native_contract_assertion_rejects_core_drift() {
     )
     .unwrap();
 
-    let auth_drift = profile.config_contents.replace(
+    // Both auth values are canonical runtime choices now, so a value flip is not drift —
+    // but the field going missing entirely still is.
+    let auth_flip = profile.config_contents.replace(
         "requires_openai_auth = false",
         "requires_openai_auth = true",
     );
+    assert_staged_native_provider_contract(&profile, &auth_flip, CatalogMode::OfficialPlusCustom)
+        .unwrap();
+    let auth_drift = profile
+        .config_contents
+        .replace("requires_openai_auth = false\n", "");
     assert!(
         assert_staged_native_provider_contract(
             &profile,
@@ -3983,7 +3990,7 @@ fn target_switching_changes_the_contract_only_on_commit_and_keeps_unowned_conten
         (
             NativeCapabilityDraftAction::EnableNativePriority,
             "OpenAI",
-            false,
+            true,
         ),
     ] {
         revision += 1;
@@ -4578,11 +4585,11 @@ experimental_bearer_token = "provider-key"
         provider
             .get("requires_openai_auth")
             .and_then(toml_edit::Item::as_bool),
-        Some(false)
+        Some(true)
     );
     assert!(stored.contains("x-openai-actor-authorization"));
 
-    // Nothing else moved: no other profile was migrated, and official auth was never written.
+    // Nothing else moved: no other profile was migrated, and auth.json was never written.
     assert_eq!(
         raw_stored_profile_config(&fixture.paths.settings_path, "bystander"),
         bystander_before,
