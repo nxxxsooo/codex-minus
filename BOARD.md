@@ -6,6 +6,13 @@
 
 ## Changelog
 
+### 2026-08-17
+
+- **chore/repository**: reconciled every remaining branch against stable v0.4.13, closed superseded PR #27, aligned the `AGENTS.md` mixed-auth contract with the behavior released through PR #28, and removed all obsolete local/remote branches plus seven auxiliary worktrees so only `master` remains
+  - why: the old hard constraint still forced `requires_openai_auth = false` even though v0.4.13 accepts both values and defaults new mixed-auth profiles to `true`; stale merged, release, drill, and abandoned pre-0.4 worktrees obscured the one authoritative line after the release proved stable
+  - verified: independent read-only review found no Critical, Important, or Minor issues; PR #34 passed macOS arm64, Windows x64, and Windows arm64 CI and merged as `a64c8ba`; `npm run verify` passed again on merged `master` with 212 frontend tests; final Git inventory showed one clean worktree, local/remote `master` at the same commit, no open PRs, and no other GitHub heads
+  - refs: `AGENTS.md`, PR #34, PR #27, merge commit `a64c8ba`
+
 ### 2026-08-16 (late)
 
 - **docs/presence**: README (zh/en) and the mjshao.fun landing/work page caught up with 0.4.x reality — signed in-app updates (sidebar banner, version foot with manual check, graceful 重启 Codex), mixed-auth keeps the ChatGPT login with both `requires_openai_auth` values legal, sequential picker order and authoritative empty reasoning levels, active-only session adaptation, NSIS-only Windows installers, and Finder-drag install guidance against quarantine translocation; product name unified to Codex Minus everywhere
