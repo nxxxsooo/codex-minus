@@ -8,6 +8,11 @@
 
 ### 2026-08-16 (late)
 
+- **docs/presence**: README (zh/en) and the mjshao.fun landing/work page caught up with 0.4.x reality — signed in-app updates (sidebar banner, version foot with manual check, graceful 重启 Codex), mixed-auth keeps the ChatGPT login with both `requires_openai_auth` values legal, sequential picker order and authoritative empty reasoning levels, active-only session adaptation, NSIS-only Windows installers, and Finder-drag install guidance against quarantine translocation; product name unified to Codex Minus everywhere
+  - why: public copy still claimed 「no auto-updater」, `requires_openai_auth = false` as the canonical contract, a disabled session adaptation, v0.3.0 links, and `.msi` installers — all overtaken by 0.4.x; the landing still carried the pre-rename product name
+  - verified: real 0.4.13 screenshots captured from the installed app (hero: provider list with the new version foot; detail: provider editor with the actionable restart badge, relay endpoint scrubbed to a placeholder); stale 0.3-era PNGs removed; portfolio change cherry-picked onto origin/main (5e46efa) without touching that repo's diverged local work
+  - refs: README.md, README.en.md, docs/assets/codex-minus-hero.webp, mjshao-portfolio public/codex-minus + codex-minus.mdx
+
 - **fix/catalog**: a custom model that declares no reasoning levels now materializes `supported_reasoning_levels: []` with no default, instead of inheriting the bundled GPT template's four levels; the Haiku known-model card drops its levels after a live upstream rejection
   - why: Codex offered an Effort menu for custom Claude models the user never gave levels to, and sent `effort` to the Sub2API bridge, which rejected it for Haiku (「This model does not support the effort parameter」); an empty list in the editor was silently un-declarable
   - verified: new regression `a_custom_model_without_declared_levels_materializes_no_reasoning_effort`; known-model card tests updated; Rust 175+17+21, frontend 212, tsc, knip green
