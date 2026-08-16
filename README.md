@@ -15,7 +15,7 @@
   <a href="LICENSE"><img alt="AGPL-3.0-only" src="https://img.shields.io/badge/license-AGPL--3.0--only-197547?style=flat-square"></a>
 </p>
 
-Codex Minus 是 [Codex++ Manager](https://github.com/BigPizzaV3/CodexPlusPlus) 的精简 fork，只保留供应商切换、模型目录、本地会话生命周期和配置诊断。没有渲染注入、launcher、市场或自动更新器。
+Codex Minus 是 [Codex++ Manager](https://github.com/BigPizzaV3/CodexPlusPlus) 的精简 fork，只保留供应商切换、模型目录、本地会话生命周期和配置诊断，并内置签名校验的应用内更新。没有渲染注入、launcher 或市场。
 
 ## 下载
 
@@ -34,7 +34,7 @@ Codex Minus 是 [Codex++ Manager](https://github.com/BigPizzaV3/CodexPlusPlus) �
 shasum -a 256 -c SHA256SUMS
 ```
 
-校验后解压，将 `Codex Minus.app` 移入 `/Applications`。当前版本采用 ad-hoc 签名，尚未使用 Developer ID 签名或 Apple 公证。首次启动如被 macOS 拦截，请在「系统设置 → 隐私与安全性」中选择「仍要打开」。
+校验后解压，**用 Finder 将 `Codex Minus.app` 拖入 `/Applications` 再启动**——不要在解压目录里直接运行，否则 macOS 隔离会让应用跑在只读位置，应用内更新会报 `Read-only file system (os error 30)`（也可执行 `xattr -dr com.apple.quarantine "/Applications/Codex Minus.app"` 后重试）。当前版本采用 ad-hoc 签名，尚未使用 Developer ID 签名或 Apple 公证。首次启动如被 macOS 拦截，请在「系统设置 → 隐私与安全性」中选择「仍要打开」。
 
 ## 为什么需要它
 
@@ -61,7 +61,7 @@ shasum -a 256 -c SHA256SUMS
 
 ### 原生能力优先
 
-- 混合供应商（官方登录 + 自定义 Base URL 与 Key）可采用一份固定契约：provider 名称为 `OpenAI`、`wire_api = "responses"`、`requires_openai_auth = false`、provider bearer 使用你的 Key，并带一个 Actor 标记请求头。
+- 混合供应商（官方登录 + 自定义 Base URL 与 Key）可采用一份固定契约：provider 名称为 `OpenAI`、`wire_api = "responses"`、provider bearer 使用你的 Key，并带一个 Actor 标记请求头。`requires_openai_auth` 默认保持 `true`，让 ChatGPT 登录态与插件能力继续可用；`true`/`false` 都是合法值，保存不会改写你已有的选择（退出到纯 API 模式时才写 `false`）。
 - Actor 标记只表示「本客户端有资格以本地扩展身份发起请求」，不是订阅升级，也不代表任何具体能力被授予。是否放行由上游决定：文本 Responses、模型发现、图像生成、图像编辑、远端压缩、联网搜索各自独立，任一项的成功或拒绝都不能推断其他项。未实测的能力一律显示为「未知」，不会被写成成功。
 - 升级为原生能力优先是显式动作，带预览与确认，只改这一个 profile。启动、读取和检视都不会自动改写任何已有 profile 的契约；保存某个供应商也不会顺带迁移其他供应商。
 - 退出到纯 OAuth 是破坏性动作：预览会列出将被删除的 provider 表与字段，确认后该 provider 及其 Key 会从 profile、settings 与 live `config.toml` 中一并删除，不保留休眠副本。
@@ -80,7 +80,8 @@ shasum -a 256 -c SHA256SUMS
 - 外部文件保持只读，采用前执行结构与目标 CLI 离线验证。目录声明版本与目标版本不同会显示警告并要求单独确认，但不会仅因版本字符串不同而拒绝兼容目录。
 - 外部目录优先于托管模式：只要 profile 的配置指向一个非本工具生成的目录文件，该 profile 就按「外部」处理，托管目录动作与原生能力优先判定都不适用，直到你显式改用内置目录。
 - 供应商 `/v1/models` 仅作为有时间戳的「已报告／未报告」证据和自定义候选；遗漏不会隐藏官方模型。
-- 托管目录写入 `~/.codex/model-catalogs/codex-minus-<profile>-<hash>.json`。活动静态目录变化后会提示重启 Codex，不会自动结束或重启官方客户端。
+- 生成目录中每个模型的 `priority` 按最终列表顺序重编，Codex 模型选择器的顺序与管理器列表完全一致，自定义模型不会穿插在官方模型之间。未声明推理级别的自定义模型生成 `supported_reasoning_levels: []`，Codex 不会展示 Effort 菜单或发送 `effort` 参数。
+- 托管目录写入 `~/.codex/model-catalogs/codex-minus-<profile>-<hash>.json`。活动静态目录变化后会提示重启 Codex；「需重启 Codex」提示和左下角的「重启 Codex」按钮可以一键优雅重启（先请求退出，绝不强制结束；仅 macOS），除此之外不会自动结束或重启官方客户端。
 
 ### 会话生命周期
 
@@ -89,6 +90,7 @@ shasum -a 256 -c SHA256SUMS
 - 自动归档默认保留最近 30 天，首次启用前必须确认候选预览。
 - 自动检查在界面可用后异步执行，最多每 24 小时完成一次。
 - 删除会话前创建本地备份。
+- 「适配到当前 provider」只改活动会话：逐会话重写 rollout 头部与逐 id 更新 sqlite，归档历史按构造不可达；先备份、锁定文件整体跳过，切换供应商时可选自动执行（默认开）。
 
 ### Context 保护
 
@@ -99,7 +101,7 @@ shasum -a 256 -c SHA256SUMS
 
 ## 更新与卸载
 
-应用启动时会自动检查 GitHub Release 上的新版本：有新版会在窗口顶部出现横幅，点「更新并重启」即可完成下载、签名校验、安装和重启，无需手动下载。检查失败（如离线）不会打扰使用。也可以随时手动下载新版覆盖安装。此前用旧版 `.msi` 安装过的 Windows 机器，请先卸载旧版再装 `-setup.exe`，避免「应用」列表出现重复条目。
+应用启动时会自动检查 GitHub Release 上的新版本：有新版会在侧边栏底部出现横幅，点「更新并重启」即可完成下载、签名校验、安装和重启，无需手动下载。左下角常驻显示当前版本，可随时点「检查更新」手动检查（已是最新会明确告知）。启动时检查失败（如离线）不会打扰使用。此前用旧版 `.msi` 安装过的 Windows 机器，请先卸载旧版再装 `-setup.exe`，避免「应用」列表出现重复条目。
 
 用户设置位于 `~/.codex-session-delete/`，覆盖应用不会删除。卸载应用时可单独决定是否保留该目录。
 
@@ -110,7 +112,6 @@ shasum -a 256 -c SHA256SUMS
 - Credential-bearing 官方目录刷新当前验证下限为内嵌 `codex-cli 0.147.0-alpha.1`；已验证 macOS OpenAI Team ID `2DC432GLL2`。不支持 keyring-only 或无法安全读取的认证存储。
 - Windows 已实现 Authenticode/OpenAI publisher gate，但尚未完成 Windows 实机 OAuth 刷新验证。
 - 「Chat Completions 协议」和「本地成员聚合」依赖上游 launcher 提供的 `127.0.0.1:57321` 代理，本项目不包含该代理，请勿使用。由远端服务完成路由、对 Codex 仅暴露一个 Responses Base URL 和 Key 的服务端复合供应商不受此限制。
-- 固定的上游 revision 尚未提供 active-only provider-sync 写入范围，因此「适配到当前 provider」保持禁用，不会回退到全历史改写。
 - 会话归档用于整理，不会压缩数据或释放磁盘空间。
 
 ## 架构
