@@ -8,6 +8,15 @@
 
 ### 2026-08-16 (late)
 
+- **fix/catalog**: a custom model that declares no reasoning levels now materializes `supported_reasoning_levels: []` with no default, instead of inheriting the bundled GPT template's four levels; the Haiku known-model card drops its levels after a live upstream rejection
+  - why: Codex offered an Effort menu for custom Claude models the user never gave levels to, and sent `effort` to the Sub2API bridge, which rejected it for Haiku (「This model does not support the effort parameter」); an empty list in the editor was silently un-declarable
+  - verified: new regression `a_custom_model_without_declared_levels_materializes_no_reasoning_effort`; known-model card tests updated; Rust 175+17+21, frontend 212, tsc, knip green
+  - refs: src-tauri/src/model_catalog.rs, src/known-relay-models.ts
+- **feat/host**: a 重启 Codex action — in the sidebar foot beside 检查更新, and the 需重启 Codex badge in the model editor is now the same button; quit is always graceful AppleScript with a confirm, never a force-kill, and nothing triggers it automatically (Windows reports not-yet-supported)
+  - why: every contract or static-catalog change ends with 「请手动退出并重开 Codex」; the badge named the action but could not perform it (user: 「工具考虑加入重启 codex 按钮」)
+  - verified: tsc, 212 frontend tests, knip green; `statusLabel`/`statusClass`/`isSuccessStatus` moved out of the shell to pay the line budget (3486 ≤ 3500); macOS restart path exercised locally after install
+  - refs: src-tauri/src/commands.rs (`restart_codex_host`), src/App.tsx, src/status-presentation.ts, src/i18n-en.ts
+
 - **fix/updates**: an install failure caused by macOS App Translocation (EROFS 「os error 30」、AppTranslocation 路径) now leads with the one-time fix — drag the app into Applications with Finder or clear the quarantine attribute — instead of the bare raw error
   - why: an ad-hoc-signed download always carries quarantine; launched in place it runs on a read-only mount and the updater cannot replace its own bundle, which a colleague hit as an unexplained 「Read-only file system (os error 30)」
   - verified: guidance matcher unit-tested (positive on os error 30 / AppTranslocation, silent otherwise); raw error stays behind 详情 per the notice contract test; tsc, 212 frontend tests, knip green

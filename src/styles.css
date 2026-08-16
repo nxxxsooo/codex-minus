@@ -355,21 +355,24 @@ body {
   margin-top: auto;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 4px;
   padding: 4px 6px 0;
   font-size: 11.5px;
   color: hsl(var(--muted-foreground));
 }
+
+
 
 .version-foot.has-banner {
   margin-top: 8px;
 }
 
 .version-foot-label {
+  margin-right: auto;
   font-variant-numeric: tabular-nums;
   user-select: text;
 }
+
 
 .version-foot-check {
   display: inline-flex;

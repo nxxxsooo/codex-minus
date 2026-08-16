@@ -29,7 +29,6 @@ const LOGIC_STILL_IN_THE_SHELL = [
   "formatTime",
   "integerOrDefault",
   "integerOrNull",
-  "isSuccessStatus",
   "loadInitialRoute",
   "loadInitialTheme",
   "managedCatalogMode",
@@ -46,8 +45,6 @@ const LOGIC_STILL_IN_THE_SHELL = [
   "relayProtocolLabel",
   "routeSubtitle",
   "routeTitle",
-  "statusClass",
-  "statusLabel",
   "stringifyError",
   "truncateSessionDeletePreview",
 ];

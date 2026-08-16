@@ -48,21 +48,30 @@ describe("the known relay model cards", () => {
         description: "Fast model via the Sub2API Responses bridge.",
         contextWindow: 200_000,
         effectiveContextWindowPercent: 95,
-        supportedReasoningLevels: [
-          { effort: "low", description: "Fast responses with lighter reasoning" },
-          { effort: "high", description: "Greater reasoning depth for complex problems" },
-        ],
-        defaultReasoningLevel: "low",
+        // The Sub2API bridge rejects `effort` for Haiku, so the card declares no levels
+        // and Codex offers no Effort menu (2026-08-16, live rejection).
+        supportedReasoningLevels: [],
+        defaultReasoningLevel: null,
       },
     ]);
   });
 
   it("keeps every card internally coherent", () => {
     for (const card of KNOWN_RELAY_MODELS) {
-      assert.ok(
-        card.supportedReasoningLevels.some((level) => level.effort === card.defaultReasoningLevel),
-        `${card.slug}: default level is not in its supported list`,
-      );
+      if (card.supportedReasoningLevels.length === 0) {
+        assert.equal(
+          card.defaultReasoningLevel,
+          null,
+          `${card.slug}: a card without levels must not name a default`,
+        );
+      } else {
+        assert.ok(
+          card.supportedReasoningLevels.some(
+            (level) => level.effort === card.defaultReasoningLevel,
+          ),
+          `${card.slug}: default level is not in its supported list`,
+        );
+      }
       assert.ok(card.contextWindow > 0);
       assert.ok(card.effectiveContextWindowPercent >= 1 && card.effectiveContextWindowPercent <= 100);
       assert.ok(card.displayName.trim().length > 0);
