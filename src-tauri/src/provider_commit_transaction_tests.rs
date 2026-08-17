@@ -4,7 +4,7 @@ use crate::commands::{
     GenericSettingsSaveError, ProviderCommitCheckpoint, ProviderCommitErrorCode,
     ProviderCommitPaths, ProviderCommitPayload, assert_staged_native_provider_contract,
     commit_provider_detail_from_paths, commit_provider_detail_from_paths_observed,
-    commit_relay_profile_transaction, save_settings_with_provider_guard_at,
+    commit_relay_profile_transaction_at, save_settings_with_provider_guard_at,
     save_settings_with_provider_guard_at_observed, settings_snapshot_for_ui_projection,
     ui_provider_topology_projection,
 };
@@ -567,7 +567,10 @@ fn relay_transaction_rejection_precedes_migration_staging_and_context_mutation()
         let before = fixture.file_generation();
         let context_before = semantic_context_tables(rich_live_config());
 
-        assert!(commit_relay_profile_transaction(unsupported, "sub2api", false).is_err());
+        assert!(
+            commit_relay_profile_transaction_at(&fixture.paths, unsupported, "sub2api", false)
+                .is_err()
+        );
 
         assert_eq!(fixture.file_generation(), before);
         assert_eq!(

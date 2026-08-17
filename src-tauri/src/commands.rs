@@ -4001,16 +4001,37 @@ fn switch_relay_profile_blocking(
 }
 
 pub(crate) fn commit_relay_profile_transaction(
+    settings: BackendSettings,
+    previous_active_relay_id: &str,
+    confirm_context_cleanup: bool,
+) -> anyhow::Result<BackendSettings> {
+    commit_relay_profile_transaction_at(
+        &ProviderCommitPaths::defaults(),
+        settings,
+        previous_active_relay_id,
+        confirm_context_cleanup,
+    )
+}
+
+pub(crate) fn commit_relay_profile_transaction_at(
+    paths: &ProviderCommitPaths,
     mut settings: BackendSettings,
     previous_active_relay_id: &str,
     confirm_context_cleanup: bool,
 ) -> anyhow::Result<BackendSettings> {
     validate_relay_profile_transaction_input(&settings)?;
-    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    let home = &paths.codex_home;
     let _guard = live_state::lock()?;
-    live_state::prepare_secret_paths(&home)?;
-    live_state::recover_locked()?;
-    migrate_legacy_profile_auth_locked()?;
+    live_state::prepare_secret_paths_at(&paths.app_state, &paths.settings_path, home)?;
+    live_state::recover_locked_at(&paths.app_state)?;
+    validate_persisted_responses_only_settings_at(&paths.settings_path)?;
+    let migrated = migrate_legacy_profile_auth_locked_at(&paths.settings_path)?;
+    if migrated > 0 {
+        log_manager_event(
+            "manager.profile_auth_migration.completed",
+            json!({ "profileCount": migrated }),
+        );
+    }
 
     let auth_path = home.join("auth.json");
     let auth_before = read_optional_bytes(&auth_path)?;
@@ -4029,7 +4050,7 @@ pub(crate) fn commit_relay_profile_transaction(
         "供应商配置总开关已关闭，未写入 live 配置"
     );
 
-    let candidate = stage_active_relay_config(&home, &settings)?;
+    let candidate = stage_active_relay_config_at(home, &paths.app_state, &settings)?;
     let catalog_plan = crate::model_catalog::plan_active_profile(
         &home,
         &settings,
@@ -4039,12 +4060,14 @@ pub(crate) fn commit_relay_profile_transaction(
     let (protected_config, context_snapshot) =
         context_protected_config(&home, &catalog_plan.config_contents)?;
     let settings_bytes = serialize_settings_without_profile_auth(&settings)?;
-    let settings_path = codex_plus_core::paths::default_settings_path();
     let config_path = home.join("config.toml");
     let mut mutations = catalog_plan.mutations;
-    mutations.push(FileMutation::bytes(settings_path, settings_bytes));
+    mutations.push(FileMutation::bytes(
+        paths.settings_path.clone(),
+        settings_bytes,
+    ));
     mutations.push(FileMutation::text(config_path, protected_config));
-    live_state::commit_locked_verified(&mutations, || {
+    live_state::commit_locked_verified_at(&paths.app_state, &mutations, || {
         verify_context_tables(&home, &context_snapshot)?;
         anyhow::ensure!(
             read_optional_bytes(&auth_path)? == auth_before,
@@ -4095,6 +4118,7 @@ fn backfill_profile_config_only(
     })
 }
 
+#[cfg(test)]
 fn stage_active_relay_config(home: &Path, settings: &BackendSettings) -> anyhow::Result<String> {
     stage_active_relay_config_at(
         home,
@@ -6039,14 +6063,46 @@ mod session_lifecycle_tests {
                 settings.relay_profiles[0].auth_contents =
                     r#"{"OPENAI_API_KEY":"incoming-auth-must-not-migrate"}"#.to_string()
             }
+            "aggregate-profile" => {
+                settings.relay_profiles[0].relay_mode =
+                    codex_plus_core::settings::RelayMode::Aggregate
+            }
+            "aggregate-metadata" => settings.aggregate_relay_profiles.push(
+                codex_plus_core::settings::AggregateRelayProfile {
+                    id: "removed-aggregate".to_string(),
+                    name: "Removed aggregate".to_string(),
+                    strategy: Default::default(),
+                    members: Vec::new(),
+                },
+            ),
+            "active-aggregate" => {
+                settings.active_aggregate_relay_id = "removed-aggregate".to_string()
+            }
             _ => panic!("unknown unsupported route test fixture"),
         }
         settings
     }
 
+    fn assert_safe_route_settings(settings: &BackendSettings) {
+        assert!(crate::provider_commit::validate_responses_only_settings(settings).is_ok());
+        assert!(
+            settings
+                .relay_profiles
+                .iter()
+                .all(|profile| profile.auth_contents.is_empty())
+        );
+    }
+
     #[test]
     fn switch_and_save_routes_reject_removed_topologies_before_the_transaction() {
-        for kind in ["chat", "proxy", "auth"] {
+        for kind in [
+            "chat",
+            "proxy",
+            "auth",
+            "aggregate-profile",
+            "aggregate-metadata",
+            "active-aggregate",
+        ] {
             let settings = unsupported_route_settings(kind);
             assert!(validate_relay_profile_transaction_input(&settings).is_err());
 
@@ -6057,10 +6113,7 @@ mod session_lifecycle_tests {
                     confirm_context_cleanup: false,
                 }));
             assert_eq!(switch.status, "failed");
-            assert!(
-                crate::provider_commit::validate_responses_only_settings(&switch.payload.settings)
-                    .is_ok()
-            );
+            assert_safe_route_settings(&switch.payload.settings);
 
             let save = tauri::async_runtime::block_on(save_active_relay_profile(
                 RelayProfileSwitchRequest {
@@ -6070,41 +6123,43 @@ mod session_lifecycle_tests {
                 },
             ));
             assert_eq!(save.status, "failed");
-            assert!(
-                crate::provider_commit::validate_responses_only_settings(&save.payload.settings)
-                    .is_ok()
-            );
+            assert_safe_route_settings(&save.payload.settings);
         }
     }
 
     #[test]
     fn backfill_route_rejects_removed_topologies_with_a_safe_fallback() {
-        for kind in ["chat", "proxy", "auth"] {
+        for kind in [
+            "chat",
+            "proxy",
+            "auth",
+            "aggregate-profile",
+            "aggregate-metadata",
+            "active-aggregate",
+        ] {
             let result = backfill_relay_profile_from_live(BackfillRelayProfileRequest {
                 settings: unsupported_route_settings(kind),
                 profile_id: "default".to_string(),
             });
 
             assert_eq!(result.status, "failed");
-            assert!(
-                crate::provider_commit::validate_responses_only_settings(&result.payload.settings)
-                    .is_ok()
-            );
+            assert_safe_route_settings(&result.payload.settings);
         }
     }
 
     #[test]
     fn switch_failure_fallback_never_reflects_rejected_persisted_topology() {
-        for kind in ["chat", "proxy", "auth"] {
+        for kind in [
+            "chat",
+            "proxy",
+            "auth",
+            "aggregate-profile",
+            "aggregate-metadata",
+            "active-aggregate",
+        ] {
             let fallback = safe_relay_switch_failure_settings(unsupported_route_settings(kind));
 
-            assert!(crate::provider_commit::validate_responses_only_settings(&fallback).is_ok());
-            assert!(
-                fallback
-                    .relay_profiles
-                    .iter()
-                    .all(|profile| profile.auth_contents.is_empty())
-            );
+            assert_safe_route_settings(&fallback);
         }
     }
 
