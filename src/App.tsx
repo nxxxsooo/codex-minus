@@ -276,7 +276,6 @@ export function App() {
   const logDiagnostic = (event: string, detail: Record<string, unknown> = {}) => {
     void invoke("write_diagnostic_event", { event, detail }).catch(() => {});
   };
-
   const run = async <T,>(task: () => Promise<T>): Promise<T | null> => {
     try {
       return await task();
@@ -305,7 +304,8 @@ export function App() {
     const normalized = normalizeSettings(result.settings);
     const baseline = { ...result, settings: normalized };
     installSettingsBaseline(baseline, normalized);
-    if (!silent) showResultNotice(t("设置已加载"), result, { silentSuccess: true });
+    if (result.legacy_model_reset_notice) showNotice(t("模型目录已恢复"), result.legacy_model_reset_notice, "ok");
+    else if (!silent) showResultNotice(t("设置已加载"), result, { silentSuccess: true });
     return normalized;
   };
 

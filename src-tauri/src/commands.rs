@@ -59,6 +59,8 @@ pub struct SettingsPayload {
     pub settings_path: String,
     pub user_scripts: Value,
     pub provider_fingerprint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub legacy_model_reset_notice: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -493,7 +495,11 @@ pub async fn load_settings() -> CommandResult<SettingsPayload> {
 fn load_settings_blocking() -> CommandResult<SettingsPayload> {
     let result = prepare_settings_load_at(&ProviderCommitPaths::defaults());
     match result {
-        Ok(()) => settings_payload("设置已加载。", "设置读取失败"),
+        Ok(reset) => {
+            let mut result = settings_payload("设置已加载。", "设置读取失败");
+            result.payload.legacy_model_reset_notice = legacy_model_reset_notice(&reset);
+            result
+        }
         Err(_) => failed(
             "设置安全检查失败；本地设置不可用或安全事务未完成。",
             fallback_settings_payload(),
@@ -501,7 +507,9 @@ fn load_settings_blocking() -> CommandResult<SettingsPayload> {
     }
 }
 
-pub(crate) fn prepare_settings_load_at(paths: &ProviderCommitPaths) -> anyhow::Result<()> {
+pub(crate) fn prepare_settings_load_at(
+    paths: &ProviderCommitPaths,
+) -> anyhow::Result<LegacyModelResetOutcome> {
     let _guard = live_state::lock()?;
     live_state::prepare_secret_paths_at(&paths.app_state, &paths.settings_path, &paths.codex_home)?;
     live_state::recover_locked_at(&paths.app_state)?;
@@ -512,8 +520,14 @@ pub(crate) fn prepare_settings_load_at(paths: &ProviderCommitPaths) -> anyhow::R
             json!({ "profileCount": migrated }),
         );
     }
-    migrate_legacy_model_state_locked_at(paths, |_| Ok(()))?;
-    Ok(())
+    migrate_legacy_model_state_locked_at(paths, |_| Ok(()))
+}
+
+pub(crate) fn legacy_model_reset_notice(reset: &LegacyModelResetOutcome) -> Option<String> {
+    (!reset.reset_profiles.is_empty()).then(|| {
+        "已丢弃旧版自动生成的模型列表，并恢复官方模型；启动模型已设为 5.6 Terra。请重启 Codex 后新建任务。"
+            .to_string()
+    })
 }
 
 #[tauri::command]
@@ -6200,6 +6214,7 @@ fn settings_payload_value() -> Result<SettingsPayload, (anyhow::Error, SettingsP
                         settings_path: settings_path.clone(),
                         user_scripts: user_script_inventory(),
                         provider_fingerprint: String::new(),
+                        legacy_model_reset_notice: None,
                     },
                 )
             })?;
@@ -6213,6 +6228,7 @@ fn settings_payload_value() -> Result<SettingsPayload, (anyhow::Error, SettingsP
                 settings_path,
                 user_scripts: user_script_inventory(),
                 provider_fingerprint,
+                legacy_model_reset_notice: None,
             })
         }
         Err(error) => Err((
@@ -6222,6 +6238,7 @@ fn settings_payload_value() -> Result<SettingsPayload, (anyhow::Error, SettingsP
                 settings_path,
                 user_scripts: user_script_inventory(),
                 provider_fingerprint: String::new(),
+                legacy_model_reset_notice: None,
             },
         )),
     }
@@ -6235,6 +6252,7 @@ fn fallback_settings_payload() -> SettingsPayload {
             .to_string(),
         user_scripts: user_script_inventory(),
         provider_fingerprint: String::new(),
+        legacy_model_reset_notice: None,
     }
 }
 

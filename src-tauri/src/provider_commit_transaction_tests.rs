@@ -6,9 +6,10 @@ use crate::commands::{
     assert_staged_native_provider_contract,
     commit_provider_detail_from_paths as commit_provider_detail_from_paths_raw,
     commit_provider_detail_from_paths_observed as commit_provider_detail_from_paths_observed_raw,
-    migrate_legacy_model_state_locked_at, prepare_settings_load_at, provider_commit_command_result,
-    save_settings_with_provider_guard_at, save_settings_with_provider_guard_at_observed,
-    settings_snapshot_for_ui_projection, ui_provider_topology_projection,
+    legacy_model_reset_notice, migrate_legacy_model_state_locked_at, prepare_settings_load_at,
+    provider_commit_command_result, save_settings_with_provider_guard_at,
+    save_settings_with_provider_guard_at_observed, settings_snapshot_for_ui_projection,
+    ui_provider_topology_projection,
 };
 use crate::provider_commit::{
     CatalogMode, CatalogOverlay, CatalogState, CustomModel, OfficialSnapshot, ProfileCatalogDraft,
@@ -1933,6 +1934,30 @@ fn legacy_model_reset_second_load_is_a_complete_byte_and_mtime_no_op() {
             .collect::<Vec<_>>(),
         mtimes
     );
+}
+
+#[test]
+fn load_settings_returns_legacy_model_reset_notice() {
+    let fixture = eva_legacy_model_fixture();
+    let _guard = crate::live_state::lock().unwrap();
+    crate::live_state::prepare_secret_paths_at(
+        &fixture.paths.app_state,
+        &fixture.paths.settings_path,
+        &fixture.paths.codex_home,
+    )
+    .unwrap();
+    crate::live_state::recover_locked_at(&fixture.paths.app_state).unwrap();
+
+    let first = migrate_legacy_model_state_locked_at(&fixture.paths, |_| Ok(())).unwrap();
+    assert_eq!(
+        legacy_model_reset_notice(&first).as_deref(),
+        Some(
+            "已丢弃旧版自动生成的模型列表，并恢复官方模型；启动模型已设为 5.6 Terra。请重启 Codex 后新建任务。"
+        ),
+    );
+
+    let second = migrate_legacy_model_state_locked_at(&fixture.paths, |_| Ok(())).unwrap();
+    assert_eq!(legacy_model_reset_notice(&second), None);
 }
 
 #[test]

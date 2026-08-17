@@ -152,6 +152,18 @@ describe("a provider save always settles", () => {
     }
   });
 
+  it("shows a legacy model reset notice after adopting even a silent settings load", () => {
+    const refresh = appSource.match(
+      /const refreshSettings = async[\s\S]*?\n  \};/,
+    )?.[0] ?? "";
+    assert.ok(refresh.length > 0, "the settings read was located");
+    assert.match(
+      refresh,
+      /installSettingsBaseline\(baseline, normalized\);\s*if \(result\.legacy_model_reset_notice\)\s*showNotice\(\s*t\("模型目录已恢复"\),\s*result\.legacy_model_reset_notice,\s*"ok"\s*\);\s*else if \(!silent\)\s*showResultNotice\(t\("设置已加载"\), result, \{ silentSuccess: true \}\);/,
+      "a reset must be reported after the baseline is adopted, while ordinary silent loads remain silent",
+    );
+  });
+
   it("invalidates older settings reads at every real baseline or form installer", () => {
     const installer = appSource.match(
       /const installSettingsBaseline = \([\s\S]*?\n  \};/,

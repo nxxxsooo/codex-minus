@@ -180,6 +180,7 @@ export type SettingsResult = CommandResult<{
   settings_path: string;
   user_scripts: UserScriptInventory;
   provider_fingerprint: string;
+  legacy_model_reset_notice?: string | null;
 }>;
 
 export type ProviderCommitResult = CommandResult<{

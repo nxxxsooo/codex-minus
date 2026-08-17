@@ -144,6 +144,26 @@ http_headers = { "x-owned" = "keep" }
 });
 
 describe("built-in Pro model list", () => {
+  it("pins the Terra default across the frontend list, backend reset, and shipped catalog", () => {
+    const rust = fs.readFileSync(
+      new URL("../src-tauri/src/legacy_model_reset.rs", import.meta.url),
+      "utf8",
+    );
+    const catalog = JSON.parse(
+      fs.readFileSync(new URL("../src-tauri/assets/official-model-catalog.json", import.meta.url), "utf8"),
+    ) as { models: Array<{ slug: string; visibility: string }> };
+
+    assert.equal(PRO_MODEL_SLUGS[0], "gpt-5.6-terra");
+    assert.match(
+      rust,
+      /CANONICAL_MIXED_DEFAULT_MODEL:\s*&str\s*=\s*"gpt-5\.6-terra"/,
+    );
+    assert.equal(
+      catalog.models.find((model) => model.slug === "gpt-5.6-terra")?.visibility,
+      "list",
+    );
+  });
+
   it("prefills a new provider with the Pro list and a default that the official catalog carries", () => {
     const draft = createNewRelayProfileDraft({ id: "relay-x", contextSelection: null });
     const list = PRO_MODEL_SLUGS;
