@@ -23,6 +23,11 @@
   - verified: independent read-only review found no Critical, Important, or Minor issues; PR #34 passed macOS arm64, Windows x64, and Windows arm64 CI and merged as `a64c8ba`; `npm run verify` passed again on merged `master` with 212 frontend tests; final Git inventory showed one clean worktree, local/remote `master` at the same commit, no open PRs, and no other GitHub heads
   - refs: `AGENTS.md`, PR #34, PR #27, merge commit `a64c8ba`
 
+- **feat/providers**: made Codex Minus Responses-only by deleting Chat Completions, the removed local protocol proxy, and client-side aggregate provider product paths
+  - breaking: old Chat Completions／local aggregate `settings.json` shapes are unsupported and receive no migration, filtering, fallback, or read-only compatibility
+  - preserved: server-side composite providers remain ordinary Responses upstreams; Context transactions, OAuth ownership, catalog ownership, CAS, and rollback invariants are unchanged
+  - verified: `npm run verify` passed TypeScript, 209 frontend tests, and knip; `npm run vite:build` passed; `cargo test` passed 208 library, 19 native-capability integration, and 20 draft integration tests with no failures; static removed-path scans found no frontend success path or UI string and no aggregate persistence keys in frontend／current docs; `git diff --check` passed; browser rendering confirmed the sole「添加供应商」action, one Base URL, one Key, Responses copy, and no protocol／proxy／aggregate／member／strategy controls; Tauri-backed save／reopen, live Provider Doctor, set-current, and persisted server-side-composite flows were not verified because the browser shell had no Tauri backend, and a full Tauri app bundle was not built
+
 ### 2026-08-16 (late)
 
 - **docs/presence**: README (zh/en) and the mjshao.fun landing/work page caught up with 0.4.x reality — signed in-app updates (sidebar banner, version foot with manual check, graceful 重启 Codex), mixed-auth keeps the ChatGPT login with both `requires_openai_auth` values legal, sequential picker order and authoritative empty reasoning levels, active-only session adaptation, NSIS-only Windows installers, and Finder-drag install guidance against quarantine translocation; product name unified to Codex Minus everywhere
