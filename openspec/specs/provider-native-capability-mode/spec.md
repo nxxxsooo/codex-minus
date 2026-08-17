@@ -536,6 +536,8 @@ This is not automatic by default: the pinned core's storage normalizer rewrites 
 
 The startup credential migration SHALL remain permitted, for a provider-key profile, to move an agreed provider key out of `authContents` into the owner-only persisted provider bearer and to remove the unauthorized copied OAuth and legacy representation. Those operations repair credential ownership without changing the provider contract; migration SHALL NOT decide the official-auth requirement while doing so.
 
+The only startup exception is a coordinator-protected reset of exact unowned `legacy-model-list` catalog rows for an ordinary mixed Responses profile: it may remove only those rows, restore bundled official model content, clear the consumed legacy list fields, and repair a removed legacy default to `gpt-5.6-terra`. This exception SHALL preserve every explicit, external, preset, user-created, or unknown-provenance model state; it SHALL NOT invoke the core normalizer or rewrite any provider contract.
+
 #### Scenario: Startup leaves an unopened contract alone
 
 - **WHEN** the manager starts with a legacy mixed profile, a legacy provider-ID alias, and a custom-header profile persisted, each carrying a legacy API-key auth copy

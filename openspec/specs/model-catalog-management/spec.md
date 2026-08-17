@@ -230,6 +230,26 @@ The system SHALL commit a new official baseline or effective catalog only after 
 ### Requirement: Compatible migration and adoption
 The system SHALL migrate existing relay model rows without copying credentials and SHALL distinguish redundant official rows, official overrides, custom models, per-profile external catalogs, and OAuth copies before changing behavior.
 
+#### Scenario: Unowned legacy model list is reset
+
+- **WHEN** an ordinary mixed Responses profile has implicit catalog state containing exact `legacy-model-list` rows and no external ownership
+- **THEN** the manager removes only those rows, restores the bundled official model content, clears consumed legacy list fields, and changes a removed legacy default to `gpt-5.6-terra`
+
+#### Scenario: Explicit or ambiguous catalog ownership is preserved
+
+- **WHEN** a profile has an explicit mode, external pointer, user-created/preset row, or unknown provenance
+- **THEN** startup does not delete or rewrite that owned or ambiguous model state
+
+#### Scenario: Active legacy reset is one protected generation
+
+- **WHEN** the affected profile is active
+- **THEN** settings, catalog state, generated catalog, and live config commit atomically under Context protection while live auth remains byte-for-byte unchanged
+
+#### Scenario: Legacy reset is idempotent and does not gate ordinary profiles
+
+- **WHEN** reset already ran or the profile has no eligible legacy state
+- **THEN** subsequent startup and provider commits perform no write and add no save/switch rejection
+
 #### Scenario: Existing model matches the official baseline
 - **WHEN** a saved `modelList` entry matches an official slug and has no user override
 - **THEN** migration treats it as redundant official data rather than a custom duplicate
@@ -295,4 +315,3 @@ A custom-only catalog contains no official models, so dropping such a slug remov
 
 - **WHEN** a custom-only profile declares a custom model whose slug the official baseline also carries, and that slug is the profile's default model
 - **THEN** the composed catalog contains exactly that model and planning succeeds
-

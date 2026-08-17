@@ -8,6 +8,11 @@
 
 ### 2026-08-17
 
+- **fix/catalog**: unowned legacy model-list overlays now reset to the official baseline, so Eva's stale GPT-5 row is discarded and Terra becomes the persistent startup default
+  - why: the 0.4.14 auth repair revealed an older manager-owned `gpt-5` model/default; preserving it was safe but incomplete because the user never explicitly adopted that legacy row
+  - verified: focused planner/ownership/transaction/notice regressions, 231 Rust library + 17 and 21 integration tests, 225 frontend tests, strict OpenSpec, formatting, diff, and the 1,621-module production build passed
+  - refs: `src-tauri/src/legacy_model_reset.rs`, `src-tauri/src/model_catalog.rs`, `src-tauri/src/commands.rs`, OpenSpec, design and implementation plan
+
 - **release**: 0.4.14 — ships automatic repair of legacy provider `authContents` so Eva can recover through the signed in-app updater instead of editing credential files by hand
   - why: PR #35 fixed the product-owned `OPENAI_API_KEY` + stale OAuth residue that blocked Eva at settings load; a passing feature PR was not deliverable until the merged fix rode a tagged Release and updated `latest.json`
   - verified: PRs #35/#36 merged; Tag, `origin/master`, and local `master` agree at `fcb51a7`; Tag workflow `31994908135` passed macOS arm64, Windows x64, Windows arm64, and Create Release; all 9 published assets match GitHub API SHA256 digests, the 4 application/installer payloads pass `SHA256SUMS`, three updater signatures match `latest.json`, and the live `/releases/latest/` route returns byte-identical version `0.4.14`; Eva received P2P update instructions as FIT user message `om_x100b671ddc81a8a8c4349e3b67ccd9d`
