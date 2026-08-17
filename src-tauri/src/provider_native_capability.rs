@@ -150,7 +150,8 @@ fn deserialize_non_aggregate_profile<'de, D>(deserializer: D) -> Result<RelayPro
 where
     D: Deserializer<'de>,
 {
-    let profile = RelayProfile::deserialize(deserializer)?;
+    let profile = crate::provider_commit::ProviderRelayProfileInput::deserialize(deserializer)?;
+    let profile = RelayProfile::from(profile);
     crate::provider_commit::validate_responses_only_profile(&profile).map_err(D::Error::custom)?;
     Ok(profile)
 }
@@ -811,9 +812,8 @@ pub fn transform_provider_native_capability_draft_from_paths(
 
     let trusted_mode = std::fs::read(settings_path)
         .ok()
-        .and_then(|bytes| serde_json::from_slice::<BackendSettings>(&bytes).ok())
+        .and_then(|bytes| crate::provider_commit::deserialize_responses_only_settings(&bytes).ok())
         .and_then(|settings| {
-            crate::provider_commit::validate_responses_only_settings(&settings).ok()?;
             crate::model_catalog::persisted_catalog_mode_from_path(
                 &settings,
                 catalog_state_path,
@@ -1777,9 +1777,7 @@ pub fn inspect_provider_native_capabilities_from_paths(
 ) -> Result<ProviderNativeCapabilityInspectionPayload, ProviderNativeCapabilityInspectionError> {
     let settings_bytes = std::fs::read(settings_path)
         .map_err(|_| ProviderNativeCapabilityInspectionError::InputUnavailable)?;
-    let mut settings = serde_json::from_slice::<BackendSettings>(&settings_bytes)
-        .map_err(|_| ProviderNativeCapabilityInspectionError::InputUnavailable)?;
-    crate::provider_commit::validate_responses_only_settings(&settings)
+    let mut settings = crate::provider_commit::deserialize_responses_only_settings(&settings_bytes)
         .map_err(|_| ProviderNativeCapabilityInspectionError::InputUnavailable)?;
     for profile in &mut settings.relay_profiles {
         profile.auth_contents.clear();

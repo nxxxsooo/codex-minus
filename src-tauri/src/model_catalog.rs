@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, ensure};
 use base64::Engine;
-use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, SettingsStore};
+use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -953,8 +953,8 @@ fn sanitized_settings() -> anyhow::Result<BackendSettings> {
 }
 
 fn sanitized_settings_at(path: &Path) -> anyhow::Result<BackendSettings> {
-    let mut settings = SettingsStore::new(path.to_path_buf()).load()?;
-    crate::provider_commit::validate_responses_only_settings(&settings)?;
+    let bytes = std::fs::read(path)?;
+    let mut settings = crate::provider_commit::deserialize_responses_only_settings(&bytes)?;
     for profile in &mut settings.relay_profiles {
         profile.auth_contents.clear();
     }
@@ -3777,9 +3777,22 @@ http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
             active_relay_id: "active".to_string(),
             ..BackendSettings::default()
         };
+        let mut settings_value = serde_json::to_value(&settings).unwrap();
+        settings_value
+            .as_object_mut()
+            .unwrap()
+            .remove("aggregateRelayProfiles");
+        settings_value
+            .as_object_mut()
+            .unwrap()
+            .remove("activeAggregateRelayId");
+        for profile in settings_value["relayProfiles"].as_array_mut().unwrap() {
+            profile.as_object_mut().unwrap().remove("protocol");
+            profile.as_object_mut().unwrap().remove("upstreamBaseUrl");
+        }
         fs::write(
             &paths.settings_path,
-            serde_json::to_vec_pretty(&settings).unwrap(),
+            serde_json::to_vec_pretty(&settings_value).unwrap(),
         )
         .unwrap();
         let external = bundled_official_snapshot().unwrap();

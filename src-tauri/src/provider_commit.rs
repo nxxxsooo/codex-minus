@@ -23,12 +23,118 @@ pub enum ProviderCommitAction {
     SetCurrent,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderContextSelectionDraft {
     pub mcp_servers: Vec<String>,
     pub skills: Vec<String>,
     pub plugins: Vec<String>,
+}
+
+/// Strict frontend provider input. Responses is reconstructed at the adapter instead of accepted
+/// as caller-controlled state; compatibility-only upstream fields are therefore unknown fields.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderRelayProfileInput {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub relay_mode: RelayMode,
+    #[serde(default)]
+    pub official_mix_api_key: bool,
+    #[serde(default)]
+    pub test_model: String,
+    #[serde(default)]
+    pub config_contents: String,
+    #[serde(default)]
+    pub auth_contents: String,
+    #[serde(default = "default_true")]
+    pub use_common_config: bool,
+    #[serde(default)]
+    pub context_selection: ProviderContextSelectionDraft,
+    #[serde(default)]
+    pub context_selection_initialized: bool,
+    #[serde(default)]
+    pub context_window: String,
+    #[serde(default)]
+    pub auto_compact_limit: String,
+    #[serde(default)]
+    pub model_insert_mode: RelayModelInsertMode,
+    #[serde(default)]
+    pub model_list: String,
+    #[serde(default)]
+    pub model_windows: String,
+    #[serde(default)]
+    pub user_agent: String,
+    #[serde(default)]
+    pub transient_target: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl From<RelayProfile> for ProviderRelayProfileInput {
+    fn from(profile: RelayProfile) -> Self {
+        Self {
+            id: profile.id,
+            name: profile.name,
+            model: profile.model,
+            base_url: profile.base_url,
+            api_key: profile.api_key,
+            relay_mode: profile.relay_mode,
+            official_mix_api_key: profile.official_mix_api_key,
+            test_model: profile.test_model,
+            config_contents: profile.config_contents,
+            auth_contents: profile.auth_contents,
+            use_common_config: profile.use_common_config,
+            context_selection: ProviderContextSelectionDraft::from(&profile.context_selection),
+            context_selection_initialized: profile.context_selection_initialized,
+            context_window: profile.context_window,
+            auto_compact_limit: profile.auto_compact_limit,
+            model_insert_mode: profile.model_insert_mode,
+            model_list: profile.model_list,
+            model_windows: profile.model_windows,
+            user_agent: profile.user_agent,
+            transient_target: None,
+        }
+    }
+}
+
+impl From<ProviderRelayProfileInput> for RelayProfile {
+    fn from(profile: ProviderRelayProfileInput) -> Self {
+        Self {
+            id: profile.id,
+            name: profile.name,
+            model: profile.model,
+            base_url: profile.base_url.clone(),
+            upstream_base_url: profile.base_url,
+            api_key: profile.api_key,
+            protocol: RelayProtocol::Responses,
+            relay_mode: profile.relay_mode,
+            official_mix_api_key: profile.official_mix_api_key,
+            test_model: profile.test_model,
+            config_contents: profile.config_contents,
+            auth_contents: profile.auth_contents,
+            use_common_config: profile.use_common_config,
+            context_selection: RelayContextSelection::from(&profile.context_selection),
+            context_selection_initialized: profile.context_selection_initialized,
+            context_window: profile.context_window,
+            auto_compact_limit: profile.auto_compact_limit,
+            model_insert_mode: profile.model_insert_mode,
+            model_list: profile.model_list,
+            model_windows: profile.model_windows,
+            user_agent: profile.user_agent,
+        }
+    }
 }
 
 impl From<&RelayContextSelection> for ProviderContextSelectionDraft {
@@ -412,6 +518,25 @@ pub(crate) fn validate_responses_only_settings(
         validate_responses_only_profile(profile)?;
     }
     Ok(())
+}
+
+pub(crate) fn deserialize_responses_only_settings(bytes: &[u8]) -> anyhow::Result<BackendSettings> {
+    let value: Value =
+        serde_json::from_slice(bytes).context("provider settings are invalid JSON")?;
+    if let Some(profiles) = value.get("relayProfiles").and_then(Value::as_array) {
+        for profile in profiles {
+            if let Some(profile) = profile.as_object() {
+                ensure!(
+                    !profile.contains_key("protocol") && !profile.contains_key("upstreamBaseUrl"),
+                    "provider settings contain removed profile fields"
+                );
+            }
+        }
+    }
+    let settings: BackendSettings = serde_json::from_value(value)
+        .context("provider settings do not match the supported schema")?;
+    validate_responses_only_settings(&settings)?;
+    Ok(settings)
 }
 
 pub fn validate_provider_detail_request(

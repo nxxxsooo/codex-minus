@@ -197,6 +197,23 @@ struct Fixture {
     paths: ProviderCommitPaths,
 }
 
+fn persisted_settings_fixture_bytes(settings: &BackendSettings) -> Vec<u8> {
+    let mut value = serde_json::to_value(settings).unwrap();
+    value
+        .as_object_mut()
+        .unwrap()
+        .remove("aggregateRelayProfiles");
+    value
+        .as_object_mut()
+        .unwrap()
+        .remove("activeAggregateRelayId");
+    for profile in value["relayProfiles"].as_array_mut().unwrap() {
+        profile.as_object_mut().unwrap().remove("protocol");
+        profile.as_object_mut().unwrap().remove("upstreamBaseUrl");
+    }
+    serde_json::to_vec_pretty(&value).unwrap()
+}
+
 impl Fixture {
     fn new(settings: &BackendSettings, state: &CatalogState) -> Self {
         let temp = tempfile::tempdir().unwrap();
@@ -206,7 +223,7 @@ impl Fixture {
         fs::create_dir_all(&codex_home).unwrap();
         let settings_path = app_state.join("settings.json");
         let catalog_state_path = app_state.join("model-catalog-state.json");
-        fs::write(&settings_path, serde_json::to_vec_pretty(settings).unwrap()).unwrap();
+        fs::write(&settings_path, persisted_settings_fixture_bytes(settings)).unwrap();
         fs::write(
             &catalog_state_path,
             serde_json::to_vec_pretty(state).unwrap(),
@@ -458,6 +475,14 @@ fn responses_only_load_rejection_precedes_auth_migration() {
     unsupported.auth_contents = r#"{"OPENAI_API_KEY":"legacy-provider-key"}"#.to_string();
     let initial = settings_with(vec![unsupported], "sub2api");
     let fixture = Fixture::new(&initial, &state_with_official());
+    let mut unsupported_value: Value =
+        serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+    unsupported_value["relayProfiles"][0]["protocol"] = json!("chatCompletions");
+    fs::write(
+        &fixture.paths.settings_path,
+        serde_json::to_vec_pretty(&unsupported_value).unwrap(),
+    )
+    .unwrap();
     let persisted_bytes = fs::read(&fixture.paths.settings_path).unwrap();
     let before = fixture.file_generation();
     let request = ProviderCommitRequest {

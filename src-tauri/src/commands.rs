@@ -3044,9 +3044,7 @@ fn load_provider_commit_settings(path: &Path) -> Result<(Vec<u8>, BackendSetting
         }
         Err(_) => return Err("provider settings file is unreadable"),
     };
-    let mut settings: BackendSettings =
-        serde_json::from_slice(&bytes).map_err(|_| "provider settings are invalid JSON")?;
-    crate::provider_commit::validate_responses_only_settings(&settings)
+    let mut settings = crate::provider_commit::deserialize_responses_only_settings(&bytes)
         .map_err(|_| "provider settings contain an unsupported provider topology")?;
     for profile in &mut settings.relay_profiles {
         migrate_persisted_legacy_api_key_auth(profile)
@@ -4508,7 +4506,10 @@ pub(crate) fn sanitize_provider_doctor_result(
 }
 
 #[tauri::command]
-pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayProfileTestPayload> {
+pub async fn test_relay_profile(
+    profile: crate::provider_commit::ProviderRelayProfileInput,
+) -> CommandResult<RelayProfileTestPayload> {
+    let profile = RelayProfile::from(profile);
     if crate::provider_commit::validate_responses_only_profile(&profile).is_err() {
         return sanitize_provider_test_result(
             &profile,
@@ -4588,8 +4589,9 @@ pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayPro
 
 #[tauri::command]
 pub async fn fetch_relay_profile_models(
-    profile: RelayProfile,
+    profile: crate::provider_commit::ProviderRelayProfileInput,
 ) -> CommandResult<RelayProfileModelsPayload> {
+    let profile = RelayProfile::from(profile);
     if crate::provider_commit::validate_responses_only_profile(&profile).is_err() {
         return sanitize_provider_models_result(
             &profile,
@@ -4650,7 +4652,10 @@ pub async fn fetch_relay_profile_models(
 }
 
 #[tauri::command]
-pub async fn diagnose_relay_profile(profile: RelayProfile) -> CommandResult<ProviderDoctorPayload> {
+pub async fn diagnose_relay_profile(
+    profile: crate::provider_commit::ProviderRelayProfileInput,
+) -> CommandResult<ProviderDoctorPayload> {
+    let profile = RelayProfile::from(profile);
     if crate::provider_commit::validate_responses_only_profile(&profile).is_err() {
         return sanitize_provider_doctor_result(
             &profile,
@@ -5630,6 +5635,17 @@ fn settings_payload_value() -> Result<SettingsPayload, (anyhow::Error, SettingsP
     let settings_path = codex_plus_core::paths::default_settings_path()
         .to_string_lossy()
         .to_string();
+    if let Err(error) = validate_persisted_responses_only_settings_at(Path::new(&settings_path)) {
+        return Err((
+            error,
+            SettingsPayload {
+                settings: BackendSettings::default(),
+                settings_path,
+                user_scripts: user_script_inventory(),
+                provider_fingerprint: String::new(),
+            },
+        ));
+    }
     match store.load() {
         Ok(settings) => {
             crate::provider_commit::validate_responses_only_settings(&settings).map_err(
@@ -5690,6 +5706,7 @@ fn sanitize_settings_for_output(mut settings: BackendSettings) -> BackendSetting
 pub(crate) fn frontend_relay_profile_value(profile: &RelayProfile) -> serde_json::Result<Value> {
     let mut value = serde_json::to_value(profile)?;
     if let Some(profile) = value.as_object_mut() {
+        profile.remove("authContents");
         profile.remove("protocol");
         profile.remove("upstreamBaseUrl");
     }
@@ -5767,10 +5784,9 @@ pub(crate) fn validate_persisted_responses_only_settings_at(path: &Path) -> anyh
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error).context("persisted provider settings are unreadable"),
     };
-    let settings: BackendSettings =
-        serde_json::from_slice(&bytes).context("persisted provider settings are invalid")?;
-    crate::provider_commit::validate_responses_only_settings(&settings)
+    crate::provider_commit::deserialize_responses_only_settings(&bytes)
         .context("persisted provider settings contain an unsupported provider topology")
+        .map(|_| ())
 }
 
 #[derive(Debug)]
@@ -6659,6 +6675,42 @@ max_threads = 1000
     }
 
     #[test]
+    fn persisted_settings_reject_explicit_removed_profile_fields_before_deserialization() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let settings = BackendSettings {
+            relay_profiles: vec![RelayProfile {
+                id: "relay-a".to_string(),
+                base_url: "https://relay.example/v1".to_string(),
+                protocol: codex_plus_core::settings::RelayProtocol::Responses,
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+        let mut canonical: Value =
+            serde_json::from_slice(&serialize_settings_without_profile_auth(&settings).unwrap())
+                .unwrap();
+        std::fs::write(&path, serde_json::to_vec_pretty(&canonical).unwrap()).unwrap();
+        assert!(validate_persisted_responses_only_settings_at(&path).is_ok());
+
+        for (field, value) in [
+            ("protocol", json!("responses")),
+            ("upstreamBaseUrl", json!("https://forged.example/v1")),
+        ] {
+            canonical["relayProfiles"][0][field] = value;
+            std::fs::write(&path, serde_json::to_vec_pretty(&canonical).unwrap()).unwrap();
+            assert!(
+                validate_persisted_responses_only_settings_at(&path).is_err(),
+                "explicit removed field {field} must be rejected"
+            );
+            canonical["relayProfiles"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+        }
+    }
+
+    #[test]
     fn first_provider_bootstrap_writes_the_canonical_omission_shape() {
         let temp = tempfile::tempdir().unwrap();
         let settings_path = temp.path().join("settings.json");
@@ -6737,7 +6789,24 @@ requires_openai_auth = true
             ..RelayProfile::default()
         }];
 
-        serde_json::to_vec_pretty(&settings).unwrap()
+        let mut value = serde_json::to_value(settings).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("aggregateRelayProfiles");
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("activeAggregateRelayId");
+        value["relayProfiles"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("protocol");
+        value["relayProfiles"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("upstreamBaseUrl");
+        serde_json::to_vec_pretty(&value).unwrap()
     }
 
     #[test]
@@ -7424,38 +7493,6 @@ mod provider_test_compatibility_tests {
     use std::net::TcpListener;
     use std::thread::JoinHandle;
 
-    fn spawn_rejected_provider_server() -> (String, JoinHandle<usize>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let address = listener.local_addr().unwrap();
-        let handle = std::thread::spawn(move || {
-            let deadline = std::time::Instant::now() + Duration::from_millis(750);
-            let mut requests = 0;
-            while std::time::Instant::now() < deadline {
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        requests += 1;
-                        let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
-                        let mut buffer = [0_u8; 4096];
-                        let _ = stream.read(&mut buffer);
-                        let body = r#"{"error":{"message":"rejected-test-server"}}"#;
-                        let _ = write!(
-                            stream,
-                            "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                            body.len(),
-                        );
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(5));
-                    }
-                    Err(error) => panic!("rejected-provider server failed: {error}"),
-                }
-            }
-            requests
-        });
-        (format!("http://{address}/v1"), handle)
-    }
-
     fn spawn_provider_test_server(
         responses: Vec<(u16, String)>,
     ) -> (String, JoinHandle<Vec<Value>>) {
@@ -7528,27 +7565,31 @@ mod provider_test_compatibility_tests {
     }
 
     #[test]
-    fn provider_network_commands_reject_removed_routes_before_any_request() {
-        for kind in ["chat", "proxy"] {
-            let (base_url, server) = spawn_rejected_provider_server();
-            let mut profile = provider_test_profile(base_url, "sk-rejected-route");
-            if kind == "chat" {
-                profile.protocol = codex_plus_core::settings::RelayProtocol::ChatCompletions;
-            } else {
-                profile.base_url = "http://127.0.0.1:57321/v1".to_string();
-            }
-            profile.test_model = "gpt-test".to_string();
+    fn provider_network_profile_wire_rejects_explicit_removed_fields() {
+        let source = provider_test_profile("https://relay.example/v1".to_string(), "sk-wire");
+        let mut canonical = serde_json::to_value(source).unwrap();
+        canonical.as_object_mut().unwrap().remove("protocol");
+        canonical.as_object_mut().unwrap().remove("upstreamBaseUrl");
+        let accepted: crate::provider_commit::ProviderRelayProfileInput =
+            serde_json::from_value(canonical.clone()).unwrap();
+        let reconstructed: RelayProfile = accepted.into();
+        assert_eq!(
+            reconstructed.protocol,
+            codex_plus_core::settings::RelayProtocol::Responses
+        );
+        assert_eq!(reconstructed.upstream_base_url, reconstructed.base_url);
 
-            let tested = tauri::async_runtime::block_on(super::test_relay_profile(profile.clone()));
-            let fetched =
-                tauri::async_runtime::block_on(super::fetch_relay_profile_models(profile.clone()));
-            let diagnosed = tauri::async_runtime::block_on(super::diagnose_relay_profile(profile));
-
-            assert_eq!(server.join().unwrap(), 0, "{kind}");
-            assert_eq!(tested.status, "failed", "{kind}");
-            assert_eq!(fetched.status, "failed", "{kind}");
-            assert_eq!(diagnosed.status, "failed", "{kind}");
-            assert!(diagnosed.payload.checks.is_empty(), "{kind}");
+        for (field, value) in [
+            ("protocol", json!("responses")),
+            ("upstreamBaseUrl", json!("https://forged.example/v1")),
+        ] {
+            let mut forged = canonical.clone();
+            forged[field] = value;
+            assert!(
+                serde_json::from_value::<crate::provider_commit::ProviderRelayProfileInput>(forged)
+                    .is_err(),
+                "explicit removed field {field} must be rejected"
+            );
         }
     }
 
@@ -7635,7 +7676,7 @@ mod provider_test_compatibility_tests {
         profile.name = "Quick Test".to_string();
         profile.test_model = "gpt-test".to_string();
 
-        let result = tauri::async_runtime::block_on(super::test_relay_profile(profile));
+        let result = tauri::async_runtime::block_on(super::test_relay_profile(profile.into()));
         assert_eq!(result.status, "ok");
         assert_eq!(result.payload.http_status, 200);
         assert!(result.payload.compatibility_fallback_used);
@@ -7663,7 +7704,7 @@ mod provider_test_compatibility_tests {
         profile.name = "Doctor Test".to_string();
         profile.test_model = "gpt-test".to_string();
 
-        let result = tauri::async_runtime::block_on(super::diagnose_relay_profile(profile));
+        let result = tauri::async_runtime::block_on(super::diagnose_relay_profile(profile.into()));
         assert_eq!(result.status, "ok");
         assert!(result.payload.compatibility_fallback_used);
         assert_eq!(result.payload.initial_http_status, Some(400));
@@ -7704,7 +7745,7 @@ mod provider_test_compatibility_tests {
             r#"{{"auth_mode":"chatgpt","tokens":{{"access_token":"{oauth_token}","account_email":"{account_email}"}}}}"#
         );
 
-        let result = tauri::async_runtime::block_on(super::diagnose_relay_profile(profile));
+        let result = tauri::async_runtime::block_on(super::diagnose_relay_profile(profile.into()));
         let serialized = serde_json::to_string(&result).unwrap();
         server.join().unwrap();
 

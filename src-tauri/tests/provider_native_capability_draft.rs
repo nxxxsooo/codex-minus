@@ -40,6 +40,23 @@ fn request(
     }
 }
 
+fn write_persisted_settings(path: &std::path::Path, settings: &BackendSettings) {
+    let mut value = serde_json::to_value(settings).unwrap();
+    value
+        .as_object_mut()
+        .unwrap()
+        .remove("aggregateRelayProfiles");
+    value
+        .as_object_mut()
+        .unwrap()
+        .remove("activeAggregateRelayId");
+    for profile in value["relayProfiles"].as_array_mut().unwrap() {
+        profile.as_object_mut().unwrap().remove("protocol");
+        profile.as_object_mut().unwrap().remove("upstreamBaseUrl");
+    }
+    std::fs::write(path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+}
+
 #[test]
 fn typescript_transform_request_shape_deserializes_through_the_real_serde_boundary() {
     let profile = mixed_profile("serde", "same-secret", &canonical_source("inline"));
@@ -73,6 +90,35 @@ fn typescript_transform_request_shape_deserializes_through_the_real_serde_bounda
             NativeCapabilityDraftConfirmation::UseStructuredKey,
         ]
     );
+
+    for (field, value) in [
+        ("protocol", serde_json::json!("responses")),
+        (
+            "upstreamBaseUrl",
+            serde_json::json!("https://forged.example/v1"),
+        ),
+    ] {
+        let mut profile = serde_json::to_value(mixed_profile(
+            "serde-forged",
+            "same-secret",
+            &canonical_source("inline"),
+        ))
+        .unwrap();
+        profile.as_object_mut().unwrap().remove("protocol");
+        profile.as_object_mut().unwrap().remove("upstreamBaseUrl");
+        profile[field] = value;
+        let forged = serde_json::json!({
+            "draftRevision": 74,
+            "profile": profile,
+            "catalogMode": "official-plus-custom",
+            "action": "enableNativePriority",
+            "confirmations": []
+        });
+        assert!(
+            serde_json::from_value::<ProviderNativeCapabilityDraftRequest>(forged).is_err(),
+            "explicit removed field {field} must be rejected"
+        );
+    }
 
     let wrong_case = serde_json::json!({
         "draftRevision": 74,
@@ -835,7 +881,7 @@ fn persisted_external_ownership_cannot_be_forged_to_managed_at_the_command_bound
     let temp = tempfile::tempdir().unwrap();
     let settings_path = temp.path().join("settings.json");
     let catalog_state_path = temp.path().join("model-catalog-state.json");
-    std::fs::write(&settings_path, serde_json::to_vec(&settings).unwrap()).unwrap();
+    write_persisted_settings(&settings_path, &settings);
     std::fs::write(
         &catalog_state_path,
         serde_json::to_vec(&serde_json::json!({
@@ -887,7 +933,7 @@ fn exit_transform_fails_closed_when_persisted_catalog_ownership_is_unavailable()
     settings.relay_profiles.push(original.clone());
     let temp = tempfile::tempdir().unwrap();
     let settings_path = temp.path().join("settings.json");
-    std::fs::write(&settings_path, serde_json::to_vec(&settings).unwrap()).unwrap();
+    write_persisted_settings(&settings_path, &settings);
 
     for (case, contents) in [
         ("missing", None),
@@ -949,7 +995,7 @@ fn persisted_managed_ownership_allows_only_confirmed_exit_drafts() {
     let temp = tempfile::tempdir().unwrap();
     let settings_path = temp.path().join("settings.json");
     let catalog_state_path = temp.path().join("model-catalog-state.json");
-    std::fs::write(&settings_path, serde_json::to_vec(&settings).unwrap()).unwrap();
+    write_persisted_settings(&settings_path, &settings);
     std::fs::write(
         &catalog_state_path,
         serde_json::to_vec(&serde_json::json!({
@@ -1023,7 +1069,7 @@ fn revisioned_command_uses_only_the_injected_read_only_inspection_boundary() {
     let temp = tempfile::tempdir().unwrap();
     let settings_path = temp.path().join("settings.json");
     let catalog_state_path = temp.path().join("model-catalog-state.json");
-    std::fs::write(&settings_path, serde_json::to_vec(&settings).unwrap()).unwrap();
+    write_persisted_settings(&settings_path, &settings);
     std::fs::write(
         &catalog_state_path,
         serde_json::to_vec(&serde_json::json!({
@@ -1142,7 +1188,7 @@ fn complete_response_keeps_provider_secret_only_in_declared_local_draft_fields()
             "/draft/structuredApiKey".to_string(),
         ]
     );
-    assert_eq!(serialized["draft"]["profile"]["authContents"], "");
+    assert!(serialized["draft"]["profile"].get("authContents").is_none());
     assert!(serialized["draft"]["profile"].get("protocol").is_none());
     assert!(
         serialized["draft"]["profile"]

@@ -260,7 +260,12 @@ describe("provider config transform router", () => {
       draftRevision: 99,
       status: "ready" as const,
       draft: {
-        profile: { ...existingProfile(), configContents: transformed, apiKey: "backend-key" },
+        profile: {
+          ...existingProfile(),
+          configContents: transformed,
+          apiKey: "backend-key",
+          authContents: undefined,
+        } as unknown as ReturnType<typeof existingProfile>,
         structuredApiKey: "backend-key",
         catalogMode: "official-plus-custom" as const,
       },
@@ -273,6 +278,7 @@ describe("provider config transform router", () => {
     if (current.kind !== "applied") return;
     assert.equal(current.profile.configContents, transformed);
     assert.equal(current.profile.apiKey, "backend-key");
+    assert.equal(current.profile.authContents, "");
     assert.match(current.profile.configContents, /custom_provider_field = "still-unowned"/);
     assert.match(current.profile.configContents, /"x-unowned" = "backend-preserved"/);
   });

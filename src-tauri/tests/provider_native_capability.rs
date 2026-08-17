@@ -171,9 +171,26 @@ fn persisted_inspection_rejects_aggregate_settings_before_catalog_presentation()
         active_relay_id: "aggregate".to_string(),
         ..BackendSettings::default()
     };
+    let mut aggregate_value = serde_json::to_value(&aggregate_settings).unwrap();
+    aggregate_value
+        .as_object_mut()
+        .unwrap()
+        .remove("aggregateRelayProfiles");
+    aggregate_value
+        .as_object_mut()
+        .unwrap()
+        .remove("activeAggregateRelayId");
+    aggregate_value["relayProfiles"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("protocol");
+    aggregate_value["relayProfiles"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("upstreamBaseUrl");
     std::fs::write(
         &settings_path,
-        serde_json::to_vec_pretty(&aggregate_settings).unwrap(),
+        serde_json::to_vec_pretty(&aggregate_value).unwrap(),
     )
     .unwrap();
 
@@ -188,9 +205,14 @@ fn persisted_inspection_rejects_aggregate_settings_before_catalog_presentation()
 
     let mut aggregate_metadata = BackendSettings::default();
     aggregate_metadata.active_aggregate_relay_id = "removed-aggregate".to_string();
+    let mut metadata_value = serde_json::to_value(&aggregate_metadata).unwrap();
+    for profile in metadata_value["relayProfiles"].as_array_mut().unwrap() {
+        profile.as_object_mut().unwrap().remove("protocol");
+        profile.as_object_mut().unwrap().remove("upstreamBaseUrl");
+    }
     std::fs::write(
         &settings_path,
-        serde_json::to_vec_pretty(&aggregate_metadata).unwrap(),
+        serde_json::to_vec_pretty(&metadata_value).unwrap(),
     )
     .unwrap();
     assert_eq!(
@@ -201,6 +223,43 @@ fn persisted_inspection_rejects_aggregate_settings_before_catalog_presentation()
         ),
         Err(ProviderNativeCapabilityInspectionError::InputUnavailable),
     );
+}
+
+#[test]
+fn persisted_inspection_rejects_explicit_removed_profile_fields() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings_path = temp.path().join("settings.json");
+    let catalog_path = temp.path().join("model-catalog-state.json");
+    let canonical = serde_json::json!({
+        "relayProfiles": [{
+            "id": "strict-wire",
+            "name": "strict wire",
+            "relayMode": "official",
+            "officialMixApiKey": true,
+            "configContents": CANONICAL_INLINE
+        }]
+    });
+
+    for (field, value) in [
+        ("protocol", serde_json::json!("responses")),
+        (
+            "upstreamBaseUrl",
+            serde_json::json!("https://forged.example/v1"),
+        ),
+    ] {
+        let mut forged = canonical.clone();
+        forged["relayProfiles"][0][field] = value;
+        std::fs::write(&settings_path, serde_json::to_vec_pretty(&forged).unwrap()).unwrap();
+        assert_eq!(
+            inspect_provider_native_capabilities_from_paths(
+                &settings_path,
+                &catalog_path,
+                ProviderNativeCapabilityInspectionRequest::default(),
+            ),
+            Err(ProviderNativeCapabilityInspectionError::InputUnavailable),
+            "explicit removed field {field} must be rejected",
+        );
+    }
 }
 
 #[test]
@@ -507,9 +566,22 @@ fn command_loader_reads_bulk_or_one_profile_without_modifying_either_store() {
         relay_profiles: vec![profile],
         ..BackendSettings::default()
     };
+    let mut settings_value = serde_json::to_value(&settings).unwrap();
+    settings_value
+        .as_object_mut()
+        .unwrap()
+        .remove("aggregateRelayProfiles");
+    settings_value
+        .as_object_mut()
+        .unwrap()
+        .remove("activeAggregateRelayId");
+    for profile in settings_value["relayProfiles"].as_array_mut().unwrap() {
+        profile.as_object_mut().unwrap().remove("protocol");
+        profile.as_object_mut().unwrap().remove("upstreamBaseUrl");
+    }
     std::fs::write(
         &settings_path,
-        serde_json::to_vec_pretty(&settings).unwrap(),
+        serde_json::to_vec_pretty(&settings_value).unwrap(),
     )
     .unwrap();
     std::fs::write(
@@ -580,7 +652,6 @@ fn command_loader_preserves_raw_persisted_evidence_before_evaluation() {
             {
                 "id": "reserved",
                 "name": "reserved",
-                "protocol": "responses",
                 "relayMode": "official",
                 "officialMixApiKey": true,
                 "configContents": RESERVED_OPENAI,
@@ -589,7 +660,6 @@ fn command_loader_preserves_raw_persisted_evidence_before_evaluation() {
             {
                 "id": "CodexPlusPlus-profile",
                 "name": "alias long",
-                "protocol": "responses",
                 "relayMode": "official",
                 "officialMixApiKey": true,
                 "configContents": LEGACY_CODEX_PLUS_PLUS
@@ -597,7 +667,6 @@ fn command_loader_preserves_raw_persisted_evidence_before_evaluation() {
             {
                 "id": "CodexPP-profile",
                 "name": "alias short",
-                "protocol": "responses",
                 "relayMode": "official",
                 "officialMixApiKey": true,
                 "configContents": LEGACY_CODEX_PP
@@ -606,7 +675,6 @@ fn command_loader_preserves_raw_persisted_evidence_before_evaluation() {
                 "id": "key-conflict",
                 "name": "key conflict",
                 "apiKey": "different-structured-secret",
-                "protocol": "responses",
                 "relayMode": "official",
                 "officialMixApiKey": true,
                 "configContents": CANONICAL_INLINE
@@ -614,7 +682,6 @@ fn command_loader_preserves_raw_persisted_evidence_before_evaluation() {
             {
                 "id": "missing-field",
                 "name": "missing field",
-                "protocol": "responses",
                 "relayMode": "official",
                 "officialMixApiKey": true,
                 "configContents": PARTIAL
