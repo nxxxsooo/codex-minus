@@ -79,7 +79,6 @@ export function createNewRelayProfileDraft<TContext>({
     modelList: PRO_MODEL_SLUGS.join("\n"),
     modelWindows: "" as const,
     userAgent: "" as const,
-    aggregate: null,
   };
 }
 

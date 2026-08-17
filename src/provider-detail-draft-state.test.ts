@@ -96,9 +96,7 @@ function settings() {
   return {
     relayProfilesEnabled: true,
     relayProfiles: [profile()],
-    aggregateRelayProfiles: [],
     activeRelayId: "relay-old",
-    activeAggregateRelayId: "",
     relayBaseUrl: "",
     relayApiKey: "",
     relayCommonConfigContents: "",

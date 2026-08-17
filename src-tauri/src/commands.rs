@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -603,9 +602,7 @@ fn serialize_settings_with_raw_provider_snapshot(
     for key in [
         "relayProfilesEnabled",
         "relayProfiles",
-        "aggregateRelayProfiles",
         "activeRelayId",
-        "activeAggregateRelayId",
         "relayBaseUrl",
         "relayApiKey",
         "relayCommonConfigContents",
@@ -627,6 +624,8 @@ fn serialize_settings_with_raw_provider_snapshot(
 pub(crate) fn ui_provider_topology_projection(
     mut settings: BackendSettings,
 ) -> Result<crate::provider_commit::ProviderOwnedTopologyDraft, GenericSettingsSaveError> {
+    crate::provider_commit::validate_responses_only_settings(&settings)
+        .map_err(|_| GenericSettingsSaveError::PersistedSettingsInvalid)?;
     let all_context = codex_plus_core::relay_config::list_context_entries_from_common_config(
         &settings.relay_context_config_contents,
     )
@@ -663,18 +662,6 @@ pub(crate) fn ui_provider_topology_projection(
             profile.api_key.clear();
             profile.config_contents.clear();
         }
-        if profile.relay_mode == codex_plus_core::settings::RelayMode::Aggregate {
-            profile.base_url.clear();
-            profile.upstream_base_url.clear();
-            profile.api_key.clear();
-            profile.protocol = codex_plus_core::settings::RelayProtocol::Responses;
-            profile.official_mix_api_key = false;
-            profile.config_contents.clear();
-            profile.context_window.clear();
-            profile.auto_compact_limit.clear();
-            profile.model_list.clear();
-            profile.model_windows.clear();
-        }
         if !profile.context_selection_initialized {
             profile.context_selection = all_context.clone();
             profile.context_selection_initialized = true;
@@ -691,67 +678,16 @@ pub(crate) fn ui_provider_topology_projection(
             .map(|profile| profile.id.clone())
             .unwrap_or_else(|| "default".to_string());
     }
-    let api_profile_ids = settings
-        .relay_profiles
-        .iter()
-        .filter(|profile| {
-            profile.relay_mode != codex_plus_core::settings::RelayMode::Aggregate
-                && !profile.base_url.trim().is_empty()
-                && !profile.api_key.trim().is_empty()
-        })
-        .map(|profile| profile.id.clone())
-        .collect::<HashSet<_>>();
-    settings.aggregate_relay_profiles = settings
-        .relay_profiles
-        .iter()
-        .filter(|profile| profile.relay_mode == codex_plus_core::settings::RelayMode::Aggregate)
-        .map(|profile| {
-            let mut aggregate = settings
-                .aggregate_relay_profiles
-                .iter()
-                .find(|aggregate| aggregate.id == profile.id)
-                .cloned()
-                .unwrap_or_else(|| codex_plus_core::settings::AggregateRelayProfile {
-                    id: profile.id.clone(),
-                    name: profile.name.clone(),
-                    strategy: Default::default(),
-                    members: Vec::new(),
-                });
-            aggregate.name = if profile.name.is_empty() {
-                aggregate.name
-            } else {
-                profile.name.clone()
-            };
-            let mut member_ids = HashSet::new();
-            aggregate.members.retain(|member| {
-                !member.relay_id.is_empty()
-                    && member_ids.insert(member.relay_id.clone())
-                    && (api_profile_ids.is_empty() || api_profile_ids.contains(&member.relay_id))
-            });
-            for member in &mut aggregate.members {
-                member.weight = member.weight.clamp(1, 999);
-            }
-            aggregate
-        })
-        .collect();
     if let Some(active) = settings
         .relay_profiles
         .iter()
         .find(|profile| profile.id == settings.active_relay_id)
     {
-        let is_aggregate = active.relay_mode == codex_plus_core::settings::RelayMode::Aggregate;
-        settings.relay_base_url = if is_aggregate {
-            "http://127.0.0.1:57321/v1".to_string()
-        } else {
-            active.base_url.clone()
-        };
+        settings.relay_base_url = active.base_url.clone();
         settings.relay_api_key = active.api_key.clone();
-        settings.active_aggregate_relay_id = if is_aggregate {
-            active.id.clone()
-        } else {
-            String::new()
-        };
     }
+    settings.aggregate_relay_profiles.clear();
+    settings.active_aggregate_relay_id.clear();
     Ok(crate::provider_commit::ProviderOwnedTopologyDraft::from_settings(&settings))
 }
 
@@ -3326,18 +3262,7 @@ fn sanitized_provider_validation_error(
         "only Responses API provider profiles are supported",
         "local aggregate provider profiles are unsupported",
         "the removed local proxy base URL is unsupported",
-        "aggregate profile id is empty",
-        "duplicate aggregate profile id",
-        "aggregate profile metadata has no matching relay profile",
-        "aggregate profile members are empty",
-        "aggregate member weight must be positive",
-        "duplicate aggregate member",
-        "aggregate member references a missing provider profile",
-        "aggregate member must reference an ordinary provider profile",
-        "aggregate relay profiles and aggregate metadata must be one-to-one",
-        "active aggregate profile is missing from the topology draft",
         "active provider profile is missing from the topology draft",
-        "active provider and active aggregate ids are inconsistent",
         "duplicate catalog draft for provider profile",
         "catalog draft references a missing provider profile",
         "catalog-incapable provider profiles cannot carry catalog drafts",
@@ -3450,7 +3375,6 @@ fn validate_provider_topology_mutation_scope(
     };
     let validate_against = |persisted: &ProviderOwnedTopologyDraft| {
         if request.topology.active_relay_id != persisted.active_relay_id
-            || request.topology.active_aggregate_relay_id != persisted.active_aggregate_relay_id
             || request.topology.relay_base_url != persisted.relay_base_url
             || request.topology.relay_api_key != persisted.relay_api_key
             || request.topology.relay_common_config_contents
@@ -3494,49 +3418,6 @@ fn validate_provider_topology_mutation_scope(
                         })
                         .ok_or_else(invalid)?;
                     copied_from.insert(profile.id.clone(), source.id.clone());
-                }
-            }
-        }
-
-        let retained_profile_ids = request
-            .topology
-            .relay_profiles
-            .iter()
-            .map(|profile| profile.id.as_str())
-            .collect::<HashSet<_>>();
-        for aggregate in &request.topology.aggregate_relay_profiles {
-            let prior = persisted
-                .aggregate_relay_profiles
-                .iter()
-                .find(|prior| prior.id == aggregate.id);
-            match prior {
-                Some(prior) => {
-                    let expected_members = prior
-                        .members
-                        .iter()
-                        .filter(|member| retained_profile_ids.contains(member.relay_id.as_str()))
-                        .collect::<Vec<_>>();
-                    if aggregate.name != prior.name
-                        || aggregate.strategy != prior.strategy
-                        || serde_json::to_vec(&aggregate.members).map_err(|_| invalid())?
-                            != serde_json::to_vec(&expected_members).map_err(|_| invalid())?
-                    {
-                        return Err(invalid());
-                    }
-                }
-                None => {
-                    let source_id = copied_from.get(&aggregate.id).ok_or_else(invalid)?;
-                    let source = persisted
-                        .aggregate_relay_profiles
-                        .iter()
-                        .find(|prior| prior.id == *source_id)
-                        .ok_or_else(invalid)?;
-                    if aggregate.strategy != source.strategy
-                        || serde_json::to_vec(&aggregate.members).map_err(|_| invalid())?
-                            != serde_json::to_vec(&source.members).map_err(|_| invalid())?
-                    {
-                        return Err(invalid());
-                    }
                 }
             }
         }
@@ -3599,18 +3480,14 @@ fn normalize_provider_topology_settings_fallible(
                     .map(|state| state.mode)
             })
             .unwrap_or(CatalogMode::NativeOfficial);
-        if profile.relay_mode != codex_plus_core::settings::RelayMode::Aggregate {
-            reconcile_provider_detail_raw_fields(profile)?;
-            validate_provider_detail_contract(profile, mode)?;
-        }
+        reconcile_provider_detail_raw_fields(profile)?;
+        validate_provider_detail_contract(profile, mode)?;
         codex_plus_core::relay_config::normalize_relay_profile_for_storage(profile)
             .map_err(|_| anyhow::anyhow!("provider profile normalization failed"))?;
         sanitize_profile_after_core_normalize_fallible(profile)?;
         profile.config_contents = retain_provider_owned_profile_config(&profile.config_contents)
             .map_err(|_| anyhow::anyhow!("provider config ownership normalization failed"))?;
-        if profile.relay_mode != codex_plus_core::settings::RelayMode::Aggregate {
-            validate_provider_detail_contract(profile, mode)?;
-        }
+        validate_provider_detail_contract(profile, mode)?;
     }
     Ok(settings)
 }
@@ -5772,6 +5649,10 @@ fn sanitize_settings_for_output(mut settings: BackendSettings) -> BackendSetting
 
 fn serialize_settings_without_profile_auth(settings: &BackendSettings) -> anyhow::Result<Vec<u8>> {
     let mut value = serde_json::to_value(settings)?;
+    if let Some(object) = value.as_object_mut() {
+        object.remove("aggregateRelayProfiles");
+        object.remove("activeAggregateRelayId");
+    }
     if let Some(profiles) = value.get_mut("relayProfiles").and_then(Value::as_array_mut) {
         for profile in profiles {
             if let Some(profile) = profile.as_object_mut() {
@@ -6651,6 +6532,31 @@ max_threads = 1000
         let persisted =
             String::from_utf8(serialize_settings_without_profile_auth(&settings).unwrap()).unwrap();
         assert!(!persisted.contains("authContents"));
+    }
+
+    #[test]
+    fn responses_only_settings_json_omits_removed_aggregate_keys() {
+        let profile = RelayProfile {
+            id: "relay-a".to_string(),
+            name: "Relay A".to_string(),
+            base_url: "https://relay.example/v1".to_string(),
+            upstream_base_url: "https://relay.example/v1".to_string(),
+            protocol: codex_plus_core::settings::RelayProtocol::Responses,
+            relay_mode: codex_plus_core::settings::RelayMode::Official,
+            official_mix_api_key: true,
+            ..RelayProfile::default()
+        };
+        let settings = BackendSettings {
+            relay_profiles: vec![profile],
+            active_relay_id: "relay-a".to_string(),
+            aggregate_relay_profiles: Vec::new(),
+            active_aggregate_relay_id: String::new(),
+            ..BackendSettings::default()
+        };
+        let bytes = serialize_settings_without_profile_auth(&settings).unwrap();
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(value.get("aggregateRelayProfiles").is_none());
+        assert!(value.get("activeAggregateRelayId").is_none());
     }
 
     fn write_legacy_auth_fixture(

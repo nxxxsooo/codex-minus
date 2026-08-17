@@ -13,7 +13,7 @@
 // instant for a local Tauri window and guarantees every literal — module-level
 // or render-level — re-evaluates under the new language.
 
-import { EN_BACKEND, EN_BACKEND_PATTERNS, EN_PLAIN, EN_TEMPLATE } from "@/i18n-en";
+import { EN_BACKEND, EN_BACKEND_PATTERNS, EN_PLAIN, EN_TEMPLATE } from "./i18n-en.ts";
 
 export type Language = "zh" | "en";
 

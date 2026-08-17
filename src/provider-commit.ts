@@ -40,19 +40,10 @@ export type ProviderRelayProfileDraft = Omit<ProviderRelayProfileSource, "modelI
   modelInsertMode: string;
 };
 
-export type ProviderAggregateDraft = {
-  id: string;
-  name: string;
-  strategy: string;
-  members: Array<{ relayId: string; weight: number }>;
-};
-
 export type ProviderSettingsSource = {
   relayProfilesEnabled: boolean;
   relayProfiles: ProviderRelayProfileSource[];
-  aggregateRelayProfiles: ProviderAggregateDraft[];
   activeRelayId: string;
-  activeAggregateRelayId: string;
   relayBaseUrl: string;
   relayApiKey: string;
   relayCommonConfigContents: string;
@@ -89,7 +80,6 @@ export type ProviderMutationKind =
   | "reorder"
   | "copy"
   | "delete"
-  | "aggregateCleanup"
   | "testModel"
   | "detailSave"
   | "setCurrent";
@@ -251,24 +241,14 @@ export function buildProviderMutationInvocation(input: ProviderMutationInvocatio
 }
 
 export function managedCatalogCapable(profile: ProviderRelayProfileSource): boolean {
-  return profile.relayMode !== "aggregate" && profile.protocol !== "chatCompletions";
+  return profile.protocol !== "chatCompletions";
 }
 
 export function projectProviderOwnedTopology(settings: ProviderSettingsSource): ProviderOwnedTopologyDraft {
   return {
     relayProfilesEnabled: settings.relayProfilesEnabled,
     relayProfiles: settings.relayProfiles.map(projectRelayProfile),
-    aggregateRelayProfiles: settings.aggregateRelayProfiles.map((aggregate) => ({
-      id: aggregate.id,
-      name: aggregate.name,
-      strategy: aggregate.strategy,
-      members: aggregate.members.map((member) => ({
-        relayId: member.relayId,
-        weight: member.weight,
-      })),
-    })),
     activeRelayId: settings.activeRelayId,
-    activeAggregateRelayId: settings.activeAggregateRelayId,
     relayBaseUrl: settings.relayBaseUrl,
     relayApiKey: settings.relayApiKey,
     relayCommonConfigContents: settings.relayCommonConfigContents,

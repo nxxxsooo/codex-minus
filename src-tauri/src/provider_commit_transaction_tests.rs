@@ -15,8 +15,8 @@ use crate::provider_commit::{
 };
 use base64::Engine;
 use codex_plus_core::settings::{
-    AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
-    RelayMode, RelayProfile, RelayProtocol, SettingsStore,
+    AggregateRelayProfile, AggregateRelayStrategy, BackendSettings, RelayMode, RelayProfile,
+    RelayProtocol, SettingsStore,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -1688,82 +1688,15 @@ fn generic_settings_save_uses_default_provider_baseline_when_settings_file_is_ab
 }
 
 #[test]
-fn generic_settings_save_accepts_first_run_ui_shape_and_rejects_active_aggregate_projection() {
+fn generic_settings_save_accepts_first_run_ui_shape() {
     let first_run = Fixture::new(&BackendSettings::default(), &state_with_official());
     fs::remove_file(&first_run.paths.settings_path).unwrap();
     let mut first_run_ui = BackendSettings::default();
     first_run_ui.relay_profiles[0].context_selection_initialized = true;
     first_run_ui.relay_base_url = first_run_ui.relay_profiles[0].base_url.clone();
     first_run_ui.relay_api_key = first_run_ui.relay_profiles[0].api_key.clone();
-    first_run_ui.active_aggregate_relay_id.clear();
     first_run_ui.codex_goals_enabled = true;
     save_settings_with_provider_guard_at(&first_run.paths, first_run_ui).unwrap();
-
-    let api = canonical_profile(
-        "sub2api",
-        "gpt-5.6-sol",
-        "https://relay.example/v1",
-        "provider-key",
-    );
-    let aggregate = RelayProfile {
-        id: "aggregate".to_string(),
-        name: "Aggregate".to_string(),
-        relay_mode: RelayMode::Aggregate,
-        protocol: RelayProtocol::ChatCompletions,
-        official_mix_api_key: true,
-        context_window: "123456".to_string(),
-        auto_compact_limit: "100000".to_string(),
-        model_list: "stale-model".to_string(),
-        ..RelayProfile::default()
-    };
-    let mut initial = settings_with(vec![api, aggregate], "aggregate");
-    initial.aggregate_relay_profiles = vec![AggregateRelayProfile {
-        id: "aggregate".to_string(),
-        name: "Aggregate".to_string(),
-        strategy: AggregateRelayStrategy::Failover,
-        members: vec![AggregateRelayMember {
-            relay_id: "sub2api".to_string(),
-            weight: 1,
-        }],
-    }];
-    let fixture = Fixture::new(&initial, &state_with_official());
-    let mut persisted_value: Value =
-        serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
-    persisted_value["relayProfiles"][1]["model"] = json!("aggregate-model");
-    fs::write(
-        &fixture.paths.settings_path,
-        serde_json::to_vec_pretty(&persisted_value).unwrap(),
-    )
-    .unwrap();
-    let raw_before = fixture.file_generation();
-    let mut ui_round_trip = SettingsStore::new(fixture.paths.settings_path.clone())
-        .load()
-        .unwrap();
-    for profile in &mut ui_round_trip.relay_profiles {
-        if profile.relay_mode == RelayMode::Aggregate {
-            profile.base_url.clear();
-            profile.upstream_base_url.clear();
-            profile.api_key.clear();
-            profile.protocol = RelayProtocol::Responses;
-            profile.official_mix_api_key = false;
-            profile.config_contents.clear();
-            profile.auth_contents.clear();
-            profile.context_window.clear();
-            profile.auto_compact_limit.clear();
-            profile.model_list.clear();
-            profile.model_windows.clear();
-        }
-        profile.context_selection_initialized = true;
-    }
-    ui_round_trip.relay_base_url = "http://127.0.0.1:57321/v1".to_string();
-    ui_round_trip.relay_api_key.clear();
-    ui_round_trip.active_aggregate_relay_id = "aggregate".to_string();
-    ui_round_trip.codex_goals_enabled = true;
-
-    let error = save_settings_with_provider_guard_at(&fixture.paths, ui_round_trip).unwrap_err();
-
-    assert_eq!(error, GenericSettingsSaveError::PersistedSettingsInvalid);
-    assert_eq!(fixture.file_generation(), raw_before);
 }
 
 #[test]

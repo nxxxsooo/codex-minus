@@ -1324,11 +1324,6 @@ body {
   }
 }
 
-.aggregate-editor {
-  display: grid;
-  gap: 12px;
-}
-
 .relay-editor-head,
 .relay-file-head {
   display: flex;
@@ -1643,10 +1638,6 @@ body {
   to {
     transform: rotate(360deg);
   }
-}
-
-.aggregate-fields {
-  margin-top: 0;
 }
 
 .relay-field-name {
@@ -2106,86 +2097,6 @@ body {
   color: hsl(var(--muted-foreground));
   font-size: 13px;
   line-height: 1.45;
-}
-
-.aggregate-strategy-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.aggregate-strategy-option {
-  min-height: 118px;
-}
-
-.aggregate-members {
-  display: grid;
-  gap: 10px;
-  border: 1px solid hsl(var(--border));
-  border-radius: 8px;
-  background: hsl(var(--secondary) / 0.22);
-  padding: 12px;
-}
-
-.aggregate-members-head {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.aggregate-members-head > div,
-.aggregate-member-summary {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-}
-
-.aggregate-members-head span,
-.aggregate-member-summary small,
-.aggregate-weight-box > span {
-  color: hsl(var(--muted-foreground));
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-.aggregate-member-list {
-  display: grid;
-  gap: 8px;
-}
-
-.aggregate-member-row {
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) 118px;
-  gap: 10px;
-  align-items: center;
-  border: 1px solid hsl(var(--border));
-  border-radius: 8px;
-  background: hsl(var(--background));
-  padding: 10px;
-}
-
-.aggregate-member-row.selected {
-  border-color: hsl(var(--primary) / 0.68);
-  background: hsl(var(--primary) / 0.1);
-}
-
-.aggregate-member-row input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-}
-
-.aggregate-weight-box {
-  display: grid;
-  gap: 4px;
-}
-
-.aggregate-weight-box input {
-  min-height: 34px;
-}
-
-.aggregate-preview {
-  margin-top: 0;
 }
 
 .metric-list div,
@@ -4218,7 +4129,6 @@ select {
 .relay-context-panel,
 .provider-doctor,
 .feature-group,
-.aggregate-editor,
 .relay-file-panel {
   border-color: hsl(var(--border));
   border-radius: 10px;
@@ -4279,7 +4189,6 @@ select {
 
 .mode-option,
 .protocol-option,
-.aggregate-strategy-option,
 .segmented button,
 .preset-toggle,
 .preset-btn,
@@ -4294,7 +4203,6 @@ select {
 
 .mode-option:hover,
 .protocol-option:hover:not(.active),
-.aggregate-strategy-option:hover,
 .segmented button:hover:not(.active),
 .preset-toggle:hover,
 .preset-btn:hover {
@@ -4305,15 +4213,9 @@ select {
 
 .mode-option.active,
 .protocol-option.active,
-.aggregate-strategy-option.active,
 .segmented button.active,
 .preset-btn[data-selected="true"] {
   border-color: hsl(var(--brand-accent) / 0.65);
-  background: hsl(var(--brand-accent) / 0.1);
-}
-
-.aggregate-member-row.selected {
-  border-color: hsl(var(--brand-accent) / 0.62);
   background: hsl(var(--brand-accent) / 0.1);
 }
 
