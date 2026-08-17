@@ -2405,6 +2405,7 @@ pub(crate) struct LegacyModelResetOutcome {
 pub(crate) enum LegacyModelResetCheckpoint {
     Planned,
     CatalogMaterialized,
+    BeforeJournalPreparation,
     BeforeCommit,
     PostCommitVerification,
 }
@@ -2413,6 +2414,8 @@ pub(crate) enum LegacyModelResetCheckpoint {
 enum LegacyModelResetFailure {
     SettingsUnreadable,
     SettingsInvalidJson,
+    PersistedProviderInvalid,
+    LiveConfigInvalid,
     CatalogUnavailable,
     GenerationChanged,
     TransactionFailed,
@@ -2423,6 +2426,8 @@ impl std::fmt::Display for LegacyModelResetFailure {
         formatter.write_str(match self {
             Self::SettingsUnreadable => "provider settings file is unreadable",
             Self::SettingsInvalidJson => "provider settings are invalid JSON",
+            Self::PersistedProviderInvalid => "a saved provider profile failed normalization",
+            Self::LiveConfigInvalid => "live provider config is invalid",
             Self::CatalogUnavailable => "provider catalog state is unavailable",
             Self::GenerationChanged => "legacy model reset generation changed before commit",
             Self::TransactionFailed => "legacy model reset transaction failed",
@@ -2445,6 +2450,14 @@ fn provider_commit_failure_for_legacy_model_reset(error: anyhow::Error) -> Provi
         Some(LegacyModelResetFailure::SettingsInvalidJson) => provider_commit_failure(
             ProviderCommitErrorCode::InputUnavailable,
             "provider settings are invalid JSON",
+        ),
+        Some(LegacyModelResetFailure::PersistedProviderInvalid) => provider_commit_failure(
+            ProviderCommitErrorCode::InputUnavailable,
+            "a saved provider profile failed normalization",
+        ),
+        Some(LegacyModelResetFailure::LiveConfigInvalid) => provider_commit_failure(
+            ProviderCommitErrorCode::InputUnavailable,
+            "live provider config is invalid",
         ),
         Some(LegacyModelResetFailure::CatalogUnavailable) => provider_commit_failure(
             ProviderCommitErrorCode::CatalogUnavailable,
@@ -2479,6 +2492,18 @@ pub(crate) fn migrate_legacy_model_state_locked_at(
     };
     let settings: BackendSettings = serde_json::from_slice(&raw_settings)
         .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::SettingsInvalidJson))?;
+    for profile in &settings.relay_profiles {
+        if !profile.config_contents.trim().is_empty()
+            && profile
+                .config_contents
+                .parse::<toml_edit::DocumentMut>()
+                .is_err()
+        {
+            return Err(legacy_model_reset_error(
+                LegacyModelResetFailure::PersistedProviderInvalid,
+            ));
+        }
+    }
     let raw_state = read_optional_bytes(&paths.catalog_state_path)
         .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::CatalogUnavailable))?;
     let state = crate::model_catalog::load_and_migrate_state_from_path(
@@ -2553,13 +2578,18 @@ pub(crate) fn migrate_legacy_model_state_locked_at(
             let live = String::from_utf8(live_before.clone().ok_or_else(|| {
                 legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed)
             })?)
-            .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))?;
-            ensure_live_config_selects_profile(&live, &profile.config_contents)?;
+            .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::LiveConfigInvalid))?;
+            ensure_live_config_selects_profile(
+                &live,
+                &profile.config_contents,
+                &state,
+                &profile.id,
+            )?;
             let active_plan = crate::model_catalog::plan_active_profile_with_state(
                 &paths.codex_home,
                 &plan.settings,
                 &crate::legacy_model_reset::set_top_level_model(&live, &reset.next_model).map_err(
-                    |_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed),
+                    |_| legacy_model_reset_error(LegacyModelResetFailure::LiveConfigInvalid),
                 )?,
                 &mut plan.state,
                 false,
@@ -2598,6 +2628,25 @@ pub(crate) fn migrate_legacy_model_state_locked_at(
         auth_before.as_deref(),
     )?;
 
+    let mut expected_preimages = std::collections::HashMap::new();
+    expected_preimages.insert(paths.settings_path.clone(), Some(raw_settings.clone()));
+    expected_preimages.insert(paths.catalog_state_path.clone(), raw_state.clone());
+    for (path, prior) in &generated_before {
+        expected_preimages.insert(path.clone(), prior.clone());
+    }
+    if let Some(live) = &live_before {
+        expected_preimages.insert(live_config_path.clone(), Some(live.clone()));
+    }
+    let mutations = mutations
+        .into_iter()
+        .map(|mutation| {
+            let expected = expected_preimages.remove(&mutation.path).ok_or_else(|| {
+                legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed)
+            })?;
+            Ok(mutation.expecting_preimage(expected))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
     let expected_mutations = mutations.clone();
     let reset_profiles = plan.reset_profiles.clone();
     let committed_state = plan.state.clone();
@@ -2618,9 +2667,13 @@ pub(crate) fn migrate_legacy_model_state_locked_at(
         .collect::<Vec<_>>();
     let before_commit_observed = std::cell::Cell::new(false);
     let observe = std::cell::RefCell::new(&mut observe);
-    live_state::commit_locked_verified_at_observed(
+    live_state::commit_locked_verified_at_observed_with_prepare(
         &paths.app_state,
         &mutations,
+        || {
+            observe.borrow_mut()(LegacyModelResetCheckpoint::BeforeJournalPreparation)?;
+            Ok(())
+        },
         |_| {
             if !before_commit_observed.replace(true) {
                 observe.borrow_mut()(LegacyModelResetCheckpoint::BeforeCommit)?;
@@ -2670,19 +2723,57 @@ pub(crate) fn migrate_legacy_model_state_locked_at(
     })
 }
 
-fn ensure_live_config_selects_profile(live: &str, profile: &str) -> anyhow::Result<()> {
-    let selected = |contents: &str| -> anyhow::Result<String> {
-        let document = contents
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))?;
-        document
-            .get("model_provider")
-            .and_then(toml_edit::Item::as_str)
-            .map(ToString::to_string)
-            .ok_or_else(|| legacy_model_reset_error(LegacyModelResetFailure::GenerationChanged))
-    };
+fn ensure_live_config_selects_profile(
+    live: &str,
+    profile: &str,
+    state: &crate::model_catalog::CatalogState,
+    profile_id: &str,
+) -> anyhow::Result<()> {
+    let identity =
+        |contents: &str, invalid: LegacyModelResetFailure| -> anyhow::Result<serde_json::Value> {
+            let document: serde_json::Value =
+                toml_edit::de::from_str(contents).map_err(|_| legacy_model_reset_error(invalid))?;
+            let provider_id = document
+                .get("model_provider")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| legacy_model_reset_error(invalid))?;
+            let provider = document
+                .get("model_providers")
+                .and_then(|providers| providers.get(provider_id))
+                .cloned()
+                .ok_or_else(|| legacy_model_reset_error(invalid))?;
+            Ok(json!({
+                "selectedProviderId": provider_id,
+                "selectedProvider": provider,
+                "baseUrl": document.get("base_url"),
+                "apiKey": document.get("OPENAI_API_KEY"),
+                "chatBaseUrl": document.get("codex_plus_chat_base_url"),
+            }))
+        };
     anyhow::ensure!(
-        selected(live)? == selected(profile)?,
+        identity(live, LegacyModelResetFailure::LiveConfigInvalid)?
+            == identity(profile, LegacyModelResetFailure::PersistedProviderInvalid)?,
+        LegacyModelResetFailure::GenerationChanged
+    );
+    let live_document = live
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::LiveConfigInvalid))?;
+    let live_pointer =
+        match live_document.get("model_catalog_json") {
+            Some(pointer) => Some(pointer.as_str().map(ToString::to_string).ok_or_else(|| {
+                legacy_model_reset_error(LegacyModelResetFailure::LiveConfigInvalid)
+            })?),
+            None => None,
+        };
+    anyhow::ensure!(
+        live_pointer.is_none()
+            || crate::model_catalog::manager_owned_pointer(
+                state,
+                profile_id,
+                live_pointer.as_deref(),
+            ),
         LegacyModelResetFailure::GenerationChanged
     );
     Ok(())
@@ -2946,8 +3037,14 @@ pub fn commit_provider_detail_from_paths_observed(
     // prepare a settings prior stage, so copied OAuth can never enter recovery material.
     migrate_legacy_profile_auth_locked_at(&paths.settings_path)
         .map_err(provider_commit_failure_for_legacy_auth_migration)?;
-    migrate_legacy_model_state_locked_at(paths, |_| Ok(()))
+    let legacy_reset = migrate_legacy_model_state_locked_at(paths, |_| Ok(()))
         .map_err(provider_commit_failure_for_legacy_model_reset)?;
+    if !legacy_reset.reset_profiles.is_empty() {
+        return Err(provider_commit_failure(
+            ProviderCommitErrorCode::StaleState,
+            "provider state changed; reload or merge before saving",
+        ));
+    }
 
     let (persisted_settings_bytes, persisted_settings) =
         load_provider_commit_settings(&paths.settings_path).map_err(|reason| {

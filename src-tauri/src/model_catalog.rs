@@ -2294,7 +2294,11 @@ fn sanitize_profile_id(profile_id: &str) -> String {
     }
 }
 
-fn manager_owned_pointer(state: &CatalogState, profile_id: &str, pointer: Option<&str>) -> bool {
+pub(crate) fn manager_owned_pointer(
+    state: &CatalogState,
+    profile_id: &str,
+    pointer: Option<&str>,
+) -> bool {
     let Some(pointer) = pointer else {
         return false;
     };
@@ -2314,7 +2318,7 @@ fn manager_owned_pointer_path(
         && profile.generated_hash.is_some()
 }
 
-fn root_catalog_pointer(config: &str) -> Option<String> {
+pub(crate) fn root_catalog_pointer(config: &str) -> Option<String> {
     let doc: toml_edit::DocumentMut = config.parse().ok()?;
     doc.get("model_catalog_json")
         .and_then(toml_edit::Item::as_str)

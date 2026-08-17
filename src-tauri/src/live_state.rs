@@ -41,6 +41,13 @@ impl Drop for LiveStateGuard {
 pub struct FileMutation {
     pub path: PathBuf,
     pub contents: Option<Vec<u8>>,
+    expected_preimage: ExpectedPreimage,
+}
+
+#[derive(Debug, Clone)]
+enum ExpectedPreimage {
+    Unconstrained,
+    Exact(Option<Vec<u8>>),
 }
 
 impl FileMutation {
@@ -48,6 +55,7 @@ impl FileMutation {
         Self {
             path: path.into(),
             contents: Some(contents.into().into_bytes()),
+            expected_preimage: ExpectedPreimage::Unconstrained,
         }
     }
 
@@ -55,7 +63,17 @@ impl FileMutation {
         Self {
             path: path.into(),
             contents: Some(contents),
+            expected_preimage: ExpectedPreimage::Unconstrained,
         }
+    }
+
+    /// Binds this target to the bytes (or absence) observed while planning.
+    ///
+    /// Existing callers remain unconstrained. Bound mutations are checked while the journal is
+    /// preparing its prior stages, before any target is applied.
+    pub(crate) fn expecting_preimage(mut self, expected: Option<Vec<u8>>) -> Self {
+        self.expected_preimage = ExpectedPreimage::Exact(expected);
+        self
     }
 }
 
@@ -291,6 +309,24 @@ pub(crate) fn commit_locked_verified_at(
 pub(crate) fn commit_locked_verified_at_observed(
     app_state: &Path,
     mutations: &[FileMutation],
+    after_apply: impl FnMut(&Path) -> anyhow::Result<()>,
+    verify: impl FnOnce() -> anyhow::Result<()>,
+    after_post_commit_verification: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    commit_locked_verified_at_observed_with_prepare(
+        app_state,
+        mutations,
+        || Ok(()),
+        after_apply,
+        verify,
+        after_post_commit_verification,
+    )
+}
+
+pub(crate) fn commit_locked_verified_at_observed_with_prepare(
+    app_state: &Path,
+    mutations: &[FileMutation],
+    before_journal_preparation: impl FnOnce() -> anyhow::Result<()>,
     mut after_apply: impl FnMut(&Path) -> anyhow::Result<()>,
     verify: impl FnOnce() -> anyhow::Result<()>,
     after_post_commit_verification: impl FnOnce() -> anyhow::Result<()>,
@@ -300,6 +336,7 @@ pub(crate) fn commit_locked_verified_at_observed(
     if mutations.is_empty() {
         return Ok(());
     }
+    before_journal_preparation().context("live-state preparation observation failed")?;
 
     ensure_owner_only_dir(&app_state)?;
     let transaction_id = transaction_id();
@@ -320,6 +357,13 @@ pub(crate) fn commit_locked_verified_at_observed(
                     });
                 }
             };
+            if let ExpectedPreimage::Exact(expected) = &mutation.expected_preimage {
+                ensure!(
+                    prior.as_ref() == expected.as_ref(),
+                    "transaction preimage mismatch for {}",
+                    mutation.path.display()
+                );
+            }
             let prior_stage_path = match prior.as_ref() {
                 Some(bytes) => {
                     let path = transaction_dir.join(format!("{index}.prior"));
@@ -786,6 +830,40 @@ mod tests {
         let text = serde_json::to_string(&journal).unwrap();
         assert!(!text.contains("secret payload"));
         assert!(!text.contains("chatgptAuthTokens"));
+    }
+
+    #[test]
+    fn expected_preimage_mismatch_aborts_before_any_target_is_applied() {
+        let temp = tempfile::tempdir().unwrap();
+        let app_state = temp.path().join("app-state");
+        let first = temp.path().join("first.json");
+        let second = temp.path().join("second.json");
+        ensure_owner_only_dir(&app_state).unwrap();
+        atomic_write_owner_only(&first, b"first-prior").unwrap();
+        atomic_write_owner_only(&second, b"second-newer-external").unwrap();
+        let mutations = [
+            FileMutation::bytes(first.clone(), b"first-target".to_vec())
+                .expecting_preimage(Some(b"first-prior".to_vec())),
+            FileMutation::bytes(second.clone(), b"second-target".to_vec()).expecting_preimage(None),
+        ];
+
+        let error = commit_locked_verified_at_observed(
+            &app_state,
+            &mutations,
+            |_| Ok(()),
+            || Ok(()),
+            || Ok(()),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("preimage"));
+        assert_eq!(fs::read(first).unwrap(), b"first-prior");
+        assert_eq!(fs::read(second).unwrap(), b"second-newer-external");
+        assert!(!journal_path(&app_state).exists());
+        let transaction_root = app_state.join(TRANSACTION_ROOT);
+        assert!(
+            !transaction_root.exists() || fs::read_dir(transaction_root).unwrap().next().is_none()
+        );
     }
 
     #[test]
