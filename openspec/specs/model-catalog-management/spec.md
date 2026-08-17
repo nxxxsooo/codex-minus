@@ -241,6 +241,12 @@ The system SHALL migrate existing relay model rows without copying credentials a
 - **WHEN** a profile has an explicit mode, external pointer, implicit `native-official` or `custom-only` mode, user-created/preset row, unknown provenance, or a modified/user-added official override that does not exactly match legacy reconstruction
 - **THEN** startup does not delete or rewrite that owned or ambiguous model state
 
+#### Scenario: Destructive legacy reconstruction requires valid window evidence
+
+- **WHEN** an eligible implicit `official-plus-custom` profile has nonblank `modelWindows` that is not a JSON object mapping every supplied slug to a string that trim-parses as a positive `u64`
+- **THEN** the manager rejects the reset before recording its marker or mutating settings or catalog state and reports a static input-unavailable reason
+- **AND** the earlier catalog-state bootstrap migration retains its permissive compatibility behavior because it does not authorize deletion
+
 #### Scenario: An overlay edit establishes explicit ownership
 
 - **WHEN** a provider commit changes a profile's official or custom overlay

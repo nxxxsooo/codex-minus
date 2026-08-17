@@ -562,7 +562,7 @@ fit_marker = "keep"
     #[test]
     fn eligible_profile_fails_closed_for_invalid_legacy_reconstruction() {
         let invalid_model_list = "x".repeat(161);
-        let settings = eva_settings("legacy-row", &invalid_model_list, "{not-json");
+        let settings = eva_settings("legacy-row", &invalid_model_list, "{}");
         let state = state_with_profile(
             "eva",
             CatalogMode::OfficialPlusCustom,
@@ -571,13 +571,105 @@ fit_marker = "keep"
         );
         let official = BTreeSet::from(["gpt-5.6-terra".to_string()]);
 
-        let error = plan_legacy_model_reset(&settings, &state, &official)
-            .expect_err("eligible invalid legacy data must fail closed");
+        let error = match plan_legacy_model_reset(&settings, &state, &official) {
+            Err(error) => error,
+            Ok(_) => panic!("eligible invalid legacy data was accepted"),
+        };
 
         assert!(error.to_string().contains("model slug is too long"));
         assert_eq!(state.profiles["eva"].legacy_model_reset_version, 0);
         assert_eq!(settings.relay_profiles[0].model_list, invalid_model_list);
-        assert_eq!(settings.relay_profiles[0].model_windows, "{not-json");
+        assert_eq!(settings.relay_profiles[0].model_windows, "{}");
+    }
+
+    #[test]
+    fn eligible_profile_rejects_untrustworthy_model_windows_without_mutation() {
+        let invalid = [
+            ("malformed-json", "{not-json"),
+            ("null", "null"),
+            ("array", "[]"),
+            ("number-scalar", "272000"),
+            ("boolean-scalar", "true"),
+            ("string-scalar", r#""272000""#),
+            ("non-string-number", r#"{"gpt-5":272000}"#),
+            ("non-string-boolean", r#"{"gpt-5":true}"#),
+            ("non-string-null", r#"{"gpt-5":null}"#),
+            ("non-string-array", r#"{"gpt-5":[]}"#),
+            ("non-string-object", r#"{"gpt-5":{}}"#),
+            ("empty", r#"{"gpt-5":""}"#),
+            ("whitespace", r#"{"gpt-5":"   "}"#),
+            ("non-numeric", r#"{"gpt-5":"window-secret-sentinel"}"#),
+            ("legacy-unit-token", r#"{"gpt-5":"1M"}"#),
+            ("zero", r#"{"gpt-5":"0"}"#),
+            ("negative", r#"{"gpt-5":"-1"}"#),
+            ("invalid-extra-entry", r#"{"gpt-5":"272000","unused":"0"}"#),
+            ("overflow", r#"{"gpt-5":"18446744073709551616"}"#),
+        ];
+        let official = BTreeSet::from(["gpt-5.6-terra".to_string()]);
+
+        for (label, model_windows) in invalid {
+            let settings = eva_settings("gpt-5", "gpt-5", model_windows);
+            let state = state_with_profile(
+                "eva",
+                CatalogMode::OfficialPlusCustom,
+                false,
+                vec![custom("gpt-5", "legacy-model-list")],
+            );
+            let settings_before = serde_json::to_vec(&settings).unwrap();
+            let state_before = serde_json::to_vec(&state).unwrap();
+
+            let error = match plan_legacy_model_reset(&settings, &state, &official) {
+                Err(error) => error,
+                Ok(_) => panic!("{label}: eligible invalid model windows were accepted"),
+            };
+
+            assert!(
+                error.to_string().contains("legacy model windows"),
+                "{label}: {error}"
+            );
+            assert!(
+                !error.to_string().contains("window-secret-sentinel"),
+                "{label}: {error}"
+            );
+            assert_eq!(
+                serde_json::to_vec(&settings).unwrap(),
+                settings_before,
+                "{label}"
+            );
+            assert_eq!(serde_json::to_vec(&state).unwrap(), state_before, "{label}");
+        }
+    }
+
+    #[test]
+    fn eligible_profile_accepts_blank_empty_and_positive_model_windows() {
+        let valid = [
+            ("blank", ""),
+            ("whitespace-blank", "   "),
+            ("empty-map", "{}"),
+            ("positive-map", r#"{"gpt-5":" 272000 "}"#),
+        ];
+        let official = BTreeSet::from(["gpt-5.6-terra".to_string()]);
+
+        for (label, model_windows) in valid {
+            let settings = eva_settings("gpt-5", "gpt-5", model_windows);
+            let state = state_with_profile(
+                "eva",
+                CatalogMode::OfficialPlusCustom,
+                false,
+                vec![custom("gpt-5", "legacy-model-list")],
+            );
+
+            let plan = plan_legacy_model_reset(&settings, &state, &official)
+                .unwrap_or_else(|error| panic!("{label}: {error}"))
+                .expect("eligible legacy state must reset");
+
+            assert_eq!(plan.reset_profiles.len(), 1, "{label}");
+            assert_eq!(plan.reset_profiles[0].removed_slugs, ["gpt-5"], "{label}");
+            assert!(
+                plan.settings.relay_profiles[0].model_windows.is_empty(),
+                "{label}"
+            );
+        }
     }
 
     #[test]

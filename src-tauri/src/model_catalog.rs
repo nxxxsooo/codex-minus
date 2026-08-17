@@ -987,12 +987,35 @@ pub(crate) fn load_and_migrate_state_from_path(
     Ok(state)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InvalidLegacyModelWindows;
+
+impl std::fmt::Display for InvalidLegacyModelWindows {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("legacy model windows are invalid")
+    }
+}
+
+impl std::error::Error for InvalidLegacyModelWindows {}
+
+fn invalid_legacy_model_windows() -> anyhow::Error {
+    anyhow::Error::new(InvalidLegacyModelWindows)
+}
+
 pub(crate) fn migrate_legacy_overlay(
     profile: &RelayProfile,
     official_slugs: &BTreeSet<String>,
 ) -> anyhow::Result<CatalogOverlay> {
     let windows = serde_json::from_str::<BTreeMap<String, String>>(&profile.model_windows)
         .unwrap_or_default();
+    migrate_legacy_overlay_with_windows(profile, official_slugs, &windows)
+}
+
+fn migrate_legacy_overlay_with_windows(
+    profile: &RelayProfile,
+    official_slugs: &BTreeSet<String>,
+    windows: &BTreeMap<String, String>,
+) -> anyhow::Result<CatalogOverlay> {
     let mut overlay = CatalogOverlay::default();
     for (order, slug) in split_model_list(&profile.model_list)
         .into_iter()
@@ -1030,9 +1053,36 @@ pub(crate) fn migrate_legacy_overlay(
     Ok(overlay)
 }
 
+/// Reconstructs deletion evidence only after the reset planner has established destructive
+/// eligibility. Bootstrap migration deliberately remains permissive for compatibility.
 pub(crate) fn legacy_overlay_for_current_official(
     state: &CatalogState,
     profile: &RelayProfile,
+) -> anyhow::Result<CatalogOverlay> {
+    let raw_windows = profile.model_windows.trim();
+    let windows = if raw_windows.is_empty() {
+        BTreeMap::new()
+    } else {
+        serde_json::from_str::<BTreeMap<String, String>>(raw_windows)
+            .map_err(|_| invalid_legacy_model_windows())?
+    };
+    for window in windows.values() {
+        if !window
+            .trim()
+            .parse::<u64>()
+            .ok()
+            .is_some_and(|value| value > 0)
+        {
+            return Err(invalid_legacy_model_windows());
+        }
+    }
+    legacy_overlay_for_current_official_with_windows(state, profile, &windows)
+}
+
+fn legacy_overlay_for_current_official_with_windows(
+    state: &CatalogState,
+    profile: &RelayProfile,
+    windows: &BTreeMap<String, String>,
 ) -> anyhow::Result<CatalogOverlay> {
     let official_slugs = state
         .official
@@ -1040,7 +1090,7 @@ pub(crate) fn legacy_overlay_for_current_official(
         .map(|snapshot| catalog_slugs(&snapshot.raw_catalog))
         .transpose()?
         .unwrap_or_default();
-    migrate_legacy_overlay(profile, &official_slugs)
+    migrate_legacy_overlay_with_windows(profile, &official_slugs, windows)
 }
 
 fn default_mode(
@@ -3278,6 +3328,30 @@ mod tests {
             ),
             CatalogMode::CustomOnly
         );
+    }
+
+    #[test]
+    fn bootstrap_legacy_migration_keeps_permissive_model_windows_compatibility() {
+        let official = BTreeSet::from(["official-a".to_string()]);
+        for model_windows in [
+            "{not-json",
+            "[]",
+            r#"{"custom-x":272000}"#,
+            r#"{"custom-x":"not-a-window"}"#,
+        ] {
+            let profile = RelayProfile {
+                model_list: "official-a\ncustom-x".to_string(),
+                model_windows: model_windows.to_string(),
+                ..RelayProfile::default()
+            };
+
+            let overlay = migrate_legacy_overlay(&profile, &official).unwrap();
+
+            assert!(overlay.official.is_empty(), "{model_windows}");
+            assert_eq!(overlay.custom.len(), 1, "{model_windows}");
+            assert_eq!(overlay.custom[0].slug, "custom-x", "{model_windows}");
+            assert_eq!(overlay.custom[0].context_window, 272_000, "{model_windows}");
+        }
     }
 
     #[test]

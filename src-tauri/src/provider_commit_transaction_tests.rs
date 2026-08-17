@@ -2458,6 +2458,54 @@ fn legacy_model_reset_maps_malformed_persisted_provider_toml_to_static_input_una
 }
 
 #[test]
+fn legacy_model_reset_maps_invalid_model_windows_to_static_input_unavailable() {
+    let fixture = eva_legacy_model_fixture();
+    let persisted = fixture.read_settings();
+    let request = request(
+        &persisted,
+        &persisted,
+        "eva",
+        ProviderCommitAction::Save,
+        918,
+    );
+    let mut settings = persisted;
+    settings.relay_profiles[0].model_windows = r#"{"gpt-5":"window-secret-sentinel"}"#.to_string();
+    fs::write(
+        &fixture.paths.settings_path,
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    let before = fixture.file_generation();
+
+    let load = load_settings_blocking_at(&fixture.paths);
+    assert_eq!(load.status, "failed");
+    assert_eq!(
+        load.message,
+        "设置安全检查失败；本地设置不可用或安全事务未完成。"
+    );
+    assert!(
+        !serde_json::to_string(&load)
+            .unwrap()
+            .contains("window-secret-sentinel")
+    );
+    assert_eq!(fixture.file_generation(), before);
+
+    let error = commit_provider_detail_from_paths(&fixture.paths, request).unwrap_err();
+
+    assert_eq!(error.code(), ProviderCommitErrorCode::InputUnavailable);
+    assert_eq!(error.reason(), "saved legacy model windows are invalid");
+    assert!(!error.to_string().contains("window-secret-sentinel"));
+    assert_eq!(fixture.file_generation(), before);
+    assert!(
+        !fixture
+            .paths
+            .app_state
+            .join("live-state-transaction.json")
+            .exists()
+    );
+}
+
+#[test]
 fn legacy_model_reset_maps_malformed_live_provider_config_to_static_input_unavailable() {
     for malformed_live in [
         "model = \"gpt-5\"\nmodel_provider = [\"live-secret-sentinel\"\n",
