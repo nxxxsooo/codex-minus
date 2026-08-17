@@ -491,21 +491,29 @@ pub async fn load_settings() -> CommandResult<SettingsPayload> {
 }
 
 fn load_settings_blocking() -> CommandResult<SettingsPayload> {
-    let home = codex_plus_core::relay_config::default_codex_home_dir();
-    let result = (|| -> anyhow::Result<()> {
-        let _guard = live_state::lock()?;
-        live_state::prepare_secret_paths(&home)?;
-        live_state::recover_locked()?;
-        migrate_legacy_profile_auth_locked()?;
-        Ok(())
-    })();
+    let result = prepare_settings_load_at(&ProviderCommitPaths::defaults());
     match result {
         Ok(()) => settings_payload("设置已加载。", "设置读取失败"),
-        Err(error) => failed(
-            &format!("设置安全检查失败：{error}"),
+        Err(_) => failed(
+            "设置安全检查失败；本地设置不可用或安全事务未完成。",
             fallback_settings_payload(),
         ),
     }
+}
+
+pub(crate) fn prepare_settings_load_at(paths: &ProviderCommitPaths) -> anyhow::Result<()> {
+    let _guard = live_state::lock()?;
+    live_state::prepare_secret_paths_at(&paths.app_state, &paths.settings_path, &paths.codex_home)?;
+    live_state::recover_locked_at(&paths.app_state)?;
+    let migrated = migrate_legacy_profile_auth_locked_at(&paths.settings_path)?;
+    if migrated > 0 {
+        log_manager_event(
+            "manager.profile_auth_migration.completed",
+            json!({ "profileCount": migrated }),
+        );
+    }
+    migrate_legacy_model_state_locked_at(paths, |_| Ok(()))?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -2387,6 +2395,348 @@ impl ProviderCommitPaths {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct LegacyModelResetOutcome {
+    pub(crate) reset_profiles: Vec<crate::legacy_model_reset::ResetProfileSummary>,
+    pub(crate) active_restart_required: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LegacyModelResetCheckpoint {
+    Planned,
+    CatalogMaterialized,
+    BeforeCommit,
+    PostCommitVerification,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegacyModelResetFailure {
+    SettingsUnreadable,
+    SettingsInvalidJson,
+    CatalogUnavailable,
+    GenerationChanged,
+    TransactionFailed,
+}
+
+impl std::fmt::Display for LegacyModelResetFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::SettingsUnreadable => "provider settings file is unreadable",
+            Self::SettingsInvalidJson => "provider settings are invalid JSON",
+            Self::CatalogUnavailable => "provider catalog state is unavailable",
+            Self::GenerationChanged => "legacy model reset generation changed before commit",
+            Self::TransactionFailed => "legacy model reset transaction failed",
+        })
+    }
+}
+
+impl std::error::Error for LegacyModelResetFailure {}
+
+fn legacy_model_reset_error(failure: LegacyModelResetFailure) -> anyhow::Error {
+    anyhow::Error::new(failure)
+}
+
+fn provider_commit_failure_for_legacy_model_reset(error: anyhow::Error) -> ProviderCommitFailure {
+    match error.downcast_ref::<LegacyModelResetFailure>() {
+        Some(LegacyModelResetFailure::SettingsUnreadable) => provider_commit_failure(
+            ProviderCommitErrorCode::InputUnavailable,
+            "provider settings file is unreadable",
+        ),
+        Some(LegacyModelResetFailure::SettingsInvalidJson) => provider_commit_failure(
+            ProviderCommitErrorCode::InputUnavailable,
+            "provider settings are invalid JSON",
+        ),
+        Some(LegacyModelResetFailure::CatalogUnavailable) => provider_commit_failure(
+            ProviderCommitErrorCode::CatalogUnavailable,
+            "provider catalog state is unavailable",
+        ),
+        _ => provider_commit_failure(
+            ProviderCommitErrorCode::TransactionFailed,
+            "provider transaction failed",
+        ),
+    }
+}
+
+/// Persists one planned legacy-model reset through the existing live-state journal.
+///
+/// The caller must hold the process-wide coordinator and must have completed the owner-only
+/// legacy auth scrub first. Keeping that credential-destruction step outside this transaction is
+/// what prevents copied OAuth bytes from entering a prior-stage recovery artifact.
+pub(crate) fn migrate_legacy_model_state_locked_at(
+    paths: &ProviderCommitPaths,
+    mut observe: impl FnMut(LegacyModelResetCheckpoint) -> anyhow::Result<()>,
+) -> anyhow::Result<LegacyModelResetOutcome> {
+    let raw_settings = match std::fs::read(&paths.settings_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(LegacyModelResetOutcome::default());
+        }
+        Err(_) => {
+            return Err(legacy_model_reset_error(
+                LegacyModelResetFailure::SettingsUnreadable,
+            ));
+        }
+    };
+    let settings: BackendSettings = serde_json::from_slice(&raw_settings)
+        .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::SettingsInvalidJson))?;
+    let raw_state = read_optional_bytes(&paths.catalog_state_path)
+        .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::CatalogUnavailable))?;
+    let state = crate::model_catalog::load_and_migrate_state_from_path(
+        &settings,
+        &paths.codex_home,
+        &paths.catalog_state_path,
+    )
+    .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::CatalogUnavailable))?;
+    let official = crate::model_catalog::visible_official_slugs(&state)
+        .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::CatalogUnavailable))?;
+    let Some(mut plan) =
+        crate::legacy_model_reset::plan_legacy_model_reset(&settings, &state, &official)
+            .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::CatalogUnavailable))?
+    else {
+        return Ok(LegacyModelResetOutcome::default());
+    };
+
+    let auth_path = paths.codex_home.join("auth.json");
+    let auth_before = read_optional_bytes(&auth_path)
+        .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))?;
+    let live_config_path = paths.codex_home.join("config.toml");
+    let active_reset = plan
+        .reset_profiles
+        .iter()
+        .find(|reset| reset.active && plan.settings.relay_profiles_enabled);
+    let live_before =
+        if active_reset.is_some() {
+            Some(std::fs::read(&live_config_path).map_err(|_| {
+                legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed)
+            })?)
+        } else {
+            None
+        };
+    let generated_before = plan
+        .reset_profiles
+        .iter()
+        .map(|reset| {
+            let path = paths
+                .codex_home
+                .join(crate::model_catalog::generated_relative_path(
+                    &reset.profile_id,
+                ));
+            read_optional_bytes(&path)
+                .map(|bytes| (path, bytes))
+                .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    observe(LegacyModelResetCheckpoint::Planned)
+        .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))?;
+
+    let next_settings_bytes = serialize_settings_without_profile_auth(&plan.settings)
+        .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))?;
+    let mut mutations = Vec::new();
+    if next_settings_bytes != raw_settings {
+        mutations.push(FileMutation::bytes(
+            paths.settings_path.clone(),
+            next_settings_bytes,
+        ));
+    }
+    let mut context_snapshots = Vec::new();
+
+    for reset in plan.reset_profiles.clone() {
+        let profile = plan
+            .settings
+            .relay_profiles
+            .iter()
+            .find(|profile| profile.id == reset.profile_id)
+            .cloned()
+            .ok_or_else(|| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))?;
+        if reset.active && plan.settings.relay_profiles_enabled {
+            let live = String::from_utf8(live_before.clone().ok_or_else(|| {
+                legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed)
+            })?)
+            .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))?;
+            ensure_live_config_selects_profile(&live, &profile.config_contents)?;
+            let active_plan = crate::model_catalog::plan_active_profile_with_state(
+                &paths.codex_home,
+                &plan.settings,
+                &crate::legacy_model_reset::set_top_level_model(&live, &reset.next_model).map_err(
+                    |_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed),
+                )?,
+                &mut plan.state,
+                false,
+            )
+            .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::CatalogUnavailable))?;
+            mutations.extend(active_plan.mutations);
+            let (protected, snapshot) =
+                context_protected_config(&paths.codex_home, &active_plan.config_contents).map_err(
+                    |_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed),
+                )?;
+            mutations.push(FileMutation::text(live_config_path.clone(), protected));
+            context_snapshots.push(snapshot);
+        } else if let Some(mutation) =
+            crate::model_catalog::materialize_profile(&mut plan.state, &profile, &paths.codex_home)
+                .map_err(|_| {
+                    legacy_model_reset_error(LegacyModelResetFailure::CatalogUnavailable)
+                })?
+        {
+            mutations.push(mutation);
+        }
+    }
+    mutations.push(
+        crate::model_catalog::state_mutation_at(&plan.state, &paths.catalog_state_path)
+            .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))?,
+    );
+
+    observe(LegacyModelResetCheckpoint::CatalogMaterialized)
+        .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))?;
+
+    ensure_legacy_model_reset_generation_current(
+        paths,
+        &raw_settings,
+        raw_state.as_deref(),
+        live_before.as_deref(),
+        &generated_before,
+        auth_before.as_deref(),
+    )?;
+
+    let expected_mutations = mutations.clone();
+    let reset_profiles = plan.reset_profiles.clone();
+    let committed_state = plan.state.clone();
+    let reset_marker_profile_ids = committed_state
+        .profiles
+        .iter()
+        .filter(|(profile_id, profile)| {
+            profile.legacy_model_reset_version
+                == crate::legacy_model_reset::LEGACY_MODEL_RESET_VERSION
+                && state
+                    .profiles
+                    .get(*profile_id)
+                    .map(|prior| prior.legacy_model_reset_version)
+                    .unwrap_or_default()
+                    < crate::legacy_model_reset::LEGACY_MODEL_RESET_VERSION
+        })
+        .map(|(profile_id, _)| profile_id.clone())
+        .collect::<Vec<_>>();
+    let before_commit_observed = std::cell::Cell::new(false);
+    let observe = std::cell::RefCell::new(&mut observe);
+    live_state::commit_locked_verified_at_observed(
+        &paths.app_state,
+        &mutations,
+        |_| {
+            if !before_commit_observed.replace(true) {
+                observe.borrow_mut()(LegacyModelResetCheckpoint::BeforeCommit)?;
+            }
+            Ok(())
+        },
+        || {
+            verify_legacy_model_reset_mutations(&expected_mutations)?;
+            for snapshot in &context_snapshots {
+                verify_context_tables(&paths.codex_home, snapshot)?;
+            }
+            anyhow::ensure!(
+                read_optional_bytes(&auth_path)? == auth_before,
+                "live auth changed concurrently"
+            );
+            let stored_state: crate::model_catalog::CatalogState =
+                serde_json::from_slice(&std::fs::read(&paths.catalog_state_path)?)?;
+            for profile_id in &reset_marker_profile_ids {
+                anyhow::ensure!(
+                    stored_state
+                        .profiles
+                        .get(profile_id)
+                        .is_some_and(|profile| profile.legacy_model_reset_version
+                            == crate::legacy_model_reset::LEGACY_MODEL_RESET_VERSION),
+                    "legacy model reset marker was not committed"
+                );
+            }
+            Ok(())
+        },
+        || {
+            observe.borrow_mut()(LegacyModelResetCheckpoint::PostCommitVerification)?;
+            Ok(())
+        },
+    )
+    .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))?;
+
+    let active_restart_required = reset_profiles.iter().any(|reset| {
+        reset.active
+            && committed_state
+                .profiles
+                .get(&reset.profile_id)
+                .is_some_and(|profile| profile.restart_required)
+    });
+    Ok(LegacyModelResetOutcome {
+        reset_profiles,
+        active_restart_required,
+    })
+}
+
+fn ensure_live_config_selects_profile(live: &str, profile: &str) -> anyhow::Result<()> {
+    let selected = |contents: &str| -> anyhow::Result<String> {
+        let document = contents
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))?;
+        document
+            .get("model_provider")
+            .and_then(toml_edit::Item::as_str)
+            .map(ToString::to_string)
+            .ok_or_else(|| legacy_model_reset_error(LegacyModelResetFailure::GenerationChanged))
+    };
+    anyhow::ensure!(
+        selected(live)? == selected(profile)?,
+        LegacyModelResetFailure::GenerationChanged
+    );
+    Ok(())
+}
+
+fn ensure_legacy_model_reset_generation_current(
+    paths: &ProviderCommitPaths,
+    settings: &[u8],
+    state: Option<&[u8]>,
+    live: Option<&[u8]>,
+    generated: &[(PathBuf, Option<Vec<u8>>)],
+    auth: Option<&[u8]>,
+) -> anyhow::Result<()> {
+    let current = |path: &Path| {
+        read_optional_bytes(path)
+            .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::GenerationChanged))
+    };
+    anyhow::ensure!(
+        current(&paths.settings_path)?.as_deref() == Some(settings),
+        LegacyModelResetFailure::GenerationChanged
+    );
+    anyhow::ensure!(
+        current(&paths.catalog_state_path)?.as_deref() == state,
+        LegacyModelResetFailure::GenerationChanged
+    );
+    if let Some(live) = live {
+        anyhow::ensure!(
+            current(&paths.codex_home.join("config.toml"))?.as_deref() == Some(live),
+            LegacyModelResetFailure::GenerationChanged
+        );
+    }
+    for (path, expected) in generated {
+        anyhow::ensure!(
+            current(path)? == *expected,
+            LegacyModelResetFailure::GenerationChanged
+        );
+    }
+    anyhow::ensure!(
+        current(&paths.codex_home.join("auth.json"))?.as_deref() == auth,
+        LegacyModelResetFailure::GenerationChanged
+    );
+    Ok(())
+}
+
+fn verify_legacy_model_reset_mutations(mutations: &[FileMutation]) -> anyhow::Result<()> {
+    for mutation in mutations {
+        anyhow::ensure!(
+            read_optional_bytes(&mutation.path)? == mutation.contents,
+            "legacy model reset target hash mismatch"
+        );
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderCommitPayload {
@@ -2596,6 +2946,8 @@ pub fn commit_provider_detail_from_paths_observed(
     // prepare a settings prior stage, so copied OAuth can never enter recovery material.
     migrate_legacy_profile_auth_locked_at(&paths.settings_path)
         .map_err(provider_commit_failure_for_legacy_auth_migration)?;
+    migrate_legacy_model_state_locked_at(paths, |_| Ok(()))
+        .map_err(provider_commit_failure_for_legacy_model_reset)?;
 
     let (persisted_settings_bytes, persisted_settings) =
         load_provider_commit_settings(&paths.settings_path).map_err(|reason| {
