@@ -8,6 +8,11 @@
 
 ### 2026-08-17
 
+- **release**: 0.4.14 — ships automatic repair of legacy provider `authContents` so Eva can recover through the signed in-app updater instead of editing credential files by hand
+  - why: PR #35 fixed the product-owned `OPENAI_API_KEY` + stale OAuth residue that blocked Eva at settings load; a passing feature PR was not deliverable until the merged fix rode a tagged Release and updated `latest.json`
+  - verified: PRs #35/#36 merged; Tag, `origin/master`, and local `master` agree at `fcb51a7`; Tag workflow `31994908135` passed macOS arm64, Windows x64, Windows arm64, and Create Release; all 9 published assets match GitHub API SHA256 digests, the 4 application/installer payloads pass `SHA256SUMS`, three updater signatures match `latest.json`, and the live `/releases/latest/` route returns byte-identical version `0.4.14`; Eva received P2P update instructions as FIT user message `om_x100b671ddc81a8a8c4349e3b67ccd9d`
+  - refs: PR #35, PR #36, Tag/Release `v0.4.14`, `scripts/release.sh`, `scripts/release-tag.sh`
+
 - **fix/providers**: legacy profile `authContents` containing a provider API key plus stale OAuth fields now migrates automatically instead of blocking settings load
   - why: older Codex Minus/Codex++ Manager versions left Eva's mixed credential copy behind; the strict API-key-only upgrade gate turned product-owned residue into a user repair task
   - verified: the focused migration regressions, full `cargo test` (190 library + 17 + 21 integration tests), `npm run verify` (212 frontend tests), strict OpenSpec validation, Rust formatting, and diff checks passed
