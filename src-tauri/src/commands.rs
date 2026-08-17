@@ -2488,6 +2488,31 @@ fn provider_commit_failure(
     ProviderCommitFailure::new(code, message)
 }
 
+fn provider_commit_failure_for_legacy_auth_migration(
+    error: LegacyProfileAuthMigrationError,
+) -> ProviderCommitFailure {
+    // Keep the loader's input taxonomy intact; only profile-level reconciliation is an auth
+    // migration failure. Security and atomic-write work belongs to the transaction category.
+    match error {
+        LegacyProfileAuthMigrationError::SettingsUnreadable(_) => provider_commit_failure(
+            ProviderCommitErrorCode::InputUnavailable,
+            "provider settings file is unreadable",
+        ),
+        LegacyProfileAuthMigrationError::SettingsInvalidJson(_) => provider_commit_failure(
+            ProviderCommitErrorCode::InputUnavailable,
+            "provider settings are invalid JSON",
+        ),
+        LegacyProfileAuthMigrationError::ProfileReconciliation(_) => provider_commit_failure(
+            ProviderCommitErrorCode::InputUnavailable,
+            "a saved provider profile failed auth migration",
+        ),
+        LegacyProfileAuthMigrationError::SecureStorage(_) => provider_commit_failure(
+            ProviderCommitErrorCode::TransactionFailed,
+            "provider transaction failed",
+        ),
+    }
+}
+
 /// Awaits a blocking command, reporting a panic instead of dropping the reply.
 ///
 /// Re-panicking inside a Tauri command drops its IPC responder without answering, so the caller's
@@ -2569,12 +2594,8 @@ pub fn commit_provider_detail_from_paths_observed(
     // Recovery artifacts snapshot every transaction target before applying it. Scrub legacy
     // profile auth through the startup's owner-only atomic no-backup path before this commit can
     // prepare a settings prior stage, so copied OAuth can never enter recovery material.
-    migrate_legacy_profile_auth_locked_at(&paths.settings_path).map_err(|_| {
-        provider_commit_failure(
-            ProviderCommitErrorCode::InputUnavailable,
-            "a saved provider profile failed auth migration",
-        )
-    })?;
+    migrate_legacy_profile_auth_locked_at(&paths.settings_path)
+        .map_err(provider_commit_failure_for_legacy_auth_migration)?;
 
     let (persisted_settings_bytes, persisted_settings) =
         load_provider_commit_settings(&paths.settings_path).map_err(|reason| {
@@ -5598,14 +5619,45 @@ fn migrate_legacy_profile_auth_locked() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn migrate_legacy_profile_auth_locked_at(settings_path: &Path) -> anyhow::Result<usize> {
+#[derive(Debug)]
+enum LegacyProfileAuthMigrationError {
+    SettingsUnreadable(anyhow::Error),
+    SettingsInvalidJson(anyhow::Error),
+    ProfileReconciliation(anyhow::Error),
+    SecureStorage(anyhow::Error),
+}
+
+impl std::fmt::Display for LegacyProfileAuthMigrationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SettingsUnreadable(error)
+            | Self::SettingsInvalidJson(error)
+            | Self::ProfileReconciliation(error)
+            | Self::SecureStorage(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for LegacyProfileAuthMigrationError {}
+
+fn migrate_legacy_profile_auth_locked_at(
+    settings_path: &Path,
+) -> Result<usize, LegacyProfileAuthMigrationError> {
     if !settings_path.exists() {
         return Ok(0);
     }
-    live_state::ensure_owner_only_file(&settings_path)?;
-    let raw = std::fs::read(&settings_path)?;
-    let mut settings: BackendSettings =
-        serde_json::from_slice(&raw).context("persisted provider settings are invalid")?;
+    live_state::ensure_owner_only_file(settings_path)
+        .map_err(LegacyProfileAuthMigrationError::SecureStorage)?;
+    let raw = std::fs::read(settings_path).map_err(|error| {
+        LegacyProfileAuthMigrationError::SettingsUnreadable(
+            anyhow::Error::new(error).context("persisted provider settings are unreadable"),
+        )
+    })?;
+    let mut settings: BackendSettings = serde_json::from_slice(&raw).map_err(|error| {
+        LegacyProfileAuthMigrationError::SettingsInvalidJson(
+            anyhow::Error::new(error).context("persisted provider settings are invalid"),
+        )
+    })?;
     let mut migrated = 0;
     for profile in &mut settings.relay_profiles {
         if profile.auth_contents.is_empty() {
@@ -5617,20 +5669,25 @@ fn migrate_legacy_profile_auth_locked_at(settings_path: &Path) -> anyhow::Result
             profile.name.trim().to_string()
         };
         migrate_persisted_legacy_api_key_auth(profile).map_err(|error| {
-            anyhow::anyhow!("provider profile {profile_label:?} failed auth migration: {error}")
+            LegacyProfileAuthMigrationError::ProfileReconciliation(anyhow::anyhow!(
+                "provider profile {profile_label:?} failed auth migration: {error}"
+            ))
         })?;
         profile.config_contents = retain_provider_owned_profile_config(&profile.config_contents)
-            .context("persisted provider config ownership is invalid")?;
+            .context("persisted provider config ownership is invalid")
+            .map_err(LegacyProfileAuthMigrationError::ProfileReconciliation)?;
         migrated += 1;
     }
     if migrated == 0 {
         return Ok(0);
     }
-    let bytes = serialize_settings_without_profile_auth(&settings)?;
+    let bytes = serialize_settings_without_profile_auth(&settings)
+        .map_err(LegacyProfileAuthMigrationError::SecureStorage)?;
     // Credential migration intentionally has no prior-file backup. The old file is
     // secured first and then atomically replaced so OAuth copies cannot survive in
     // a recovery artifact.
-    live_state::atomic_write_owner_only(&settings_path, &bytes)?;
+    live_state::atomic_write_owner_only(settings_path, &bytes)
+        .map_err(LegacyProfileAuthMigrationError::SecureStorage)?;
     Ok(migrated)
 }
 
@@ -6518,6 +6575,48 @@ requires_openai_auth = true
             provider_bearer_token_from_config_exact(&profile.config_contents).as_deref(),
             Some("provider-key-sentinel")
         );
+    }
+
+    #[test]
+    fn pre_snapshot_auth_migration_maps_each_typed_failure_to_a_static_commit_reason() {
+        let cases = [
+            (
+                LegacyProfileAuthMigrationError::SettingsUnreadable(anyhow::anyhow!(
+                    "read error sentinel"
+                )),
+                ProviderCommitErrorCode::InputUnavailable,
+                "provider settings file is unreadable",
+            ),
+            (
+                LegacyProfileAuthMigrationError::SettingsInvalidJson(anyhow::anyhow!(
+                    "JSON error sentinel"
+                )),
+                ProviderCommitErrorCode::InputUnavailable,
+                "provider settings are invalid JSON",
+            ),
+            (
+                LegacyProfileAuthMigrationError::ProfileReconciliation(anyhow::anyhow!(
+                    "profile error sentinel"
+                )),
+                ProviderCommitErrorCode::InputUnavailable,
+                "a saved provider profile failed auth migration",
+            ),
+            (
+                LegacyProfileAuthMigrationError::SecureStorage(anyhow::anyhow!(
+                    "storage error sentinel"
+                )),
+                ProviderCommitErrorCode::TransactionFailed,
+                "provider transaction failed",
+            ),
+        ];
+
+        for (error, expected_code, expected_reason) in cases {
+            let failure = provider_commit_failure_for_legacy_auth_migration(error);
+
+            assert_eq!(failure.code(), expected_code);
+            assert_eq!(failure.reason(), expected_reason);
+            assert!(!failure.to_string().contains("sentinel"));
+        }
     }
 
     #[test]

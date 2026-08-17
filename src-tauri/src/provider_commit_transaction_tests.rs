@@ -1203,6 +1203,98 @@ requires_openai_auth = true
 }
 
 #[test]
+fn provider_commit_pre_snapshot_scrub_preserves_invalid_settings_reason() {
+    let initial = settings_with(
+        vec![canonical_profile(
+            "sub2api",
+            "gpt-5.6-sol",
+            "https://relay.example/v1",
+            "provider-key",
+        )],
+        "sub2api",
+    );
+    let fixture = Fixture::new(&initial, &state_with_official());
+    let persisted = fixture.read_settings();
+    fs::write(&fixture.paths.settings_path, "{invalid-json").unwrap();
+
+    let error = commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(
+            &persisted,
+            &persisted,
+            "sub2api",
+            ProviderCommitAction::Save,
+            71,
+        ),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code(), ProviderCommitErrorCode::InputUnavailable);
+    assert_eq!(error.reason(), "provider settings are invalid JSON");
+}
+
+#[test]
+fn provider_commit_pre_snapshot_scrub_classifies_profile_reconciliation_as_auth_migration() {
+    let legacy = legacy_pure_api_profile("legacy", "{invalid-json");
+    let fixture = Fixture::new(
+        &settings_with(vec![legacy], "legacy"),
+        &state_with_official(),
+    );
+    let persisted = fixture.read_settings();
+
+    let error = commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(
+            &persisted,
+            &persisted,
+            "legacy",
+            ProviderCommitAction::Save,
+            72,
+        ),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code(), ProviderCommitErrorCode::InputUnavailable);
+    assert_eq!(
+        error.reason(),
+        "a saved provider profile failed auth migration"
+    );
+    assert!(!error.to_string().contains("invalid-json"));
+}
+
+#[test]
+fn provider_commit_pre_snapshot_scrub_classifies_owner_only_failure_as_transaction_failure() {
+    let initial = settings_with(
+        vec![canonical_profile(
+            "sub2api",
+            "gpt-5.6-sol",
+            "https://relay.example/v1",
+            "provider-key",
+        )],
+        "sub2api",
+    );
+    let fixture = Fixture::new(&initial, &state_with_official());
+    let persisted = fixture.read_settings();
+    fs::remove_file(&fixture.paths.settings_path).unwrap();
+    fs::create_dir(&fixture.paths.settings_path).unwrap();
+
+    let error = commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(
+            &persisted,
+            &persisted,
+            "sub2api",
+            ProviderCommitAction::Save,
+            73,
+        ),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code(), ProviderCommitErrorCode::TransactionFailed);
+    assert_eq!(error.reason(), "provider transaction failed");
+}
+
+#[test]
 fn generic_settings_save_allows_unrelated_changes_but_rejects_every_provider_owned_difference() {
     let first = canonical_profile(
         "sub2api",
