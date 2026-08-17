@@ -36,11 +36,11 @@ exclusive property of the official client and must be byte-for-byte unchanged.
 
 | Legacy profile state | Result |
 |---|---|
-| `authContents` contains `OPENAI_API_KEY` plus OAuth or other legacy fields; no other provider key exists | Move the legacy key into `apiKey` and the provider bearer, then remove `authContents` |
-| `authContents` contains `OPENAI_API_KEY`; existing `apiKey` and/or provider bearer contains the same key | Preserve the agreed key and remove `authContents` |
-| `authContents` contains `OPENAI_API_KEY`; an existing structured key or bearer differs | Fail closed without writing settings |
+| A provider-key profile's `authContents` contains `OPENAI_API_KEY` plus OAuth or other legacy fields; no other provider key exists | Move the legacy key into `apiKey` and the provider bearer, then remove `authContents` |
+| A provider-key profile's `authContents` contains `OPENAI_API_KEY`; existing `apiKey` and/or provider bearer contains the same key | Preserve the agreed key and remove `authContents` |
+| A provider-key profile's `authContents` contains `OPENAI_API_KEY`; an existing structured key or bearer differs | Fail closed without writing settings |
 | `authContents` contains only OAuth/legacy fields; a structured key or provider bearer already exists | Preserve that provider key and remove `authContents` |
-| `authContents` contains only OAuth/legacy fields; the profile is pure OAuth | Remove `authContents`; live official auth remains untouched |
+| The profile is pure OAuth, whether or not its legacy payload also contains `OPENAI_API_KEY` | Remove `authContents` without creating a structured key or provider bearer; live official auth remains untouched |
 | `authContents` contains only OAuth/legacy fields; the profile requires a provider key but none exists | Fail closed and identify the profile and missing provider key without exposing credential material |
 | `authContents` is invalid JSON or is not an object | Fail closed without writing settings |
 
