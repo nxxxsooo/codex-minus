@@ -8,6 +8,11 @@
 
 ### 2026-08-17
 
+- **release**: 0.4.15 — delivers the unowned legacy model-list reset through the signed in-app updater, so Eva's stale `gpt-5` default recovers without manual model switching
+  - why: PR #37 landed the reset on `master` but 0.4.14 remained the newest Release, so the fix was unreachable from the app; her machine kept showing the legacy GPT-5 default until someone changed the model by hand every session
+  - verified: `scripts/release.sh 0.4.15` bumped the four version files with `npm test` passing, release PR CI covered macOS arm64/Windows x64/Windows arm64, the Tag workflow published the Release with updated `latest.json`, and local `master`, `origin/master`, and the Tag agree
+  - refs: PR #37, PR #38, Tag/Release `v0.4.15`, `scripts/release.sh`, `scripts/release-tag.sh`
+
 - **fix/catalog**: unowned legacy model-list overlays now reset to the official baseline, so Eva's stale GPT-5 row is discarded and Terra becomes the persistent startup default
   - why: the 0.4.14 auth repair revealed an older manager-owned `gpt-5` model/default; preserving it was safe but incomplete because the user never explicitly adopted that legacy row
   - verified: focused missing-state eligibility/strict-list-and-window-evidence/ownership/default/pointer/response-order/form-convergence/generation-deduped-notice/load/i18n regressions, 251 Rust library + 17 and 21 integration tests, 232 frontend tests, strict OpenSpec, formatting, diff, and the 1,621-module production build passed
