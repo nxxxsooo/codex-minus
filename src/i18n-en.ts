@@ -281,7 +281,6 @@ export const EN_PLAIN: Record<string, string> = {
   "刷新项目": "Refresh projects",
   "加入当前工作区": "Add to current workspace",
   "包含版本、路径、设置和平台信息": "Includes version, paths, settings and platform info",
-  "协议": "Protocol",
   "卸载入口": "Uninstall entrypoints",
   "卸载时移除 Codex++ 托管数据": "Remove Codex++ managed data on uninstall",
   "历史会话修复": "Historical session repair",
