@@ -128,6 +128,13 @@ export function providerCommitFailureShouldReconcileForm(
   return focusedProfileId === null && disposition === "report";
 }
 
+export function providerCommitResetRequiresAuthoritativeRefresh(
+  resetApplied: boolean,
+  disposition: ProviderCommitResponseDisposition,
+): boolean {
+  return resetApplied && disposition === "ignore";
+}
+
 export function registerProviderCommit<T>(state: ProviderCommitUiState<T>, revision: number): ProviderCommitUiState<T> {
   if (revision !== state.latestRevision + 1) throw new Error("provider commit revision is not the next submitted revision");
   return { ...state, latestRevision: revision };

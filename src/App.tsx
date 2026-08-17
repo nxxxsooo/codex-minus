@@ -97,7 +97,7 @@ import {
   providerDeleteAvailable,
   providerCommitFailureNotice,
   providerCommitFailureShouldReconcileForm,
-  registerProviderCommit,
+  providerCommitResetRequiresAuthoritativeRefresh, registerProviderCommit,
   settleProviderCommit,
   type ProviderCommitResponseDisposition,
   type ProfileCatalogDraft,
@@ -785,15 +785,16 @@ export function App() {
       nextBaseline,
     );
     providerCommitState.current = settled.state;
+    if (providerCommitResetRequiresAuthoritativeRefresh(resetApplied, settled.disposition)) {
+      setModelCatalog(null); void refreshSettings(true).then((refreshed) => { if (refreshed) void refreshModelCatalog(true, true); });
+      return false;
+    }
     if (settled.disposition === "ignore") return false;
     if (settled.disposition === "report") {
       if (resetApplied && nextBaseline && selectedSettings) {
-        setSettings(nextBaseline);
-        setSettingsForm(selectedSettings);
-        setModelCatalog(null);
-        refreshAfterCommit();
-        const failure = providerCommitFailureNotice(result.message, result.errorCode, result.reason);
-        showNotice(t("模型目录已恢复"), result.message, result.status, failure.detail);
+        setSettings(nextBaseline); setSettingsForm(selectedSettings);
+        setModelCatalog(null); refreshAfterCommit();
+        showNotice(t("模型目录已恢复"), result.message, result.status, providerCommitFailureNotice(result.message, result.errorCode, result.reason).detail);
         return false;
       }
       await reconcileTopologyFailure(settled.disposition);

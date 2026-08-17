@@ -988,6 +988,95 @@ fn legacy_model_reset_command_response_truthfully_carries_the_authoritative_gene
 }
 
 #[test]
+fn legacy_model_reset_response_token_matches_returned_settings_with_pure_api_bystander() {
+    let (fixture, _) = state_only_legacy_overlay_fixture();
+    let mut settings: BackendSettings =
+        serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+    let mut bystander = canonical_profile(
+        "pure-bystander",
+        "bystander-model",
+        "https://bystander.example/v1",
+        "bystander-provider-key",
+    );
+    bystander.relay_mode = RelayMode::PureApi;
+    bystander.official_mix_api_key = false;
+    bystander.config_contents = bystander.config_contents.replace(
+        "requires_openai_auth = false",
+        "requires_openai_auth = true",
+    );
+    settings.relay_profiles.push(bystander);
+    fs::write(
+        &fixture.paths.settings_path,
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    let persisted = fixture.read_settings();
+    let mut stale = request(
+        &persisted,
+        &persisted,
+        "eva",
+        ProviderCommitAction::Save,
+        910,
+    );
+    stale.catalog_drafts[0].overlay.custom = vec![CustomModel {
+        slug: "gpt-5".to_string(),
+        display_name: "gpt-5".to_string(),
+        template_provenance: "legacy-model-list".to_string(),
+        ..CustomModel::default()
+    }];
+    let effective_state = crate::model_catalog::load_and_migrate_state_from_path(
+        &persisted,
+        &fixture.paths.codex_home,
+        &fixture.paths.catalog_state_path,
+    )
+    .unwrap();
+    stale.expected_provider_fingerprint = provider_generation_fingerprint(
+        &ProviderOwnedTopologyDraft::from_settings(&persisted),
+        &effective_state,
+    )
+    .unwrap();
+
+    let first = commit_provider_detail_from_paths_raw(&fixture.paths, stale).unwrap_err();
+    let replacement = first.reset_payload().unwrap();
+    let returned = replacement.settings.as_ref().unwrap();
+    let returned_bystander = returned
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == "pure-bystander")
+        .unwrap();
+    let bystander_document = returned_bystander
+        .config_contents
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap();
+    let bystander_provider_id = bystander_document["model_provider"].as_str().unwrap();
+    assert_eq!(
+        bystander_document["model_providers"][bystander_provider_id]["requires_openai_auth"]
+            .as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        replacement.provider_fingerprint,
+        provider_generation_fingerprint(
+            &ProviderOwnedTopologyDraft::from_settings(returned),
+            &fixture.read_state(),
+        )
+        .unwrap()
+    );
+
+    let mut rebased = request(returned, returned, "eva", ProviderCommitAction::Save, 911);
+    rebased.expected_provider_fingerprint = replacement.provider_fingerprint.clone();
+    let committed = commit_provider_detail_from_paths_raw(&fixture.paths, rebased).unwrap();
+
+    assert!(committed.error_code.is_none());
+    assert!(
+        fixture.read_state().profiles["eva"]
+            .overlay
+            .custom
+            .is_empty()
+    );
+}
+
+#[test]
 fn legacy_model_reset_ordinary_user_overlay_is_a_load_and_direct_invoke_no_op() {
     let profile = canonical_profile(
         "ordinary",
@@ -2176,7 +2265,7 @@ OpenAI = "selected-provider-type-secret-sentinel"
         assert_eq!(error.code(), ProviderCommitErrorCode::InputUnavailable);
         assert_eq!(
             error.reason(),
-            if matches!(malformed_side, "live" | "both") {
+            if malformed_side == "live" {
                 "live provider config is invalid"
             } else {
                 "a saved provider profile failed normalization"
@@ -2188,6 +2277,100 @@ OpenAI = "selected-provider-type-secret-sentinel"
                 .contains("selected-provider-type-secret-sentinel")
         );
         assert_eq!(fixture.file_generation(), before, "{malformed_side}");
+    }
+}
+
+#[test]
+fn legacy_model_reset_validates_inactive_selected_provider_tables_before_mutation() {
+    for shape in ["inactive-only-scalar", "active-plus-inactive-array"] {
+        let fixture = eva_legacy_model_fixture();
+        let mut settings: BackendSettings =
+            serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+        let mut state = fixture.read_state();
+        if shape == "inactive-only-scalar" {
+            settings.relay_profiles.push(pure_oauth_profile("official"));
+            settings.active_relay_id = "official".to_string();
+        } else {
+            let mut backup = settings.relay_profiles[0].clone();
+            backup.id = "backup".to_string();
+            backup.name = "Backup".to_string();
+            backup.config_contents = backup
+                .config_contents
+                .replace("https://eva.example/v1", "https://backup.example/v1")
+                .replace("eva-provider-key", "backup-provider-key");
+            settings.relay_profiles.push(backup);
+            state
+                .profiles
+                .insert("backup".to_string(), state.profiles["eva"].clone());
+        }
+        fs::write(
+            &fixture.paths.settings_path,
+            serde_json::to_vec_pretty(&settings).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            &fixture.paths.catalog_state_path,
+            serde_json::to_vec_pretty(&state).unwrap(),
+        )
+        .unwrap();
+        let persisted = fixture.read_settings();
+        let mut request = request(
+            &persisted,
+            &persisted,
+            "eva",
+            ProviderCommitAction::Save,
+            912,
+        );
+        if shape == "active-plus-inactive-array" {
+            request.focused_profile_id = Some("eva".to_string());
+        }
+        let inactive_id = if shape == "inactive-only-scalar" {
+            "eva"
+        } else {
+            "backup"
+        };
+        let mut raw: Value =
+            serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+        let profile = raw["relayProfiles"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|profile| profile["id"].as_str() == Some(inactive_id))
+            .unwrap();
+        profile["configContents"] = json!(if shape == "inactive-only-scalar" {
+            r#"model = "gpt-5"
+model_provider = "OpenAI"
+[model_providers]
+OpenAI = "inactive-provider-type-secret-sentinel"
+"#
+        } else {
+            r#"model = "gpt-5"
+model_provider = "OpenAI"
+[model_providers]
+OpenAI = ["inactive-provider-type-secret-sentinel"]
+"#
+        });
+        fs::write(
+            &fixture.paths.settings_path,
+            serde_json::to_vec_pretty(&raw).unwrap(),
+        )
+        .unwrap();
+        let before = fixture.file_generation();
+
+        let error = commit_provider_detail_from_paths_raw(&fixture.paths, request).unwrap_err();
+
+        assert_eq!(
+            error.code(),
+            ProviderCommitErrorCode::InputUnavailable,
+            "{shape}"
+        );
+        assert_eq!(
+            error.reason(),
+            "a saved provider profile failed normalization",
+            "{shape}"
+        );
+        assert!(!format!("{error:?}").contains("inactive-provider-type-secret-sentinel"));
+        assert_eq!(fixture.file_generation(), before, "{shape}");
     }
 }
 

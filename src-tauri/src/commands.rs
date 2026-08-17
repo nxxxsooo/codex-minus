@@ -2522,6 +2522,18 @@ pub(crate) fn migrate_legacy_model_state_locked_at(
     else {
         return Ok(LegacyModelResetOutcome::default());
     };
+    for reset in &plan.reset_profiles {
+        let profile = plan
+            .settings
+            .relay_profiles
+            .iter()
+            .find(|profile| profile.id == reset.profile_id)
+            .ok_or_else(|| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))?;
+        provider_semantic_identity(
+            &profile.config_contents,
+            LegacyModelResetFailure::PersistedProviderInvalid,
+        )?;
+    }
 
     let auth_path = paths.codex_home.join("auth.json");
     let auth_before = read_optional_bytes(&auth_path)
@@ -2659,7 +2671,7 @@ pub(crate) fn migrate_legacy_model_state_locked_at(
     let expected_mutations = mutations.clone();
     let reset_profiles = plan.reset_profiles.clone();
     let committed_state = plan.state.clone();
-    let committed_settings = plan.settings.clone();
+    let committed_settings = sanitize_settings_for_output(plan.settings.clone());
     let committed_provider_fingerprint = crate::provider_commit::provider_generation_fingerprint(
         &crate::provider_commit::ProviderOwnedTopologyDraft::from_settings(&committed_settings),
         &committed_state,
@@ -2747,34 +2759,12 @@ fn ensure_live_config_selects_profile(
     state: &crate::model_catalog::CatalogState,
     profile_id: &str,
 ) -> anyhow::Result<()> {
-    let identity =
-        |contents: &str, invalid: LegacyModelResetFailure| -> anyhow::Result<serde_json::Value> {
-            let document: serde_json::Value =
-                toml_edit::de::from_str(contents).map_err(|_| legacy_model_reset_error(invalid))?;
-            let provider_id = document
-                .get("model_provider")
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| legacy_model_reset_error(invalid))?;
-            let provider = document
-                .get("model_providers")
-                .and_then(|providers| providers.get(provider_id))
-                .and_then(serde_json::Value::as_object)
-                .cloned()
-                .map(serde_json::Value::Object)
-                .ok_or_else(|| legacy_model_reset_error(invalid))?;
-            Ok(json!({
-                "selectedProviderId": provider_id,
-                "selectedProvider": provider,
-                "baseUrl": document.get("base_url"),
-                "apiKey": document.get("OPENAI_API_KEY"),
-                "chatBaseUrl": document.get("codex_plus_chat_base_url"),
-            }))
-        };
     anyhow::ensure!(
-        identity(live, LegacyModelResetFailure::LiveConfigInvalid)?
-            == identity(profile, LegacyModelResetFailure::PersistedProviderInvalid)?,
+        provider_semantic_identity(live, LegacyModelResetFailure::LiveConfigInvalid)?
+            == provider_semantic_identity(
+                profile,
+                LegacyModelResetFailure::PersistedProviderInvalid,
+            )?,
         LegacyModelResetFailure::GenerationChanged
     );
     let live_document = live
@@ -2797,6 +2787,34 @@ fn ensure_live_config_selects_profile(
         LegacyModelResetFailure::GenerationChanged
     );
     Ok(())
+}
+
+fn provider_semantic_identity(
+    contents: &str,
+    invalid: LegacyModelResetFailure,
+) -> anyhow::Result<serde_json::Value> {
+    let document: serde_json::Value =
+        toml_edit::de::from_str(contents).map_err(|_| legacy_model_reset_error(invalid))?;
+    let provider_id = document
+        .get("model_provider")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| legacy_model_reset_error(invalid))?;
+    let provider = document
+        .get("model_providers")
+        .and_then(|providers| providers.get(provider_id))
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .map(serde_json::Value::Object)
+        .ok_or_else(|| legacy_model_reset_error(invalid))?;
+    Ok(json!({
+        "selectedProviderId": provider_id,
+        "selectedProvider": provider,
+        "baseUrl": document.get("base_url"),
+        "apiKey": document.get("OPENAI_API_KEY"),
+        "chatBaseUrl": document.get("codex_plus_chat_base_url"),
+    }))
 }
 
 fn ensure_legacy_model_reset_generation_current(

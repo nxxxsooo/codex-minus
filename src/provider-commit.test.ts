@@ -116,6 +116,14 @@ describe("provider-owned commit request", () => {
     assert.equal(obsoleteReset.disposition, "ignore");
     assert.equal(obsoleteReset.state.baseline, "reset-baseline-3");
     assert.equal(
+      commitModule.providerCommitResetRequiresAuthoritativeRefresh(true, obsoleteReset.disposition),
+      true,
+    );
+    assert.equal(
+      commitModule.providerCommitResetRequiresAuthoritativeRefresh(false, obsoleteReset.disposition),
+      false,
+    );
+    assert.equal(
       commitModule.providerCommitFailureShouldReconcileForm(null, settled.disposition),
       true,
     );
@@ -125,6 +133,42 @@ describe("provider-owned commit request", () => {
     );
     assert.equal(commitModule.settleProviderCommit(settled.state, 2, false, null).disposition, "ignore");
     assert.equal(commitModule.providerCommitFailureShouldReconcileForm(null, "ignore"), false);
+  });
+
+  it("refreshes, rather than adopting, a delayed committed reset behind stale or success N+1", () => {
+    assert.ok(commitModule);
+    for (const newerSucceeded of [false, true]) {
+      let state: { latestRevision: number; baseline: string | null } = {
+        latestRevision: 0,
+        baseline: "generation-0",
+      };
+      state = commitModule.registerProviderCommit(state, 1);
+      state = commitModule.registerProviderCommit(state, 2);
+      const newer = commitModule.settleProviderCommit(
+        state,
+        2,
+        newerSucceeded,
+        newerSucceeded ? "generation-2" : null,
+      );
+      const delayedReset = commitModule.settleProviderCommit(
+        newer.state,
+        1,
+        false,
+        "obsolete-reset-generation-1",
+      );
+      assert.equal(delayedReset.disposition, "ignore");
+      assert.equal(
+        delayedReset.state.baseline,
+        newerSucceeded ? "generation-2" : "generation-0",
+      );
+      assert.equal(
+        commitModule.providerCommitResetRequiresAuthoritativeRefresh(
+          true,
+          delayedReset.disposition,
+        ),
+        true,
+      );
+    }
   });
 
   it("builds the literal first-save envelope and supplies an implicit mixed catalog draft", () => {
@@ -626,6 +670,10 @@ describe("the shell renders failures as sentence plus 详情", () => {
     assert.match(appSource, /const refreshAfterCommit[\s\S]*?refreshModelCatalog\(true, true\)/);
     assert.match(appSource, /result\.providerFingerprint !== expectedProviderFingerprint/);
     assert.match(appSource, /modelCatalogRequestRevision\.current/);
+    assert.match(
+      appSource,
+      /providerCommitResetRequiresAuthoritativeRefresh\(resetApplied, settled\.disposition\)[\s\S]*?setModelCatalog\(null\)[\s\S]*?refreshSettings\(true\)\.then[\s\S]*?refreshModelCatalog\(true, true\)[\s\S]*?return false;/,
+    );
   });
 
   it("runs the settings migration boundary before startup and relay catalog reads", () => {
