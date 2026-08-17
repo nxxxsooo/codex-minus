@@ -6,8 +6,8 @@ use crate::commands::{
     assert_staged_native_provider_contract,
     commit_provider_detail_from_paths as commit_provider_detail_from_paths_raw,
     commit_provider_detail_from_paths_observed as commit_provider_detail_from_paths_observed_raw,
-    legacy_model_reset_notice, migrate_legacy_model_state_locked_at, prepare_settings_load_at,
-    provider_commit_command_result, save_settings_with_provider_guard_at,
+    legacy_model_reset_notice, load_settings_blocking_at, migrate_legacy_model_state_locked_at,
+    prepare_settings_load_at, provider_commit_command_result, save_settings_with_provider_guard_at,
     save_settings_with_provider_guard_at_observed, settings_snapshot_for_ui_projection,
     ui_provider_topology_projection,
 };
@@ -26,7 +26,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn canonical_profile(id: &str, model: &str, base_url: &str, key: &str) -> RelayProfile {
     RelayProfile {
@@ -451,6 +451,53 @@ fn live_root_model(codex_home: &Path) -> String {
 fn generated_catalog_text(codex_home: &Path, profile_id: &str) -> String {
     fs::read_to_string(codex_home.join(crate::model_catalog::generated_relative_path(profile_id)))
         .unwrap()
+}
+
+fn seed_missing_state_catalog_pointers(
+    fixture: &Fixture,
+    persisted_pointer: Option<&str>,
+    live_pointer: Option<&str>,
+) {
+    let mut settings: BackendSettings =
+        serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+    let profile = settings
+        .relay_profiles
+        .iter_mut()
+        .find(|profile| profile.id == "eva")
+        .unwrap();
+    profile.config_contents =
+        crate::model_catalog::set_root_catalog_pointer(&profile.config_contents, persisted_pointer)
+            .unwrap();
+    fs::write(
+        &fixture.paths.settings_path,
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+
+    let live_path = fixture.paths.codex_home.join("config.toml");
+    let live = fs::read_to_string(&live_path).unwrap();
+    fs::write(
+        &live_path,
+        crate::model_catalog::set_root_catalog_pointer(&live, live_pointer).unwrap(),
+    )
+    .unwrap();
+    fs::remove_file(&fixture.paths.catalog_state_path).unwrap();
+}
+
+fn matching_missing_state_pointer_fixture(existing_artifact: bool) -> (Fixture, PathBuf) {
+    let fixture = eva_legacy_model_fixture();
+    let pointer = crate::model_catalog::generated_relative_path("eva");
+    seed_missing_state_catalog_pointers(&fixture, Some(&pointer), Some(&pointer));
+    let artifact = fixture.paths.codex_home.join(&pointer);
+    if existing_artifact {
+        fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        fs::write(
+            &artifact,
+            serde_json::to_vec_pretty(&official_catalog()).unwrap(),
+        )
+        .unwrap();
+    }
+    (fixture, artifact)
 }
 
 fn rendered_provider_table(config: &str) -> String {
@@ -1905,6 +1952,108 @@ fn legacy_model_reset_creates_missing_state_and_generated_catalog_from_absent_pr
 }
 
 #[test]
+fn legacy_model_reset_accepts_matching_generated_pointer_with_missing_state_and_absent_artifact() {
+    let (fixture, artifact) = matching_missing_state_pointer_fixture(false);
+    assert!(!artifact.exists());
+
+    prepare_settings_load_at(&fixture.paths).unwrap();
+
+    let state = fixture.read_state();
+    let profile_state = &state.profiles["eva"];
+    assert_eq!(
+        profile_state.generated_path.as_deref(),
+        Some(crate::model_catalog::generated_relative_path("eva").as_str())
+    );
+    assert!(profile_state.generated_hash.is_some());
+    assert!(artifact.is_file());
+    assert_eq!(
+        stored_profile_model(&fixture.paths.settings_path, "eva"),
+        "gpt-5.6-terra"
+    );
+    assert_eq!(live_root_model(&fixture.paths.codex_home), "gpt-5.6-terra");
+}
+
+#[test]
+fn legacy_model_reset_accepts_matching_generated_pointer_with_missing_state_and_existing_artifact()
+{
+    let (fixture, artifact) = matching_missing_state_pointer_fixture(true);
+    let stale_artifact = fs::read(&artifact).unwrap();
+
+    prepare_settings_load_at(&fixture.paths).unwrap();
+
+    assert_ne!(fs::read(&artifact).unwrap(), stale_artifact);
+    let state = fixture.read_state();
+    let profile_state = &state.profiles["eva"];
+    assert_eq!(
+        profile_state.generated_path.as_deref(),
+        Some(crate::model_catalog::generated_relative_path("eva").as_str())
+    );
+    assert!(profile_state.generated_hash.is_some());
+    assert!(!generated_catalog_text(&fixture.paths.codex_home, "eva").contains("\"gpt-5\""));
+}
+
+#[test]
+fn legacy_model_reset_accepts_matching_generated_pointer_when_state_file_lacks_profile() {
+    let fixture = eva_legacy_model_fixture();
+    let pointer = crate::model_catalog::generated_relative_path("eva");
+    seed_missing_state_catalog_pointers(&fixture, Some(&pointer), Some(&pointer));
+    fs::write(
+        &fixture.paths.catalog_state_path,
+        serde_json::to_vec_pretty(&state_with_official()).unwrap(),
+    )
+    .unwrap();
+
+    prepare_settings_load_at(&fixture.paths).unwrap();
+
+    let state = fixture.read_state();
+    assert_eq!(state.profiles["eva"].mode, CatalogMode::OfficialPlusCustom);
+    assert_eq!(
+        state.profiles["eva"].generated_path.as_deref(),
+        Some(pointer.as_str())
+    );
+    assert!(state.profiles["eva"].generated_hash.is_some());
+    assert_eq!(
+        stored_profile_model(&fixture.paths.settings_path, "eva"),
+        "gpt-5.6-terra"
+    );
+}
+
+#[test]
+fn legacy_model_reset_missing_state_rejects_live_only_or_different_generated_pointer() {
+    let cases = [
+        (
+            "live-only",
+            None,
+            crate::model_catalog::generated_relative_path("eva"),
+        ),
+        (
+            "different-profile",
+            Some(crate::model_catalog::generated_relative_path("eva")),
+            crate::model_catalog::generated_relative_path("other-profile"),
+        ),
+    ];
+
+    for (name, persisted_pointer, live_pointer) in cases {
+        let fixture = eva_legacy_model_fixture();
+        seed_missing_state_catalog_pointers(
+            &fixture,
+            persisted_pointer.as_deref(),
+            Some(&live_pointer),
+        );
+        let before = fixture.file_generation();
+
+        let error = prepare_settings_load_at(&fixture.paths).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "legacy model reset generation changed before commit",
+            "{name}"
+        );
+        assert_eq!(fixture.file_generation(), before, "{name}");
+    }
+}
+
+#[test]
 fn legacy_model_reset_second_load_is_a_complete_byte_and_mtime_no_op() {
     let fixture = eva_legacy_model_fixture();
     prepare_settings_load_at(&fixture.paths).unwrap();
@@ -1937,7 +2086,7 @@ fn legacy_model_reset_second_load_is_a_complete_byte_and_mtime_no_op() {
 }
 
 #[test]
-fn load_settings_returns_legacy_model_reset_notice() {
+fn legacy_model_reset_notice_selector_is_one_time_for_migration_outcomes() {
     let fixture = eva_legacy_model_fixture();
     let _guard = crate::live_state::lock().unwrap();
     crate::live_state::prepare_secret_paths_at(
@@ -1958,6 +2107,40 @@ fn load_settings_returns_legacy_model_reset_notice() {
 
     let second = migrate_legacy_model_state_locked_at(&fixture.paths, |_| Ok(())).unwrap();
     assert_eq!(legacy_model_reset_notice(&second), None);
+}
+
+#[test]
+fn path_injected_load_payload_assigns_notice_once_and_omits_it_on_second_load() {
+    let fixture = eva_legacy_model_fixture();
+
+    let first = load_settings_blocking_at(&fixture.paths);
+    assert_eq!(first.status, "ok");
+    assert_eq!(
+        first.payload.legacy_model_reset_notice.as_deref(),
+        Some(
+            "已丢弃旧版自动生成的模型列表，并恢复官方模型；至少一个启动模型已设为 5.6 Terra。请重启 Codex 后新建任务。"
+        )
+    );
+    assert_eq!(
+        first.payload.settings_path,
+        fixture.paths.settings_path.to_string_lossy()
+    );
+    assert_eq!(
+        crate::legacy_model_reset::top_level_model(
+            &first.payload.settings.relay_profiles[0].config_contents
+        )
+        .as_deref(),
+        Some("gpt-5.6-terra")
+    );
+    assert!(!first.payload.provider_fingerprint.is_empty());
+
+    let second = load_settings_blocking_at(&fixture.paths);
+    assert_eq!(second.status, "ok");
+    assert_eq!(second.payload.legacy_model_reset_notice, None);
+    assert_eq!(
+        second.payload.provider_fingerprint,
+        first.payload.provider_fingerprint
+    );
 }
 
 #[test]

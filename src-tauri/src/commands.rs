@@ -493,16 +493,22 @@ pub async fn load_settings() -> CommandResult<SettingsPayload> {
 }
 
 fn load_settings_blocking() -> CommandResult<SettingsPayload> {
-    let result = prepare_settings_load_at(&ProviderCommitPaths::defaults());
+    load_settings_blocking_at(&ProviderCommitPaths::defaults())
+}
+
+pub(crate) fn load_settings_blocking_at(
+    paths: &ProviderCommitPaths,
+) -> CommandResult<SettingsPayload> {
+    let result = prepare_settings_load_at(paths);
     match result {
         Ok(reset) => {
-            let mut result = settings_payload("设置已加载。", "设置读取失败");
+            let mut result = settings_payload_at(paths, "设置已加载。", "设置读取失败");
             result.payload.legacy_model_reset_notice = legacy_model_reset_notice(&reset);
             result
         }
         Err(_) => failed(
             "设置安全检查失败；本地设置不可用或安全事务未完成。",
-            fallback_settings_payload(),
+            fallback_settings_payload_at(&paths.settings_path),
         ),
     }
 }
@@ -2535,6 +2541,18 @@ pub(crate) fn migrate_legacy_model_state_locked_at(
     }
     let raw_state = read_optional_bytes(&paths.catalog_state_path)
         .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::CatalogUnavailable))?;
+    let persisted_state_profile_ids = raw_state
+        .as_deref()
+        .map(serde_json::from_slice::<crate::model_catalog::CatalogState>)
+        .transpose()
+        .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::CatalogUnavailable))?
+        .map(|state| {
+            state
+                .profiles
+                .into_keys()
+                .collect::<std::collections::BTreeSet<_>>()
+        })
+        .unwrap_or_default();
     let state = crate::model_catalog::load_and_migrate_state_from_path(
         &settings,
         &paths.codex_home,
@@ -2627,6 +2645,7 @@ pub(crate) fn migrate_legacy_model_state_locked_at(
                 &profile.config_contents,
                 &state,
                 &profile.id,
+                !persisted_state_profile_ids.contains(&profile.id),
             )?;
             let active_plan = crate::model_catalog::plan_active_profile_with_state(
                 &paths.codex_home,
@@ -2785,6 +2804,7 @@ fn ensure_live_config_selects_profile(
     profile: &str,
     state: &crate::model_catalog::CatalogState,
     profile_id: &str,
+    profile_state_was_missing: bool,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
         provider_semantic_identity(live, LegacyModelResetFailure::LiveConfigInvalid)?
@@ -2804,13 +2824,22 @@ fn ensure_live_config_selects_profile(
             })?),
             None => None,
         };
+    let profile_state = state.profiles.get(profile_id);
+    let live_ownership = crate::model_catalog::classify_manager_pointer_ownership(
+        profile_id,
+        live_pointer.as_deref(),
+        profile_state,
+    );
+    let persisted_pointer = crate::model_catalog::root_catalog_pointer(profile);
+    let matching_missing_state_pointer = profile_state_was_missing
+        && live_pointer.is_some()
+        && live_pointer == persisted_pointer
+        && live_ownership == crate::model_catalog::ManagerPointerOwnership::UntrackedGenerated
+        && profile_state.is_some_and(|profile| crate::model_catalog::managed_mode(profile.mode));
     anyhow::ensure!(
         live_pointer.is_none()
-            || crate::model_catalog::manager_owned_pointer(
-                state,
-                profile_id,
-                live_pointer.as_deref(),
-            ),
+            || live_ownership == crate::model_catalog::ManagerPointerOwnership::Managed
+            || matching_missing_state_pointer,
         LegacyModelResetFailure::GenerationChanged
     );
     Ok(())
@@ -6200,24 +6229,36 @@ fn open_url(url: &str) -> anyhow::Result<()> {
 }
 
 fn settings_payload(message: &str, failure_context: &str) -> CommandResult<SettingsPayload> {
-    match settings_payload_value() {
+    settings_payload_at(&ProviderCommitPaths::defaults(), message, failure_context)
+}
+
+fn settings_payload_at(
+    paths: &ProviderCommitPaths,
+    message: &str,
+    failure_context: &str,
+) -> CommandResult<SettingsPayload> {
+    match settings_payload_value_at(paths) {
         Ok(payload) => ok(message, payload),
         Err((error, payload)) => failed(&format!("{failure_context}：{error}"), payload),
     }
 }
 
 fn settings_payload_value() -> Result<SettingsPayload, (anyhow::Error, SettingsPayload)> {
-    let store = SettingsStore::default();
-    let settings_path = codex_plus_core::paths::default_settings_path()
-        .to_string_lossy()
-        .to_string();
+    settings_payload_value_at(&ProviderCommitPaths::defaults())
+}
+
+fn settings_payload_value_at(
+    paths: &ProviderCommitPaths,
+) -> Result<SettingsPayload, (anyhow::Error, SettingsPayload)> {
+    let store = SettingsStore::new(paths.settings_path.clone());
+    let settings_path = paths.settings_path.to_string_lossy().to_string();
     match store.load() {
         Ok(settings) => {
             let settings = sanitize_settings_for_output(settings);
             let state = crate::model_catalog::load_and_migrate_state_from_path(
                 &settings,
-                &codex_plus_core::relay_config::default_codex_home_dir(),
-                &crate::model_catalog::catalog_state_path(),
+                &paths.codex_home,
+                &paths.catalog_state_path,
             )
             .map_err(|error| {
                 (
@@ -6258,11 +6299,13 @@ fn settings_payload_value() -> Result<SettingsPayload, (anyhow::Error, SettingsP
 }
 
 fn fallback_settings_payload() -> SettingsPayload {
+    fallback_settings_payload_at(&codex_plus_core::paths::default_settings_path())
+}
+
+fn fallback_settings_payload_at(settings_path: &Path) -> SettingsPayload {
     SettingsPayload {
         settings: BackendSettings::default(),
-        settings_path: codex_plus_core::paths::default_settings_path()
-            .to_string_lossy()
-            .to_string(),
+        settings_path: settings_path.to_string_lossy().to_string(),
         user_scripts: user_script_inventory(),
         provider_fingerprint: String::new(),
         legacy_model_reset_notice: None,

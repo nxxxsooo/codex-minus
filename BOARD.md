@@ -10,7 +10,7 @@
 
 - **fix/catalog**: unowned legacy model-list overlays now reset to the official baseline, so Eva's stale GPT-5 row is discarded and Terra becomes the persistent startup default
   - why: the 0.4.14 auth repair revealed an older manager-owned `gpt-5` model/default; preserving it was safe but incomplete because the user never explicitly adopted that legacy row
-  - verified: focused planner/ownership/transaction/notice regressions, 231 Rust library + 17 and 21 integration tests, 225 frontend tests, strict OpenSpec, formatting, diff, and the 1,621-module production build passed
+  - verified: focused ownership/default/pointer/response-order/notice/load/i18n regressions, 240 Rust library + 17 and 21 integration tests, 228 frontend tests, strict OpenSpec, formatting, diff, and the 1,621-module production build passed
   - refs: `src-tauri/src/legacy_model_reset.rs`, `src-tauri/src/model_catalog.rs`, `src-tauri/src/commands.rs`, OpenSpec, design and implementation plan
 
 - **release**: 0.4.14 — ships automatic repair of legacy provider `authContents` so Eva can recover through the signed in-app updater instead of editing credential files by hand

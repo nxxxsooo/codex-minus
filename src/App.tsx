@@ -97,7 +97,7 @@ import {
   modelCatalogResponseCanAdopt, providerDeleteAvailable,
   providerCommitFailureNotice,
   providerCommitFailureShouldReconcileForm,
-  providerCommitResetRequiresAuthoritativeRefresh, registerProviderCommit,
+  providerCommitResponseRequiresAuthoritativeRefresh, registerProviderCommit,
   settleProviderCommit,
   type ProviderCommitResponseDisposition,
   type ProfileCatalogDraft,
@@ -269,6 +269,7 @@ export function App() {
     baseline: null,
   });
   const settingsBaselineEpoch = useRef(settingsBaseline.createSettingsBaselineEpochState());
+  const legacyModelResetNotices = useRef(settingsBaseline.createLegacyModelResetNoticeState());
   const modelCatalogRequestRevision = useRef(0);
 
   const call = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
@@ -292,20 +293,23 @@ export function App() {
     if (form !== null) setSettingsForm(form);
   };
 
-  const refreshSettings = async (silent = false) => {
+  const refreshSettings = async (silent = false, replaceForm = true) => {
     const registered = settingsBaseline.registerSettingsRead(settingsBaselineEpoch.current);
     settingsBaselineEpoch.current = registered.state;
     const result = await run(() => call<SettingsResult>("load_settings"));
-    if (!result || !settingsBaseline.settingsReadResponseCanAdopt(registered.request, settingsBaselineEpoch.current)) return null;
+    if (!result) return null;
+    const notice = settingsBaseline.consumeLegacyModelResetNotice(legacyModelResetNotices.current, result.legacy_model_reset_notice);
+    legacyModelResetNotices.current = notice.state;
+    if (notice.notice) showNotice(t("模型目录已恢复"), notice.notice, "ok");
+    if (!settingsBaseline.settingsReadResponseCanAdopt(registered.request, settingsBaselineEpoch.current)) return null;
     if (!result.provider_fingerprint) {
       showNotice(t("设置已加载"), result.message, "failed");
       return null;
     }
     const normalized = normalizeSettings(result.settings);
     const baseline = { ...result, settings: normalized };
-    installSettingsBaseline(baseline, normalized);
-    if (result.legacy_model_reset_notice) showNotice(t("模型目录已恢复"), result.legacy_model_reset_notice, "ok");
-    else if (!silent) showResultNotice(t("设置已加载"), result, { silentSuccess: true });
+    installSettingsBaseline(baseline, replaceForm ? normalized : null);
+    if (!notice.notice && !silent) showResultNotice(t("设置已加载"), result, { silentSuccess: true });
     return normalized;
   };
 
@@ -741,17 +745,19 @@ export function App() {
     void refreshModelCatalog(true, true);
   };
 
+  const refreshAuthoritativeProviderState = async (replaceForm: boolean) => {
+    modelCatalogRequestRevision.current += 1;
+    setModelCatalog(null); setModelCatalogLoading(false);
+    const refreshed = await refreshSettings(true, replaceForm);
+    if (refreshed) await refreshModelCatalog(true, true);
+  };
+
   const submitProviderCommit = async (invocation: ReturnType<typeof buildProviderMutationInvocation>) => {
     const revision = invocation.request.draftRevision;
     providerCommitState.current = registerProviderCommit(providerCommitState.current, revision);
     const reconcileTopologyFailure = async (disposition: ProviderCommitResponseDisposition) => {
       if (!providerCommitFailureShouldReconcileForm(invocation.request.focusedProfileId, disposition)) return;
-      const baseline = providerCommitState.current.baseline;
-      if (baseline) {
-        installSettingsBaseline(baseline, normalizeSettings(baseline.settings));
-      } else {
-        await refreshSettings(true);
-      }
+      await refreshAuthoritativeProviderState(true);
     };
     let result: ProviderCommitResult;
     try {
@@ -777,18 +783,13 @@ export function App() {
       succeeded,
       nextBaseline,
     );
-    if (providerCommitResetRequiresAuthoritativeRefresh(resetApplied, settled.disposition)) {
-      modelCatalogRequestRevision.current += 1;
-      setModelCatalog(null); setModelCatalogLoading(false);
-      void refreshSettings(true).then((refreshed) => { if (refreshed) void refreshModelCatalog(true, true); });
+    if (providerCommitResponseRequiresAuthoritativeRefresh(succeeded, resetApplied, settled.disposition)) {
+      void refreshAuthoritativeProviderState(resetApplied);
       return false;
     }
     if (settled.disposition === "ignore") return false;
     if (nextBaseline && selectedSettings) {
-      installSettingsBaseline(
-        nextBaseline,
-        settled.disposition === "adopt-baseline" ? null : selectedSettings,
-      );
+      installSettingsBaseline(nextBaseline, selectedSettings);
     }
     if (settled.disposition === "report") {
       if (resetApplied && nextBaseline && selectedSettings) {
@@ -802,10 +803,6 @@ export function App() {
       return false;
     }
     if (!nextBaseline || !selectedSettings) return false;
-    if (settled.disposition === "adopt-baseline") {
-      refreshAfterCommit();
-      return false;
-    }
     refreshAfterCommit();
     return true;
   };

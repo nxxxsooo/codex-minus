@@ -19,6 +19,8 @@ export type SettingsReadRegistration = Readonly<{
   request: SettingsReadRequest;
 }>;
 
+export type LegacyModelResetNoticeState = ReadonlySet<string>;
+
 export function createSettingsBaselineEpochState(): SettingsBaselineEpochState {
   return { baselineEpoch: 0, latestReadRevision: 0 };
 }
@@ -45,6 +47,21 @@ export function settingsReadResponseCanAdopt(
 ): boolean {
   return request.revision === state.latestReadRevision
     && request.baselineEpochAtStart === state.baselineEpoch;
+}
+
+export function createLegacyModelResetNoticeState(): LegacyModelResetNoticeState {
+  return new Set<string>();
+}
+
+export function consumeLegacyModelResetNotice(
+  state: LegacyModelResetNoticeState,
+  value: string | null | undefined,
+): { state: LegacyModelResetNoticeState; notice: string | null } {
+  const notice = value?.trim() ?? "";
+  if (!notice || state.has(notice)) return { state, notice: null };
+  const next = new Set(state);
+  next.add(notice);
+  return { state: next, notice };
 }
 
 export function settingsBaselineFromProviderCommit(

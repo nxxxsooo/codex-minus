@@ -858,12 +858,18 @@ fn plan_validated_request(
         .retain(|profile_id, _| profile_ids.contains(profile_id));
 
     for draft in &drafts {
+        let prior = persisted_state.profiles.get(&draft.profile_id);
+        let overlay_was_explicitly_edited = prior
+            .map(|prior| prior.overlay != draft.overlay)
+            .unwrap_or_else(|| draft.overlay != CatalogOverlay::default());
         let state = catalog_state
             .profiles
             .entry(draft.profile_id.clone())
             .or_default();
         state.mode = draft.mode;
-        state.mode_explicit = draft.mode_explicit;
+        state.mode_explicit = draft.mode_explicit
+            || prior.is_some_and(|prior| prior.mode_explicit)
+            || overlay_was_explicitly_edited;
         state.upstream_topology = draft.upstream_topology;
         state.overlay = draft.overlay.clone();
         state.external_pointer = draft.external_pointer.clone();
@@ -1441,6 +1447,43 @@ mod tests {
         assert!(plan.generated_catalogs.contains_key("new"));
         assert!(plan.active_catalog.is_none());
         assert_eq!(plan.draft_revision, 11);
+    }
+
+    #[test]
+    fn explicit_overlay_edit_promotes_implicit_catalog_ownership() {
+        let persisted = settings_with(vec![mixed_profile("relay-a", "official-a")], "relay-a");
+        let mut state = state_with_official();
+        state.profiles.insert(
+            "relay-a".to_string(),
+            ProfileCatalogState {
+                mode: CatalogMode::OfficialPlusCustom,
+                mode_explicit: false,
+                ..ProfileCatalogState::default()
+            },
+        );
+        let overlay = CatalogOverlay {
+            official: BTreeMap::from([(
+                "official-a".to_string(),
+                crate::model_catalog::OfficialOverride {
+                    context_window: Some(300_000),
+                    ..crate::model_catalog::OfficialOverride::default()
+                },
+            )]),
+            ..CatalogOverlay::default()
+        };
+        let mut draft = catalog_draft("relay-a", CatalogMode::OfficialPlusCustom, overlay);
+        draft.mode_explicit = false;
+        let request = request_for(
+            &persisted,
+            &persisted,
+            Some("relay-a"),
+            vec![draft],
+            ProviderCommitAction::Save,
+        );
+
+        let plan = plan_provider_detail_commit(&persisted, &state, &request).unwrap();
+
+        assert!(plan.catalog_state.profiles["relay-a"].mode_explicit);
     }
 
     #[test]

@@ -46,11 +46,13 @@ pub(crate) fn plan_legacy_model_reset(
             continue;
         }
 
+        let legacy_overlay =
+            crate::model_catalog::legacy_overlay_for_current_official(&next_state, profile)?;
         let state_entry = next_state.profiles.entry(profile.id.clone()).or_default();
         let marker_changed = state_entry.legacy_model_reset_version < LEGACY_MODEL_RESET_VERSION;
         state_entry.legacy_model_reset_version = LEGACY_MODEL_RESET_VERSION;
         if !ordinary_mixed_responses(profile)
-            || state_entry.mode == CatalogMode::External
+            || state_entry.mode != CatalogMode::OfficialPlusCustom
             || state_entry.external_pointer.is_some()
             || state_entry.mode_explicit
         {
@@ -72,13 +74,23 @@ pub(crate) fn plan_legacy_model_reset(
             .overlay
             .custom
             .retain(|model| model.template_provenance != "legacy-model-list");
-        let official_overrides_cleared = !state_entry.overlay.official.is_empty();
-        if official_overrides_cleared {
-            state_entry.overlay.official.clear();
-        }
+        let official_override_count = state_entry.overlay.official.len();
+        state_entry
+            .overlay
+            .official
+            .retain(|slug, value| legacy_overlay.official.get(slug) != Some(value));
+        let official_overrides_removed =
+            state_entry.overlay.official.len() != official_override_count;
 
         let mut default_changed = false;
-        if removed.contains(&previous_model) {
+        let selected_slug = previous_model.trim();
+        let selected_survives = official_visible_slugs.contains(selected_slug)
+            || state_entry
+                .overlay
+                .custom
+                .iter()
+                .any(|model| model.slug.trim() == selected_slug);
+        if removed.contains(selected_slug) && !selected_survives {
             ensure!(
                 official_visible_slugs.contains(CANONICAL_MIXED_DEFAULT_MODEL),
                 "canonical mixed default model is not in the official visible catalog"
@@ -89,8 +101,8 @@ pub(crate) fn plan_legacy_model_reset(
             default_changed = true;
         }
 
-        let state_changed = marker_changed || overlay_changed || official_overrides_cleared;
-        let profile_reset = !removed.is_empty() || official_overrides_cleared || default_changed;
+        let state_changed = marker_changed || overlay_changed || official_overrides_removed;
+        let profile_reset = !removed.is_empty() || official_overrides_removed || default_changed;
         changed |= state_changed;
         if profile_reset {
             profile.model_list.clear();
@@ -181,8 +193,8 @@ mod tests {
 
     use super::{plan_legacy_model_reset, top_level_model};
     use crate::model_catalog::{
-        CatalogMode, CatalogOverlay, CatalogState, CustomModel, ProfileCatalogState,
-        compose_profile_catalog,
+        CatalogMode, CatalogOverlay, CatalogState, CustomModel, OfficialOverride,
+        ProfileCatalogState, compose_profile_catalog,
     };
 
     fn custom(slug: &str, provenance: &str) -> CustomModel {
@@ -342,6 +354,22 @@ fit_marker = "keep"
                 false,
             ),
             (
+                "implicit-native",
+                CatalogMode::NativeOfficial,
+                false,
+                None,
+                "legacy-model-list",
+                false,
+            ),
+            (
+                "implicit-custom-only",
+                CatalogMode::CustomOnly,
+                false,
+                None,
+                "legacy-model-list",
+                false,
+            ),
+            (
                 "user-created",
                 CatalogMode::OfficialPlusCustom,
                 false,
@@ -378,10 +406,76 @@ fit_marker = "keep"
                 "{id}"
             );
             if !reset_expected {
-                let next = plan.map(|plan| plan.state).unwrap_or(state);
-                assert_eq!(next.profiles[id].overlay.custom[0].slug, "claude-or-legacy");
+                let (next_settings, next_state) = plan
+                    .map(|plan| (plan.settings, plan.state))
+                    .unwrap_or((settings.clone(), state));
+                assert_eq!(
+                    next_state.profiles[id].overlay.custom[0].slug,
+                    "claude-or-legacy"
+                );
+                assert_eq!(
+                    next_settings.relay_profiles[0].model_list,
+                    settings.relay_profiles[0].model_list
+                );
+                assert_eq!(
+                    next_settings.relay_profiles[0].model_windows,
+                    settings.relay_profiles[0].model_windows
+                );
+                assert_eq!(
+                    next_settings.relay_profiles[0].model,
+                    settings.relay_profiles[0].model
+                );
             }
         }
+    }
+
+    #[test]
+    fn reset_removes_only_exact_legacy_derived_official_overrides() {
+        let settings = eva_settings(
+            "gpt-5",
+            "gpt-5.4\ngpt-5.6-luna\ngpt-5",
+            r#"{"gpt-5.4":"300000","gpt-5.6-luna":"310000"}"#,
+        );
+        let mut state = state_with_profile(
+            "eva",
+            CatalogMode::OfficialPlusCustom,
+            false,
+            vec![custom("gpt-5", "legacy-model-list")],
+        );
+        let exact_hidden_legacy = OfficialOverride {
+            context_window: Some(300_000),
+            order: Some(0),
+            ..OfficialOverride::default()
+        };
+        let modified_legacy = OfficialOverride {
+            context_window: Some(310_000),
+            order: Some(1),
+            visible: Some(false),
+            ..OfficialOverride::default()
+        };
+        let user_added = OfficialOverride {
+            context_window: Some(512_000),
+            visible: Some(true),
+            ..OfficialOverride::default()
+        };
+        let official_overlay = &mut state.profiles.get_mut("eva").unwrap().overlay.official;
+        official_overlay.insert("gpt-5.4".to_string(), exact_hidden_legacy);
+        official_overlay.insert("gpt-5.6-luna".to_string(), modified_legacy.clone());
+        official_overlay.insert("gpt-5.6-sol".to_string(), user_added.clone());
+        let visible_official = BTreeSet::from([
+            "gpt-5.6-terra".to_string(),
+            "gpt-5.6-luna".to_string(),
+            "gpt-5.6-sol".to_string(),
+        ]);
+
+        let plan = plan_legacy_model_reset(&settings, &state, &visible_official)
+            .unwrap()
+            .unwrap();
+        let official_overlay = &plan.state.profiles["eva"].overlay.official;
+
+        assert!(!official_overlay.contains_key("gpt-5.4"));
+        assert_eq!(official_overlay.get("gpt-5.6-luna"), Some(&modified_legacy));
+        assert_eq!(official_overlay.get("gpt-5.6-sol"), Some(&user_added));
     }
 
     #[test]
@@ -440,6 +534,68 @@ fit_marker = "keep"
                 Some(default_model),
             );
         }
+    }
+
+    #[test]
+    fn removed_legacy_shadow_of_visible_official_default_keeps_that_default() {
+        let settings = eva_settings("gpt-5.6-sol", "gpt-5.6-sol", "{}");
+        let state = state_with_profile(
+            "eva",
+            CatalogMode::OfficialPlusCustom,
+            false,
+            vec![custom("gpt-5.6-sol", "legacy-model-list")],
+        );
+        let official = BTreeSet::from(["gpt-5.6-sol".to_string(), "gpt-5.6-terra".to_string()]);
+
+        let plan = plan_legacy_model_reset(&settings, &state, &official)
+            .unwrap()
+            .unwrap();
+        let profile = &plan.settings.relay_profiles[0];
+        assert_eq!(profile.model, "gpt-5.6-sol");
+        assert_eq!(
+            top_level_model(&profile.config_contents).as_deref(),
+            Some("gpt-5.6-sol")
+        );
+        assert!(plan.state.profiles["eva"].overlay.custom.is_empty());
+        let catalog =
+            compose_profile_catalog(&plan.state, profile, &plan.state.profiles["eva"]).unwrap();
+        assert!(
+            catalog["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|model| { model["slug"].as_str() == Some("gpt-5.6-sol") })
+        );
+    }
+
+    #[test]
+    fn removed_legacy_duplicate_keeps_a_retained_custom_default_with_the_same_slug() {
+        let settings = eva_settings("claude-opus-5", "claude-opus-5", "{}");
+        let state = state_with_profile(
+            "eva",
+            CatalogMode::OfficialPlusCustom,
+            false,
+            vec![
+                custom("claude-opus-5", "legacy-model-list"),
+                custom("claude-opus-5", "user-created"),
+            ],
+        );
+        let official = BTreeSet::from(["gpt-5.6-terra".to_string()]);
+
+        let plan = plan_legacy_model_reset(&settings, &state, &official)
+            .unwrap()
+            .unwrap();
+        let profile = &plan.settings.relay_profiles[0];
+        assert_eq!(profile.model, "claude-opus-5");
+        assert_eq!(
+            top_level_model(&profile.config_contents).as_deref(),
+            Some("claude-opus-5")
+        );
+        assert_eq!(plan.state.profiles["eva"].overlay.custom.len(), 1);
+        assert_eq!(
+            plan.state.profiles["eva"].overlay.custom[0].template_provenance,
+            "user-created"
+        );
     }
 
     #[test]

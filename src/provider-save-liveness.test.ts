@@ -152,15 +152,39 @@ describe("a provider save always settles", () => {
     }
   });
 
-  it("shows a legacy model reset notice after adopting even a silent settings load", () => {
+  it("shows and deduplicates a legacy reset notice before deciding whether settings are obsolete", () => {
     const refresh = appSource.match(
       /const refreshSettings = async[\s\S]*?\n  \};/,
     )?.[0] ?? "";
     assert.ok(refresh.length > 0, "the settings read was located");
     assert.match(
       refresh,
-      /installSettingsBaseline\(baseline, normalized\);\s*if \(result\.legacy_model_reset_notice\)\s*showNotice\(\s*t\("模型目录已恢复"\),\s*result\.legacy_model_reset_notice,\s*"ok"\s*\);\s*else if \(!silent\)\s*showResultNotice\(t\("设置已加载"\), result, \{ silentSuccess: true \}\);/,
-      "a reset must be reported after the baseline is adopted, while ordinary silent loads remain silent",
+      /consumeLegacyModelResetNotice\([\s\S]*?result\.legacy_model_reset_notice[\s\S]*?if \(notice\.notice\) showNotice\([\s\S]*?if \(!settingsBaseline\.settingsReadResponseCanAdopt\([\s\S]*?return null;/,
+      "a stale response can report its one-time reset notice without adopting stale settings",
+    );
+    assert.match(refresh, /installSettingsBaseline\(baseline, replaceForm \? normalized : null\)/);
+  });
+
+  it("reconciles a newer topology failure through the same authoritative settings-first path", () => {
+    const authoritative = appSource.match(
+      /const refreshAuthoritativeProviderState = async[\s\S]*?\n  \};/,
+    )?.[0] ?? "";
+    assert.match(
+      authoritative,
+      /modelCatalogRequestRevision\.current \+= 1;[\s\S]*?setModelCatalog\(null\)[\s\S]*?await refreshSettings\(true, replaceForm\)[\s\S]*?refreshModelCatalog\(true, true\)/,
+    );
+    const submit = appSource.match(
+      /const submitProviderCommit = async[\s\S]*?\n  \};/,
+    )?.[0] ?? "";
+    const topologyFailure = submit.match(
+      /const reconcileTopologyFailure = async[\s\S]*?\n    \};/,
+    )?.[0] ?? "";
+    assert.match(topologyFailure, /await refreshAuthoritativeProviderState\(true\)/);
+    assert.doesNotMatch(topologyFailure, /installSettingsBaseline|const baseline/);
+    assert.match(
+      submit,
+      /providerCommitResponseRequiresAuthoritativeRefresh\(succeeded, resetApplied, settled\.disposition\)[\s\S]*?void refreshAuthoritativeProviderState\(resetApplied\)/,
+      "a delayed success preserves the newer form, while a delayed reset replaces stale reset state",
     );
   });
 
@@ -181,7 +205,7 @@ describe("a provider save always settles", () => {
     const refresh = appSource.match(
       /const refreshSettings = async[\s\S]*?\n  \};/,
     )?.[0] ?? "";
-    assert.match(refresh, /installSettingsBaseline\(baseline, normalized\)/);
+    assert.match(refresh, /installSettingsBaseline\(baseline, replaceForm \? normalized : null\)/);
 
     for (const savePath of ["saveSettings", "saveSettingsValue"]) {
       const body = appSource.match(
@@ -220,7 +244,7 @@ describe("a provider save always settles", () => {
       /providerCommitState\.current = settled\.state/,
       "provider settlement cannot write a baseline before the epoch-owning installer",
     );
-    const delayedResetAt = submit.indexOf("providerCommitResetRequiresAuthoritativeRefresh");
+    const delayedResetAt = submit.indexOf("providerCommitResponseRequiresAuthoritativeRefresh");
     const ignoredResponseAt = submit.indexOf('if (settled.disposition === "ignore") return false;');
     const providerInstallAt = submit.indexOf("installSettingsBaseline(", ignoredResponseAt);
     assert.ok(
@@ -231,13 +255,19 @@ describe("a provider save always settles", () => {
     );
     assert.match(
       submit,
-      /if \(nextBaseline && selectedSettings\) \{[\s\S]*?installSettingsBaseline\([\s\S]*?settled\.disposition === "adopt-baseline" \? null : selectedSettings[\s\S]*?\);/,
-      "provider success, reset adoption, and stale-success baseline adoption share the epoch installer",
+      /if \(nextBaseline && selectedSettings\) \{[\s\S]*?installSettingsBaseline\(nextBaseline, selectedSettings\);/,
+      "current provider success and current reset adoption share the epoch installer",
+    );
+    assert.doesNotMatch(submit, /adopt-baseline/);
+    assert.match(
+      submit,
+      /providerCommitResponseRequiresAuthoritativeRefresh\(succeeded, resetApplied, settled\.disposition\)[\s\S]*?void refreshAuthoritativeProviderState\(resetApplied\)/,
+      "non-current success preserves the newer form while a delayed reset replaces stale reset state",
     );
     assert.match(
       submit,
-      /const baseline = providerCommitState\.current\.baseline;[\s\S]*?if \(baseline\) \{[\s\S]*?installSettingsBaseline\(baseline, normalizeSettings\(baseline\.settings\)\)/,
-      "topology-failure form restoration also invalidates older settings reads",
+      /const reconcileTopologyFailure = async[\s\S]*?await refreshAuthoritativeProviderState\(true\)/,
+      "topology-failure form restoration also uses the epoch-owning authoritative read",
     );
     assert.doesNotMatch(
       appSource,

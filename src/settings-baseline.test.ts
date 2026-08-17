@@ -81,6 +81,45 @@ describe("the settings baseline epoch", () => {
     );
   });
 
+  it("surfaces an obsolete read's reset notice once without adopting its settings", () => {
+    const baseline = requireBaselineModule();
+    const first = baseline.registerSettingsRead(
+      baseline.createSettingsBaselineEpochState(),
+    );
+    const second = baseline.registerSettingsRead(first.state);
+    let noticeState = baseline.createLegacyModelResetNoticeState();
+
+    const current = baseline.consumeLegacyModelResetNotice(noticeState, null);
+    noticeState = current.state;
+    assert.equal(current.notice, null);
+    assert.equal(
+      baseline.settingsReadResponseCanAdopt(second.request, second.state),
+      true,
+    );
+
+    const obsolete = baseline.consumeLegacyModelResetNotice(
+      noticeState,
+      "legacy reset completed",
+    );
+    noticeState = obsolete.state;
+    assert.equal(obsolete.notice, "legacy reset completed");
+    assert.equal(
+      baseline.settingsReadResponseCanAdopt(first.request, second.state),
+      false,
+    );
+    assert.deepEqual(second.state, {
+      baselineEpoch: 0,
+      latestReadRevision: 2,
+    });
+
+    const duplicate = baseline.consumeLegacyModelResetNotice(
+      noticeState,
+      "legacy reset completed",
+    );
+    assert.equal(duplicate.notice, null);
+    assert.equal(duplicate.state, noticeState);
+  });
+
   it("lets a provider success invalidate an earlier settings read", () => {
     const baseline = requireBaselineModule();
     const refresh = baseline.registerSettingsRead(

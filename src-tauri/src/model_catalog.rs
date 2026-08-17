@@ -953,9 +953,10 @@ pub(crate) fn load_and_migrate_state_from_path(
             // rejected for not preserving a pointer the editor has no way to send, and correcting
             // the mode requires a save. `manager_owned_pointer_path` cannot answer this, because it
             // asks the state for a generated path and the state is what is being built here.
-            let user_owned_pointer = existing_pointer
-                .as_deref()
-                .filter(|pointer| *pointer != generated_relative_path(&profile.id));
+            let user_owned_pointer = existing_pointer.as_deref().filter(|pointer| {
+                classify_manager_pointer_ownership(&profile.id, Some(pointer), None)
+                    == ManagerPointerOwnership::External
+            });
             entry.mode = default_mode(profile, user_owned_pointer, entry.upstream_topology);
             if entry.mode == CatalogMode::External {
                 entry.external_pointer = user_owned_pointer.map(ToString::to_string);
@@ -986,7 +987,7 @@ pub(crate) fn load_and_migrate_state_from_path(
     Ok(state)
 }
 
-fn migrate_legacy_overlay(
+pub(crate) fn migrate_legacy_overlay(
     profile: &RelayProfile,
     official_slugs: &BTreeSet<String>,
 ) -> anyhow::Result<CatalogOverlay> {
@@ -1027,6 +1028,19 @@ fn migrate_legacy_overlay(
     }
     validate_overlay(&overlay)?;
     Ok(overlay)
+}
+
+pub(crate) fn legacy_overlay_for_current_official(
+    state: &CatalogState,
+    profile: &RelayProfile,
+) -> anyhow::Result<CatalogOverlay> {
+    let official_slugs = state
+        .official
+        .as_ref()
+        .map(|snapshot| catalog_slugs(&snapshot.raw_catalog))
+        .transpose()?
+        .unwrap_or_default();
+    migrate_legacy_overlay(profile, &official_slugs)
 }
 
 fn default_mode(
@@ -2318,9 +2332,36 @@ fn manager_owned_pointer_path(
     pointer: &str,
     profile: &ProfileCatalogState,
 ) -> bool {
-    pointer == generated_relative_path(profile_id)
-        && profile.generated_path.as_deref() == Some(pointer)
-        && profile.generated_hash.is_some()
+    classify_manager_pointer_ownership(profile_id, Some(pointer), Some(profile))
+        == ManagerPointerOwnership::Managed
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManagerPointerOwnership {
+    Absent,
+    Managed,
+    UntrackedGenerated,
+    External,
+}
+
+pub(crate) fn classify_manager_pointer_ownership(
+    profile_id: &str,
+    pointer: Option<&str>,
+    profile: Option<&ProfileCatalogState>,
+) -> ManagerPointerOwnership {
+    let Some(pointer) = pointer else {
+        return ManagerPointerOwnership::Absent;
+    };
+    if pointer != generated_relative_path(profile_id) {
+        return ManagerPointerOwnership::External;
+    }
+    if profile.is_some_and(|profile| {
+        profile.generated_path.as_deref() == Some(pointer) && profile.generated_hash.is_some()
+    }) {
+        ManagerPointerOwnership::Managed
+    } else {
+        ManagerPointerOwnership::UntrackedGenerated
+    }
 }
 
 pub(crate) fn root_catalog_pointer(config: &str) -> Option<String> {

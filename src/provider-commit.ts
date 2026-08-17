@@ -100,7 +100,7 @@ export type ProviderCommitInvocation = {
 };
 
 export type CatalogDraftAvailability = "not-required" | "implicit" | "persisted" | "unavailable";
-export type ProviderCommitResponseDisposition = "apply" | "adopt-baseline" | "report" | "ignore";
+export type ProviderCommitResponseDisposition = "apply" | "report" | "ignore";
 export type ProviderCommitUiState<T> = {
   latestRevision: number;
   baseline: T | null;
@@ -118,7 +118,7 @@ export function providerCommitResponseDisposition(
   if (providerCommitResponseIsCurrent(responseRevision, latestRevision)) {
     return succeeded ? "apply" : "report";
   }
-  return succeeded ? "adopt-baseline" : "ignore";
+  return "ignore";
 }
 
 export function providerCommitFailureShouldReconcileForm(
@@ -128,11 +128,12 @@ export function providerCommitFailureShouldReconcileForm(
   return focusedProfileId === null && disposition === "report";
 }
 
-export function providerCommitResetRequiresAuthoritativeRefresh(
+export function providerCommitResponseRequiresAuthoritativeRefresh(
+  succeeded: boolean,
   resetApplied: boolean,
   disposition: ProviderCommitResponseDisposition,
 ): boolean {
-  return resetApplied && disposition === "ignore";
+  return disposition === "ignore" && (succeeded || resetApplied);
 }
 
 export function modelCatalogResponseCanAdopt(

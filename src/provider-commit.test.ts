@@ -67,7 +67,7 @@ describe("provider-owned commit request", () => {
     assert.ok(commitModule, "provider UI safety helpers must exist");
     assert.equal(commitModule.providerCommitResponseIsCurrent(8, 9), false);
     assert.equal(commitModule.providerCommitResponseIsCurrent(9, 9), true);
-    assert.equal(commitModule.providerCommitResponseDisposition(8, 9, true), "adopt-baseline");
+    assert.equal(commitModule.providerCommitResponseDisposition(8, 9, true), "ignore");
     assert.equal(commitModule.providerCommitResponseDisposition(8, 9, false), "ignore");
     assert.equal(commitModule.providerCommitResponseDisposition(9, 9, true), "apply");
     assert.equal(commitModule.providerCommitResponseDisposition(9, 9, false), "report");
@@ -94,11 +94,11 @@ describe("provider-owned commit request", () => {
     state = commitModule.registerProviderCommit(settled.state, 2);
     state = commitModule.registerProviderCommit(state, 3);
     settled = commitModule.settleProviderCommit(state, 2, true, "persisted-2");
-    assert.equal(settled.disposition, "adopt-baseline");
-    assert.equal(settled.state.baseline, "persisted-2");
+    assert.equal(settled.disposition, "ignore");
+    assert.equal(settled.state.baseline, "persisted-1");
     settled = commitModule.settleProviderCommit(settled.state, 3, false, null);
     assert.equal(settled.disposition, "report");
-    assert.equal(settled.state.baseline, "persisted-2");
+    assert.equal(settled.state.baseline, "persisted-1");
     const resetSettled = commitModule.settleProviderCommit(
       settled.state,
       3,
@@ -116,11 +116,19 @@ describe("provider-owned commit request", () => {
     assert.equal(obsoleteReset.disposition, "ignore");
     assert.equal(obsoleteReset.state.baseline, "reset-baseline-3");
     assert.equal(
-      commitModule.providerCommitResetRequiresAuthoritativeRefresh(true, obsoleteReset.disposition),
+      commitModule.providerCommitResponseRequiresAuthoritativeRefresh(
+        false,
+        true,
+        obsoleteReset.disposition,
+      ),
       true,
     );
     assert.equal(
-      commitModule.providerCommitResetRequiresAuthoritativeRefresh(false, obsoleteReset.disposition),
+      commitModule.providerCommitResponseRequiresAuthoritativeRefresh(
+        false,
+        false,
+        obsoleteReset.disposition,
+      ),
       false,
     );
     assert.equal(
@@ -135,39 +143,91 @@ describe("provider-owned commit request", () => {
     assert.equal(commitModule.providerCommitFailureShouldReconcileForm(null, "ignore"), false);
   });
 
-  it("refreshes, rather than adopting, a delayed committed reset behind stale or success N+1", () => {
+  it("never adopts A success after B starts and reconciles A/B truth in both response orders", () => {
     assert.ok(commitModule);
     for (const newerSucceeded of [false, true]) {
-      let state: { latestRevision: number; baseline: string | null } = {
-        latestRevision: 0,
-        baseline: "generation-0",
-      };
-      state = commitModule.registerProviderCommit(state, 1);
-      state = commitModule.registerProviderCommit(state, 2);
-      const newer = commitModule.settleProviderCommit(
-        state,
-        2,
-        newerSucceeded,
-        newerSucceeded ? "generation-2" : null,
-      );
-      const delayedReset = commitModule.settleProviderCommit(
-        newer.state,
-        1,
-        false,
-        "obsolete-reset-generation-1",
-      );
-      assert.equal(delayedReset.disposition, "ignore");
-      assert.equal(
-        delayedReset.state.baseline,
-        newerSucceeded ? "generation-2" : "generation-0",
-      );
-      assert.equal(
-        commitModule.providerCommitResetRequiresAuthoritativeRefresh(
-          true,
-          delayedReset.disposition,
-        ),
-        true,
-      );
+      for (const order of ["A-then-B", "B-then-A"] as const) {
+        let state: { latestRevision: number; baseline: string | null } = {
+          latestRevision: 0,
+          baseline: "generation-0",
+        };
+        state = commitModule.registerProviderCommit(state, 1);
+        state = commitModule.registerProviderCommit(state, 2);
+        let refreshCount = 0;
+        const settleA = () => {
+          const settled = commitModule.settleProviderCommit(state, 1, true, "generation-A");
+          state = settled.state;
+          assert.equal(settled.disposition, "ignore", order);
+          assert.notEqual(state.baseline, "generation-A", order);
+          refreshCount += Number(commitModule.providerCommitResponseRequiresAuthoritativeRefresh(
+            true,
+            false,
+            settled.disposition,
+          ));
+        };
+        const settleB = () => {
+          const settled = commitModule.settleProviderCommit(
+            state,
+            2,
+            newerSucceeded,
+            newerSucceeded ? "generation-B" : null,
+          );
+          state = settled.state;
+        };
+        if (order === "A-then-B") {
+          settleA(); settleB();
+        } else {
+          settleB(); settleA();
+        }
+        assert.equal(state.baseline, newerSucceeded ? "generation-B" : "generation-0", order);
+        assert.equal(refreshCount, 1, order);
+      }
+    }
+  });
+
+  it("keeps delayed committed-reset reconciliation in both response orders", () => {
+    assert.ok(commitModule);
+    for (const newerSucceeded of [false, true]) {
+      for (const order of ["reset-then-B", "B-then-reset"] as const) {
+        let state: { latestRevision: number; baseline: string | null } = {
+          latestRevision: 0,
+          baseline: "generation-0",
+        };
+        state = commitModule.registerProviderCommit(state, 1);
+        state = commitModule.registerProviderCommit(state, 2);
+        let refreshCount = 0;
+        const settleReset = () => {
+          const settled = commitModule.settleProviderCommit(
+            state,
+            1,
+            false,
+            "obsolete-reset-generation-1",
+          );
+          state = settled.state;
+          assert.equal(settled.disposition, "ignore", order);
+          refreshCount += Number(commitModule.providerCommitResponseRequiresAuthoritativeRefresh(
+            false,
+            true,
+            settled.disposition,
+          ));
+        };
+        const settleB = () => {
+          const settled = commitModule.settleProviderCommit(
+            state,
+            2,
+            newerSucceeded,
+            newerSucceeded ? "generation-B" : null,
+          );
+          state = settled.state;
+        };
+        if (order === "reset-then-B") {
+          settleReset(); settleB();
+        } else {
+          settleB(); settleReset();
+        }
+        assert.equal(state.baseline, newerSucceeded ? "generation-B" : "generation-0", order);
+        assert.equal(refreshCount, 1, order);
+      }
     }
   });
 
@@ -725,18 +785,7 @@ describe("the shell renders failures as sentence plus 详情", () => {
     assert.match(appSource, /modelCatalogRequestRevision\.current/);
     assert.match(
       appSource,
-      /providerCommitResetRequiresAuthoritativeRefresh\(resetApplied, settled\.disposition\)[\s\S]*?setModelCatalog\(null\)[\s\S]*?refreshSettings\(true\)\.then[\s\S]*?refreshModelCatalog\(true, true\)[\s\S]*?return false;/,
-    );
-    const delayedResetRefresh = appSource.match(
-      /if \(providerCommitResetRequiresAuthoritativeRefresh\(resetApplied, settled\.disposition\)\) \{[\s\S]*?return false;\s*\}/,
-    )?.[0] ?? "";
-    const invalidateAt = delayedResetRefresh.indexOf("modelCatalogRequestRevision.current += 1");
-    const clearAt = delayedResetRefresh.indexOf("setModelCatalog(null)");
-    const settingsAt = delayedResetRefresh.indexOf("refreshSettings(true)");
-    const catalogAt = delayedResetRefresh.indexOf("refreshModelCatalog(true, true)");
-    assert.ok(
-      invalidateAt >= 0 && invalidateAt < clearAt && clearAt < settingsAt && settingsAt < catalogAt,
-      "the delayed reset revokes old catalog reads before clearing and awaiting settings",
+      /providerCommitResponseRequiresAuthoritativeRefresh\(succeeded, resetApplied, settled\.disposition\)[\s\S]*?void refreshAuthoritativeProviderState\(resetApplied\)[\s\S]*?return false;/,
     );
   });
 

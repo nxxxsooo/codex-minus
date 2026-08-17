@@ -12,7 +12,7 @@ import {
   officialLoginGuide,
   validateNewProviderDraft,
 } from "./provider-onboarding.ts";
-import { EN_PLAIN } from "./i18n-en.ts";
+import { EN_BACKEND, EN_PLAIN } from "./i18n-en.ts";
 
 /// Slug -> is-listed, straight from the shipped asset. The bundled baseline is what a brand-new
 /// profile's catalog can actually represent, so the Pro list is validated against it, not against
@@ -153,6 +153,14 @@ describe("built-in Pro model list", () => {
     assert.equal(
       EN_PLAIN["已丢弃旧版自动生成的模型列表，并恢复官方模型；现有启动模型已保留。请重启 Codex 后新建任务。"],
       "The legacy automatically generated model list was discarded and official models were restored; existing startup models were preserved. Restart Codex and start a new task.",
+    );
+    assert.equal(
+      EN_BACKEND["已丢弃旧版自动生成的模型列表并恢复官方模型；本次供应商更改尚未保存。请重启 Codex 后新建任务，再检查更新后的设置并重新保存。"],
+      "The legacy automatically generated model list was discarded and official models were restored; this provider change was not saved. Restart Codex and start a new task, then review the updated settings and save again.",
+    );
+    assert.equal(
+      EN_BACKEND["已丢弃旧版自动生成的模型列表并恢复官方模型；本次供应商更改尚未保存。页面已更新，请检查后重新保存。"],
+      "The legacy automatically generated model list was discarded and official models were restored; this provider change was not saved. The page was updated; review it and save again.",
     );
   });
 
