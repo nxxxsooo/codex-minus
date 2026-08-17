@@ -3928,31 +3928,57 @@ pub async fn save_active_relay_profile(
 fn switch_relay_profile_blocking(
     request: RelayProfileSwitchRequest,
 ) -> CommandResult<RelaySwitchPayload> {
-    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    if validate_relay_profile_transaction_input(&request.settings).is_err() {
+        return switch_relay_profile_blocking_at(&ProviderCommitPaths::defaults(), request);
+    }
+    let previous_active_relay_id = request.previous_active_relay_id.clone();
+    let target_relay_id = request.settings.active_relay_id.clone();
+    log_manager_event(
+        "manager.switch_relay_profile.start",
+        json!({
+            "previousActiveRelayId": previous_active_relay_id,
+            "targetRelayId": target_relay_id,
+        }),
+    );
+    let result = switch_relay_profile_blocking_at(&ProviderCommitPaths::defaults(), request);
+    let event = if result.status == "ok" {
+        "manager.switch_relay_profile.ok"
+    } else {
+        "manager.switch_relay_profile.failed"
+    };
+    log_manager_event(
+        event,
+        json!({
+            "activeRelayId": result.payload.settings.active_relay_id,
+            "error": (result.status == "failed").then_some(result.message.as_str()),
+        }),
+    );
+    result
+}
+
+pub(crate) fn switch_relay_profile_blocking_at(
+    paths: &ProviderCommitPaths,
+    request: RelayProfileSwitchRequest,
+) -> CommandResult<RelaySwitchPayload> {
+    let home = &paths.codex_home;
     let previous_provider = current_effective_provider_from_home(&home);
     let previous_active_relay_id = request.previous_active_relay_id;
     let confirm_context_cleanup = request.confirm_context_cleanup;
-    let target_relay_id = request.settings.active_relay_id.clone();
     if let Err(error) = validate_relay_profile_transaction_input(&request.settings) {
         return failed(
             &format!("供应商切换失败：{error}"),
-            relay_switch_payload(
+            relay_switch_payload_at(
                 BackendSettings::default(),
                 codex_plus_core::relay_config::relay_status_from_home(&home),
                 None,
                 previous_provider.clone(),
                 previous_provider,
+                &paths.settings_path,
             ),
         );
     }
-    log_manager_event(
-        "manager.switch_relay_profile.start",
-        json!({
-            "previousActiveRelayId": previous_active_relay_id,
-            "targetRelayId": target_relay_id
-        }),
-    );
-    match commit_relay_profile_transaction(
+    match commit_relay_profile_transaction_at(
+        paths,
         request.settings,
         &previous_active_relay_id,
         confirm_context_cleanup,
@@ -3960,41 +3986,35 @@ fn switch_relay_profile_blocking(
         Ok(settings) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
             let current_provider = current_effective_provider_from_home(&home);
-            let provider_changed = previous_provider != current_provider;
-            log_manager_event(
-                "manager.switch_relay_profile.ok",
-                json!({
-                    "targetRelayId": settings.active_relay_id,
-                    "configured": status.configured,
-                    "previousProvider": previous_provider,
-                    "currentProvider": current_provider,
-                    "providerChanged": provider_changed,
-                    "sessionScansScheduled": usize::from(provider_changed)
-                }),
-            );
             ok(
                 "供应商已切换。",
-                relay_switch_payload(settings, status, None, previous_provider, current_provider),
+                relay_switch_payload_at(
+                    settings,
+                    status,
+                    None,
+                    previous_provider,
+                    current_provider,
+                    &paths.settings_path,
+                ),
             )
         }
         Err(error) => {
             let status = codex_plus_core::relay_config::relay_status_from_home(&home);
             let current_provider = current_effective_provider_from_home(&home);
-            let settings = SettingsStore::default()
+            let settings = SettingsStore::new(paths.settings_path.clone())
                 .load()
                 .map(safe_relay_switch_failure_settings)
                 .unwrap_or_default();
-            log_manager_event(
-                "manager.switch_relay_profile.failed",
-                json!({
-                    "previousActiveRelayId": previous_active_relay_id,
-                    "activeRelayId": settings.active_relay_id,
-                    "error": error.to_string()
-                }),
-            );
             failed(
                 &format!("供应商切换失败：{error}"),
-                relay_switch_payload(settings, status, None, previous_provider, current_provider),
+                relay_switch_payload_at(
+                    settings,
+                    status,
+                    None,
+                    previous_provider,
+                    current_provider,
+                    &paths.settings_path,
+                ),
             )
         }
     }
@@ -4051,11 +4071,12 @@ pub(crate) fn commit_relay_profile_transaction_at(
     );
 
     let candidate = stage_active_relay_config_at(home, &paths.app_state, &settings)?;
-    let catalog_plan = crate::model_catalog::plan_active_profile(
-        &home,
+    let catalog_plan = crate::model_catalog::plan_active_profile_at(
+        home,
         &settings,
         &candidate,
         confirm_context_cleanup,
+        &paths.catalog_state_path,
     )?;
     let (protected_config, context_snapshot) =
         context_protected_config(&home, &catalog_plan.config_contents)?;
@@ -5355,20 +5376,19 @@ fn redact_live_config_for_output(config: &str) -> String {
         .unwrap_or_else(|_| "# 配置无法安全序列化；已停止在诊断界面显示。\n".to_string())
 }
 
-fn relay_switch_payload(
+fn relay_switch_payload_at(
     settings: BackendSettings,
     status: codex_plus_core::relay_config::RelayStatus,
     backup_path: Option<String>,
     previous_provider: String,
     current_provider: String,
+    settings_path: &Path,
 ) -> RelaySwitchPayload {
     let provider_changed = previous_provider != current_provider;
     RelaySwitchPayload {
         settings,
         relay: relay_payload(status, backup_path),
-        settings_path: codex_plus_core::paths::default_settings_path()
-            .to_string_lossy()
-            .to_string(),
+        settings_path: settings_path.to_string_lossy().to_string(),
         user_scripts: user_script_inventory(),
         previous_provider,
         current_provider,

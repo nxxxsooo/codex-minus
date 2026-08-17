@@ -6,7 +6,7 @@ use crate::commands::{
     commit_provider_detail_from_paths, commit_provider_detail_from_paths_observed,
     commit_relay_profile_transaction_at, save_settings_with_provider_guard_at,
     save_settings_with_provider_guard_at_observed, settings_snapshot_for_ui_projection,
-    ui_provider_topology_projection,
+    switch_relay_profile_blocking_at, ui_provider_topology_projection,
 };
 use crate::provider_commit::{
     CatalogMode, CatalogOverlay, CatalogState, CustomModel, OfficialSnapshot, ProfileCatalogDraft,
@@ -578,6 +578,109 @@ fn relay_transaction_rejection_precedes_migration_staging_and_context_mutation()
                 &fs::read_to_string(fixture.paths.codex_home.join("config.toml")).unwrap()
             ),
             context_before
+        );
+    }
+}
+
+#[test]
+fn relay_transaction_catalog_plan_uses_the_injected_catalog_state_path() {
+    let initial = settings_with(
+        vec![canonical_profile(
+            "sub2api",
+            "gpt-5.6-sol",
+            "https://relay.example/v1",
+            "provider-key",
+        )],
+        "sub2api",
+    );
+    let fixture = Fixture::new(&initial, &state_with_official());
+    let persisted = fixture.read_settings();
+    let catalog_before = fs::read(&fixture.paths.catalog_state_path).unwrap();
+
+    commit_relay_profile_transaction_at(&fixture.paths, persisted, "sub2api", false).unwrap();
+
+    assert_ne!(
+        fs::read(&fixture.paths.catalog_state_path).unwrap(),
+        catalog_before,
+        "the accepted relay transaction must persist its catalog generation beside its settings"
+    );
+}
+
+#[test]
+fn injected_switch_failure_payload_hides_every_rejected_persisted_topology() {
+    let valid = settings_with(
+        vec![canonical_profile(
+            "sub2api",
+            "gpt-5.6-sol",
+            "https://relay.example/v1",
+            "provider-key",
+        )],
+        "sub2api",
+    );
+    let invalid_states = [
+        {
+            let mut settings = valid.clone();
+            settings.relay_profiles[0].protocol = RelayProtocol::ChatCompletions;
+            settings
+        },
+        {
+            let mut settings = valid.clone();
+            settings.relay_profiles[0].base_url = "http://127.0.0.1:57321/v1".to_string();
+            settings
+        },
+        {
+            let mut settings = valid.clone();
+            settings.relay_profiles[0].auth_contents = "{persisted-auth-must-not-leak".to_string();
+            settings
+        },
+        {
+            let mut settings = valid.clone();
+            settings.relay_profiles[0].relay_mode = RelayMode::Aggregate;
+            settings
+        },
+        {
+            let mut settings = valid.clone();
+            settings
+                .aggregate_relay_profiles
+                .push(AggregateRelayProfile {
+                    id: "removed-aggregate".to_string(),
+                    name: "Removed aggregate".to_string(),
+                    strategy: AggregateRelayStrategy::Failover,
+                    members: Vec::new(),
+                });
+            settings
+        },
+        {
+            let mut settings = valid.clone();
+            settings.active_aggregate_relay_id = "removed-aggregate".to_string();
+            settings
+        },
+    ];
+    for invalid in invalid_states {
+        let fixture = Fixture::new(&invalid, &state_with_official());
+        let mut forced_failure = valid.clone();
+        forced_failure.relay_profiles_enabled = false;
+        let result = switch_relay_profile_blocking_at(
+            &fixture.paths,
+            crate::commands::RelayProfileSwitchRequest {
+                settings: forced_failure,
+                previous_active_relay_id: "sub2api".to_string(),
+                confirm_context_cleanup: false,
+            },
+        );
+
+        assert_eq!(result.status, "failed");
+        assert!(
+            crate::provider_commit::validate_responses_only_settings(&result.payload.settings)
+                .is_ok()
+        );
+        assert!(
+            result
+                .payload
+                .settings
+                .relay_profiles
+                .iter()
+                .all(|profile| profile.auth_contents.is_empty())
         );
     }
 }

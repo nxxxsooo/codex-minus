@@ -768,13 +768,30 @@ fn adopt_external_model_catalog_blocking(
     command_result(result, "外部模型目录预览已生成。", "外部模型目录采用失败")
 }
 
+#[allow(dead_code)]
 pub fn plan_active_profile(
     home: &Path,
     settings: &BackendSettings,
     provider_config: &str,
     confirm_context_cleanup: bool,
 ) -> anyhow::Result<ActiveCatalogPlan> {
-    let mut state = load_and_migrate_state(settings, home)?;
+    plan_active_profile_at(
+        home,
+        settings,
+        provider_config,
+        confirm_context_cleanup,
+        &state_path(),
+    )
+}
+
+pub(crate) fn plan_active_profile_at(
+    home: &Path,
+    settings: &BackendSettings,
+    provider_config: &str,
+    confirm_context_cleanup: bool,
+    catalog_state_path: &Path,
+) -> anyhow::Result<ActiveCatalogPlan> {
+    let mut state = load_and_migrate_state_from_path(settings, home, catalog_state_path)?;
     let mut plan = plan_active_profile_with_state(
         home,
         settings,
@@ -783,7 +800,8 @@ pub fn plan_active_profile(
         confirm_context_cleanup,
     )?;
     state.operation_generation = state.operation_generation.saturating_add(1);
-    plan.mutations.push(state_mutation(&state)?);
+    plan.mutations
+        .push(state_mutation_at(&state, catalog_state_path)?);
     Ok(plan)
 }
 
