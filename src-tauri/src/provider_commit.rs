@@ -430,6 +430,58 @@ pub fn provider_fingerprint_status(
     })
 }
 
+pub(crate) const REMOVED_PROTOCOL_PROXY_BASE_URL: &str = "http://127.0.0.1:57321/v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResponsesOnlyProviderError {
+    UnsupportedProtocol,
+    LocalAggregate,
+    RemovedProxy,
+}
+
+impl std::fmt::Display for ResponsesOnlyProviderError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::UnsupportedProtocol => "only Responses API provider profiles are supported",
+            Self::LocalAggregate => "local aggregate provider profiles are unsupported",
+            Self::RemovedProxy => "the removed local proxy base URL is unsupported",
+        })
+    }
+}
+
+impl std::error::Error for ResponsesOnlyProviderError {}
+
+pub(crate) fn validate_responses_only_profile(
+    profile: &RelayProfile,
+) -> Result<(), ResponsesOnlyProviderError> {
+    if profile.relay_mode == RelayMode::Aggregate {
+        return Err(ResponsesOnlyProviderError::LocalAggregate);
+    }
+    if profile.protocol != RelayProtocol::Responses {
+        return Err(ResponsesOnlyProviderError::UnsupportedProtocol);
+    }
+    if profile.base_url.trim_end_matches('/')
+        == REMOVED_PROTOCOL_PROXY_BASE_URL.trim_end_matches('/')
+    {
+        return Err(ResponsesOnlyProviderError::RemovedProxy);
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_responses_only_settings(
+    settings: &BackendSettings,
+) -> Result<(), ResponsesOnlyProviderError> {
+    if !settings.aggregate_relay_profiles.is_empty()
+        || !settings.active_aggregate_relay_id.trim().is_empty()
+    {
+        return Err(ResponsesOnlyProviderError::LocalAggregate);
+    }
+    for profile in &settings.relay_profiles {
+        validate_responses_only_profile(profile)?;
+    }
+    Ok(())
+}
+
 pub fn validate_provider_detail_request(
     persisted_settings: &BackendSettings,
     persisted_state: &CatalogState,
@@ -514,6 +566,7 @@ fn validate_common_request(
             profile.auth_contents.is_empty(),
             "incoming authContents is prohibited"
         );
+        validate_responses_only_profile(&RelayProfile::from(profile))?;
     }
     let aggregate_profile_ids = request
         .topology
@@ -985,6 +1038,40 @@ mod tests {
             relay_test_model: "global-test".to_string(),
             ..BackendSettings::default()
         }
+    }
+
+    #[test]
+    fn responses_only_settings_reject_removed_provider_shapes() {
+        let valid = settings_with(vec![mixed_profile("relay-a", "OpenAI")], "relay-a");
+        assert!(validate_responses_only_settings(&valid).is_ok());
+
+        let mut chat = valid.clone();
+        chat.relay_profiles[0].protocol = RelayProtocol::ChatCompletions;
+        assert!(matches!(
+            validate_responses_only_settings(&chat),
+            Err(ResponsesOnlyProviderError::UnsupportedProtocol)
+        ));
+
+        let mut aggregate = valid.clone();
+        aggregate.relay_profiles[0].relay_mode = RelayMode::Aggregate;
+        assert!(matches!(
+            validate_responses_only_settings(&aggregate),
+            Err(ResponsesOnlyProviderError::LocalAggregate)
+        ));
+
+        let mut metadata = valid.clone();
+        metadata.active_aggregate_relay_id = "aggregate-a".to_string();
+        assert!(matches!(
+            validate_responses_only_settings(&metadata),
+            Err(ResponsesOnlyProviderError::LocalAggregate)
+        ));
+
+        let mut proxy = valid;
+        proxy.relay_profiles[0].base_url = "http://127.0.0.1:57321/v1".to_string();
+        assert!(matches!(
+            validate_responses_only_settings(&proxy),
+            Err(ResponsesOnlyProviderError::RemovedProxy)
+        ));
     }
 
     fn official_catalog() -> Value {
@@ -1758,7 +1845,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_incapable_profiles_require_zero_catalog_drafts() {
+    fn responses_only_request_validation_rejects_chat_completion_profiles() {
         let active = mixed_profile("relay-a", "official-a");
         let persisted = settings_with(vec![active.clone()], "relay-a");
         let mut chat = mixed_profile("relay-chat", "chat-model");
@@ -1766,7 +1853,7 @@ mod tests {
         let next = settings_with(vec![active, chat.clone()], "relay-a");
         let topology = request_for(&persisted, &next, None, vec![], ProviderCommitAction::Save);
         assert!(
-            plan_provider_topology_commit(&persisted, &state_with_official(), &topology).is_ok()
+            plan_provider_topology_commit(&persisted, &state_with_official(), &topology).is_err()
         );
 
         let persisted_chat = settings_with(vec![chat], "relay-chat");
@@ -1778,13 +1865,13 @@ mod tests {
             ProviderCommitAction::Save,
         );
         assert!(
-            plan_provider_detail_commit(&persisted_chat, &CatalogState::default(), &detail).is_ok()
+            plan_provider_detail_commit(&persisted_chat, &CatalogState::default(), &detail)
+                .is_err()
         );
     }
 
     #[test]
-    fn aggregate_projection_requires_one_to_one_nonempty_unique_eligible_members_and_active_linkage()
-     {
+    fn responses_only_request_validation_rejects_aggregate_topology() {
         let member = mixed_profile("relay-a", "official-a");
         let mut aggregate_stub = mixed_profile("aggregate-a", "");
         aggregate_stub.relay_mode = RelayMode::Aggregate;
@@ -1806,48 +1893,7 @@ mod tests {
             "topology Save must not switch active"
         );
 
-        let persisted_aggregate = next.clone();
-        let valid = request_for(
-            &persisted_aggregate,
-            &persisted_aggregate,
-            None,
-            vec![],
-            ProviderCommitAction::Save,
-        );
-        assert!(
-            validate_common_request(&persisted_aggregate, &state_with_official(), &valid).is_ok()
-        );
-
-        let mut invalid = valid.clone();
-        invalid.topology.aggregate_relay_profiles[0].members.clear();
-        assert!(
-            validate_common_request(&persisted_aggregate, &state_with_official(), &invalid)
-                .is_err()
-        );
-
-        let mut invalid = valid.clone();
-        let duplicate_member = invalid.topology.aggregate_relay_profiles[0].members[0].clone();
-        invalid.topology.aggregate_relay_profiles[0]
-            .members
-            .push(duplicate_member);
-        assert!(
-            validate_common_request(&persisted_aggregate, &state_with_official(), &invalid)
-                .is_err()
-        );
-
-        let mut invalid = valid.clone();
-        invalid.topology.aggregate_relay_profiles[0].members[0].weight = 0;
-        assert!(
-            validate_common_request(&persisted_aggregate, &state_with_official(), &invalid)
-                .is_err()
-        );
-
-        let mut invalid = valid.clone();
-        invalid.topology.active_aggregate_relay_id.clear();
-        assert!(
-            validate_common_request(&persisted_aggregate, &state_with_official(), &invalid)
-                .is_err()
-        );
+        assert!(plan_provider_topology_commit(&persisted, &state_with_official(), &valid).is_err());
     }
 
     #[test]

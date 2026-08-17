@@ -567,6 +567,8 @@ impl std::error::Error for GenericSettingsSaveError {}
 pub(crate) fn settings_snapshot_for_ui_projection(
     mut settings: BackendSettings,
 ) -> Result<BackendSettings, GenericSettingsSaveError> {
+    crate::provider_commit::validate_responses_only_settings(&settings)
+        .map_err(|_| GenericSettingsSaveError::PersistedSettingsInvalid)?;
     let (common_without_context, extracted_context) =
         split_relay_context_config_sections(&settings.relay_common_config_contents);
     settings.relay_common_config_contents =
@@ -767,6 +769,8 @@ pub(crate) fn save_settings_with_provider_guard_at_observed(
 ) -> Result<(), GenericSettingsSaveError> {
     use crate::provider_commit::ProviderOwnedTopologyDraft;
 
+    crate::provider_commit::validate_responses_only_settings(&incoming)
+        .map_err(|_| GenericSettingsSaveError::PersistedSettingsInvalid)?;
     let _guard = live_state::lock().map_err(|_| GenericSettingsSaveError::SecureStorageFailed)?;
     live_state::prepare_secret_paths_at(&paths.app_state, &paths.settings_path, &paths.codex_home)
         .map_err(|_| GenericSettingsSaveError::SecureStorageFailed)?;
@@ -788,6 +792,8 @@ pub(crate) fn save_settings_with_provider_guard_at_observed(
         }
         None => (BackendSettings::default(), None),
     };
+    crate::provider_commit::validate_responses_only_settings(&persisted)
+        .map_err(|_| GenericSettingsSaveError::PersistedSettingsInvalid)?;
     if persisted
         .relay_profiles
         .iter()
@@ -2594,6 +2600,17 @@ pub fn commit_provider_detail_from_paths_observed(
     // Recovery artifacts snapshot every transaction target before applying it. Scrub legacy
     // profile auth through the startup's owner-only atomic no-backup path before this commit can
     // prepare a settings prior stage, so copied OAuth can never enter recovery material.
+    validate_persisted_responses_only_settings_at(&paths.settings_path).map_err(|error| {
+        let reason = if error
+            .downcast_ref::<crate::provider_commit::ResponsesOnlyProviderError>()
+            .is_some()
+        {
+            "provider settings contain an unsupported provider topology"
+        } else {
+            "provider settings are invalid JSON"
+        };
+        provider_commit_failure(ProviderCommitErrorCode::InputUnavailable, reason)
+    })?;
     migrate_legacy_profile_auth_locked_at(&paths.settings_path)
         .map_err(provider_commit_failure_for_legacy_auth_migration)?;
 
@@ -3086,6 +3103,8 @@ fn load_provider_commit_settings(path: &Path) -> Result<(Vec<u8>, BackendSetting
     };
     let mut settings: BackendSettings =
         serde_json::from_slice(&bytes).map_err(|_| "provider settings are invalid JSON")?;
+    crate::provider_commit::validate_responses_only_settings(&settings)
+        .map_err(|_| "provider settings contain an unsupported provider topology")?;
     for profile in &mut settings.relay_profiles {
         migrate_persisted_legacy_api_key_auth(profile)
             .map_err(|_| "a saved provider profile failed auth migration")?;
@@ -3304,6 +3323,9 @@ fn sanitized_provider_validation_error(
         "provider profile id is empty",
         "duplicate provider profile id",
         "incoming authContents is prohibited",
+        "only Responses API provider profiles are supported",
+        "local aggregate provider profiles are unsupported",
+        "the removed local proxy base URL is unsupported",
         "aggregate profile id is empty",
         "duplicate aggregate profile id",
         "aggregate profile metadata has no matching relay profile",
@@ -5610,6 +5632,19 @@ fn settings_payload_value() -> Result<SettingsPayload, (anyhow::Error, SettingsP
         .to_string();
     match store.load() {
         Ok(settings) => {
+            crate::provider_commit::validate_responses_only_settings(&settings).map_err(
+                |error| {
+                    (
+                        anyhow::Error::new(error),
+                        SettingsPayload {
+                            settings: BackendSettings::default(),
+                            settings_path: settings_path.clone(),
+                            user_scripts: user_script_inventory(),
+                            provider_fingerprint: String::new(),
+                        },
+                    )
+                },
+            )?;
             let settings = sanitize_settings_for_output(settings);
             let provider_fingerprint = crate::provider_commit::provider_owned_fingerprint(
                 &crate::provider_commit::ProviderOwnedTopologyDraft::from_settings(&settings),
@@ -5666,6 +5701,7 @@ fn serialize_settings_without_profile_auth(settings: &BackendSettings) -> anyhow
 
 fn migrate_legacy_profile_auth_locked() -> anyhow::Result<()> {
     let settings_path = codex_plus_core::paths::default_settings_path();
+    validate_persisted_responses_only_settings_at(&settings_path)?;
     let migrated = migrate_legacy_profile_auth_locked_at(&settings_path)?;
     if migrated > 0 {
         log_manager_event(
@@ -5674,6 +5710,18 @@ fn migrate_legacy_profile_auth_locked() -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+pub(crate) fn validate_persisted_responses_only_settings_at(path: &Path) -> anyhow::Result<()> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error).context("persisted provider settings are unreadable"),
+    };
+    let settings: BackendSettings =
+        serde_json::from_slice(&bytes).context("persisted provider settings are invalid")?;
+    crate::provider_commit::validate_responses_only_settings(&settings)
+        .context("persisted provider settings contain an unsupported provider topology")
 }
 
 #[derive(Debug)]

@@ -446,6 +446,89 @@ fn successful_active_commit_preserves_context_semantics_and_auth_bytes() {
 }
 
 #[test]
+fn responses_only_rejection_writes_nothing() {
+    let initial = settings_with(
+        vec![canonical_profile(
+            "sub2api",
+            "gpt-5.6-sol",
+            "https://relay.example/v1",
+            "provider-key",
+        )],
+        "sub2api",
+    );
+    let fixture = Fixture::new(&initial, &state_with_official());
+    fs::write(
+        fixture.paths.codex_home.join("config.toml"),
+        rich_live_config(),
+    )
+    .unwrap();
+    let persisted = fixture.read_settings();
+    let mut unsupported = persisted.clone();
+    unsupported.relay_profiles[0].protocol = RelayProtocol::ChatCompletions;
+    let before = fixture.file_generation();
+    let context_before = semantic_context_tables(rich_live_config());
+
+    let error = commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(
+            &persisted,
+            &unsupported,
+            "sub2api",
+            ProviderCommitAction::Save,
+            100,
+        ),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code(), ProviderCommitErrorCode::InvalidDraft);
+    assert_eq!(fixture.file_generation(), before);
+    assert_eq!(
+        semantic_context_tables(
+            &fs::read_to_string(fixture.paths.codex_home.join("config.toml")).unwrap()
+        ),
+        context_before
+    );
+}
+
+#[test]
+fn responses_only_load_rejection_precedes_auth_migration() {
+    let mut unsupported = canonical_profile(
+        "sub2api",
+        "gpt-5.6-sol",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    unsupported.protocol = RelayProtocol::ChatCompletions;
+    unsupported.auth_contents = r#"{"OPENAI_API_KEY":"legacy-provider-key"}"#.to_string();
+    let initial = settings_with(vec![unsupported], "sub2api");
+    let fixture = Fixture::new(&initial, &state_with_official());
+    let persisted_bytes = fs::read(&fixture.paths.settings_path).unwrap();
+    let before = fixture.file_generation();
+    let request = ProviderCommitRequest {
+        topology: ProviderOwnedTopologyDraft::from_settings(&initial),
+        catalog_drafts: vec![catalog_draft("sub2api")],
+        focused_profile_id: Some("sub2api".to_string()),
+        action: ProviderCommitAction::Save,
+        previous_active_relay_id: "sub2api".to_string(),
+        confirm_context_cleanup: false,
+        draft_revision: 101,
+        expected_provider_fingerprint: provider_owned_fingerprint(
+            &ProviderOwnedTopologyDraft::from_settings(&initial),
+        )
+        .unwrap(),
+    };
+
+    let error = commit_provider_detail_from_paths(&fixture.paths, request).unwrap_err();
+
+    assert_eq!(error.code(), ProviderCommitErrorCode::InputUnavailable);
+    assert_eq!(
+        fs::read(&fixture.paths.settings_path).unwrap(),
+        persisted_bytes
+    );
+    assert_eq!(fixture.file_generation(), before);
+}
+
+#[test]
 fn managed_context_cleanup_requires_confirmation_and_commits_settings_and_live_atomically() {
     let mut structured_only = canonical_profile(
         "sub2api",
@@ -1448,7 +1531,7 @@ fn generic_settings_save_uses_default_provider_baseline_when_settings_file_is_ab
 }
 
 #[test]
-fn generic_settings_save_accepts_first_run_ui_shape_and_active_aggregate_ui_projection() {
+fn generic_settings_save_accepts_first_run_ui_shape_and_rejects_active_aggregate_projection() {
     let first_run = Fixture::new(&BackendSettings::default(), &state_with_official());
     fs::remove_file(&first_run.paths.settings_path).unwrap();
     let mut first_run_ui = BackendSettings::default();
@@ -1495,7 +1578,7 @@ fn generic_settings_save_accepts_first_run_ui_shape_and_active_aggregate_ui_proj
         serde_json::to_vec_pretty(&persisted_value).unwrap(),
     )
     .unwrap();
-    let raw_before = fs::read(&fixture.paths.settings_path).unwrap();
+    let raw_before = fixture.file_generation();
     let mut ui_round_trip = SettingsStore::new(fixture.paths.settings_path.clone())
         .load()
         .unwrap();
@@ -1520,16 +1603,10 @@ fn generic_settings_save_accepts_first_run_ui_shape_and_active_aggregate_ui_proj
     ui_round_trip.active_aggregate_relay_id = "aggregate".to_string();
     ui_round_trip.codex_goals_enabled = true;
 
-    save_settings_with_provider_guard_at(&fixture.paths, ui_round_trip).unwrap();
+    let error = save_settings_with_provider_guard_at(&fixture.paths, ui_round_trip).unwrap_err();
 
-    let saved = fs::read(&fixture.paths.settings_path).unwrap();
-    let raw_topology: BackendSettings = serde_json::from_slice(&raw_before).unwrap();
-    let saved_settings: BackendSettings = serde_json::from_slice(&saved).unwrap();
-    assert_eq!(
-        serde_json::to_value(ProviderOwnedTopologyDraft::from_settings(&saved_settings)).unwrap(),
-        serde_json::to_value(ProviderOwnedTopologyDraft::from_settings(&raw_topology)).unwrap()
-    );
-    assert!(saved_settings.codex_goals_enabled);
+    assert_eq!(error, GenericSettingsSaveError::PersistedSettingsInvalid);
+    assert_eq!(fixture.file_generation(), raw_before);
 }
 
 #[test]
@@ -1766,39 +1843,9 @@ fn topology_adapter_commits_list_mutations_through_the_shared_provider_transacti
     let mut shadow = b.clone();
     shadow.id = "relay-shadow".to_string();
     shadow.name = "Relay B shadow".to_string();
-    let c = canonical_profile(
-        "relay-c",
-        "gpt-5.6-sol",
-        "https://c.example/v1",
-        "provider-key-c",
-    );
-    let aggregate = RelayProfile {
-        id: "aggregate".to_string(),
-        name: "Aggregate".to_string(),
-        relay_mode: RelayMode::Aggregate,
-        ..RelayProfile::default()
-    };
-    let mut initial = settings_with(
-        vec![a.clone(), shadow, b.clone(), c, aggregate.clone()],
-        "relay-a",
-    );
-    initial.aggregate_relay_profiles = vec![AggregateRelayProfile {
-        id: "aggregate".to_string(),
-        name: "Aggregate".to_string(),
-        strategy: AggregateRelayStrategy::Failover,
-        members: vec![
-            AggregateRelayMember {
-                relay_id: "relay-b".to_string(),
-                weight: 2,
-            },
-            AggregateRelayMember {
-                relay_id: "relay-c".to_string(),
-                weight: 1,
-            },
-        ],
-    }];
+    let initial = settings_with(vec![a.clone(), shadow, b.clone()], "relay-a");
     let mut catalog_state = state_with_official();
-    for profile_id in ["relay-a", "relay-b", "relay-c"] {
+    for profile_id in ["relay-a", "relay-b"] {
         catalog_state
             .profiles
             .entry(profile_id.to_string())
@@ -1824,28 +1871,13 @@ fn topology_adapter_commits_list_mutations_through_the_shared_provider_transacti
         .find(|profile| profile.id == "relay-b")
         .unwrap()
         .clone();
-    let persisted_aggregate = persisted
-        .relay_profiles
-        .iter()
-        .find(|profile| profile.id == "aggregate")
-        .unwrap()
-        .clone();
     let mut copy = persisted_b.clone();
     copy.id = "relay-copy".to_string();
     copy.name = "Relay B copy".to_string();
     let mut next = persisted.clone();
-    next.relay_profiles = vec![persisted_b, persisted_a, copy, persisted_aggregate];
+    next.relay_profiles = vec![persisted_b, persisted_a, copy];
     next.relay_profiles_enabled = false;
     next.relay_test_model = "topology-test-model".to_string();
-    next.aggregate_relay_profiles = vec![AggregateRelayProfile {
-        id: "aggregate".to_string(),
-        name: "Aggregate".to_string(),
-        strategy: AggregateRelayStrategy::Failover,
-        members: vec![AggregateRelayMember {
-            relay_id: "relay-b".to_string(),
-            weight: 2,
-        }],
-    }];
     let request = ProviderCommitRequest {
         topology: ProviderOwnedTopologyDraft::from_settings(&next),
         catalog_drafts: vec![catalog_draft("relay-copy")],
@@ -1875,9 +1907,8 @@ fn topology_adapter_commits_list_mutations_through_the_shared_provider_transacti
             .iter()
             .map(|profile| profile.id.as_str())
             .collect::<Vec<_>>(),
-        vec!["relay-b", "relay-a", "relay-copy", "aggregate"]
+        vec!["relay-b", "relay-a", "relay-copy"]
     );
-    assert_eq!(saved.aggregate_relay_profiles[0].members.len(), 1);
     let saved_catalog: CatalogState =
         serde_json::from_slice(&fs::read(&fixture.paths.catalog_state_path).unwrap()).unwrap();
     assert!(!saved_catalog.profiles.contains_key("relay-c"));
