@@ -4904,12 +4904,12 @@ fn provider_doctor_recommendation(checks: &[ProviderDoctorCheck]) -> String {
         .iter()
         .any(|check| check.id == "request" && check.status == "failed")
     {
-        return "优先检查测试模型名称、上游协议选择和 Key 权限；如果 Chat Completions 可用，请切到对应协议。".to_string();
+        return "优先检查测试模型名称、Responses Base URL 和 API Key 权限；确认上游支持 Responses API。".to_string();
     }
     if checks.iter().any(|check| check.status == "warning") {
         return "连接可用，但测试模型没有出现在模型列表里；建议改用上游返回的模型名。".to_string();
     }
-    "可以作为 Codex 供应商使用；如果真实对话仍失败，请查看协议代理日志里的上游响应。".to_string()
+    "可以作为 Codex Responses 供应商使用；如果真实对话仍失败，请检查上游 Responses 响应和 Codex 日志。".to_string()
 }
 
 #[tauri::command]
@@ -7725,6 +7725,29 @@ mod provider_test_compatibility_tests {
     }
 
     #[test]
+    fn provider_doctor_failed_request_recommends_only_responses_repairs() {
+        let (base_url, server) = spawn_provider_test_server(vec![
+            (200, r#"{"data":[{"id":"gpt-test"}]}"#.to_string()),
+            (
+                401,
+                r#"{"error":{"message":"provider key rejected"}}"#.to_string(),
+            ),
+        ]);
+        let mut profile = provider_test_profile(base_url, "sk-doctor-rejected");
+        profile.test_model = "gpt-test".to_string();
+
+        let result = tauri::async_runtime::block_on(super::diagnose_relay_profile(profile.into()));
+        let bodies = server.join().unwrap();
+
+        assert_eq!(bodies.len(), 2);
+        assert_eq!(result.status, "failed");
+        assert!(result.payload.recommendation.contains("Responses"));
+        assert!(result.payload.recommendation.contains("Key"));
+        assert!(!result.payload.recommendation.contains("Chat Completions"));
+        assert!(!result.payload.recommendation.contains("代理"));
+    }
+
+    #[test]
     fn provider_doctor_output_redacts_provider_oauth_identity_and_endpoint_sentinels() {
         let api_key = "sk-provider-doctor-secret";
         let oauth_token = "oauth-provider-doctor-token";
@@ -7748,6 +7771,10 @@ mod provider_test_compatibility_tests {
         let result = tauri::async_runtime::block_on(super::diagnose_relay_profile(profile.into()));
         let serialized = serde_json::to_string(&result).unwrap();
         server.join().unwrap();
+
+        assert!(result.payload.recommendation.contains("Responses"));
+        assert!(!result.payload.recommendation.contains("Chat Completions"));
+        assert!(!result.payload.recommendation.contains("代理"));
 
         assert!(!serialized.contains(api_key));
         assert!(!serialized.contains(oauth_token));
