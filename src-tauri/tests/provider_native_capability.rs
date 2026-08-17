@@ -65,9 +65,6 @@ fn classifies_the_binding_fixture_matrix_from_profile_catalog_and_toml() {
     pure_api.relay_mode = RelayMode::PureApi;
     let mut chat_completions = mixed_profile("chat-completions", CANONICAL_INLINE);
     chat_completions.protocol = RelayProtocol::ChatCompletions;
-    let mut aggregate = mixed_profile("aggregate", CANONICAL_INLINE);
-    aggregate.relay_mode = RelayMode::Aggregate;
-
     let cases = [
         (
             "canonical native-priority",
@@ -124,12 +121,6 @@ fn classifies_the_binding_fixture_matrix_from_profile_catalog_and_toml() {
             NativeCapabilityState::Compatibility,
         ),
         (
-            "aggregate",
-            aggregate,
-            CatalogMode::NativeOfficial,
-            NativeCapabilityState::NotApplicable,
-        ),
-        (
             "missing input",
             mixed_profile("missing", MISSING_INPUT),
             CatalogMode::OfficialPlusCustom,
@@ -174,6 +165,50 @@ fn classifies_the_binding_fixture_matrix_from_profile_catalog_and_toml() {
             "{label}"
         );
     }
+}
+
+#[test]
+fn persisted_inspection_rejects_aggregate_settings_before_catalog_presentation() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings_path = temp.path().join("settings.json");
+    let catalog_path = temp.path().join("model-catalog-state.json");
+    let mut aggregate_profile = mixed_profile("aggregate", CANONICAL_INLINE);
+    aggregate_profile.relay_mode = RelayMode::Aggregate;
+    let aggregate_settings = BackendSettings {
+        relay_profiles: vec![aggregate_profile],
+        active_relay_id: "aggregate".to_string(),
+        ..BackendSettings::default()
+    };
+    std::fs::write(
+        &settings_path,
+        serde_json::to_vec_pretty(&aggregate_settings).unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        inspect_provider_native_capabilities_from_paths(
+            &settings_path,
+            &catalog_path,
+            ProviderNativeCapabilityInspectionRequest::default(),
+        ),
+        Err(ProviderNativeCapabilityInspectionError::InputUnavailable),
+    );
+
+    let mut aggregate_metadata = BackendSettings::default();
+    aggregate_metadata.active_aggregate_relay_id = "removed-aggregate".to_string();
+    std::fs::write(
+        &settings_path,
+        serde_json::to_vec_pretty(&aggregate_metadata).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        inspect_provider_native_capabilities_from_paths(
+            &settings_path,
+            &catalog_path,
+            ProviderNativeCapabilityInspectionRequest::default(),
+        ),
+        Err(ProviderNativeCapabilityInspectionError::InputUnavailable),
+    );
 }
 
 #[test]

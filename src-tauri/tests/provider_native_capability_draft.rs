@@ -85,6 +85,22 @@ fn typescript_transform_request_shape_deserializes_through_the_real_serde_bounda
         "confirmations": [],
     });
     assert!(serde_json::from_value::<ProviderNativeCapabilityDraftRequest>(retired).is_err());
+
+    let mut aggregate_profile = serde_json::to_value(mixed_profile(
+        "serde-aggregate",
+        "same-secret",
+        &canonical_source("inline"),
+    ))
+    .unwrap();
+    aggregate_profile["relayMode"] = serde_json::json!("aggregate");
+    let aggregate = serde_json::json!({
+        "draftRevision": 76,
+        "profile": aggregate_profile,
+        "catalogMode": "native-official",
+        "action": "inspect",
+        "confirmations": [],
+    });
+    assert!(serde_json::from_value::<ProviderNativeCapabilityDraftRequest>(aggregate).is_err());
 }
 
 fn parsed(

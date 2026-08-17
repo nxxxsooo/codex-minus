@@ -3026,7 +3026,7 @@ fn load_provider_commit_settings(path: &Path) -> Result<(Vec<u8>, BackendSetting
         // input: bootstrap the defaults on disk so the very first provider save can
         // proceed instead of refusing with "provider settings are unavailable".
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let defaults = serde_json::to_vec(&BackendSettings::default())
+            let defaults = serialize_settings_without_profile_auth(&BackendSettings::default())
                 .map_err(|_| "provider settings bootstrap failed")?;
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)
@@ -5647,7 +5647,9 @@ fn sanitize_settings_for_output(mut settings: BackendSettings) -> BackendSetting
     settings
 }
 
-fn serialize_settings_without_profile_auth(settings: &BackendSettings) -> anyhow::Result<Vec<u8>> {
+pub(crate) fn serialize_settings_without_profile_auth(
+    settings: &BackendSettings,
+) -> anyhow::Result<Vec<u8>> {
     let mut value = serde_json::to_value(settings)?;
     if let Some(object) = value.as_object_mut() {
         object.remove("aggregateRelayProfiles");
@@ -6557,6 +6559,26 @@ max_threads = 1000
         let value: Value = serde_json::from_slice(&bytes).unwrap();
         assert!(value.get("aggregateRelayProfiles").is_none());
         assert!(value.get("activeAggregateRelayId").is_none());
+    }
+
+    #[test]
+    fn first_provider_bootstrap_writes_the_canonical_omission_shape() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+
+        let (_, settings) = load_provider_commit_settings(&settings_path).unwrap();
+
+        assert!(crate::provider_commit::validate_responses_only_settings(&settings).is_ok());
+        let value: Value = serde_json::from_slice(&std::fs::read(&settings_path).unwrap()).unwrap();
+        assert!(value.get("aggregateRelayProfiles").is_none());
+        assert!(value.get("activeAggregateRelayId").is_none());
+        assert!(
+            value["relayProfiles"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|profile| profile.get("authContents").is_none())
+        );
     }
 
     fn write_legacy_auth_fixture(

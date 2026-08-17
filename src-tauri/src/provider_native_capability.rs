@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use toml_edit::{DocumentMut, InlineTable, Item, TableLike, Value, value};
 
 use crate::commands::CommandResult;
@@ -62,7 +62,6 @@ pub enum NativeCapabilityReason {
     ExternalCatalog,
     PureOAuth,
     PureApi,
-    Aggregate,
     UnsupportedRelayMode,
     ChatCompletions,
     CatalogModeMismatch,
@@ -138,6 +137,7 @@ pub enum NativeCapabilityDraftStatus {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderNativeCapabilityDraftRequest {
     pub draft_revision: u64,
+    #[serde(deserialize_with = "deserialize_non_aggregate_profile")]
     pub profile: RelayProfile,
     pub catalog_mode: CatalogMode,
     pub action: NativeCapabilityDraftAction,
@@ -147,6 +147,19 @@ pub struct ProviderNativeCapabilityDraftRequest {
     pub confirmations: Vec<NativeCapabilityDraftConfirmation>,
     #[serde(default)]
     pub replacement_provider_id: Option<String>,
+}
+
+fn deserialize_non_aggregate_profile<'de, D>(deserializer: D) -> Result<RelayProfile, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let profile = RelayProfile::deserialize(deserializer)?;
+    if profile.relay_mode == RelayMode::Aggregate {
+        return Err(D::Error::custom(
+            "local aggregate provider profiles are unsupported",
+        ));
+    }
+    Ok(profile)
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -258,6 +271,10 @@ pub fn inspect_profile(
     profile: &RelayProfile,
     catalog_mode: CatalogMode,
 ) -> ProviderNativeCapabilityInspection {
+    match profile.relay_mode {
+        RelayMode::Official | RelayMode::MixedApi | RelayMode::PureApi => {}
+        _ => unreachable!("unsupported provider modes are rejected before inspection"),
+    }
     if catalog_mode == CatalogMode::External {
         return inspection(
             profile,
@@ -271,17 +288,6 @@ pub fn inspect_profile(
     }
 
     match profile.relay_mode {
-        RelayMode::Aggregate => {
-            return inspection(
-                profile,
-                NativeCapabilityState::NotApplicable,
-                vec![field(
-                    NativeCapabilityField::RelayMode,
-                    NativeCapabilityOutcome::NotApplicable,
-                    NativeCapabilityReason::Aggregate,
-                )],
-            );
-        }
         RelayMode::PureApi => {
             return inspection(
                 profile,
@@ -316,6 +322,7 @@ pub fn inspect_profile(
                 )],
             );
         }
+        _ => unreachable!("unsupported provider modes are rejected before inspection"),
     }
 
     let mut fields = vec![
@@ -716,6 +723,8 @@ pub fn inspect_profiles(
     catalog_modes: &BTreeMap<String, CatalogMode>,
     profile_id: Option<&str>,
 ) -> Result<Vec<ProviderNativeCapabilityInspection>, ProviderNativeCapabilityInspectionError> {
+    crate::provider_commit::validate_responses_only_settings(settings)
+        .map_err(|_| ProviderNativeCapabilityInspectionError::InputUnavailable)?;
     let profiles = match profile_id {
         Some(profile_id) => vec![
             settings
@@ -817,6 +826,7 @@ pub fn transform_provider_native_capability_draft_from_paths(
         .ok()
         .and_then(|bytes| serde_json::from_slice::<BackendSettings>(&bytes).ok())
         .and_then(|settings| {
+            crate::provider_commit::validate_responses_only_settings(&settings).ok()?;
             crate::model_catalog::persisted_catalog_mode_from_path(
                 &settings,
                 catalog_state_path,
@@ -1784,6 +1794,8 @@ pub fn inspect_provider_native_capabilities_from_paths(
     let settings_bytes = std::fs::read(settings_path)
         .map_err(|_| ProviderNativeCapabilityInspectionError::InputUnavailable)?;
     let mut settings = serde_json::from_slice::<BackendSettings>(&settings_bytes)
+        .map_err(|_| ProviderNativeCapabilityInspectionError::InputUnavailable)?;
+    crate::provider_commit::validate_responses_only_settings(&settings)
         .map_err(|_| ProviderNativeCapabilityInspectionError::InputUnavailable)?;
     for profile in &mut settings.relay_profiles {
         profile.auth_contents.clear();

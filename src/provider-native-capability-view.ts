@@ -72,7 +72,6 @@ export function deriveProviderModePresentation(
     legacyCompatibilityContract
     || reasons.has("pureApi")
     || reasons.has("chatCompletions")
-    || reasons.has("aggregate")
     || reasons.has("unsupportedRelayMode")
     || reasons.has("legacyProviderIdRequiresRename")
   ) return "advancedCompatibility";

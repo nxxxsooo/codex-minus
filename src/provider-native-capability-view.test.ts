@@ -45,11 +45,10 @@ describe("provider native-capability view", () => {
     }
   });
 
-  it("keeps pure API, Chat, aggregate, and legacy paths visibly advanced", () => {
+  it("keeps pure API, Chat, and legacy paths visibly advanced without presenting aggregates", () => {
     const reasons = [
       ["compatibility", "pureApi"],
       ["compatibility", "chatCompletions"],
-      ["notApplicable", "aggregate"],
       ["upgradeAvailable", "legacyProviderIdRequiresRename"],
     ] as const;
     for (const [state, reason] of reasons) {
@@ -59,6 +58,11 @@ describe("provider native-capability view", () => {
         fields: [{ field: "relayMode", outcome: "mismatch", reason }],
       }), "advancedCompatibility");
     }
+    assert.equal(deriveProviderModePresentation({
+      profileId: "removed-aggregate",
+      state: "notApplicable",
+      fields: [{ field: "relayMode", outcome: "notApplicable", reason: "aggregate" }],
+    }), "unknown");
     assert.equal(deriveProviderModePresentation({
       profileId: "advanced-legacy-contract",
       state: "upgradeAvailable",

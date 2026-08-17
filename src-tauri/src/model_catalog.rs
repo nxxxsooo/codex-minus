@@ -726,10 +726,10 @@ fn adopt_external_model_catalog_blocking(
                 );
                 settings.relay_profiles[profile_index].config_contents =
                     remove_global_context_keys(&profile.config_contents)?;
-                settings_mutation = Some(FileMutation::bytes(
-                    codex_plus_core::paths::default_settings_path(),
-                    serde_json::to_vec_pretty(&settings)?,
-                ));
+                settings_mutation = Some(adoption_settings_mutation(
+                    &codex_plus_core::paths::default_settings_path(),
+                    &settings,
+                )?);
             }
             let profile = &settings.relay_profiles[profile_index];
             let source_config = if profile.id == settings.active_relay_id {
@@ -766,6 +766,16 @@ fn adopt_external_model_catalog_blocking(
         Ok(payload)
     })();
     command_result(result, "外部模型目录预览已生成。", "外部模型目录采用失败")
+}
+
+fn adoption_settings_mutation(
+    settings_path: &Path,
+    settings: &BackendSettings,
+) -> anyhow::Result<FileMutation> {
+    Ok(FileMutation::bytes(
+        settings_path,
+        crate::commands::serialize_settings_without_profile_auth(settings)?,
+    ))
 }
 
 #[allow(dead_code)]
@@ -910,6 +920,7 @@ pub fn record_provider_evidence(
 
 fn sanitized_settings() -> anyhow::Result<BackendSettings> {
     let mut settings = SettingsStore::default().load()?;
+    crate::provider_commit::validate_responses_only_settings(&settings)?;
     for profile in &mut settings.relay_profiles {
         profile.auth_contents.clear();
     }
@@ -925,6 +936,7 @@ pub(crate) fn load_and_migrate_state_from_path(
     home: &Path,
     path: &Path,
 ) -> anyhow::Result<CatalogState> {
+    crate::provider_commit::validate_responses_only_settings(settings)?;
     let mut state = match fs::read(&path) {
         Ok(bytes) => {
             live_state::ensure_owner_only_file(&path)?;
@@ -988,11 +1000,6 @@ pub(crate) fn load_and_migrate_state_from_path(
                 // the mode disagrees, and correcting the mode requires a commit.
                 None => entry.mode = default_mode(profile, None, entry.upstream_topology),
             }
-        }
-        if profile.relay_mode == RelayMode::Aggregate
-            || profile.protocol == codex_plus_core::settings::RelayProtocol::ChatCompletions
-        {
-            entry.action_required = Some("该供应商依赖未提供的代理能力。".to_string());
         }
     }
     if settings.active_relay_id.trim().is_empty() {
@@ -1059,7 +1066,7 @@ fn default_mode(
             CatalogMode::OfficialPlusCustom
         }
         RelayMode::PureApi => CatalogMode::CustomOnly,
-        RelayMode::Aggregate => CatalogMode::NativeOfficial,
+        _ => unreachable!("unsupported provider modes are rejected before catalog derivation"),
     }
 }
 
@@ -1079,6 +1086,7 @@ pub(crate) fn read_only_catalog_modes_from_path(
     settings: &BackendSettings,
     path: &Path,
 ) -> anyhow::Result<BTreeMap<String, CatalogMode>> {
+    crate::provider_commit::validate_responses_only_settings(settings)?;
     let state = match fs::read(path) {
         Ok(bytes) => Some(
             serde_json::from_slice::<CatalogState>(&bytes)
@@ -1122,6 +1130,7 @@ pub(crate) fn persisted_catalog_mode_from_path(
     path: &Path,
     profile_id: &str,
 ) -> anyhow::Result<Option<CatalogMode>> {
+    crate::provider_commit::validate_responses_only_settings(settings)?;
     let bytes = fs::read(path)?;
     let state =
         serde_json::from_slice::<CatalogState>(&bytes).context("model catalog state is invalid")?;
@@ -1857,6 +1866,7 @@ pub(crate) fn compose_profile_catalog(
     profile: &RelayProfile,
     profile_state: &ProfileCatalogState,
 ) -> anyhow::Result<Value> {
+    crate::provider_commit::validate_responses_only_profile(profile)?;
     validate_overlay(&profile_state.overlay)?;
     let mut root = match profile_state.mode {
         CatalogMode::OfficialPlusCustom => state
@@ -2256,8 +2266,7 @@ fn catalog_file_matches(path: &Path, expected_hash: &str) -> anyhow::Result<bool
 }
 
 pub(crate) fn managed_catalog_capable(profile: &RelayProfile) -> bool {
-    profile.relay_mode != RelayMode::Aggregate
-        && profile.protocol != codex_plus_core::settings::RelayProtocol::ChatCompletions
+    profile.protocol != codex_plus_core::settings::RelayProtocol::ChatCompletions
 }
 
 pub(crate) fn generated_relative_path(profile_id: &str) -> String {
@@ -2953,13 +2962,6 @@ mod tests {
         assert!(
             validate_upstream_topology(&pure_oauth, UpstreamTopology::ServerSideComposite).is_err()
         );
-
-        let mut aggregate = profile.clone();
-        aggregate.relay_mode = RelayMode::Aggregate;
-        assert!(
-            validate_upstream_topology(&aggregate, UpstreamTopology::ServerSideComposite).is_err()
-        );
-        assert!(!managed_catalog_capable(&aggregate));
 
         let mut chat = profile;
         chat.protocol = codex_plus_core::settings::RelayProtocol::ChatCompletions;
@@ -3695,6 +3697,31 @@ mod tests {
     }
 
     #[test]
+    fn adoption_context_cleanup_writes_the_canonical_settings_shape() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let settings = BackendSettings {
+            relay_profiles: vec![RelayProfile {
+                id: "external".to_string(),
+                relay_mode: RelayMode::Official,
+                protocol: codex_plus_core::settings::RelayProtocol::Responses,
+                official_mix_api_key: true,
+                auth_contents: "oauth-copy-must-not-persist".to_string(),
+                ..RelayProfile::default()
+            }],
+            active_relay_id: "external".to_string(),
+            ..BackendSettings::default()
+        };
+
+        let mutation = adoption_settings_mutation(&settings_path, &settings).unwrap();
+        fs::write(&mutation.path, mutation.contents.unwrap()).unwrap();
+        let value: Value = serde_json::from_slice(&fs::read(&settings_path).unwrap()).unwrap();
+        assert!(value.get("aggregateRelayProfiles").is_none());
+        assert!(value.get("activeAggregateRelayId").is_none());
+        assert!(value["relayProfiles"][0].get("authContents").is_none());
+    }
+
+    #[test]
     fn status_loading_is_read_only_for_missing_state_and_migrates_existing_state_in_memory() {
         let temp = tempfile::tempdir().unwrap();
         let missing_path = temp.path().join("missing-state.json");
@@ -3723,6 +3750,46 @@ mod tests {
         let unchanged: CatalogState =
             serde_json::from_slice(&std::fs::read(&existing_path).unwrap()).unwrap();
         assert_eq!(unchanged.version, 1);
+    }
+
+    #[test]
+    fn catalog_entry_points_reject_aggregate_settings_before_derivation_or_mutation() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_path = temp.path().join("model-catalog-state.json");
+        let state_bytes = serde_json::to_vec_pretty(&CatalogState::default()).unwrap();
+        fs::write(&state_path, &state_bytes).unwrap();
+        let mut aggregate = RelayProfile {
+            id: "aggregate".to_string(),
+            relay_mode: RelayMode::Aggregate,
+            protocol: codex_plus_core::settings::RelayProtocol::Responses,
+            ..RelayProfile::default()
+        };
+        aggregate.base_url = "https://relay.example/v1".to_string();
+        let settings = BackendSettings {
+            relay_profiles: vec![aggregate],
+            active_relay_id: "aggregate".to_string(),
+            ..BackendSettings::default()
+        };
+
+        assert!(load_and_migrate_state_from_path(&settings, temp.path(), &state_path).is_err());
+        assert!(read_only_catalog_modes_from_path(&settings, &state_path).is_err());
+        assert!(
+            plan_active_profile_at(
+                temp.path(),
+                &settings,
+                "model = \"gpt-5.5\"\n",
+                false,
+                &state_path,
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read(&state_path).unwrap(), state_bytes);
+        assert!(
+            !temp
+                .path()
+                .join(generated_relative_path("aggregate"))
+                .exists()
+        );
     }
 
     fn runtime_profile(
