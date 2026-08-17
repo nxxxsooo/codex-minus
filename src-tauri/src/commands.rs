@@ -2399,6 +2399,8 @@ impl ProviderCommitPaths {
 pub(crate) struct LegacyModelResetOutcome {
     pub(crate) reset_profiles: Vec<crate::legacy_model_reset::ResetProfileSummary>,
     pub(crate) active_restart_required: bool,
+    committed_settings: Option<BackendSettings>,
+    provider_fingerprint: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2555,10 +2557,12 @@ pub(crate) fn migrate_legacy_model_state_locked_at(
     observe(LegacyModelResetCheckpoint::Planned)
         .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))?;
 
+    let current_typed_settings_bytes = serialize_settings_without_profile_auth(&settings)
+        .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))?;
     let next_settings_bytes = serialize_settings_without_profile_auth(&plan.settings)
         .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))?;
     let mut mutations = Vec::new();
-    if next_settings_bytes != raw_settings {
+    if next_settings_bytes != current_typed_settings_bytes {
         mutations.push(FileMutation::bytes(
             paths.settings_path.clone(),
             next_settings_bytes,
@@ -2628,7 +2632,7 @@ pub(crate) fn migrate_legacy_model_state_locked_at(
         auth_before.as_deref(),
     )?;
 
-    let mut expected_preimages = std::collections::HashMap::new();
+    let mut expected_preimages = std::collections::BTreeMap::new();
     expected_preimages.insert(paths.settings_path.clone(), Some(raw_settings.clone()));
     expected_preimages.insert(paths.catalog_state_path.clone(), raw_state.clone());
     for (path, prior) in &generated_before {
@@ -2637,6 +2641,7 @@ pub(crate) fn migrate_legacy_model_state_locked_at(
     if let Some(live) = &live_before {
         expected_preimages.insert(live_config_path.clone(), Some(live.clone()));
     }
+    expected_preimages.insert(auth_path.clone(), auth_before.clone());
     let mutations = mutations
         .into_iter()
         .map(|mutation| {
@@ -2646,10 +2651,20 @@ pub(crate) fn migrate_legacy_model_state_locked_at(
             Ok(mutation.expecting_preimage(expected))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
+    let observed_preconditions = expected_preimages
+        .into_iter()
+        .map(|(path, expected)| live_state::ObservedFilePrecondition::exact(path, expected))
+        .collect::<Vec<_>>();
 
     let expected_mutations = mutations.clone();
     let reset_profiles = plan.reset_profiles.clone();
     let committed_state = plan.state.clone();
+    let committed_settings = plan.settings.clone();
+    let committed_provider_fingerprint = crate::provider_commit::provider_generation_fingerprint(
+        &crate::provider_commit::ProviderOwnedTopologyDraft::from_settings(&committed_settings),
+        &committed_state,
+    )
+    .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))?;
     let reset_marker_profile_ids = committed_state
         .profiles
         .iter()
@@ -2667,9 +2682,10 @@ pub(crate) fn migrate_legacy_model_state_locked_at(
         .collect::<Vec<_>>();
     let before_commit_observed = std::cell::Cell::new(false);
     let observe = std::cell::RefCell::new(&mut observe);
-    live_state::commit_locked_verified_at_observed_with_prepare(
+    live_state::commit_locked_verified_at_observed_with_preconditions(
         &paths.app_state,
         &mutations,
+        &observed_preconditions,
         || {
             observe.borrow_mut()(LegacyModelResetCheckpoint::BeforeJournalPreparation)?;
             Ok(())
@@ -2720,6 +2736,8 @@ pub(crate) fn migrate_legacy_model_state_locked_at(
     Ok(LegacyModelResetOutcome {
         reset_profiles,
         active_restart_required,
+        provider_fingerprint: committed_provider_fingerprint,
+        committed_settings: Some(committed_settings),
     })
 }
 
@@ -2742,7 +2760,9 @@ fn ensure_live_config_selects_profile(
             let provider = document
                 .get("model_providers")
                 .and_then(|providers| providers.get(provider_id))
+                .and_then(serde_json::Value::as_object)
                 .cloned()
+                .map(serde_json::Value::Object)
                 .ok_or_else(|| legacy_model_reset_error(invalid))?;
             Ok(json!({
                 "selectedProviderId": provider_id,
@@ -2836,6 +2856,7 @@ pub struct ProviderCommitPayload {
     pub draft_revision: u64,
     pub provider_fingerprint: String,
     pub restart_required: bool,
+    pub legacy_model_reset_applied: bool,
     pub error_code: Option<ProviderCommitErrorCode>,
     /// Static rejecting rule. Every value is a literal chosen at the failing call site, so the
     /// discriminator can reach the user without a redaction pass over dynamic content.
@@ -2853,8 +2874,26 @@ impl ProviderCommitPayload {
             draft_revision,
             provider_fingerprint: String::new(),
             restart_required: false,
+            legacy_model_reset_applied: false,
             error_code: Some(error_code),
             reason: Some(reason),
+        }
+    }
+
+    fn legacy_model_reset_applied(
+        settings: BackendSettings,
+        draft_revision: u64,
+        provider_fingerprint: String,
+        restart_required: bool,
+    ) -> Self {
+        Self {
+            settings: Some(sanitize_settings_for_output(settings)),
+            draft_revision,
+            provider_fingerprint,
+            restart_required,
+            legacy_model_reset_applied: true,
+            error_code: Some(ProviderCommitErrorCode::StaleState),
+            reason: Some("legacy model reset applied; requested provider edit was not applied"),
         }
     }
 }
@@ -2872,10 +2911,21 @@ pub enum ProviderCommitErrorCode {
     TransactionFailed,
 }
 
-#[derive(Debug)]
 pub struct ProviderCommitFailure {
     code: ProviderCommitErrorCode,
     message: &'static str,
+    reset_payload: Option<ProviderCommitPayload>,
+}
+
+impl std::fmt::Debug for ProviderCommitFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProviderCommitFailure")
+            .field("code", &self.code)
+            .field("message", &self.message)
+            .field("has_reset_payload", &self.reset_payload.is_some())
+            .finish()
+    }
 }
 
 /// Transaction checkpoints exposed only so isolated regression fixtures can inject failures
@@ -2902,7 +2952,11 @@ pub enum ProviderCommitCheckpoint {
 
 impl ProviderCommitFailure {
     fn new(code: ProviderCommitErrorCode, message: &'static str) -> Self {
-        Self { code, message }
+        Self {
+            code,
+            message,
+            reset_payload: None,
+        }
     }
 
     pub fn code(&self) -> ProviderCommitErrorCode {
@@ -2911,6 +2965,15 @@ impl ProviderCommitFailure {
 
     pub fn reason(&self) -> &'static str {
         self.message
+    }
+
+    pub(crate) fn reset_payload(&self) -> Option<&ProviderCommitPayload> {
+        self.reset_payload.as_ref()
+    }
+
+    fn with_reset_payload(mut self, payload: ProviderCommitPayload) -> Self {
+        self.reset_payload = Some(payload);
+        self
     }
 }
 
@@ -2978,16 +3041,12 @@ pub async fn commit_provider_detail(
     request: crate::provider_commit::ProviderCommitRequest,
 ) -> CommandResult<ProviderCommitPayload> {
     let draft_revision = request.draft_revision;
-    let task =
-        tauri::async_runtime::spawn_blocking(move || {
-            match commit_provider_detail_from_paths(&ProviderCommitPaths::defaults(), request) {
-                Ok(payload) => ok("供应商与模型目录已作为同一代提交。", payload),
-                Err(error) => failed(
-                    "供应商提交失败；已保留原有设置与 live 配置。",
-                    ProviderCommitPayload::failure(draft_revision, error.code(), error.reason()),
-                ),
-            }
-        });
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        provider_commit_command_result(
+            draft_revision,
+            commit_provider_detail_from_paths(&ProviderCommitPaths::defaults(), request),
+        )
+    });
     settle_blocking(
         task,
         "供应商提交中断；已保留原有设置与 live 配置。",
@@ -3000,6 +3059,28 @@ pub async fn commit_provider_detail(
         },
     )
     .await
+}
+
+pub(crate) fn provider_commit_command_result(
+    draft_revision: u64,
+    result: Result<ProviderCommitPayload, ProviderCommitFailure>,
+) -> CommandResult<ProviderCommitPayload> {
+    match result {
+        Ok(payload) => ok("供应商与模型目录已作为同一代提交。", payload),
+        Err(error) if error.reset_payload().is_some() => {
+            let payload = error.reset_payload().cloned().unwrap();
+            let message = if payload.restart_required {
+                "已丢弃旧版自动生成的模型列表并恢复官方模型；本次供应商更改尚未保存。请重启 Codex 后新建任务，再检查更新后的设置并重新保存。"
+            } else {
+                "已丢弃旧版自动生成的模型列表并恢复官方模型；本次供应商更改尚未保存。页面已更新，请检查后重新保存。"
+            };
+            failed(message, payload)
+        }
+        Err(error) => failed(
+            "供应商提交失败；已保留原有设置与 live 配置。",
+            ProviderCommitPayload::failure(draft_revision, error.code(), error.reason()),
+        ),
+    }
 }
 
 pub fn commit_provider_detail_from_paths(
@@ -3040,10 +3121,22 @@ pub fn commit_provider_detail_from_paths_observed(
     let legacy_reset = migrate_legacy_model_state_locked_at(paths, |_| Ok(()))
         .map_err(provider_commit_failure_for_legacy_model_reset)?;
     if !legacy_reset.reset_profiles.is_empty() {
+        let payload = ProviderCommitPayload::legacy_model_reset_applied(
+            legacy_reset.committed_settings.ok_or_else(|| {
+                provider_commit_failure(
+                    ProviderCommitErrorCode::TransactionFailed,
+                    "provider transaction failed",
+                )
+            })?,
+            request.draft_revision,
+            legacy_reset.provider_fingerprint,
+            legacy_reset.active_restart_required,
+        );
         return Err(provider_commit_failure(
             ProviderCommitErrorCode::StaleState,
-            "provider state changed; reload or merge before saving",
-        ));
+            "legacy model reset applied; requested provider edit was not applied",
+        )
+        .with_reset_payload(payload));
     }
 
     let (persisted_settings_bytes, persisted_settings) =
@@ -3076,8 +3169,12 @@ pub fn commit_provider_detail_from_paths_observed(
     // Compare-and-swap is decided here and only here. Restating the accepted baseline keeps the
     // later validators comparing against one agreed generation instead of re-deciding staleness
     // against a form the editor was never shown.
-    request.expected_provider_fingerprint =
-        validate_provider_commit_cas(&persisted_settings, &persisted_as_shown, &request)?;
+    request.expected_provider_fingerprint = validate_provider_commit_cas(
+        &persisted_settings,
+        &persisted_as_shown,
+        &persisted_state,
+        &request,
+    )?;
     validate_provider_commit_catalog_structure(&request)?;
     let focused_id = request.focused_profile_id.clone();
     if focused_id.is_some() {
@@ -3459,8 +3556,9 @@ pub fn commit_provider_detail_from_paths_observed(
             .get(focused_id)
             .is_some_and(|state| state.restart_required)
     });
-    let provider_fingerprint = crate::provider_commit::provider_owned_fingerprint(
+    let provider_fingerprint = crate::provider_commit::provider_generation_fingerprint(
         &ProviderOwnedTopologyDraft::from_settings(&plan.settings),
+        &plan.catalog_state,
     )
     .map_err(|_| {
         provider_commit_failure(
@@ -3473,6 +3571,7 @@ pub fn commit_provider_detail_from_paths_observed(
         draft_revision: plan.draft_revision,
         provider_fingerprint,
         restart_required,
+        legacy_model_reset_applied: false,
         error_code: None,
         reason: None,
     })
@@ -3799,11 +3898,13 @@ fn sanitized_provider_validation_error(
 fn validate_provider_commit_cas(
     persisted_settings: &BackendSettings,
     persisted_as_shown: &BackendSettings,
+    persisted_state: &crate::model_catalog::CatalogState,
     request: &crate::provider_commit::ProviderCommitRequest,
 ) -> Result<String, ProviderCommitFailure> {
-    let fingerprint = |settings: &BackendSettings| {
-        crate::provider_commit::provider_owned_fingerprint(
+    let generation_fingerprint = |settings: &BackendSettings| {
+        crate::provider_commit::provider_generation_fingerprint(
             &crate::provider_commit::ProviderOwnedTopologyDraft::from_settings(settings),
+            persisted_state,
         )
         .map_err(|_| {
             provider_commit_failure(
@@ -3812,16 +3913,24 @@ fn validate_provider_commit_cas(
             )
         })
     };
-    let expected = fingerprint(persisted_settings)?;
+    let expected = generation_fingerprint(persisted_settings)?;
     let accepted = request.expected_provider_fingerprint == expected
-        || request.expected_provider_fingerprint == fingerprint(persisted_as_shown)?;
+        || request.expected_provider_fingerprint == generation_fingerprint(persisted_as_shown)?;
     if !accepted || request.previous_active_relay_id != persisted_settings.active_relay_id {
         return Err(provider_commit_failure(
             ProviderCommitErrorCode::StaleState,
             "provider state changed; reload or merge before saving",
         ));
     }
-    Ok(expected)
+    crate::provider_commit::provider_owned_fingerprint(
+        &crate::provider_commit::ProviderOwnedTopologyDraft::from_settings(persisted_settings),
+    )
+    .map_err(|_| {
+        provider_commit_failure(
+            ProviderCommitErrorCode::InvalidDraft,
+            "provider fingerprint validation failed",
+        )
+    })
 }
 
 fn validate_provider_commit_catalog_structure(
@@ -6060,8 +6169,25 @@ fn settings_payload_value() -> Result<SettingsPayload, (anyhow::Error, SettingsP
     match store.load() {
         Ok(settings) => {
             let settings = sanitize_settings_for_output(settings);
-            let provider_fingerprint = crate::provider_commit::provider_owned_fingerprint(
+            let state = crate::model_catalog::load_and_migrate_state_from_path(
+                &settings,
+                &codex_plus_core::relay_config::default_codex_home_dir(),
+                &crate::model_catalog::catalog_state_path(),
+            )
+            .map_err(|error| {
+                (
+                    error,
+                    SettingsPayload {
+                        settings: BackendSettings::default(),
+                        settings_path: settings_path.clone(),
+                        user_scripts: user_script_inventory(),
+                        provider_fingerprint: String::new(),
+                    },
+                )
+            })?;
+            let provider_fingerprint = crate::provider_commit::provider_generation_fingerprint(
                 &crate::provider_commit::ProviderOwnedTopologyDraft::from_settings(&settings),
+                &state,
             )
             .unwrap_or_default();
             Ok(SettingsPayload {

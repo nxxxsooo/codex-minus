@@ -141,7 +141,7 @@ export function settleProviderCommit<T>(
 ): { state: ProviderCommitUiState<T>; disposition: ProviderCommitResponseDisposition } {
   const disposition = providerCommitResponseDisposition(revision, state.latestRevision, succeeded);
   return {
-    state: succeeded && baseline ? { ...state, baseline } : state,
+    state: baseline && disposition !== "ignore" ? { ...state, baseline } : state,
     disposition,
   };
 }

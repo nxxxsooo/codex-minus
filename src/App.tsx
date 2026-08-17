@@ -267,6 +267,7 @@ export function App() {
     latestRevision: 0,
     baseline: null,
   });
+  const modelCatalogRequestRevision = useRef(0);
 
   const call = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
 
@@ -319,18 +320,22 @@ export function App() {
     return result;
   };
 
-  const refreshModelCatalog = async (silent = false) => {
-    if (modelCatalogLoading) return null;
+  const refreshModelCatalog = async (silent = false, force = false) => {
+    if (modelCatalogLoading && !force) return null;
+    const requestRevision = ++modelCatalogRequestRevision.current;
     setModelCatalogLoading(true);
     try {
       const result = await run(() => call<ModelCatalogStatusResult>("model_catalog_status"));
+      if (requestRevision !== modelCatalogRequestRevision.current) return null;
+      const expectedProviderFingerprint = providerCommitState.current.baseline?.provider_fingerprint;
+      if (result && expectedProviderFingerprint && result.providerFingerprint !== expectedProviderFingerprint) return null;
       if (result) {
         setModelCatalog(result);
         if (!silent && !isSuccessStatus(result.status)) showNotice(t("模型目录"), result.message, result.status);
       }
       return result;
     } finally {
-      setModelCatalogLoading(false);
+      if (requestRevision === modelCatalogRequestRevision.current) setModelCatalogLoading(false);
     }
   };
 
@@ -606,8 +611,8 @@ export function App() {
   const navigate = async (next: Route) => {
     setRoute(next);
     if (next === "relay") {
+      await refreshSettings(true);
       await Promise.all([
-        refreshSettings(true),
         refreshRelay(true),
         refreshRelayFiles(true),
         refreshEnvConflicts(true),
@@ -731,7 +736,7 @@ export function App() {
   const refreshAfterCommit = () => {
     void refreshRelay(true);
     void refreshRelayFiles(true);
-    void refreshModelCatalog(true);
+    void refreshModelCatalog(true, true);
   };
 
   const submitProviderCommit = async (invocation: ReturnType<typeof buildProviderMutationInvocation>) => {
@@ -760,9 +765,10 @@ export function App() {
       return false;
     }
     const succeeded = isSuccessStatus(result.status) && !!result.settings;
+    const resetApplied = result.legacyModelResetApplied === true && !!result.settings && !!result.providerFingerprint;
     const selectedSettings = result.settings ? normalizeSettings(result.settings) : null;
     const priorBaseline = providerCommitState.current.baseline ?? settings;
-    const nextBaseline = succeeded && selectedSettings
+    const nextBaseline = (succeeded || resetApplied) && selectedSettings
       ? {
           status: result.status,
           message: result.message,
@@ -781,6 +787,15 @@ export function App() {
     providerCommitState.current = settled.state;
     if (settled.disposition === "ignore") return false;
     if (settled.disposition === "report") {
+      if (resetApplied && nextBaseline && selectedSettings) {
+        setSettings(nextBaseline);
+        setSettingsForm(selectedSettings);
+        setModelCatalog(null);
+        refreshAfterCommit();
+        const failure = providerCommitFailureNotice(result.message, result.errorCode, result.reason);
+        showNotice(t("模型目录已恢复"), result.message, result.status, failure.detail);
+        return false;
+      }
       await reconcileTopologyFailure(settled.disposition);
       const failure = providerCommitFailureNotice(result.message, result.errorCode, result.reason);
       showNotice(t("保存供应商"), failure.sentence, result.status, failure.detail);
@@ -1059,13 +1074,10 @@ export function App() {
   };
 
   useEffect(() => {
-    void Promise.all([
-      refreshSettings(true),
-      refreshRelay(true),
-      refreshRelayFiles(true),
-      refreshEnvConflicts(true),
-      refreshModelCatalog(true),
-    ]);
+    void (async () => {
+      await refreshSettings(true);
+      await Promise.all([refreshRelay(true), refreshRelayFiles(true), refreshEnvConflicts(true), refreshModelCatalog(true)]);
+    })();
     const scheduleMaintenance = () => {
       void refreshSessionLifecycle(true).then((result) => {
         if (result?.archiveEnabled) void runArchiveMaintenance();

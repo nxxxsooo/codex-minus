@@ -420,6 +420,62 @@ pub fn provider_owned_fingerprint(topology: &ProviderOwnedTopologyDraft) -> anyh
     Ok(format!("sha256:{:x}", Sha256::digest(canonical)))
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderGenerationFingerprintMaterial<'a> {
+    version: &'static str,
+    topology: &'a ProviderOwnedTopologyDraft,
+    catalogs: BTreeMap<String, EditableCatalogFingerprintMaterial>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EditableCatalogFingerprintMaterial {
+    mode: CatalogMode,
+    mode_explicit: bool,
+    upstream_topology: UpstreamTopology,
+    overlay: CatalogOverlay,
+    external_pointer: Option<String>,
+}
+
+pub fn provider_generation_fingerprint(
+    topology: &ProviderOwnedTopologyDraft,
+    state: &CatalogState,
+) -> anyhow::Result<String> {
+    let catalogs = topology
+        .relay_profiles
+        .iter()
+        .map(|profile| {
+            let stored = state.profiles.get(&profile.id).cloned().unwrap_or_else(|| {
+                let relay_profile = RelayProfile::from(profile);
+                ProfileCatalogState {
+                    mode: model_catalog::default_catalog_mode_for_profile(&relay_profile),
+                    ..ProfileCatalogState::default()
+                }
+            });
+            (
+                profile.id.clone(),
+                EditableCatalogFingerprintMaterial {
+                    mode: stored.mode,
+                    mode_explicit: stored.mode_explicit,
+                    upstream_topology: stored.upstream_topology,
+                    overlay: stored.overlay,
+                    external_pointer: stored.external_pointer,
+                },
+            )
+        })
+        .collect();
+    let material = ProviderGenerationFingerprintMaterial {
+        version: "provider-generation-v1",
+        topology,
+        catalogs,
+    };
+    Ok(format!(
+        "sha256:{:x}",
+        Sha256::digest(serde_json::to_vec(&material)?)
+    ))
+}
+
 pub fn provider_fingerprint_status(
     settings: &BackendSettings,
 ) -> anyhow::Result<ProviderFingerprintStatus> {
@@ -1157,6 +1213,69 @@ mod tests {
         );
         assert!(!status_json.contains("secret-relay-a"));
         assert!(!status_json.contains("official-a"));
+    }
+
+    #[test]
+    fn generation_fingerprint_includes_editable_catalog_semantics_only() {
+        let settings = settings_with(vec![mixed_profile("relay-a", "official-a")], "relay-a");
+        let topology = ProviderOwnedTopologyDraft::from_settings(&settings);
+        let mut state = CatalogState::default();
+        state.profiles.insert(
+            "relay-a".to_string(),
+            ProfileCatalogState {
+                mode: CatalogMode::OfficialPlusCustom,
+                ..ProfileCatalogState::default()
+            },
+        );
+        let baseline = provider_generation_fingerprint(&topology, &state).unwrap();
+
+        let mut editable = state.clone();
+        editable
+            .profiles
+            .get_mut("relay-a")
+            .unwrap()
+            .overlay
+            .custom
+            .push(CustomModel {
+                slug: "custom-a".to_string(),
+                display_name: "Custom A".to_string(),
+                ..CustomModel::default()
+            });
+        assert_ne!(
+            provider_generation_fingerprint(&topology, &editable).unwrap(),
+            baseline
+        );
+        let mut editable = state.clone();
+        let profile = editable.profiles.get_mut("relay-a").unwrap();
+        profile.mode = CatalogMode::External;
+        profile.mode_explicit = true;
+        profile.external_pointer = Some("/private/catalog.json".to_string());
+        profile.upstream_topology = UpstreamTopology::ServerSideComposite;
+        assert_ne!(
+            provider_generation_fingerprint(&topology, &editable).unwrap(),
+            baseline
+        );
+
+        let mut bookkeeping = state.clone();
+        bookkeeping.operation_generation = 99;
+        let profile = bookkeeping.profiles.get_mut("relay-a").unwrap();
+        profile.legacy_model_reset_version = 42;
+        profile.generated_path = Some("model-catalogs/generated.json".to_string());
+        profile.generated_hash = Some("generated-hash".to_string());
+        profile.generation = 17;
+        profile.restart_required = true;
+        profile.action_required = Some("catalog-readiness-unavailable".to_string());
+        profile.provider_evidence = Some(crate::model_catalog::ProviderEvidence {
+            fetched_at_ms: 1,
+            endpoint: "sha256:evidence".to_string(),
+            reported_slugs: vec!["reported".to_string()],
+            candidate_slugs: vec!["candidate".to_string()],
+        });
+        profile.applied_runtime_fingerprint = Some("runtime".to_string());
+        assert_eq!(
+            provider_generation_fingerprint(&topology, &bookkeeping).unwrap(),
+            baseline
+        );
     }
 
     #[test]

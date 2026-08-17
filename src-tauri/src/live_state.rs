@@ -50,6 +50,21 @@ enum ExpectedPreimage {
     Exact(Option<Vec<u8>>),
 }
 
+#[derive(Clone)]
+pub(crate) struct ObservedFilePrecondition {
+    path: PathBuf,
+    expected: Option<Vec<u8>>,
+}
+
+impl ObservedFilePrecondition {
+    pub(crate) fn exact(path: impl Into<PathBuf>, expected: Option<Vec<u8>>) -> Self {
+        Self {
+            path: path.into(),
+            expected,
+        }
+    }
+}
+
 impl FileMutation {
     pub fn text(path: impl Into<PathBuf>, contents: impl Into<String>) -> Self {
         Self {
@@ -331,12 +346,34 @@ pub(crate) fn commit_locked_verified_at_observed_with_prepare(
     verify: impl FnOnce() -> anyhow::Result<()>,
     after_post_commit_verification: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
+    commit_locked_verified_at_observed_with_preconditions(
+        app_state,
+        mutations,
+        &[],
+        before_journal_preparation,
+        &mut after_apply,
+        verify,
+        after_post_commit_verification,
+    )
+}
+
+pub(crate) fn commit_locked_verified_at_observed_with_preconditions(
+    app_state: &Path,
+    mutations: &[FileMutation],
+    preconditions: &[ObservedFilePrecondition],
+    before_journal_preparation: impl FnOnce() -> anyhow::Result<()>,
+    mut after_apply: impl FnMut(&Path) -> anyhow::Result<()>,
+    verify: impl FnOnce() -> anyhow::Result<()>,
+    after_post_commit_verification: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
     recover_locked_at(app_state)?;
     validate_mutations(mutations)?;
+    validate_observed_preconditions(preconditions, mutations)?;
     if mutations.is_empty() {
         return Ok(());
     }
     before_journal_preparation().context("live-state preparation observation failed")?;
+    verify_observed_preconditions(preconditions)?;
 
     ensure_owner_only_dir(&app_state)?;
     let transaction_id = transaction_id();
@@ -440,6 +477,55 @@ pub(crate) fn commit_locked_verified_at_observed_with_prepare(
             )),
             None => Err(error),
         };
+    }
+    Ok(())
+}
+
+fn validate_observed_preconditions(
+    preconditions: &[ObservedFilePrecondition],
+    mutations: &[FileMutation],
+) -> anyhow::Result<()> {
+    let mutation_paths = mutations
+        .iter()
+        .map(|mutation| mutation.path.clone())
+        .collect::<HashSet<_>>();
+    let mut seen = HashSet::new();
+    for precondition in preconditions {
+        ensure!(
+            precondition.path.is_absolute(),
+            "transaction observation path must be absolute"
+        );
+        ensure!(
+            seen.insert(precondition.path.clone()),
+            "duplicate transaction observation path"
+        );
+        ensure!(
+            !mutation_paths.contains(&precondition.path),
+            "transaction observation path is also a mutation target"
+        );
+    }
+    Ok(())
+}
+
+fn verify_observed_preconditions(preconditions: &[ObservedFilePrecondition]) -> anyhow::Result<()> {
+    for precondition in preconditions {
+        let current = match fs::read(&precondition.path) {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to observe transaction dependency {}",
+                        precondition.path.display()
+                    )
+                });
+            }
+        };
+        ensure!(
+            current == precondition.expected,
+            "transaction observation precondition mismatch for {}",
+            precondition.path.display()
+        );
     }
     Ok(())
 }
@@ -813,6 +899,60 @@ mod tests {
     }
 
     #[test]
+    fn file_mutation_constructors_remain_unconstrained() {
+        let text = FileMutation::text(PathBuf::from("/tmp/text.json"), "{}");
+        let bytes = FileMutation::bytes(PathBuf::from("/tmp/bytes.json"), b"{}".to_vec());
+        assert!(matches!(
+            text.expected_preimage,
+            ExpectedPreimage::Unconstrained
+        ));
+        assert!(matches!(
+            bytes.expected_preimage,
+            ExpectedPreimage::Unconstrained
+        ));
+    }
+
+    #[test]
+    fn version_one_journal_without_observations_deserializes_and_recovers() {
+        let temp = tempfile::tempdir().unwrap();
+        let app_state = temp.path().join("app-state");
+        let transaction_id = "legacy-version-one";
+        let transaction_dir = app_state.join(TRANSACTION_ROOT).join(transaction_id);
+        let target = temp.path().join("target.json");
+        let prior_stage = transaction_dir.join("0.prior");
+        let target_stage = transaction_dir.join("0.target");
+        ensure_owner_only_dir(&app_state).unwrap();
+        ensure_owner_only_dir(&app_state.join(TRANSACTION_ROOT)).unwrap();
+        ensure_owner_only_dir(&transaction_dir).unwrap();
+        atomic_write_owner_only(&target, b"target-v1").unwrap();
+        atomic_write_owner_only(&prior_stage, b"prior-v1").unwrap();
+        atomic_write_owner_only(&target_stage, b"target-v1").unwrap();
+        let literal_v1 = serde_json::json!({
+            "version": 1,
+            "transactionId": transaction_id,
+            "phase": "applying",
+            "appliedCount": 1,
+            "entries": [{
+                "targetPath": target,
+                "targetStagePath": target_stage,
+                "priorStagePath": prior_stage,
+                "targetHash": content_hash(b"target-v1"),
+                "priorHash": content_hash(b"prior-v1")
+            }]
+        });
+        let literal_text = serde_json::to_string_pretty(&literal_v1).unwrap();
+        assert!(!literal_text.contains("observedPreconditions"));
+        atomic_write_owner_only(&journal_path(&app_state), literal_text.as_bytes()).unwrap();
+
+        let recovered = recover_locked_at(&app_state).unwrap();
+
+        assert_eq!(recovered, RecoveryOutcome::RolledForward);
+        assert_eq!(fs::read(target).unwrap(), b"target-v1");
+        assert!(!journal_path(&app_state).exists());
+        assert!(!transaction_dir.exists());
+    }
+
+    #[test]
     fn journal_contains_hashes_and_paths_only() {
         let journal = TransactionJournal {
             version: 1,
@@ -864,6 +1004,40 @@ mod tests {
         assert!(
             !transaction_root.exists() || fs::read_dir(transaction_root).unwrap().next().is_none()
         );
+    }
+
+    #[test]
+    fn observed_precondition_mismatch_aborts_before_mutation_staging() {
+        let temp = tempfile::tempdir().unwrap();
+        let app_state = temp.path().join("app-state");
+        let target = temp.path().join("target.json");
+        let observed = temp.path().join("observed.json");
+        ensure_owner_only_dir(&app_state).unwrap();
+        atomic_write_owner_only(&target, b"target-prior").unwrap();
+        atomic_write_owner_only(&observed, b"newer-observed-generation").unwrap();
+        let mutations = [FileMutation::bytes(target.clone(), b"target-next".to_vec())
+            .expecting_preimage(Some(b"target-prior".to_vec()))];
+        let preconditions = [ObservedFilePrecondition::exact(
+            observed.clone(),
+            Some(b"stale-observed-generation".to_vec()),
+        )];
+
+        let error = commit_locked_verified_at_observed_with_preconditions(
+            &app_state,
+            &mutations,
+            &preconditions,
+            || Ok(()),
+            |_| Ok(()),
+            || Ok(()),
+            || Ok(()),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("observation precondition"));
+        assert_eq!(fs::read(target).unwrap(), b"target-prior");
+        assert_eq!(fs::read(observed).unwrap(), b"newer-observed-generation");
+        assert!(!journal_path(&app_state).exists());
+        assert!(!app_state.join(TRANSACTION_ROOT).exists());
     }
 
     #[test]

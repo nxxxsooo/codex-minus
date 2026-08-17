@@ -187,6 +187,7 @@ export type ProviderCommitResult = CommandResult<{
   draftRevision: number;
   providerFingerprint: string;
   restartRequired: boolean;
+  legacyModelResetApplied: boolean;
   errorCode: string | null;
   reason: string | null;
 }>;
@@ -389,6 +390,7 @@ export type ProfileCatalogSummary = {
 
 export type ModelCatalogStatusResult = CommandResult<{
   statePath: string;
+  providerFingerprint: string;
   source: string;
   targetClientVersion: string | null;
   targetCliPath: string | null;

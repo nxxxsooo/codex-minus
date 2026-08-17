@@ -99,6 +99,22 @@ describe("provider-owned commit request", () => {
     settled = commitModule.settleProviderCommit(settled.state, 3, false, null);
     assert.equal(settled.disposition, "report");
     assert.equal(settled.state.baseline, "persisted-2");
+    const resetSettled = commitModule.settleProviderCommit(
+      settled.state,
+      3,
+      false,
+      "reset-baseline-3",
+    );
+    assert.equal(resetSettled.disposition, "report");
+    assert.equal(resetSettled.state.baseline, "reset-baseline-3");
+    const obsoleteReset = commitModule.settleProviderCommit(
+      resetSettled.state,
+      2,
+      false,
+      "obsolete-reset-baseline-2",
+    );
+    assert.equal(obsoleteReset.disposition, "ignore");
+    assert.equal(obsoleteReset.state.baseline, "reset-baseline-3");
     assert.equal(
       commitModule.providerCommitFailureShouldReconcileForm(null, settled.disposition),
       true,
@@ -598,6 +614,25 @@ describe("the shell renders failures as sentence plus 详情", () => {
     assert.match(appSource, /showNotice\(t\("保存供应商"\), failure\.sentence, result\.status, failure\.detail\)/);
     // The composed one-string renderer is gone; nothing concatenates a code into the sentence.
     assert.doesNotMatch(appSource, /providerCommitFailureMessage/);
+  });
+
+  it("adopts an automatic-reset baseline while keeping the requested edit failed", () => {
+    assert.match(appSource, /const resetApplied = result\.legacyModelResetApplied === true/);
+    assert.match(appSource, /succeeded \|\| resetApplied/);
+    assert.match(
+      appSource,
+      /if \(resetApplied[\s\S]*?setSettings\(nextBaseline\)[\s\S]*?setSettingsForm\(selectedSettings\)[\s\S]*?setModelCatalog\(null\)[\s\S]*?refreshAfterCommit\(\)[\s\S]*?return false;/,
+    );
+    assert.match(appSource, /const refreshAfterCommit[\s\S]*?refreshModelCatalog\(true, true\)/);
+    assert.match(appSource, /result\.providerFingerprint !== expectedProviderFingerprint/);
+    assert.match(appSource, /modelCatalogRequestRevision\.current/);
+  });
+
+  it("runs the settings migration boundary before startup and relay catalog reads", () => {
+    const navigate = appSource.match(/const navigate = async[\s\S]*?\n  \};/)?.[0] ?? "";
+    assert.match(navigate, /await refreshSettings\(true\);[\s\S]*?refreshModelCatalog\(true\)/);
+    const startup = appSource.match(/useEffect\(\(\) => \{[\s\S]*?scheduleMaintenance/)?.[0] ?? "";
+    assert.match(startup, /await refreshSettings\(true\);[\s\S]*?refreshModelCatalog\(true\)/);
   });
 
   it("keeps every raw thrown error behind 详情 instead of leading with it", () => {

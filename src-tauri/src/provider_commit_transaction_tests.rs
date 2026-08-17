@@ -3,16 +3,17 @@ use std::fs;
 use crate::commands::{
     GenericSettingsSaveError, LegacyModelResetCheckpoint, ProviderCommitCheckpoint,
     ProviderCommitErrorCode, ProviderCommitPaths, ProviderCommitPayload,
-    assert_staged_native_provider_contract, commit_provider_detail_from_paths,
-    commit_provider_detail_from_paths_observed, migrate_legacy_model_state_locked_at,
-    prepare_settings_load_at, save_settings_with_provider_guard_at,
-    save_settings_with_provider_guard_at_observed, settings_snapshot_for_ui_projection,
-    ui_provider_topology_projection,
+    assert_staged_native_provider_contract,
+    commit_provider_detail_from_paths as commit_provider_detail_from_paths_raw,
+    commit_provider_detail_from_paths_observed as commit_provider_detail_from_paths_observed_raw,
+    migrate_legacy_model_state_locked_at, prepare_settings_load_at, provider_commit_command_result,
+    save_settings_with_provider_guard_at, save_settings_with_provider_guard_at_observed,
+    settings_snapshot_for_ui_projection, ui_provider_topology_projection,
 };
 use crate::provider_commit::{
     CatalogMode, CatalogOverlay, CatalogState, CustomModel, OfficialSnapshot, ProfileCatalogDraft,
     ProviderCommitAction, ProviderCommitRequest, ProviderOwnedTopologyDraft, UpstreamTopology,
-    provider_owned_fingerprint,
+    provider_generation_fingerprint, provider_owned_fingerprint,
 };
 use base64::Engine;
 use codex_plus_core::settings::{
@@ -191,6 +192,120 @@ fn request(
         )
         .unwrap(),
     }
+}
+
+/// Most transaction tests predate the catalog-semantic generation token and intentionally focus
+/// on a different boundary. Upgrade only a topology-only token that still matches the current
+/// fixture generation; explicit stale tokens and the dedicated generation-CAS tests bypass this
+/// adapter and call the raw command entry point.
+fn upgrade_legacy_test_fingerprint(
+    paths: &ProviderCommitPaths,
+    request: &mut ProviderCommitRequest,
+) {
+    let Ok(bytes) = fs::read(&paths.settings_path) else {
+        return;
+    };
+    let Ok(raw_settings) = serde_json::from_slice::<BackendSettings>(&bytes) else {
+        return;
+    };
+    let mut shown = raw_settings.clone();
+    for profile in &mut shown.relay_profiles {
+        profile.auth_contents.clear();
+    }
+    let mut legacy_ui = raw_settings.clone();
+    for profile in &mut legacy_ui.relay_profiles {
+        if codex_plus_core::relay_config::normalize_relay_profile_for_storage(profile).is_err() {
+            return;
+        }
+        if profile.relay_mode == RelayMode::PureApi {
+            let Ok(mut document) = profile.config_contents.parse::<toml_edit::DocumentMut>() else {
+                return;
+            };
+            let Some(provider_id) = document
+                .get("model_provider")
+                .and_then(toml_edit::Item::as_str)
+                .map(ToString::to_string)
+            else {
+                return;
+            };
+            document["model_providers"][&provider_id]["experimental_bearer_token"] =
+                toml_edit::value(profile.api_key.trim());
+            document["model_providers"][&provider_id]["requires_openai_auth"] =
+                toml_edit::value(false);
+            profile.config_contents = document.to_string();
+        }
+        profile.auth_contents.clear();
+    }
+    let mut settings = raw_settings;
+    for profile in &mut settings.relay_profiles {
+        if profile.api_key.trim().is_empty()
+            && let Some(key) = serde_json::from_str::<Value>(&profile.auth_contents)
+                .ok()
+                .and_then(|value| value.get("OPENAI_API_KEY")?.as_str().map(str::to_string))
+        {
+            profile.api_key = key;
+        }
+        profile.auth_contents.clear();
+        if codex_plus_core::relay_config::normalize_relay_profile_for_storage(profile).is_err() {
+            return;
+        }
+        if !profile.api_key.trim().is_empty() {
+            let Ok(mut document) = profile.config_contents.parse::<toml_edit::DocumentMut>() else {
+                return;
+            };
+            let Some(provider_id) = document
+                .get("model_provider")
+                .and_then(toml_edit::Item::as_str)
+                .map(ToString::to_string)
+            else {
+                return;
+            };
+            document["model_providers"][&provider_id]["experimental_bearer_token"] =
+                toml_edit::value(profile.api_key.trim());
+            if profile.relay_mode == RelayMode::PureApi {
+                document["model_providers"][&provider_id]["requires_openai_auth"] =
+                    toml_edit::value(false);
+            }
+            profile.config_contents = document.to_string();
+        }
+    }
+    let candidates = [&settings, &legacy_ui, &shown];
+    let matched = candidates.into_iter().any(|candidate| {
+        let topology = ProviderOwnedTopologyDraft::from_settings(candidate);
+        provider_owned_fingerprint(&topology).ok().as_deref()
+            == Some(request.expected_provider_fingerprint.as_str())
+    });
+    if !matched {
+        return;
+    }
+    let topology = ProviderOwnedTopologyDraft::from_settings(&settings);
+    let Ok(state) = crate::model_catalog::load_and_migrate_state_from_path(
+        &settings,
+        &paths.codex_home,
+        &paths.catalog_state_path,
+    ) else {
+        return;
+    };
+    if let Ok(fingerprint) = provider_generation_fingerprint(&topology, &state) {
+        request.expected_provider_fingerprint = fingerprint;
+    }
+}
+
+fn commit_provider_detail_from_paths(
+    paths: &ProviderCommitPaths,
+    mut request: ProviderCommitRequest,
+) -> Result<ProviderCommitPayload, crate::commands::ProviderCommitFailure> {
+    upgrade_legacy_test_fingerprint(paths, &mut request);
+    commit_provider_detail_from_paths_raw(paths, request)
+}
+
+fn commit_provider_detail_from_paths_observed(
+    paths: &ProviderCommitPaths,
+    mut request: ProviderCommitRequest,
+    observe: impl FnMut(ProviderCommitCheckpoint) -> anyhow::Result<()>,
+) -> Result<ProviderCommitPayload, crate::commands::ProviderCommitFailure> {
+    upgrade_legacy_test_fingerprint(paths, &mut request);
+    commit_provider_detail_from_paths_observed_raw(paths, request, observe)
 }
 
 struct Fixture {
@@ -412,6 +527,93 @@ enabled = true
     fixture
 }
 
+fn state_only_legacy_overlay_fixture() -> (Fixture, ProviderCommitRequest) {
+    let fixture = eva_legacy_model_fixture();
+    let mut settings: BackendSettings =
+        serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+    let profile = settings
+        .relay_profiles
+        .iter_mut()
+        .find(|profile| profile.id == "eva")
+        .unwrap();
+    profile.model = "gpt-5.6-terra".to_string();
+    profile.model_list.clear();
+    profile.model_windows.clear();
+    profile.config_contents =
+        crate::legacy_model_reset::set_top_level_model(&profile.config_contents, "gpt-5.6-terra")
+            .unwrap();
+    fs::write(
+        &fixture.paths.settings_path,
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    let live_path = fixture.paths.codex_home.join("config.toml");
+    fs::write(
+        &live_path,
+        crate::legacy_model_reset::set_top_level_model(
+            &fs::read_to_string(&live_path).unwrap(),
+            "gpt-5.6-terra",
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let persisted = fixture.read_settings();
+    let mut request = request(
+        &persisted,
+        &persisted,
+        "eva",
+        ProviderCommitAction::Save,
+        903,
+    );
+    request.catalog_drafts[0].overlay.custom = vec![CustomModel {
+        slug: "gpt-5".to_string(),
+        display_name: "gpt-5".to_string(),
+        template_provenance: "legacy-model-list".to_string(),
+        ..CustomModel::default()
+    }];
+    request.expected_provider_fingerprint = provider_generation_fingerprint(
+        &ProviderOwnedTopologyDraft::from_settings(&persisted),
+        &fixture.read_state(),
+    )
+    .unwrap();
+    (fixture, request)
+}
+
+fn inactive_state_only_legacy_overlay_set_current_fixture() -> (Fixture, ProviderCommitRequest) {
+    let (fixture, _) = state_only_legacy_overlay_fixture();
+    let mut settings: BackendSettings =
+        serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+    settings.relay_profiles.push(pure_oauth_profile("official"));
+    settings.active_relay_id = "official".to_string();
+    fs::write(
+        &fixture.paths.settings_path,
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    let persisted = fixture.read_settings();
+    let mut next = persisted.clone();
+    next.active_relay_id = "eva".to_string();
+    let mut request = request(
+        &persisted,
+        &next,
+        "eva",
+        ProviderCommitAction::SetCurrent,
+        909,
+    );
+    request.catalog_drafts[0].overlay.custom = vec![CustomModel {
+        slug: "gpt-5".to_string(),
+        display_name: "gpt-5".to_string(),
+        template_provenance: "legacy-model-list".to_string(),
+        ..CustomModel::default()
+    }];
+    request.expected_provider_fingerprint = provider_generation_fingerprint(
+        &ProviderOwnedTopologyDraft::from_settings(&persisted),
+        &fixture.read_state(),
+    )
+    .unwrap();
+    (fixture, request)
+}
+
 #[test]
 fn eva_legacy_model_reset_commits_one_protected_generation() {
     let fixture = eva_legacy_model_fixture();
@@ -625,8 +827,9 @@ fn legacy_model_reset_state_only_change_invalidates_a_stale_catalog_draft() {
     assert_eq!(error.code(), ProviderCommitErrorCode::StaleState);
     assert_eq!(
         error.reason(),
-        "provider state changed; reload or merge before saving"
+        "legacy model reset applied; requested provider edit was not applied"
     );
+    assert!(error.reset_payload().is_some());
     let state = fixture.read_state();
     assert_eq!(
         state.profiles["eva"].legacy_model_reset_version,
@@ -634,6 +837,154 @@ fn legacy_model_reset_state_only_change_invalidates_a_stale_catalog_draft() {
     );
     assert!(state.profiles["eva"].overlay.custom.is_empty());
     assert!(!generated_catalog_text(&fixture.paths.codex_home, "eva").contains("\"gpt-5\""));
+}
+
+#[test]
+fn legacy_model_reset_generation_cas_rejects_repeated_save_set_current_and_topology_requests() {
+    for shape in ["save", "set-current", "topology"] {
+        let (fixture, mut stale) = if shape == "set-current" {
+            inactive_state_only_legacy_overlay_set_current_fixture()
+        } else {
+            state_only_legacy_overlay_fixture()
+        };
+        if shape == "set-current" {
+            stale.action = ProviderCommitAction::SetCurrent;
+        } else if shape == "topology" {
+            stale.focused_profile_id = None;
+            stale.catalog_drafts.clear();
+            stale.topology.relay_profiles_enabled = false;
+        }
+        let old_fingerprint = stale.expected_provider_fingerprint.clone();
+
+        let first =
+            commit_provider_detail_from_paths_raw(&fixture.paths, stale.clone()).unwrap_err();
+
+        assert_eq!(first.code(), ProviderCommitErrorCode::StaleState, "{shape}");
+        assert!(
+            !format!("{first:?}").contains("eva-provider-key"),
+            "{shape}"
+        );
+        assert_eq!(
+            first.reason(),
+            "legacy model reset applied; requested provider edit was not applied",
+            "{shape}"
+        );
+        let replacement = first
+            .reset_payload()
+            .expect("reset failure carries new baseline");
+        assert!(replacement.settings.is_some(), "{shape}");
+        assert_eq!(
+            replacement.restart_required,
+            shape != "set-current",
+            "{shape}"
+        );
+        assert!(!replacement.provider_fingerprint.is_empty(), "{shape}");
+        assert_ne!(replacement.provider_fingerprint, old_fingerprint, "{shape}");
+        assert_eq!(
+            replacement.error_code,
+            Some(ProviderCommitErrorCode::StaleState)
+        );
+        assert_eq!(replacement.reason, Some(first.reason()));
+        if shape == "set-current" {
+            assert_eq!(
+                replacement.settings.as_ref().unwrap().active_relay_id,
+                "official"
+            );
+        } else if shape == "topology" {
+            assert!(
+                replacement
+                    .settings
+                    .as_ref()
+                    .unwrap()
+                    .relay_profiles_enabled
+            );
+        }
+        assert!(
+            fixture.read_state().profiles["eva"]
+                .overlay
+                .custom
+                .is_empty()
+        );
+
+        let second = commit_provider_detail_from_paths_raw(&fixture.paths, stale).unwrap_err();
+
+        assert_eq!(
+            second.code(),
+            ProviderCommitErrorCode::StaleState,
+            "{shape}"
+        );
+        assert_eq!(
+            second.reason(),
+            "provider state changed; reload or merge before saving",
+            "{shape}"
+        );
+        assert!(second.reset_payload().is_none(), "{shape}");
+        assert!(
+            fixture.read_state().profiles["eva"]
+                .overlay
+                .custom
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn legacy_model_reset_command_response_truthfully_carries_the_authoritative_generation() {
+    let (fixture, stale) = state_only_legacy_overlay_fixture();
+    let draft_revision = stale.draft_revision;
+    let command_result = provider_commit_command_result(
+        draft_revision,
+        commit_provider_detail_from_paths_raw(&fixture.paths, stale),
+    );
+
+    assert_eq!(command_result.status, "failed");
+    assert!(command_result.message.contains("旧版自动生成的模型列表"));
+    assert!(command_result.message.contains("本次供应商更改尚未保存"));
+    assert!(
+        !command_result
+            .message
+            .contains("已保留原有设置与 live 配置")
+    );
+    assert!(command_result.payload.legacy_model_reset_applied);
+    assert!(command_result.payload.restart_required);
+    assert_eq!(
+        command_result.payload.error_code,
+        Some(ProviderCommitErrorCode::StaleState)
+    );
+    assert_eq!(
+        command_result.payload.reason,
+        Some("legacy model reset applied; requested provider edit was not applied")
+    );
+    let returned = command_result.payload.settings.as_ref().unwrap();
+    assert_eq!(
+        command_result.payload.provider_fingerprint,
+        provider_generation_fingerprint(
+            &ProviderOwnedTopologyDraft::from_settings(returned),
+            &fixture.read_state(),
+        )
+        .unwrap()
+    );
+    assert!(
+        !format!(
+            "{} {:?} {}",
+            command_result.message,
+            command_result.payload.reason,
+            command_result.payload.provider_fingerprint
+        )
+        .contains("eva-provider-key")
+    );
+
+    let (inactive_fixture, inactive_stale) =
+        inactive_state_only_legacy_overlay_set_current_fixture();
+    let inactive_result = provider_commit_command_result(
+        inactive_stale.draft_revision,
+        commit_provider_detail_from_paths_raw(&inactive_fixture.paths, inactive_stale),
+    );
+    assert_eq!(inactive_result.status, "failed");
+    assert!(inactive_result.payload.legacy_model_reset_applied);
+    assert!(!inactive_result.payload.restart_required);
+    assert!(inactive_result.message.contains("页面已更新"));
+    assert!(!inactive_result.message.contains("请重启 Codex"));
 }
 
 #[test]
@@ -882,16 +1233,17 @@ fn legacy_model_reset_marker_only_plan_persists_only_catalog_state() {
     let fixture = Fixture::new(&settings_with(vec![profile], "external"), &state);
     let mut raw_settings: Value =
         serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
-    raw_settings["relayProfiles"][0]
-        .as_object_mut()
-        .unwrap()
-        .remove("authContents");
+    raw_settings["nonCanonicalMarkerOnlySentinel"] = json!("must-survive");
     fs::write(
         &fixture.paths.settings_path,
-        serde_json::to_vec_pretty(&raw_settings).unwrap(),
+        serde_json::to_vec(&raw_settings).unwrap(),
     )
     .unwrap();
     let settings_before = fs::read(&fixture.paths.settings_path).unwrap();
+    let settings_mtime = fs::metadata(&fixture.paths.settings_path)
+        .unwrap()
+        .modified()
+        .unwrap();
     let live_before = fs::read(fixture.paths.codex_home.join("config.toml")).unwrap();
     let auth_before = fs::read(fixture.paths.codex_home.join("auth.json")).unwrap();
     let mut staged_targets = Vec::new();
@@ -936,6 +1288,13 @@ fn legacy_model_reset_marker_only_plan_persists_only_catalog_state() {
         settings_before
     );
     assert_eq!(
+        fs::metadata(&fixture.paths.settings_path)
+            .unwrap()
+            .modified()
+            .unwrap(),
+        settings_mtime
+    );
+    assert_eq!(
         fs::read(fixture.paths.codex_home.join("config.toml")).unwrap(),
         live_before
     );
@@ -947,6 +1306,482 @@ fn legacy_model_reset_marker_only_plan_persists_only_catalog_state() {
         fixture.read_state().profiles["external"].legacy_model_reset_version,
         crate::legacy_model_reset::LEGACY_MODEL_RESET_VERSION
     );
+}
+
+#[test]
+fn legacy_model_reset_marker_only_bookkeeping_keeps_a_legitimate_request_current() {
+    let mut profile = canonical_profile(
+        "external",
+        "gpt-5.6-sol",
+        "https://external.example/v1",
+        "external-provider-key",
+    );
+    profile.model_list = "legacy-row".to_string();
+    profile.config_contents = format!(
+        "model_catalog_json = \"/private/user-catalog.json\"\n{}",
+        profile.config_contents
+    );
+    let mut state = state_with_official();
+    state.profiles.insert(
+        "external".to_string(),
+        crate::model_catalog::ProfileCatalogState {
+            mode: CatalogMode::External,
+            mode_explicit: true,
+            external_pointer: Some("/private/user-catalog.json".to_string()),
+            ..crate::model_catalog::ProfileCatalogState::default()
+        },
+    );
+    let fixture = Fixture::new(&settings_with(vec![profile], "external"), &state);
+    let persisted = fixture.read_settings();
+    let old_fingerprint = provider_generation_fingerprint(
+        &ProviderOwnedTopologyDraft::from_settings(&persisted),
+        &fixture.read_state(),
+    )
+    .unwrap();
+    let request = ProviderCommitRequest {
+        topology: ProviderOwnedTopologyDraft::from_settings(&persisted),
+        catalog_drafts: vec![ProfileCatalogDraft {
+            profile_id: "external".to_string(),
+            mode: CatalogMode::External,
+            mode_explicit: true,
+            upstream_topology: UpstreamTopology::Direct,
+            external_pointer: Some("/private/user-catalog.json".to_string()),
+            overlay: CatalogOverlay::default(),
+        }],
+        focused_profile_id: Some("external".to_string()),
+        action: ProviderCommitAction::Save,
+        previous_active_relay_id: "external".to_string(),
+        confirm_context_cleanup: false,
+        draft_revision: 908,
+        expected_provider_fingerprint: old_fingerprint.clone(),
+    };
+
+    let payload = commit_provider_detail_from_paths_raw(&fixture.paths, request).unwrap();
+
+    assert!(payload.error_code.is_none());
+    assert!(!payload.legacy_model_reset_applied);
+    assert_eq!(payload.provider_fingerprint, old_fingerprint);
+    let state = fixture.read_state();
+    assert_eq!(
+        state.profiles["external"].legacy_model_reset_version,
+        crate::legacy_model_reset::LEGACY_MODEL_RESET_VERSION
+    );
+    assert_eq!(
+        state.profiles["external"].external_pointer.as_deref(),
+        Some("/private/user-catalog.json")
+    );
+}
+
+#[test]
+fn legacy_model_reset_marker_only_settings_drift_aborts_before_state_write() {
+    let mut profile = canonical_profile(
+        "external",
+        "gpt-5.6-sol",
+        "https://external.example/v1",
+        "external-provider-key",
+    );
+    profile.model_list = "legacy-row".to_string();
+    profile.config_contents = format!(
+        "model_catalog_json = \"/private/user-catalog.json\"\n{}",
+        profile.config_contents
+    );
+    let mut state = state_with_official();
+    state.profiles.insert(
+        "external".to_string(),
+        crate::model_catalog::ProfileCatalogState {
+            mode: CatalogMode::External,
+            mode_explicit: true,
+            external_pointer: Some("/private/user-catalog.json".to_string()),
+            ..crate::model_catalog::ProfileCatalogState::default()
+        },
+    );
+    let fixture = Fixture::new(&settings_with(vec![profile], "external"), &state);
+    let mut raw: Value =
+        serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+    raw["nonCanonicalMarkerOnlySentinel"] = json!("prior");
+    fs::write(
+        &fixture.paths.settings_path,
+        serde_json::to_vec(&raw).unwrap(),
+    )
+    .unwrap();
+    raw["nonCanonicalMarkerOnlySentinel"] = json!("newer-external");
+    let newer_settings = serde_json::to_vec(&raw).unwrap();
+    let state_before = fs::read(&fixture.paths.catalog_state_path).unwrap();
+    let mut reached_apply = false;
+
+    let _guard = crate::live_state::lock().unwrap();
+    crate::live_state::prepare_secret_paths_at(
+        &fixture.paths.app_state,
+        &fixture.paths.settings_path,
+        &fixture.paths.codex_home,
+    )
+    .unwrap();
+    crate::live_state::recover_locked_at(&fixture.paths.app_state).unwrap();
+    let error = migrate_legacy_model_state_locked_at(&fixture.paths, |checkpoint| {
+        if checkpoint == LegacyModelResetCheckpoint::BeforeJournalPreparation {
+            fs::write(&fixture.paths.settings_path, &newer_settings)?;
+        }
+        if checkpoint == LegacyModelResetCheckpoint::BeforeCommit {
+            reached_apply = true;
+        }
+        Ok(())
+    })
+    .unwrap_err();
+
+    assert_eq!(error.to_string(), "legacy model reset transaction failed");
+    assert!(!reached_apply);
+    assert_eq!(
+        fs::read(&fixture.paths.settings_path).unwrap(),
+        newer_settings
+    );
+    assert_eq!(
+        fs::read(&fixture.paths.catalog_state_path).unwrap(),
+        state_before
+    );
+    assert!(
+        !fixture
+            .paths
+            .app_state
+            .join("live-state-transaction.json")
+            .exists()
+    );
+    assert_directory_has_no_entries(&fixture.paths.app_state.join("live-state-transactions"));
+}
+
+#[test]
+fn legacy_model_reset_multi_profile_auth_drift_aborts_before_any_target_apply() {
+    let fixture = eva_legacy_model_fixture();
+    let mut settings: BackendSettings =
+        serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+    let mut backup = settings.relay_profiles[0].clone();
+    backup.id = "backup".to_string();
+    backup.config_contents = backup
+        .config_contents
+        .replace("https://eva.example/v1", "https://backup.example/v1")
+        .replace("eva-provider-key", "backup-provider-key");
+    settings.relay_profiles.push(backup);
+    fs::write(
+        &fixture.paths.settings_path,
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    let mut state = fixture.read_state();
+    state
+        .profiles
+        .insert("backup".to_string(), state.profiles["eva"].clone());
+    fs::write(
+        &fixture.paths.catalog_state_path,
+        serde_json::to_vec_pretty(&state).unwrap(),
+    )
+    .unwrap();
+    let settings_before = fs::read(&fixture.paths.settings_path).unwrap();
+    let state_before = fs::read(&fixture.paths.catalog_state_path).unwrap();
+    let live_before = fs::read(fixture.paths.codex_home.join("config.toml")).unwrap();
+    let newer_auth = b"newer-official-auth-generation".to_vec();
+    let mut reached_apply = false;
+
+    let _guard = crate::live_state::lock().unwrap();
+    crate::live_state::prepare_secret_paths_at(
+        &fixture.paths.app_state,
+        &fixture.paths.settings_path,
+        &fixture.paths.codex_home,
+    )
+    .unwrap();
+    crate::live_state::recover_locked_at(&fixture.paths.app_state).unwrap();
+    let error = migrate_legacy_model_state_locked_at(&fixture.paths, |checkpoint| {
+        if checkpoint == LegacyModelResetCheckpoint::BeforeJournalPreparation {
+            fs::write(fixture.paths.codex_home.join("auth.json"), &newer_auth)?;
+        }
+        if checkpoint == LegacyModelResetCheckpoint::BeforeCommit {
+            reached_apply = true;
+        }
+        Ok(())
+    })
+    .unwrap_err();
+
+    assert_eq!(error.to_string(), "legacy model reset transaction failed");
+    assert!(!reached_apply);
+    assert_eq!(
+        fs::read(&fixture.paths.settings_path).unwrap(),
+        settings_before
+    );
+    assert_eq!(
+        fs::read(&fixture.paths.catalog_state_path).unwrap(),
+        state_before
+    );
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join("config.toml")).unwrap(),
+        live_before
+    );
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
+        newer_auth
+    );
+    for profile_id in ["eva", "backup"] {
+        assert!(
+            !fixture
+                .paths
+                .codex_home
+                .join(crate::model_catalog::generated_relative_path(profile_id))
+                .exists()
+        );
+    }
+    assert!(
+        !fixture
+            .paths
+            .app_state
+            .join("live-state-transaction.json")
+            .exists()
+    );
+    assert_directory_has_no_entries(&fixture.paths.app_state.join("live-state-transactions"));
+}
+
+#[test]
+fn legacy_model_reset_state_only_semantic_settings_drift_applies_nothing() {
+    let (fixture, _) = state_only_legacy_overlay_fixture();
+    let mut concurrent: Value =
+        serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+    concurrent["codexGoalsEnabled"] = json!(true);
+    concurrent["concurrentStateOnlySentinel"] = json!("newer-settings");
+    let concurrent_settings = serde_json::to_vec_pretty(&concurrent).unwrap();
+    let state_before = fs::read(&fixture.paths.catalog_state_path).unwrap();
+    let live_before = fs::read(fixture.paths.codex_home.join("config.toml")).unwrap();
+    let auth_before = fs::read(fixture.paths.codex_home.join("auth.json")).unwrap();
+    let mut reached_apply = false;
+
+    let _guard = crate::live_state::lock().unwrap();
+    crate::live_state::prepare_secret_paths_at(
+        &fixture.paths.app_state,
+        &fixture.paths.settings_path,
+        &fixture.paths.codex_home,
+    )
+    .unwrap();
+    crate::live_state::recover_locked_at(&fixture.paths.app_state).unwrap();
+    let error = migrate_legacy_model_state_locked_at(&fixture.paths, |checkpoint| {
+        if checkpoint == LegacyModelResetCheckpoint::BeforeJournalPreparation {
+            fs::write(&fixture.paths.settings_path, &concurrent_settings)?;
+        }
+        if checkpoint == LegacyModelResetCheckpoint::BeforeCommit {
+            reached_apply = true;
+        }
+        Ok(())
+    })
+    .unwrap_err();
+
+    assert_eq!(error.to_string(), "legacy model reset transaction failed");
+    assert!(!reached_apply);
+    assert_eq!(
+        fs::read(&fixture.paths.settings_path).unwrap(),
+        concurrent_settings
+    );
+    assert_eq!(
+        fs::read(&fixture.paths.catalog_state_path).unwrap(),
+        state_before
+    );
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join("config.toml")).unwrap(),
+        live_before
+    );
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
+        auth_before
+    );
+    let state = fixture.read_state();
+    assert_eq!(state.profiles["eva"].legacy_model_reset_version, 0);
+    assert_eq!(state.profiles["eva"].overlay.custom[0].slug, "gpt-5");
+    assert!(
+        !fixture
+            .paths
+            .codex_home
+            .join(crate::model_catalog::generated_relative_path("eva"))
+            .exists()
+    );
+    assert!(
+        !fixture
+            .paths
+            .app_state
+            .join("live-state-transaction.json")
+            .exists()
+    );
+}
+
+#[test]
+fn legacy_model_reset_observes_an_already_matching_generated_catalog() {
+    let fixture = eva_legacy_model_fixture();
+    {
+        let _guard = crate::live_state::lock().unwrap();
+        crate::live_state::prepare_secret_paths_at(
+            &fixture.paths.app_state,
+            &fixture.paths.settings_path,
+            &fixture.paths.codex_home,
+        )
+        .unwrap();
+    }
+    let settings: BackendSettings =
+        serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+    let state = crate::model_catalog::load_and_migrate_state_from_path(
+        &settings,
+        &fixture.paths.codex_home,
+        &fixture.paths.catalog_state_path,
+    )
+    .unwrap();
+    let official = crate::model_catalog::visible_official_slugs(&state).unwrap();
+    let mut plan = crate::legacy_model_reset::plan_legacy_model_reset(&settings, &state, &official)
+        .unwrap()
+        .unwrap();
+    let profile = plan.settings.relay_profiles[0].clone();
+    let catalog_mutation = crate::model_catalog::materialize_profile(
+        &mut plan.state,
+        &profile,
+        &fixture.paths.codex_home,
+    )
+    .unwrap()
+    .unwrap();
+    fs::create_dir_all(catalog_mutation.path.parent().unwrap()).unwrap();
+    fs::write(
+        &catalog_mutation.path,
+        catalog_mutation.contents.as_ref().unwrap(),
+    )
+    .unwrap();
+    let concurrent_catalog = b"newer-matching-catalog-generation".to_vec();
+    let settings_before = fs::read(&fixture.paths.settings_path).unwrap();
+    let state_before = fs::read(&fixture.paths.catalog_state_path).unwrap();
+    let live_before = fs::read(fixture.paths.codex_home.join("config.toml")).unwrap();
+    let auth_before = fs::read(fixture.paths.codex_home.join("auth.json")).unwrap();
+    let mut reached_apply = false;
+
+    let _guard = crate::live_state::lock().unwrap();
+    let error = migrate_legacy_model_state_locked_at(&fixture.paths, |checkpoint| {
+        if checkpoint == LegacyModelResetCheckpoint::BeforeJournalPreparation {
+            fs::write(&catalog_mutation.path, &concurrent_catalog)?;
+        }
+        if checkpoint == LegacyModelResetCheckpoint::BeforeCommit {
+            reached_apply = true;
+        }
+        Ok(())
+    })
+    .unwrap_err();
+
+    assert_eq!(error.to_string(), "legacy model reset transaction failed");
+    assert!(!reached_apply);
+    assert_eq!(
+        fs::read(&fixture.paths.settings_path).unwrap(),
+        settings_before
+    );
+    assert_eq!(
+        fs::read(&fixture.paths.catalog_state_path).unwrap(),
+        state_before
+    );
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join("config.toml")).unwrap(),
+        live_before
+    );
+    assert_eq!(
+        fs::read(&catalog_mutation.path).unwrap(),
+        concurrent_catalog
+    );
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
+        auth_before
+    );
+    assert!(
+        !fixture
+            .paths
+            .app_state
+            .join("live-state-transaction.json")
+            .exists()
+    );
+}
+
+#[test]
+fn legacy_model_reset_later_inactive_generated_preimage_mismatch_applies_nothing() {
+    let fixture = eva_legacy_model_fixture();
+    let mut settings: BackendSettings =
+        serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+    let mut backup = settings.relay_profiles[0].clone();
+    backup.id = "backup".to_string();
+    backup.config_contents = backup
+        .config_contents
+        .replace("https://eva.example/v1", "https://backup.example/v1")
+        .replace("eva-provider-key", "backup-provider-key");
+    settings.relay_profiles.push(backup);
+    fs::write(
+        &fixture.paths.settings_path,
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    let mut state = fixture.read_state();
+    state
+        .profiles
+        .insert("backup".to_string(), state.profiles["eva"].clone());
+    fs::write(
+        &fixture.paths.catalog_state_path,
+        serde_json::to_vec_pretty(&state).unwrap(),
+    )
+    .unwrap();
+    let settings_before = fs::read(&fixture.paths.settings_path).unwrap();
+    let state_before = fs::read(&fixture.paths.catalog_state_path).unwrap();
+    let live_before = fs::read(fixture.paths.codex_home.join("config.toml")).unwrap();
+    let auth_before = fs::read(fixture.paths.codex_home.join("auth.json")).unwrap();
+    let active_generated = fixture
+        .paths
+        .codex_home
+        .join(crate::model_catalog::generated_relative_path("eva"));
+    let backup_generated = fixture
+        .paths
+        .codex_home
+        .join(crate::model_catalog::generated_relative_path("backup"));
+    let concurrent_backup = b"concurrent-backup-catalog".to_vec();
+    let mut reached_apply = false;
+
+    let _guard = crate::live_state::lock().unwrap();
+    crate::live_state::prepare_secret_paths_at(
+        &fixture.paths.app_state,
+        &fixture.paths.settings_path,
+        &fixture.paths.codex_home,
+    )
+    .unwrap();
+    crate::live_state::recover_locked_at(&fixture.paths.app_state).unwrap();
+    let error = migrate_legacy_model_state_locked_at(&fixture.paths, |checkpoint| {
+        if checkpoint == LegacyModelResetCheckpoint::BeforeJournalPreparation {
+            fs::create_dir_all(backup_generated.parent().unwrap())?;
+            fs::write(&backup_generated, &concurrent_backup)?;
+        }
+        if checkpoint == LegacyModelResetCheckpoint::BeforeCommit {
+            reached_apply = true;
+        }
+        Ok(())
+    })
+    .unwrap_err();
+
+    assert_eq!(error.to_string(), "legacy model reset transaction failed");
+    assert!(!reached_apply);
+    assert_eq!(
+        fs::read(&fixture.paths.settings_path).unwrap(),
+        settings_before
+    );
+    assert_eq!(
+        fs::read(&fixture.paths.catalog_state_path).unwrap(),
+        state_before
+    );
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join("config.toml")).unwrap(),
+        live_before
+    );
+    assert!(!active_generated.exists());
+    assert_eq!(fs::read(backup_generated).unwrap(), concurrent_backup);
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
+        auth_before
+    );
+    assert!(
+        !fixture
+            .paths
+            .app_state
+            .join("live-state-transaction.json")
+            .exists()
+    );
+    assert_directory_has_no_entries(&fixture.paths.app_state.join("live-state-transactions"));
 }
 
 #[test]
@@ -1300,6 +2135,59 @@ fn legacy_model_reset_maps_malformed_live_provider_config_to_static_input_unavai
         assert_eq!(error.reason(), "live provider config is invalid");
         assert!(!error.to_string().contains("live-secret-sentinel"));
         assert_eq!(fixture.file_generation(), before);
+    }
+}
+
+#[test]
+fn legacy_model_reset_requires_selected_provider_entries_to_be_tables() {
+    for malformed_side in ["persisted", "live", "both"] {
+        let fixture = eva_legacy_model_fixture();
+        let persisted = fixture.read_settings();
+        let request = request(
+            &persisted,
+            &persisted,
+            "eva",
+            ProviderCommitAction::Save,
+            907,
+        );
+        let scalar_config = r#"model = "gpt-5"
+model_provider = "OpenAI"
+
+[model_providers]
+OpenAI = "selected-provider-type-secret-sentinel"
+"#;
+        if matches!(malformed_side, "persisted" | "both") {
+            let mut value: Value =
+                serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+            value["relayProfiles"][0]["configContents"] = json!(scalar_config);
+            fs::write(
+                &fixture.paths.settings_path,
+                serde_json::to_vec_pretty(&value).unwrap(),
+            )
+            .unwrap();
+        }
+        if matches!(malformed_side, "live" | "both") {
+            fs::write(fixture.paths.codex_home.join("config.toml"), scalar_config).unwrap();
+        }
+        let before = fixture.file_generation();
+
+        let error = commit_provider_detail_from_paths(&fixture.paths, request).unwrap_err();
+
+        assert_eq!(error.code(), ProviderCommitErrorCode::InputUnavailable);
+        assert_eq!(
+            error.reason(),
+            if matches!(malformed_side, "live" | "both") {
+                "live provider config is invalid"
+            } else {
+                "a saved provider profile failed normalization"
+            }
+        );
+        assert!(
+            !error
+                .to_string()
+                .contains("selected-provider-type-secret-sentinel")
+        );
+        assert_eq!(fixture.file_generation(), before, "{malformed_side}");
     }
 }
 
@@ -2838,6 +3726,12 @@ fn topology_adapter_commits_list_mutations_through_the_shared_provider_transacti
             weight: 2,
         }],
     }];
+    let effective_state = crate::model_catalog::load_and_migrate_state_from_path(
+        &persisted,
+        &fixture.paths.codex_home,
+        &fixture.paths.catalog_state_path,
+    )
+    .unwrap();
     let request = ProviderCommitRequest {
         topology: ProviderOwnedTopologyDraft::from_settings(&next),
         catalog_drafts: vec![catalog_draft("relay-copy")],
@@ -2846,8 +3740,9 @@ fn topology_adapter_commits_list_mutations_through_the_shared_provider_transacti
         previous_active_relay_id: persisted.active_relay_id.clone(),
         confirm_context_cleanup: false,
         draft_revision: 41,
-        expected_provider_fingerprint: provider_owned_fingerprint(
+        expected_provider_fingerprint: provider_generation_fingerprint(
             &ProviderOwnedTopologyDraft::from_settings(&persisted),
+            &effective_state,
         )
         .unwrap(),
     };
@@ -3139,19 +4034,22 @@ fn persisted_legacy_api_key_auth_migrates_through_provider_commit() {
         .replace("experimental_bearer_token = \"legacy-provider-key\"\n", "");
     let initial = settings_with(vec![active.clone(), api_only], "official");
     let fixture = Fixture::new(&initial, &state_with_official());
+    prepare_settings_load_at(&fixture.paths).unwrap();
     let persisted = fixture.read_settings();
 
-    commit_provider_detail_from_paths(
-        &fixture.paths,
-        request(
-            &persisted,
-            &persisted,
-            "legacy",
-            ProviderCommitAction::Save,
-            59,
-        ),
+    let mut commit = request(
+        &persisted,
+        &persisted,
+        "legacy",
+        ProviderCommitAction::Save,
+        59,
+    );
+    commit.expected_provider_fingerprint = provider_generation_fingerprint(
+        &ProviderOwnedTopologyDraft::from_settings(&persisted),
+        &fixture.read_state(),
     )
     .unwrap();
+    commit_provider_detail_from_paths_raw(&fixture.paths, commit).unwrap();
 
     let raw_settings = fs::read_to_string(&fixture.paths.settings_path).unwrap();
     assert!(!raw_settings.contains("authContents"));
@@ -3963,17 +4861,19 @@ fn fallible_normalizer_rejects_structured_raw_conflicts_before_any_mutation() {
         let mut next = persisted.clone();
         next.relay_profiles[0] = conflicted;
 
-        let error = commit_provider_detail_from_paths(
-            &fixture.paths,
-            request(
-                &persisted,
-                &next,
-                "sub2api",
-                ProviderCommitAction::Save,
-                5 + index as u64,
-            ),
+        let mut commit = request(
+            &persisted,
+            &next,
+            "sub2api",
+            ProviderCommitAction::Save,
+            5 + index as u64,
+        );
+        commit.expected_provider_fingerprint = provider_generation_fingerprint(
+            &ProviderOwnedTopologyDraft::from_settings(&persisted),
+            &fixture.read_state(),
         )
-        .unwrap_err();
+        .unwrap();
+        let error = commit_provider_detail_from_paths_raw(&fixture.paths, commit).unwrap_err();
         assert_eq!(
             error.code(),
             ProviderCommitErrorCode::InvalidDraft,
@@ -4045,17 +4945,19 @@ fn fallible_normalizer_rejects_byte_distinct_raw_values_before_any_mutation() {
         let mut next = persisted.clone();
         next.relay_profiles[0] = conflicted;
 
-        let error = commit_provider_detail_from_paths(
-            &fixture.paths,
-            request(
-                &persisted,
-                &next,
-                "sub2api",
-                ProviderCommitAction::Save,
-                10 + index as u64,
-            ),
+        let mut commit = request(
+            &persisted,
+            &next,
+            "sub2api",
+            ProviderCommitAction::Save,
+            10 + index as u64,
+        );
+        commit.expected_provider_fingerprint = provider_generation_fingerprint(
+            &ProviderOwnedTopologyDraft::from_settings(&persisted),
+            &fixture.read_state(),
         )
-        .unwrap_err();
+        .unwrap();
+        let error = commit_provider_detail_from_paths_raw(&fixture.paths, commit).unwrap_err();
         assert_eq!(
             error.code(),
             ProviderCommitErrorCode::InvalidDraft,
@@ -5180,6 +6082,11 @@ fn target_switching_changes_the_contract_only_on_commit_and_keeps_unowned_conten
             ProviderCommitAction::Save,
             revision,
         );
+        commit.expected_provider_fingerprint = provider_generation_fingerprint(
+            &ProviderOwnedTopologyDraft::from_settings(&persisted),
+            &fixture.read_state(),
+        )
+        .unwrap();
         commit.catalog_drafts = vec![ProfileCatalogDraft {
             mode: payload.draft.catalog_mode,
             mode_explicit: true,
@@ -5963,8 +6870,11 @@ fn the_fingerprint_a_save_returns_is_the_one_the_next_save_is_judged_against() {
             .clone()
             .expect("a successful save answers with settings");
         assert_eq!(
-            provider_owned_fingerprint(&ProviderOwnedTopologyDraft::from_settings(&returned))
-                .unwrap(),
+            provider_generation_fingerprint(
+                &ProviderOwnedTopologyDraft::from_settings(&returned),
+                &fixture.read_state(),
+            )
+            .unwrap(),
             payload.provider_fingerprint,
             "{shape}: the returned settings and fingerprint describe different generations",
         );
@@ -5974,8 +6884,11 @@ fn the_fingerprint_a_save_returns_is_the_one_the_next_save_is_judged_against() {
         let reread = fixture.read_settings();
         assert_eq!(
             payload.provider_fingerprint,
-            provider_owned_fingerprint(&ProviderOwnedTopologyDraft::from_settings(&reread))
-                .unwrap(),
+            provider_generation_fingerprint(
+                &ProviderOwnedTopologyDraft::from_settings(&reread),
+                &fixture.read_state(),
+            )
+            .unwrap(),
             "{shape}: the editor was handed a fingerprint no later save can match",
         );
     }

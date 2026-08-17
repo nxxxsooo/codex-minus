@@ -307,6 +307,7 @@ pub struct CatalogDiff {
 #[serde(rename_all = "camelCase")]
 pub struct CatalogStatusPayload {
     pub state_path: String,
+    pub provider_fingerprint: String,
     pub source: String,
     pub target_client_version: Option<String>,
     pub target_cli_path: Option<String>,
@@ -1377,6 +1378,10 @@ fn status_payload(
         .unwrap_or_default();
     Ok(CatalogStatusPayload {
         state_path: state_path().to_string_lossy().to_string(),
+        provider_fingerprint: crate::provider_commit::provider_generation_fingerprint(
+            &crate::provider_commit::ProviderOwnedTopologyDraft::from_settings(settings),
+            state,
+        )?,
         source: official
             .map(|item| item.source.clone())
             .unwrap_or_else(|| "none".to_string()),
@@ -2570,6 +2575,7 @@ impl Default for CatalogStatusPayload {
     fn default() -> Self {
         Self {
             state_path: state_path().to_string_lossy().to_string(),
+            provider_fingerprint: String::new(),
             source: "none".to_string(),
             target_client_version: None,
             target_cli_path: None,
