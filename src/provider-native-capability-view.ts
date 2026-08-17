@@ -154,6 +154,12 @@ type ProviderMode = {
   officialMixApiKey: boolean;
 };
 
+export function providerAccessModeHint(profile: { officialMixApiKey: boolean }): string {
+  return profile.officialMixApiKey
+    ? "官方登录＋混入 API Key＋Responses API"
+    : "官方登录＋不写 API Key＋Responses API";
+}
+
 export type ProviderStructuredTransitionDecision =
   | { kind: "noChange" }
   | { kind: "requiresExplicitUpgrade" }

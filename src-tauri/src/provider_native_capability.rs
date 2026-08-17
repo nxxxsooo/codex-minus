@@ -1181,9 +1181,11 @@ fn enable_native_priority_draft(
         .expect("provider shape was validated before mutation");
     set_string_preserving_decor(provider, "name", MANAGED_PROVIDER_NAME);
     set_string_preserving_decor(provider, "wire_api", MANAGED_WIRE_API);
-    // Mixed auth keeps the official ChatGPT login attached (`true`): plugins and account
-    // surfaces stay available while the provider bearer authenticates the actual requests.
-    set_bool_preserving_decor(provider, "requires_openai_auth", true);
+    // A new/missing mixed-auth choice defaults to `true`; an existing valid choice is owned by
+    // this profile and survives an unrelated native-priority repair unchanged.
+    if provider.get("requires_openai_auth").is_none() {
+        set_bool_preserving_decor(provider, "requires_openai_auth", true);
+    }
     if let Some(bearer) = bearer_to_write {
         set_string_preserving_decor(provider, "experimental_bearer_token", &bearer);
     }
@@ -1432,6 +1434,8 @@ fn pure_oauth_exit_draft(
     }
     document.remove("model_provider");
     profile.api_key.clear();
+    profile.base_url.clear();
+    profile.upstream_base_url.clear();
     profile.relay_mode = RelayMode::Official;
     profile.official_mix_api_key = false;
     profile.protocol = RelayProtocol::Responses;

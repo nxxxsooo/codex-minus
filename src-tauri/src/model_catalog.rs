@@ -633,14 +633,20 @@ impl CatalogCommandPaths {
 }
 
 fn model_catalog_status_blocking() -> CommandResult<CatalogStatusPayload> {
-    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    model_catalog_status_blocking_at(&CatalogCommandPaths::defaults())
+}
+
+fn model_catalog_status_blocking_at(
+    paths: &CatalogCommandPaths,
+) -> CommandResult<CatalogStatusPayload> {
+    let home = &paths.codex_home;
     let result = (|| -> anyhow::Result<CatalogStatusPayload> {
         let _guard = live_state::lock()?;
-        live_state::prepare_secret_paths(&home)?;
-        live_state::recover_locked()?;
-        let settings = sanitized_settings()?;
-        let state = load_and_migrate_state(&settings, &home)?;
-        status_payload(&state, &settings, &home)
+        live_state::prepare_secret_paths_at(&paths.app_state, &paths.settings_path, home)?;
+        live_state::recover_locked_at(&paths.app_state)?;
+        let settings = sanitized_settings_at(&paths.settings_path)?;
+        let state = load_and_migrate_state_from_path(&settings, home, &paths.catalog_state_path)?;
+        status_payload(&state, &settings, home)
     })();
     command_result(result, "模型目录状态已加载。", "模型目录状态读取失败")
 }
@@ -684,12 +690,27 @@ fn adopt_external_model_catalog_blocking_at(
     request: AdoptCatalogRequest,
     verify_target: impl FnOnce() -> anyhow::Result<VerifiedTargetIdentity>,
 ) -> CommandResult<AdoptionPreviewPayload> {
+    adopt_external_model_catalog_blocking_at_observed(paths, request, verify_target, |_| Ok(()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdoptionCheckpoint {
+    SourceConfigRead,
+    LiveConfigApplied,
+}
+
+fn adopt_external_model_catalog_blocking_at_observed(
+    paths: &CatalogCommandPaths,
+    request: AdoptCatalogRequest,
+    verify_target: impl FnOnce() -> anyhow::Result<VerifiedTargetIdentity>,
+    mut observe: impl FnMut(AdoptionCheckpoint) -> anyhow::Result<()>,
+) -> CommandResult<AdoptionPreviewPayload> {
     let home = &paths.codex_home;
     let result = (|| -> anyhow::Result<AdoptionPreviewPayload> {
         let _guard = live_state::lock()?;
         live_state::prepare_secret_paths_at(&paths.app_state, &paths.settings_path, home)?;
         live_state::recover_locked_at(&paths.app_state)?;
-        let mut settings = sanitized_settings_at(&paths.settings_path)?;
+        let mut settings = sanitized_existing_settings_at(&paths.settings_path)?;
         let profile_index = settings
             .relay_profiles
             .iter()
@@ -749,7 +770,6 @@ fn adopt_external_model_catalog_blocking_at(
             profile_state.external_pointer = None;
             state.operation_generation = state.operation_generation.saturating_add(1);
             let saved_conflicts = global_context_conflicts(&profile.config_contents);
-            let mut settings_mutation = None;
             if !saved_conflicts.is_empty() {
                 ensure!(
                     request.confirm_context_cleanup,
@@ -758,23 +778,27 @@ fn adopt_external_model_catalog_blocking_at(
                 );
                 settings.relay_profiles[profile_index].config_contents =
                     remove_global_context_keys(&profile.config_contents)?;
-                settings_mutation =
-                    Some(adoption_settings_mutation(&paths.settings_path, &settings)?);
             }
             let profile = &settings.relay_profiles[profile_index];
-            let source_config = if profile.id == settings.active_relay_id {
+            let profile_id = profile.id.clone();
+            let active = profile_id == settings.active_relay_id;
+            let source_config = if active {
                 fs::read_to_string(home.join("config.toml"))?
             } else {
                 profile.config_contents.clone()
             };
+            if active {
+                let mut live_profile = profile.clone();
+                live_profile.config_contents = source_config.clone();
+                crate::provider_commit::validate_responses_only_profile(&live_profile)?;
+            }
+            observe(AdoptionCheckpoint::SourceConfigRead)?;
             let mut mutations = vec![FileMutation::text(
                 adoption_backup_path_at(&paths.app_state, &profile.id),
                 sanitize_nonsecret_config_backup(&source_config)?,
             )];
-            if let Some(mutation) = settings_mutation {
-                mutations.push(mutation);
-            }
-            if profile.id == settings.active_relay_id {
+            let mut context_snapshot = None;
+            if active {
                 let plan = plan_active_profile_with_state(
                     home,
                     &settings,
@@ -783,15 +807,44 @@ fn adopt_external_model_catalog_blocking_at(
                     request.confirm_context_cleanup,
                 )?;
                 mutations.extend(plan.mutations);
-                mutations.push(FileMutation::text(
-                    home.join("config.toml"),
-                    plan.config_contents,
-                ));
-            } else if let Some(mutation) = materialize_profile(&mut state, profile, home)? {
-                mutations.push(mutation);
+                let (protected, snapshot) =
+                    crate::commands::context_protected_config(home, &plan.config_contents)?;
+                context_snapshot = Some(snapshot);
+                mutations.push(FileMutation::text(home.join("config.toml"), protected));
+            } else {
+                if let Some(mutation) = materialize_profile(&mut state, profile, home)? {
+                    mutations.push(mutation);
+                }
             }
+            let manager_pointer = state
+                .profiles
+                .get(&profile_id)
+                .and_then(|profile| profile.generated_path.as_deref())
+                .context("采用托管目录后缺少 manager-owned 指针")?;
+            settings.relay_profiles[profile_index].config_contents = set_root_catalog_pointer(
+                &settings.relay_profiles[profile_index].config_contents,
+                Some(manager_pointer),
+            )?;
+            mutations.push(adoption_settings_mutation(&paths.settings_path, &settings)?);
             mutations.push(state_mutation_at(&state, &paths.catalog_state_path)?);
-            live_state::commit_locked_verified_at(&paths.app_state, &mutations, || Ok(()))?;
+            let live_config_path = home.join("config.toml");
+            live_state::commit_locked_verified_at_observed(
+                &paths.app_state,
+                &mutations,
+                |path| {
+                    if path == live_config_path {
+                        observe(AdoptionCheckpoint::LiveConfigApplied)?;
+                    }
+                    Ok(())
+                },
+                || {
+                    if let Some(snapshot) = context_snapshot.as_ref() {
+                        crate::commands::verify_context_tables(home, snapshot)?;
+                    }
+                    Ok(())
+                },
+                || Ok(()),
+            )?;
         }
         Ok(payload)
     })();
@@ -917,11 +970,26 @@ pub fn record_provider_evidence(
     endpoint: &str,
     models: &[String],
 ) -> anyhow::Result<()> {
-    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    record_provider_evidence_at(
+        &CatalogCommandPaths::defaults(),
+        profile_id,
+        endpoint,
+        models,
+    )
+}
+
+fn record_provider_evidence_at(
+    paths: &CatalogCommandPaths,
+    profile_id: &str,
+    endpoint: &str,
+    models: &[String],
+) -> anyhow::Result<()> {
+    let home = &paths.codex_home;
     let _guard = live_state::lock()?;
-    live_state::prepare_secret_paths(&home)?;
-    let settings = sanitized_settings()?;
-    let mut state = load_and_migrate_state(&settings, &home)?;
+    live_state::prepare_secret_paths_at(&paths.app_state, &paths.settings_path, home)?;
+    live_state::recover_locked_at(&paths.app_state)?;
+    let settings = sanitized_settings_at(&paths.settings_path)?;
+    let mut state = load_and_migrate_state_from_path(&settings, home, &paths.catalog_state_path)?;
     let official_slugs = state
         .official
         .as_ref()
@@ -941,7 +1009,11 @@ pub fn record_provider_evidence(
         reported_slugs,
         candidate_slugs,
     });
-    live_state::commit_locked(&[state_mutation(&state)?])
+    live_state::commit_locked_verified_at(
+        &paths.app_state,
+        &[state_mutation_at(&state, &paths.catalog_state_path)?],
+        || Ok(()),
+    )
 }
 
 fn sanitized_settings() -> anyhow::Result<BackendSettings> {
@@ -949,6 +1021,18 @@ fn sanitized_settings() -> anyhow::Result<BackendSettings> {
 }
 
 fn sanitized_settings_at(path: &Path) -> anyhow::Result<BackendSettings> {
+    let mut settings = match std::fs::read(path) {
+        Ok(bytes) => crate::provider_commit::deserialize_responses_only_settings(&bytes)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => BackendSettings::default(),
+        Err(error) => return Err(error.into()),
+    };
+    for profile in &mut settings.relay_profiles {
+        profile.auth_contents.clear();
+    }
+    Ok(settings)
+}
+
+fn sanitized_existing_settings_at(path: &Path) -> anyhow::Result<BackendSettings> {
     let bytes = std::fs::read(path)?;
     let mut settings = crate::provider_commit::deserialize_responses_only_settings(&bytes)?;
     for profile in &mut settings.relay_profiles {
@@ -1001,6 +1085,13 @@ pub(crate) fn load_and_migrate_state_from_path(
     state.profiles.retain(|id, _| profile_ids.contains(id));
     for profile in &settings.relay_profiles {
         let existing_pointer = root_catalog_pointer(&profile.config_contents);
+        let generated_pointer = generated_relative_path(&profile.id);
+        let manager_pointer = existing_pointer
+            .as_deref()
+            .filter(|pointer| *pointer == generated_pointer);
+        let recovered_manager = manager_pointer.and_then(|pointer| {
+            recover_manager_owned_catalog(home, pointer, profile, state.official.as_ref()).ok()
+        });
         let state_has_profile = state.profiles.contains_key(&profile.id);
         let entry = state.profiles.entry(profile.id.clone()).or_default();
         if !state_has_profile {
@@ -1010,14 +1101,34 @@ pub(crate) fn load_and_migrate_state_from_path(
             // rejected for not preserving a pointer the editor has no way to send, and correcting
             // the mode requires a save. `manager_owned_pointer_path` cannot answer this, because it
             // asks the state for a generated path and the state is what is being built here.
-            let user_owned_pointer = existing_pointer
-                .as_deref()
-                .filter(|pointer| *pointer != generated_relative_path(&profile.id));
-            entry.mode = default_mode(profile, user_owned_pointer, entry.upstream_topology);
-            if entry.mode == CatalogMode::External {
-                entry.external_pointer = user_owned_pointer.map(ToString::to_string);
+            if let Some(pointer) = manager_pointer {
+                let fallback_mode = match default_mode(profile, None, entry.upstream_topology) {
+                    CatalogMode::NativeOfficial => CatalogMode::OfficialPlusCustom,
+                    mode => mode,
+                };
+                entry.mode = recovered_manager
+                    .as_ref()
+                    .map(|recovered| recovered.mode)
+                    .unwrap_or(fallback_mode);
+                entry.mode_explicit = true;
+                entry.generated_path = Some(pointer.to_string());
+                entry.external_pointer = None;
+                if let Some(recovered) = recovered_manager {
+                    entry.generated_hash = Some(recovered.hash);
+                    entry.overlay = recovered.overlay;
+                    clear_catalog_readiness_action(entry);
+                } else {
+                    entry.overlay = migrate_legacy_overlay(profile, &official_slugs)?;
+                    entry.action_required = Some("catalog-readiness-unavailable".to_string());
+                }
+            } else {
+                let user_owned_pointer = existing_pointer.as_deref();
+                entry.mode = default_mode(profile, user_owned_pointer, entry.upstream_topology);
+                if entry.mode == CatalogMode::External {
+                    entry.external_pointer = user_owned_pointer.map(ToString::to_string);
+                }
+                entry.overlay = migrate_legacy_overlay(profile, &official_slugs)?;
             }
-            entry.overlay = migrate_legacy_overlay(profile, &official_slugs)?;
         } else if !entry.mode_explicit {
             match existing_pointer.as_deref() {
                 Some(pointer) if !manager_owned_pointer_path(&profile.id, pointer, entry) => {
@@ -1036,6 +1147,53 @@ pub(crate) fn load_and_migrate_state_from_path(
         let _ = home;
     }
     Ok(state)
+}
+
+struct RecoveredManagerCatalog {
+    mode: CatalogMode,
+    overlay: CatalogOverlay,
+    hash: String,
+}
+
+fn recover_manager_owned_catalog(
+    home: &Path,
+    pointer: &str,
+    profile: &RelayProfile,
+    official: Option<&OfficialSnapshot>,
+) -> anyhow::Result<RecoveredManagerCatalog> {
+    let bytes = fs::read(home.join(pointer))?;
+    let raw: Value = serde_json::from_slice(&bytes)?;
+    validate_catalog_structure(&raw)?;
+    validate_effective_catalog_offline(&raw)?;
+    let mode = match profile.relay_mode {
+        RelayMode::Official | RelayMode::MixedApi => CatalogMode::OfficialPlusCustom,
+        _ => {
+            if let Some(official) = official {
+                let official_slugs = catalog_slugs(&official.raw_catalog)?;
+                let recovered_slugs = catalog_slugs(&raw)?;
+                if official_slugs.is_subset(&recovered_slugs) {
+                    CatalogMode::OfficialPlusCustom
+                } else {
+                    CatalogMode::CustomOnly
+                }
+            } else {
+                CatalogMode::CustomOnly
+            }
+        }
+    };
+    let overlay_official = (mode == CatalogMode::OfficialPlusCustom)
+        .then_some(official)
+        .flatten();
+    let (overlay, collisions) = overlay_from_catalog(overlay_official, &raw)?;
+    ensure!(
+        collisions.is_empty(),
+        "manager catalog contains duplicate slugs"
+    );
+    Ok(RecoveredManagerCatalog {
+        mode,
+        overlay,
+        hash: content_hash(&bytes),
+    })
 }
 
 fn migrate_legacy_overlay(
@@ -1305,6 +1463,7 @@ pub fn prepare_active_profile_context_settings(
     Ok(())
 }
 
+#[cfg(test)]
 fn state_mutation(state: &CatalogState) -> anyhow::Result<FileMutation> {
     state_mutation_at(state, &state_path())
 }
@@ -2392,10 +2551,10 @@ fn sanitize_nonsecret_config_backup(config: &str) -> anyhow::Result<String> {
     doc.as_table_mut().remove("OPENAI_API_KEY");
     if let Some(providers) = doc
         .get_mut("model_providers")
-        .and_then(toml_edit::Item::as_table_mut)
+        .and_then(toml_edit::Item::as_table_like_mut)
     {
         for (_, provider) in providers.iter_mut() {
-            if let Some(provider) = provider.as_table_mut() {
+            if let Some(provider) = provider.as_table_like_mut() {
                 provider.remove("experimental_bearer_token");
                 provider.remove("bearer_token");
                 provider.remove("api_key");
@@ -2920,6 +3079,16 @@ mod tests {
             protocol: codex_plus_core::settings::RelayProtocol::Responses,
             base_url: "https://relay.example/v1".to_string(),
             api_key: "provider-key".to_string(),
+            config_contents: r#"model_provider = "Composite"
+
+[model_providers.Composite]
+name = "Composite"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = "provider-key"
+"#
+            .to_string(),
             ..RelayProfile::default()
         };
         validate_upstream_topology(&profile, UpstreamTopology::ServerSideComposite).unwrap();
@@ -2938,6 +3107,16 @@ mod tests {
             protocol: codex_plus_core::settings::RelayProtocol::Responses,
             base_url: "https://relay.example/v1".to_string(),
             api_key: "provider-key".to_string(),
+            config_contents: r#"model_provider = "Composite"
+
+[model_providers.Composite]
+name = "OpenAI"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = "provider-key"
+"#
+            .to_string(),
             ..RelayProfile::default()
         };
         validate_upstream_topology(&official_mixed, UpstreamTopology::ServerSideComposite).unwrap();
@@ -2955,6 +3134,9 @@ mod tests {
         );
         let mut missing_official_base_url = official_mixed.clone();
         missing_official_base_url.base_url.clear();
+        missing_official_base_url.config_contents = missing_official_base_url
+            .config_contents
+            .replace("base_url = \"https://relay.example/v1\"\n", "");
         assert!(
             validate_upstream_topology(
                 &missing_official_base_url,
@@ -2964,6 +3146,9 @@ mod tests {
         );
         let mut missing_official_key = official_mixed.clone();
         missing_official_key.api_key.clear();
+        missing_official_key.config_contents = missing_official_key
+            .config_contents
+            .replace("experimental_bearer_token = \"provider-key\"\n", "");
         assert!(
             validate_upstream_topology(
                 &missing_official_key,
@@ -3019,6 +3204,17 @@ mod tests {
             relay_mode: RelayMode::PureApi,
             protocol: codex_plus_core::settings::RelayProtocol::Responses,
             base_url: "https://relay.example/v1".to_string(),
+            api_key: "provider-key".to_string(),
+            config_contents: r#"model_provider = "PureApi"
+
+[model_providers.PureApi]
+name = "Pure API"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = "provider-key"
+"#
+            .to_string(),
             ..RelayProfile::default()
         };
         assert_eq!(
@@ -3202,7 +3398,17 @@ mod tests {
             protocol: codex_plus_core::settings::RelayProtocol::Responses,
             base_url: "https://relay.example/v1".to_string(),
             api_key: "provider-key".to_string(),
-            config_contents: "model = \"codex-minus-test-model\"\n".to_string(),
+            config_contents: r#"model = "codex-minus-test-model"
+model_provider = "relay"
+
+[model_providers.relay]
+name = "relay"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = "provider-key"
+"#
+            .to_string(),
             ..RelayProfile::default()
         };
         let settings = BackendSettings {
@@ -3232,7 +3438,7 @@ mod tests {
                 ..ProfileCatalogState::default()
             },
         );
-        let provider_config = "model = \"codex-minus-test-model\"\nmodel_provider = \"relay\"\n[model_providers.relay]\nbase_url = \"https://relay.example/v1\"\nexperimental_bearer_token = \"provider-key\"\n";
+        let provider_config = "model = \"codex-minus-test-model\"\nmodel_provider = \"relay\"\n[model_providers.relay]\nbase_url = \"https://relay.example/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = false\nexperimental_bearer_token = \"provider-key\"\n";
         let home = tempfile::tempdir().unwrap();
         let plan = plan_active_profile_with_state(
             home.path(),
@@ -3794,6 +4000,586 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn adoption_backup_redacts_inline_provider_credentials() {
+        let config = r#"model = "gpt-5.6-sol"
+model_provider = "Relay"
+model_providers = { Relay = { name = "OpenAI", base_url = "https://relay.example/v1", wire_api = "responses", requires_openai_auth = true, experimental_bearer_token = "inline-secret", api_key = "second-secret" } }
+"#;
+        let profile = RelayProfile {
+            relay_mode: RelayMode::Official,
+            official_mix_api_key: true,
+            base_url: "https://relay.example/v1".to_string(),
+            api_key: "inline-secret".to_string(),
+            config_contents: config.to_string(),
+            ..RelayProfile::default()
+        };
+        crate::provider_commit::validate_responses_only_profile(&profile).unwrap();
+
+        let backup = sanitize_nonsecret_config_backup(config).unwrap();
+
+        assert!(!backup.contains("inline-secret"));
+        assert!(!backup.contains("second-secret"));
+        let document: toml_edit::DocumentMut = backup.parse().unwrap();
+        let provider = document["model_providers"]["Relay"]
+            .as_table_like()
+            .unwrap();
+        assert!(provider.get("experimental_bearer_token").is_none());
+        assert!(provider.get("api_key").is_none());
+    }
+
+    struct ExternalAdoptionFixture {
+        _temp: tempfile::TempDir,
+        paths: CatalogCommandPaths,
+        profile_id: String,
+        client_version: String,
+        external_bytes: Vec<u8>,
+    }
+
+    impl ExternalAdoptionFixture {
+        fn new(active_external: bool, context_conflict: bool, live_context: &str) -> Self {
+            Self::new_with_profile_id("external", active_external, context_conflict, live_context)
+        }
+
+        fn new_with_profile_id(
+            profile_id: &str,
+            active_external: bool,
+            context_conflict: bool,
+            live_context: &str,
+        ) -> Self {
+            let temp = tempfile::tempdir().unwrap();
+            let paths = CatalogCommandPaths {
+                app_state: temp.path().join("app-state"),
+                codex_home: temp.path().join("codex-home"),
+                settings_path: temp.path().join("settings.json"),
+                catalog_state_path: temp.path().join("model-catalog-state.json"),
+            };
+            fs::create_dir_all(&paths.app_state).unwrap();
+            fs::create_dir_all(&paths.codex_home).unwrap();
+            let conflict = if context_conflict {
+                "model_context_window = 123456\n"
+            } else {
+                ""
+            };
+            let external_config = format!(
+                r#"model = "gpt-5.6-sol"
+model_provider = "ExternalRelay"
+model_catalog_json = "external.json"
+{conflict}
+[model_providers.ExternalRelay]
+name = "OpenAI"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = "provider-key"
+http_headers = {{ "x-openai-actor-authorization" = "local-image-extension" }}
+"#
+            );
+            let external_profile = RelayProfile {
+                id: profile_id.to_string(),
+                model: "gpt-5.6-sol".to_string(),
+                base_url: "https://relay.example/v1".to_string(),
+                upstream_base_url: "https://relay.example/v1".to_string(),
+                api_key: "provider-key".to_string(),
+                relay_mode: RelayMode::Official,
+                protocol: codex_plus_core::settings::RelayProtocol::Responses,
+                official_mix_api_key: true,
+                config_contents: external_config.clone(),
+                ..RelayProfile::default()
+            };
+            let mut profiles = vec![external_profile];
+            if !active_external {
+                profiles.insert(
+                    0,
+                    RelayProfile {
+                        id: "active".to_string(),
+                        model: "gpt-5.6-sol".to_string(),
+                        relay_mode: RelayMode::Official,
+                        protocol: codex_plus_core::settings::RelayProtocol::Responses,
+                        config_contents: "model = \"gpt-5.6-sol\"\n".to_string(),
+                        ..RelayProfile::default()
+                    },
+                );
+            }
+            let settings = BackendSettings {
+                relay_profiles: profiles,
+                active_relay_id: if active_external {
+                    profile_id
+                } else {
+                    "active"
+                }
+                .to_string(),
+                ..BackendSettings::default()
+            };
+            fs::write(
+                &paths.settings_path,
+                crate::commands::serialize_settings_without_profile_auth(&settings).unwrap(),
+            )
+            .unwrap();
+            let external = bundled_official_snapshot().unwrap();
+            let external_bytes = serde_json::to_vec_pretty(&external.raw_catalog).unwrap();
+            fs::write(paths.codex_home.join("external.json"), &external_bytes).unwrap();
+            let mut state = CatalogState::default();
+            state.profiles.insert(
+                profile_id.to_string(),
+                ProfileCatalogState {
+                    mode: CatalogMode::External,
+                    mode_explicit: true,
+                    external_pointer: Some("external.json".to_string()),
+                    ..ProfileCatalogState::default()
+                },
+            );
+            fs::write(
+                &paths.catalog_state_path,
+                serde_json::to_vec_pretty(&state).unwrap(),
+            )
+            .unwrap();
+            let live = if active_external {
+                format!("{external_config}\n{live_context}")
+            } else {
+                "model = \"active\"\n".to_string()
+            };
+            fs::write(paths.codex_home.join("config.toml"), live).unwrap();
+            Self {
+                _temp: temp,
+                paths,
+                profile_id: profile_id.to_string(),
+                client_version: external.client_version,
+                external_bytes,
+            }
+        }
+
+        fn verified_target(&self) -> VerifiedTargetIdentity {
+            VerifiedTargetIdentity {
+                cli_path: "/verified/codex".to_string(),
+                client_version: self.client_version.clone(),
+                identity_hash: "sha256:verified-target".to_string(),
+                capability_available: true,
+                capability_message: "verified".to_string(),
+            }
+        }
+
+        fn preview(&self) -> CommandResult<AdoptionPreviewPayload> {
+            adopt_external_model_catalog_blocking_at(
+                &self.paths,
+                AdoptCatalogRequest {
+                    profile_id: self.profile_id.clone(),
+                    commit: false,
+                    expected_source_hash: None,
+                    expected_target_client_version: None,
+                    expected_version_status: None,
+                    accept_version_mismatch: false,
+                    confirm_context_cleanup: false,
+                },
+                || Ok(self.verified_target()),
+            )
+        }
+
+        fn commit(
+            &self,
+            preview: &CommandResult<AdoptionPreviewPayload>,
+        ) -> CommandResult<AdoptionPreviewPayload> {
+            adopt_external_model_catalog_blocking_at(
+                &self.paths,
+                self.commit_request(preview),
+                || Ok(self.verified_target()),
+            )
+        }
+
+        fn commit_request(
+            &self,
+            preview: &CommandResult<AdoptionPreviewPayload>,
+        ) -> AdoptCatalogRequest {
+            AdoptCatalogRequest {
+                profile_id: self.profile_id.clone(),
+                commit: true,
+                expected_source_hash: Some(preview.payload.source_hash.clone()),
+                expected_target_client_version: Some(preview.payload.target_client_version.clone()),
+                expected_version_status: Some(preview.payload.version_status.clone()),
+                accept_version_mismatch: preview.payload.version_status == "mismatch",
+                confirm_context_cleanup: true,
+            }
+        }
+    }
+
+    fn adoption_context_tables(config: &str) -> BTreeMap<String, Value> {
+        let document: Value = toml_edit::de::from_str(config).unwrap();
+        ["mcp_servers", "skills", "plugins"]
+            .into_iter()
+            .map(|name| {
+                (
+                    name.to_string(),
+                    document.get(name).cloned().unwrap_or(Value::Null),
+                )
+            })
+            .collect()
+    }
+
+    fn adoption_file_generation(fixture: &ExternalAdoptionFixture) -> BTreeMap<String, Vec<u8>> {
+        fn collect(root: &Path, prefix: &str, files: &mut BTreeMap<String, Vec<u8>>) {
+            let mut entries = fs::read_dir(root)
+                .unwrap()
+                .map(|entry| entry.unwrap())
+                .collect::<Vec<_>>();
+            entries.sort_by_key(|entry| entry.file_name());
+            for entry in entries {
+                let path = entry.path();
+                let relative = path.strip_prefix(root).unwrap().to_string_lossy();
+                let key = format!("{prefix}/{relative}");
+                if path.is_dir() {
+                    collect(&path, &key, files);
+                } else {
+                    files.insert(key, fs::read(path).unwrap());
+                }
+            }
+        }
+        let mut files = BTreeMap::new();
+        collect(&fixture.paths.app_state, "app-state", &mut files);
+        collect(&fixture.paths.codex_home, "codex-home", &mut files);
+        if let Ok(bytes) = fs::read(&fixture.paths.settings_path) {
+            files.insert("settings.json".to_string(), bytes);
+        }
+        if let Ok(bytes) = fs::read(&fixture.paths.catalog_state_path) {
+            files.insert("catalog-state.json".to_string(), bytes);
+        }
+        files
+    }
+
+    #[test]
+    fn external_adoption_requires_the_existing_settings_generation() {
+        let default_id = BackendSettings::default().relay_profiles[0].id.clone();
+        let fixture = ExternalAdoptionFixture::new_with_profile_id(&default_id, true, false, "");
+        let preview = fixture.preview();
+        assert_eq!(preview.status, "ok", "{}", preview.message);
+        fs::remove_file(&fixture.paths.settings_path).unwrap();
+        let before = adoption_file_generation(&fixture);
+
+        let committed = fixture.commit(&preview);
+
+        assert_eq!(committed.status, "failed");
+        assert!(!fixture.paths.settings_path.exists());
+        assert_eq!(adoption_file_generation(&fixture), before);
+    }
+
+    #[test]
+    fn active_external_adoption_rejects_drifted_live_provider_toml() {
+        let fixture = ExternalAdoptionFixture::new(true, false, "");
+        let preview = fixture.preview();
+        assert_eq!(preview.status, "ok", "{}", preview.message);
+        let live_path = fixture.paths.codex_home.join("config.toml");
+        let drifted = fs::read_to_string(&live_path)
+            .unwrap()
+            .replace("wire_api = \"responses\"", "wire_api = \"chat\"");
+        fs::write(&live_path, drifted).unwrap();
+        let before = adoption_file_generation(&fixture);
+
+        let committed = fixture.commit(&preview);
+
+        assert_eq!(committed.status, "failed");
+        assert_eq!(adoption_file_generation(&fixture), before);
+    }
+
+    #[test]
+    fn active_external_adoption_regrafts_context_changed_after_source_read() {
+        let old_context = r#"[mcp_servers.old]
+command = "old-mcp"
+[skills.old]
+path = "/old/skill"
+enabled = true
+[plugins.old]
+enabled = true
+"#;
+        let new_context = r#"[mcp_servers.new]
+command = "new-mcp"
+[skills.new]
+path = "/new/skill"
+enabled = true
+[plugins.new]
+enabled = true
+"#;
+        let fixture = ExternalAdoptionFixture::new(true, false, old_context);
+        let preview = fixture.preview();
+        assert_eq!(preview.status, "ok", "{}", preview.message);
+        let live_path = fixture.paths.codex_home.join("config.toml");
+        let expected = fs::read_to_string(&live_path)
+            .unwrap()
+            .replace(old_context, new_context);
+        let expected_context = adoption_context_tables(&expected);
+
+        let committed = adopt_external_model_catalog_blocking_at_observed(
+            &fixture.paths,
+            fixture.commit_request(&preview),
+            || Ok(fixture.verified_target()),
+            |checkpoint| {
+                if checkpoint == AdoptionCheckpoint::SourceConfigRead {
+                    fs::write(&live_path, &expected)?;
+                }
+                Ok(())
+            },
+        );
+
+        assert_eq!(committed.status, "ok", "{}", committed.message);
+        assert_eq!(
+            adoption_context_tables(&fs::read_to_string(live_path).unwrap()),
+            expected_context
+        );
+        let manager_pointer = generated_relative_path("external");
+        let saved = sanitized_settings_at(&fixture.paths.settings_path).unwrap();
+        assert_eq!(
+            root_catalog_pointer(&saved.relay_profiles[0].config_contents).as_deref(),
+            Some(manager_pointer.as_str())
+        );
+        assert_eq!(
+            root_catalog_pointer(
+                &fs::read_to_string(fixture.paths.codex_home.join("config.toml")).unwrap()
+            )
+            .as_deref(),
+            Some(manager_pointer.as_str())
+        );
+    }
+
+    #[test]
+    fn active_external_adoption_context_verification_failure_rolls_back_generation() {
+        let context = r#"[mcp_servers.memory]
+command = "memory"
+[skills.writer]
+path = "/skills/writer"
+enabled = true
+[plugins.browser]
+enabled = true
+"#;
+        let fixture = ExternalAdoptionFixture::new(true, false, context);
+        let preview = fixture.preview();
+        assert_eq!(preview.status, "ok", "{}", preview.message);
+        let before = adoption_file_generation(&fixture);
+        let live_path = fixture.paths.codex_home.join("config.toml");
+
+        let committed = adopt_external_model_catalog_blocking_at_observed(
+            &fixture.paths,
+            fixture.commit_request(&preview),
+            || Ok(fixture.verified_target()),
+            |checkpoint| {
+                if checkpoint == AdoptionCheckpoint::LiveConfigApplied {
+                    let mut live = fs::read_to_string(&live_path)?;
+                    live.push_str("\n[mcp_servers.concurrent]\ncommand = \"changed\"\n");
+                    fs::write(&live_path, live)?;
+                }
+                Ok(())
+            },
+        );
+
+        assert_eq!(committed.status, "failed");
+        assert_eq!(adoption_file_generation(&fixture), before);
+    }
+
+    #[test]
+    fn external_adoption_without_context_conflicts_persists_manager_pointer() {
+        let fixture = ExternalAdoptionFixture::new(false, false, "");
+        let preview = fixture.preview();
+        assert_eq!(preview.status, "ok", "{}", preview.message);
+
+        let committed = fixture.commit(&preview);
+        assert_eq!(committed.status, "ok", "{}", committed.message);
+
+        let saved = sanitized_settings_at(&fixture.paths.settings_path).unwrap();
+        let external = saved
+            .relay_profiles
+            .iter()
+            .find(|profile| profile.id == "external")
+            .unwrap();
+        assert_eq!(
+            root_catalog_pointer(&external.config_contents).as_deref(),
+            Some(generated_relative_path("external").as_str())
+        );
+        assert_eq!(
+            fs::read(fixture.paths.codex_home.join("external.json")).unwrap(),
+            fixture.external_bytes,
+            "adoption must not modify the user-owned external source"
+        );
+
+        fs::remove_file(&fixture.paths.catalog_state_path).unwrap();
+        let reconstructed = load_and_migrate_state_from_path(
+            &saved,
+            &fixture.paths.codex_home,
+            &fixture.paths.catalog_state_path,
+        )
+        .unwrap();
+        assert_ne!(
+            reconstructed.profiles["external"].mode,
+            CatalogMode::External,
+            "the persisted manager pointer must remain manager-owned without state"
+        );
+    }
+
+    #[test]
+    fn pure_oauth_adoption_reconstructs_managed_ownership_and_overlay_after_state_loss() {
+        let mut fixture = ExternalAdoptionFixture::new(true, false, "");
+        let mut settings = sanitized_existing_settings_at(&fixture.paths.settings_path).unwrap();
+        let profile = settings
+            .relay_profiles
+            .iter_mut()
+            .find(|profile| profile.id == "external")
+            .unwrap();
+        profile.official_mix_api_key = false;
+        profile.base_url.clear();
+        profile.upstream_base_url.clear();
+        profile.api_key.clear();
+        fs::write(
+            &fixture.paths.settings_path,
+            crate::commands::serialize_settings_without_profile_auth(&settings).unwrap(),
+        )
+        .unwrap();
+
+        let mut external: Value = serde_json::from_slice(&fixture.external_bytes).unwrap();
+        let generated = codex_plus_core::model_suffix::build_model_catalog_json(
+            &[codex_plus_core::model_suffix::ModelCatalogEntry {
+                slug: "adopted-custom".to_string(),
+                display_name: "Adopted Custom".to_string(),
+                suffix_window: Some(123_000),
+            }],
+            None,
+        );
+        let generated: Value = serde_json::from_str(&generated).unwrap();
+        external["models"]
+            .as_array_mut()
+            .unwrap()
+            .push(generated["models"][0].clone());
+        fixture.external_bytes = serde_json::to_vec_pretty(&external).unwrap();
+        fs::write(
+            fixture.paths.codex_home.join("external.json"),
+            &fixture.external_bytes,
+        )
+        .unwrap();
+
+        let preview = fixture.preview();
+        assert_eq!(preview.status, "ok", "{}", preview.message);
+        let committed = fixture.commit(&preview);
+        assert_eq!(committed.status, "ok", "{}", committed.message);
+        let saved = sanitized_existing_settings_at(&fixture.paths.settings_path).unwrap();
+        let manager_path = root_catalog_pointer(&saved.relay_profiles[0].config_contents).unwrap();
+        let mut prior_baseline_artifact: Value = serde_json::from_slice(
+            &fs::read(fixture.paths.codex_home.join(&manager_path)).unwrap(),
+        )
+        .unwrap();
+        let removable = prior_baseline_artifact["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|model| model["slug"] != "adopted-custom")
+            .unwrap();
+        prior_baseline_artifact["models"]
+            .as_array_mut()
+            .unwrap()
+            .remove(removable);
+        fs::write(
+            fixture.paths.codex_home.join(&manager_path),
+            serde_json::to_vec_pretty(&prior_baseline_artifact).unwrap(),
+        )
+        .unwrap();
+        fs::remove_file(&fixture.paths.catalog_state_path).unwrap();
+
+        let reconstructed = load_and_migrate_state_from_path(
+            &saved,
+            &fixture.paths.codex_home,
+            &fixture.paths.catalog_state_path,
+        )
+        .unwrap();
+
+        let profile_state = &reconstructed.profiles["external"];
+        assert_eq!(profile_state.mode, CatalogMode::OfficialPlusCustom);
+        assert!(profile_state.mode_explicit);
+        assert_eq!(
+            profile_state.generated_path.as_deref(),
+            Some(generated_relative_path("external").as_str())
+        );
+        assert!(profile_state.generated_hash.is_some());
+        assert!(
+            profile_state
+                .overlay
+                .custom
+                .iter()
+                .any(|model| model.slug == "adopted-custom")
+        );
+        fs::write(
+            &fixture.paths.catalog_state_path,
+            serde_json::to_vec_pretty(&reconstructed).unwrap(),
+        )
+        .unwrap();
+        let second = load_and_migrate_state_from_path(
+            &saved,
+            &fixture.paths.codex_home,
+            &fixture.paths.catalog_state_path,
+        )
+        .unwrap();
+        assert_eq!(
+            second.profiles["external"].mode,
+            CatalogMode::OfficialPlusCustom
+        );
+        assert!(manager_owned_pointer(
+            &second,
+            "external",
+            root_catalog_pointer(&saved.relay_profiles[0].config_contents).as_deref(),
+        ));
+    }
+
+    #[test]
+    fn sanitized_settings_missing_file_uses_default_but_existing_files_remain_strict() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+
+        let settings = sanitized_settings_at(&path).unwrap();
+        assert_eq!(
+            serde_json::to_value(settings).unwrap(),
+            serde_json::to_value(BackendSettings::default()).unwrap()
+        );
+        assert!(
+            !path.exists(),
+            "catalog reads must not create settings on first run"
+        );
+
+        fs::write(&path, br#"{"aggregateRelayProfiles":[]}"#).unwrap();
+        assert!(sanitized_settings_at(&path).is_err());
+    }
+
+    #[test]
+    fn first_run_catalog_status_and_evidence_use_defaults_without_creating_settings() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = CatalogCommandPaths {
+            app_state: temp.path().join("app-state"),
+            codex_home: temp.path().join("codex-home"),
+            settings_path: temp.path().join("missing-settings.json"),
+            catalog_state_path: temp.path().join("model-catalog-state.json"),
+        };
+        fs::create_dir_all(&paths.app_state).unwrap();
+        fs::create_dir_all(&paths.codex_home).unwrap();
+        let defaults = BackendSettings::default();
+        let default_profile = defaults.relay_profiles[0].id.clone();
+
+        let status = model_catalog_status_blocking_at(&paths);
+        assert_eq!(status.status, "ok", "{}", status.message);
+        assert_eq!(status.payload.profiles.len(), defaults.relay_profiles.len());
+        assert!(!paths.settings_path.exists());
+
+        record_provider_evidence_at(
+            &paths,
+            &default_profile,
+            "https://provider.example/v1/models",
+            &["provider-model".to_string()],
+        )
+        .unwrap();
+        let state: CatalogState =
+            serde_json::from_slice(&fs::read(&paths.catalog_state_path).unwrap()).unwrap();
+        assert_eq!(
+            state.profiles[&default_profile]
+                .provider_evidence
+                .as_ref()
+                .unwrap()
+                .reported_slugs,
+            vec!["provider-model"]
+        );
+        assert!(!paths.settings_path.exists());
     }
 
     #[test]
@@ -4462,7 +5248,20 @@ mod implicit_catalog_mode_tests {
             relay_mode: RelayMode::Official,
             official_mix_api_key: true,
             protocol: codex_plus_core::settings::RelayProtocol::Responses,
-            config_contents: "model = \"gpt-5.4\"\n".to_string(),
+            base_url: format!("https://{id}.example/v1"),
+            api_key: format!("key-{id}"),
+            config_contents: format!(
+                r#"model = "gpt-5.4"
+model_provider = "{id}"
+
+[model_providers.{id}]
+name = "OpenAI"
+base_url = "https://{id}.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = "key-{id}"
+"#
+            ),
             ..RelayProfile::default()
         }
     }

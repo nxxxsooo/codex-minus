@@ -157,6 +157,38 @@ fn typescript_transform_request_shape_deserializes_through_the_real_serde_bounda
     assert!(serde_json::from_value::<ProviderNativeCapabilityDraftRequest>(aggregate).is_err());
 }
 
+#[test]
+fn typescript_transform_request_rejects_removed_raw_provider_toml_at_serde_boundary() {
+    let canonical = canonical_source("inline");
+    let invalid = [
+        canonical.replace("wire_api = \"responses\"", "wire_api = \"chat\""),
+        canonical.replace("wire_api = \"responses\"\n", ""),
+        format!("codex_plus_chat_base_url = \"https://relay.example/v1\"\n{canonical}"),
+        canonical.replace(
+            "base_url = \"https://relay.example/v1\"",
+            "base_url = \"http://127.0.0.1:57321/v1\"",
+        ),
+    ];
+    for config_contents in invalid {
+        let mut profile = serde_json::to_value(mixed_profile(
+            "serde-legacy",
+            "same-secret",
+            &config_contents,
+        ))
+        .unwrap();
+        profile.as_object_mut().unwrap().remove("protocol");
+        profile.as_object_mut().unwrap().remove("upstreamBaseUrl");
+        let wire = serde_json::json!({
+            "draftRevision": 75,
+            "profile": profile,
+            "catalogMode": "official-plus-custom",
+            "action": "enableNativePriority",
+            "confirmations": []
+        });
+        assert!(serde_json::from_value::<ProviderNativeCapabilityDraftRequest>(wire).is_err());
+    }
+}
+
 fn parsed(
     payload: &codex_minus_lib::provider_native_capability::ProviderNativeCapabilityDraftPayload,
 ) -> DocumentMut {
@@ -189,7 +221,7 @@ unrelated_root = "keep-root"
 [model_providers.RelayOne] # provider-comment
 name = "custom" # name-comment
 base_url = "https://relay.example/v1" # base-comment
-wire_api = "chat"
+wire_api = "responses"
 requires_openai_auth = true
 experimental_bearer_token = "same-secret" # bearer-comment
 arbitrary_provider_key = "keep-provider" # arbitrary-comment
@@ -278,6 +310,30 @@ fn enabling_edits_only_owned_fields_and_preserves_nonlegacy_identity_evidence_an
             );
         }
     }
+}
+
+#[test]
+fn enabling_preserves_an_existing_false_official_auth_requirement() {
+    let source = canonical_source("inline").replace(
+        "requires_openai_auth = true",
+        "requires_openai_auth = false",
+    );
+    let profile = mixed_profile("profile", "same-secret", &source);
+
+    let payload = draft_provider_native_capability(&request(
+        profile,
+        CatalogMode::NativeOfficial,
+        NativeCapabilityDraftAction::EnableNativePriority,
+    ));
+
+    assert_eq!(payload.status, NativeCapabilityDraftStatus::Ready);
+    let document = parsed(&payload);
+    assert_eq!(
+        provider(&document, "RelayOne")
+            .get("requires_openai_auth")
+            .and_then(Item::as_bool),
+        Some(false)
+    );
 }
 
 #[test]

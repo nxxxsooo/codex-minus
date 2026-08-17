@@ -2,12 +2,17 @@
 
 ### Requirement: Canonical actor-authorized provider contract
 
-The system MUST materialize each native-capability-priority profile as one coherent custom provider contract. The selected provider identifier MUST remain a non-built-in profile-scoped identifier; an explicit upgrade MUST preserve an existing non-reserved, non-legacy identifier unchanged so session references stay valid; a brand-new draft SHALL default its identifier to `OpenAI`. The provider entry MUST use the exact friendly name `name = "OpenAI"`, use `wire_api = "responses"`, set `requires_openai_auth = false`, project the provider-scoped key through the provider bearer field, and include the manager-owned non-empty `x-openai-actor-authorization = "local-image-extension"` header. The system MUST NOT route the profile through Codex's reserved built-in `openai` provider identifier, and exactly one generator SHALL own this materialization.
+The system MUST materialize each native-capability-priority profile as one coherent custom provider contract. The selected provider identifier MUST remain a non-built-in profile-scoped identifier; an explicit upgrade MUST preserve an existing non-reserved, non-legacy identifier unchanged so session references stay valid; a brand-new draft SHALL default its identifier to `OpenAI`. The provider entry MUST use the exact friendly name `name = "OpenAI"`, use `wire_api = "responses"`, project the provider-scoped key through the provider bearer field, and include the manager-owned non-empty `x-openai-actor-authorization = "local-image-extension"` header. A new mixed-auth profile MUST default to `requires_openai_auth = true`. Existing mixed profiles with either `true` or `false` are valid, and ordinary saves MUST preserve the persisted value. The system MUST write `requires_openai_auth = false` only for an explicit exit to pure API. The system MUST NOT route the profile through Codex's reserved built-in `openai` provider identifier, and exactly one generator SHALL own this materialization.
 
 #### Scenario: Native-capability profile is materialized
 
 - **WHEN** a valid native-capability-priority draft is saved
 - **THEN** the resulting provider table contains the complete actor-authorized Responses contract and the root `model_provider` selects that profile's existing custom provider identifier
+
+#### Scenario: Existing mixed authentication requirement is preserved
+
+- **WHEN** an existing actor-authorized Responses provider has either `requires_openai_auth = true` or `requires_openai_auth = false` and the user performs an ordinary edit or save
+- **THEN** the system preserves that exact persisted value and does not treat either boolean as a compatibility mode
 
 #### Scenario: A new draft defaults its identifier
 

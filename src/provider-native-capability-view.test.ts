@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import {
   deriveProviderNativeCapabilityView,
   deriveProviderModePresentation,
+  providerAccessModeHint,
   providerTransitionDecisionForStructuredPatch,
 } from "./provider-native-capability-view.ts";
 
@@ -208,6 +209,17 @@ describe("ordinary provider mode controls", () => {
     relayMode: "official",
     officialMixApiKey: true,
   };
+
+  it("distinguishes mixed-key and pure-OAuth access copy", () => {
+    assert.equal(
+      providerAccessModeHint(nativeProfile),
+      "官方登录＋混入 API Key＋Responses API",
+    );
+    assert.equal(
+      providerAccessModeHint({ ...nativeProfile, officialMixApiKey: false }),
+      "官方登录＋不写 API Key＋Responses API",
+    );
+  });
 
   it("routes supported mode exits without using an implicit upgrade action", () => {
     assert.deepEqual(

@@ -475,6 +475,8 @@ pub(crate) enum ResponsesOnlyProviderError {
     UnsupportedProtocol,
     LocalAggregate,
     RemovedProxy,
+    InvalidProviderConfig,
+    RetiredChatMarker,
 }
 
 impl std::fmt::Display for ResponsesOnlyProviderError {
@@ -483,6 +485,8 @@ impl std::fmt::Display for ResponsesOnlyProviderError {
             Self::UnsupportedProtocol => "only Responses API provider profiles are supported",
             Self::LocalAggregate => "local aggregate provider profiles are unsupported",
             Self::RemovedProxy => "the removed local proxy base URL is unsupported",
+            Self::InvalidProviderConfig => "provider config TOML is invalid",
+            Self::RetiredChatMarker => "the retired Chat Completions marker is unsupported",
         })
     }
 }
@@ -502,6 +506,109 @@ pub(crate) fn validate_responses_only_profile(
         == REMOVED_PROTOCOL_PROXY_BASE_URL.trim_end_matches('/')
     {
         return Err(ResponsesOnlyProviderError::RemovedProxy);
+    }
+    validate_responses_only_provider_toml(profile)?;
+    Ok(())
+}
+
+fn validate_responses_only_provider_toml(
+    profile: &RelayProfile,
+) -> Result<(), ResponsesOnlyProviderError> {
+    let api_bearing = profile.relay_mode != RelayMode::Official
+        || profile.official_mix_api_key
+        || !profile.base_url.trim().is_empty()
+        || !profile.api_key.trim().is_empty();
+    if profile.config_contents.trim().is_empty() {
+        return if api_bearing {
+            Err(ResponsesOnlyProviderError::InvalidProviderConfig)
+        } else {
+            Ok(())
+        };
+    }
+    let document = profile
+        .config_contents
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|_| ResponsesOnlyProviderError::InvalidProviderConfig)?;
+    if document.as_table().contains_key("codex_plus_chat_base_url") {
+        return Err(ResponsesOnlyProviderError::RetiredChatMarker);
+    }
+    if let Some(base_url) = document.get("base_url") {
+        let base_url = base_url
+            .as_str()
+            .ok_or(ResponsesOnlyProviderError::InvalidProviderConfig)?;
+        if base_url.trim().trim_end_matches('/')
+            == REMOVED_PROTOCOL_PROXY_BASE_URL.trim_end_matches('/')
+        {
+            return Err(ResponsesOnlyProviderError::RemovedProxy);
+        }
+    }
+    if let Some(providers) = document.get("model_providers") {
+        let providers = providers
+            .as_table_like()
+            .ok_or(ResponsesOnlyProviderError::InvalidProviderConfig)?;
+        for (_, provider) in providers.iter() {
+            let provider = provider
+                .as_table_like()
+                .ok_or(ResponsesOnlyProviderError::InvalidProviderConfig)?;
+            if provider.get("codex_plus_chat_base_url").is_some() {
+                return Err(ResponsesOnlyProviderError::RetiredChatMarker);
+            }
+            if provider.get("wire_api").and_then(toml_edit::Item::as_str) != Some("responses") {
+                return Err(ResponsesOnlyProviderError::UnsupportedProtocol);
+            }
+            if let Some(base_url) = provider.get("base_url") {
+                let base_url = base_url
+                    .as_str()
+                    .ok_or(ResponsesOnlyProviderError::InvalidProviderConfig)?;
+                if base_url.trim().trim_end_matches('/')
+                    == REMOVED_PROTOCOL_PROXY_BASE_URL.trim_end_matches('/')
+                {
+                    return Err(ResponsesOnlyProviderError::RemovedProxy);
+                }
+            }
+        }
+    }
+    let Some(provider_id) = document.get("model_provider") else {
+        return if api_bearing || document.get("model_providers").is_some() {
+            Err(ResponsesOnlyProviderError::InvalidProviderConfig)
+        } else {
+            Ok(())
+        };
+    };
+    let provider_id = provider_id
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(ResponsesOnlyProviderError::InvalidProviderConfig)?;
+    let provider = document
+        .get("model_providers")
+        .and_then(toml_edit::Item::as_table_like)
+        .and_then(|providers| providers.get(provider_id))
+        .and_then(toml_edit::Item::as_table_like);
+    let Some(provider) = provider else {
+        if provider_id == "openai"
+            && profile.relay_mode == RelayMode::Official
+            && !profile.official_mix_api_key
+        {
+            return Ok(());
+        }
+        return Err(ResponsesOnlyProviderError::InvalidProviderConfig);
+    };
+    if provider.get("codex_plus_chat_base_url").is_some() {
+        return Err(ResponsesOnlyProviderError::RetiredChatMarker);
+    }
+    if provider.get("wire_api").and_then(toml_edit::Item::as_str) != Some("responses") {
+        return Err(ResponsesOnlyProviderError::UnsupportedProtocol);
+    }
+    if let Some(base_url) = provider.get("base_url") {
+        let base_url = base_url
+            .as_str()
+            .ok_or(ResponsesOnlyProviderError::InvalidProviderConfig)?;
+        if base_url.trim().trim_end_matches('/')
+            == REMOVED_PROTOCOL_PROXY_BASE_URL.trim_end_matches('/')
+        {
+            return Err(ResponsesOnlyProviderError::RemovedProxy);
+        }
     }
     Ok(())
 }
@@ -523,6 +630,20 @@ pub(crate) fn validate_responses_only_settings(
 pub(crate) fn deserialize_responses_only_settings(bytes: &[u8]) -> anyhow::Result<BackendSettings> {
     let value: Value =
         serde_json::from_slice(bytes).context("provider settings are invalid JSON")?;
+    deserialize_responses_only_settings_value(value)
+}
+
+pub(crate) fn deserialize_responses_only_settings_value(
+    value: Value,
+) -> anyhow::Result<BackendSettings> {
+    let root = value
+        .as_object()
+        .context("provider settings must be a JSON object")?;
+    ensure!(
+        !root.contains_key("aggregateRelayProfiles")
+            && !root.contains_key("activeAggregateRelayId"),
+        "provider settings contain removed top-level fields"
+    );
     if let Some(profiles) = value.get("relayProfiles").and_then(Value::as_array) {
         for profile in profiles {
             if let Some(profile) = profile.as_object() {
@@ -537,6 +658,19 @@ pub(crate) fn deserialize_responses_only_settings(bytes: &[u8]) -> anyhow::Resul
         .context("provider settings do not match the supported schema")?;
     validate_responses_only_settings(&settings)?;
     Ok(settings)
+}
+
+pub(crate) fn validate_provider_commit_wire_preflight(
+    request: &ProviderCommitRequest,
+) -> anyhow::Result<()> {
+    for profile in &request.topology.relay_profiles {
+        ensure!(
+            profile.auth_contents.is_empty(),
+            "incoming authContents is prohibited"
+        );
+        validate_responses_only_profile(&RelayProfile::from(profile))?;
+    }
+    Ok(())
 }
 
 pub fn validate_provider_detail_request(
@@ -556,6 +690,26 @@ pub fn validate_provider_detail_request(
         .iter()
         .find(|profile| profile.id == focused_id)
         .context("focused provider profile is missing from the topology draft")?;
+    for persisted in &persisted_settings.relay_profiles {
+        ensure!(
+            request
+                .topology
+                .relay_profiles
+                .iter()
+                .any(|profile| profile.id == persisted.id),
+            "focused provider detail cannot omit a persisted bystander profile"
+        );
+    }
+    for profile in &request.topology.relay_profiles {
+        ensure!(
+            profile.id == focused_id
+                || persisted_settings
+                    .relay_profiles
+                    .iter()
+                    .any(|persisted| persisted.id == profile.id),
+            "focused provider detail cannot add a bystander profile"
+        );
+    }
     if request.action == ProviderCommitAction::SetCurrent {
         ensure!(
             request.topology.active_relay_id == focused_id,
@@ -573,7 +727,7 @@ pub fn validate_provider_detail_request(
         .filter(|draft| draft.profile_id == focused_id)
         .count();
     ensure!(
-        supplied == 1,
+        supplied == 1 && request.catalog_drafts.len() == 1,
         "focused provider profile must carry exactly one complete catalog draft"
     );
     Ok(())
@@ -993,7 +1147,18 @@ mod tests {
             relay_mode: RelayMode::Official,
             official_mix_api_key: true,
             test_model: format!("{model}-test"),
-            config_contents: format!("model = \"{model}\"\n"),
+            config_contents: format!(
+                r#"model = "{model}"
+model_provider = "{id}"
+
+[model_providers.{id}]
+name = "OpenAI"
+base_url = "https://{id}.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = "secret-{id}"
+"#
+            ),
             auth_contents: String::new(),
             model_list: model.to_string(),
             model_windows: "{}".to_string(),
@@ -1057,6 +1222,100 @@ mod tests {
             validate_responses_only_settings(&proxy),
             Err(ResponsesOnlyProviderError::RemovedProxy)
         ));
+    }
+
+    #[test]
+    fn responses_only_profile_rejects_legacy_raw_toml_before_structured_reconstruction() {
+        let canonical = r#"model = "gpt-5.6-sol"
+model_provider = "RelayOne"
+
+[model_providers.RelayOne]
+name = "OpenAI"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = "provider-key"
+"#;
+        let mut profile = mixed_profile("relay-a", "gpt-5.6-sol");
+        profile.base_url = "https://relay.example/v1".to_string();
+        profile.upstream_base_url = profile.base_url.clone();
+        profile.config_contents = canonical.to_string();
+        assert!(validate_responses_only_profile(&profile).is_ok());
+
+        let invalid = [
+            (
+                "missing selected provider",
+                "model = \"gpt-5.6-sol\"\n".to_string(),
+            ),
+            (
+                "chat wire API",
+                canonical.replace("wire_api = \"responses\"", "wire_api = \"chat\""),
+            ),
+            (
+                "non-string wire API",
+                canonical.replace("wire_api = \"responses\"", "wire_api = 1"),
+            ),
+            (
+                "missing wire API",
+                canonical.replace("wire_api = \"responses\"\n", ""),
+            ),
+            (
+                "retired chat marker",
+                format!("codex_plus_chat_base_url = \"https://relay.example/v1\"\n{canonical}"),
+            ),
+            (
+                "retired selected-provider chat marker",
+                canonical.replace(
+                    "wire_api = \"responses\"",
+                    "wire_api = \"responses\"\ncodex_plus_chat_base_url = \"https://relay.example/v1\"",
+                ),
+            ),
+            (
+                "removed proxy effective URL",
+                canonical.replace(
+                    "base_url = \"https://relay.example/v1\"",
+                    "base_url = \"http://127.0.0.1:57321/v1\"",
+                ),
+            ),
+            (
+                "removed root proxy effective URL",
+                format!("base_url = \"http://127.0.0.1:57321/v1\"\n{canonical}"),
+            ),
+            (
+                "unselected Chat Completions provider table",
+                format!(
+                    "{canonical}\n[model_providers.LegacyChat]\nname = \"legacy\"\nbase_url = \"https://legacy.example/v1\"\nwire_api = \"chat\"\n"
+                ),
+            ),
+            (
+                "unselected provider table with no wire API",
+                format!(
+                    "{canonical}\n[model_providers.LegacyMissingWire]\nname = \"legacy\"\nbase_url = \"https://legacy.example/v1\"\n"
+                ),
+            ),
+        ];
+        for (case, config_contents) in invalid {
+            let mut invalid = profile.clone();
+            invalid.config_contents = config_contents;
+            assert!(
+                validate_responses_only_profile(&invalid).is_err(),
+                "legacy raw TOML must be rejected for {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn settings_wire_rejects_retired_top_level_fields_even_when_empty() {
+        assert!(deserialize_responses_only_settings(br#"{}"#).is_ok());
+        for bytes in [
+            br#"{"aggregateRelayProfiles":[]}"#.as_slice(),
+            br#"{"activeAggregateRelayId":""}"#.as_slice(),
+        ] {
+            assert!(
+                deserialize_responses_only_settings(bytes).is_err(),
+                "presence of a retired top-level field must fail closed"
+            );
+        }
     }
 
     fn official_catalog() -> Value {
@@ -1431,7 +1690,9 @@ mod tests {
         let persisted = settings_with(vec![profile.clone()], "relay-a");
         let mut requested_profile = profile;
         requested_profile.model = "draft-model".to_string();
-        requested_profile.config_contents = "model = \"draft-model\"\n".to_string();
+        requested_profile.config_contents = requested_profile
+            .config_contents
+            .replace("model = \"persisted-model\"", "model = \"draft-model\"");
         let requested = settings_with(vec![requested_profile], "relay-a");
         let mut persisted_state = state_with_official();
         persisted_state.profiles.insert(
@@ -1524,6 +1785,55 @@ mod tests {
         );
         assert!(
             validate_provider_detail_request(&settings, &state_with_official(), &request).is_err()
+        );
+    }
+
+    #[test]
+    fn focused_detail_validation_requires_every_persisted_bystander() {
+        let a = mixed_profile("relay-a", "official-a");
+        let b = mixed_profile("relay-b", "official-a");
+        let persisted = settings_with(vec![a.clone(), b.clone()], "relay-a");
+        let omitted = settings_with(vec![a.clone()], "relay-a");
+        let request = request_for(
+            &persisted,
+            &omitted,
+            Some("relay-a"),
+            vec![catalog_draft(
+                "relay-a",
+                CatalogMode::OfficialPlusCustom,
+                CatalogOverlay::default(),
+            )],
+            ProviderCommitAction::Save,
+        );
+
+        assert!(
+            validate_provider_detail_request(&persisted, &state_with_official(), &request).is_err(),
+            "a focused detail save cannot delete an omitted bystander profile"
+        );
+
+        let complete = settings_with(vec![a, b], "relay-a");
+        let extra_catalog = request_for(
+            &persisted,
+            &complete,
+            Some("relay-a"),
+            vec![
+                catalog_draft(
+                    "relay-a",
+                    CatalogMode::OfficialPlusCustom,
+                    CatalogOverlay::default(),
+                ),
+                catalog_draft(
+                    "relay-b",
+                    CatalogMode::OfficialPlusCustom,
+                    CatalogOverlay::default(),
+                ),
+            ],
+            ProviderCommitAction::Save,
+        );
+        assert!(
+            validate_provider_detail_request(&persisted, &state_with_official(), &extra_catalog)
+                .is_err(),
+            "a focused detail save cannot mutate a bystander catalog"
         );
     }
 
@@ -1878,7 +2188,10 @@ mod tests {
     #[test]
     fn external_identity_is_preserved_and_new_external_pointer_must_come_from_profile_toml() {
         let mut profile = mixed_profile("relay-a", "official-a");
-        profile.config_contents = "model_catalog_json = \"models/user-owned.json\"\n".to_string();
+        profile.config_contents = format!(
+            "model_catalog_json = \"models/user-owned.json\"\n{}",
+            profile.config_contents
+        );
         let persisted = settings_with(vec![profile.clone()], "relay-a");
         let mut state = state_with_official();
         let external_overlay = CatalogOverlay {
@@ -1941,7 +2254,10 @@ mod tests {
     #[test]
     fn draftless_topology_save_preserves_every_external_profile_pointer() {
         let mut external = mixed_profile("relay-external", "owned-model");
-        external.config_contents = "model_catalog_json = \"models/user-owned.json\"\n".to_string();
+        external.config_contents = format!(
+            "model_catalog_json = \"models/user-owned.json\"\n{}",
+            external.config_contents
+        );
         let ordinary = mixed_profile("relay-b", "official-a");
         let persisted = settings_with(vec![external.clone(), ordinary.clone()], "relay-external");
         let mut state = state_with_official();
@@ -1967,12 +2283,15 @@ mod tests {
         assert!(validate_common_request(&persisted, &state, &valid).is_ok());
 
         let mut changed = reordered.clone();
-        changed
+        let changed_profile = changed
             .relay_profiles
             .iter_mut()
             .find(|profile| profile.id == "relay-external")
-            .unwrap()
-            .config_contents = "model_catalog_json = \"models/replaced.json\"\n".to_string();
+            .unwrap();
+        changed_profile.config_contents = changed_profile.config_contents.replace(
+            "model_catalog_json = \"models/user-owned.json\"",
+            "model_catalog_json = \"models/replaced.json\"",
+        );
         let changed = request_for(
             &persisted,
             &changed,
@@ -1983,12 +2302,14 @@ mod tests {
         assert!(validate_common_request(&persisted, &state, &changed).is_err());
 
         let mut removed = reordered;
-        removed
+        let removed_profile = removed
             .relay_profiles
             .iter_mut()
             .find(|profile| profile.id == "relay-external")
-            .unwrap()
-            .config_contents = "model = \"owned-model\"\n".to_string();
+            .unwrap();
+        removed_profile.config_contents = removed_profile
+            .config_contents
+            .replace("model_catalog_json = \"models/user-owned.json\"\n", "");
         let removed = request_for(
             &persisted,
             &removed,
@@ -2002,7 +2323,10 @@ mod tests {
     #[test]
     fn external_pointer_identity_rejects_whitespace_wrapped_replacement() {
         let mut external = mixed_profile("relay-external", "owned-model");
-        external.config_contents = "model_catalog_json = \"models/user-owned.json\"\n".to_string();
+        external.config_contents = format!(
+            "model_catalog_json = \"models/user-owned.json\"\n{}",
+            external.config_contents
+        );
         let persisted = settings_with(vec![external], "relay-external");
         let mut state = state_with_official();
         state.profiles.insert(
@@ -2016,7 +2340,10 @@ mod tests {
         );
         let mut replacement = persisted.clone();
         replacement.relay_profiles[0].config_contents =
-            "model_catalog_json = \" models/user-owned.json \"\n".to_string();
+            replacement.relay_profiles[0].config_contents.replace(
+                "model_catalog_json = \"models/user-owned.json\"",
+                "model_catalog_json = \" models/user-owned.json \"",
+            );
         let request = request_for(
             &persisted,
             &replacement,
@@ -2032,7 +2359,10 @@ mod tests {
     fn external_pointer_identity_accepts_unchanged_pointer_with_spaces() {
         let pointer = " models/user-owned.json ";
         let mut external = mixed_profile("relay-external", "owned-model");
-        external.config_contents = format!("model_catalog_json = \"{pointer}\"\n");
+        external.config_contents = format!(
+            "model_catalog_json = \"{pointer}\"\n{}",
+            external.config_contents
+        );
         let persisted = settings_with(vec![external], "relay-external");
         let mut state = state_with_official();
         state.profiles.insert(

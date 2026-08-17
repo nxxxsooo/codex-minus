@@ -25,7 +25,6 @@ import {
   codexModelFromConfig,
   codexTopLevelIntFromConfig,
   joinTomlSectionsRootFirst,
-  rootTomlStringValue,
 } from "./codex-toml.ts";
 import {
   applyProviderConfigPatch,

@@ -4,9 +4,10 @@ use crate::commands::{
     GenericSettingsSaveError, ProviderCommitCheckpoint, ProviderCommitErrorCode,
     ProviderCommitPaths, ProviderCommitPayload, assert_staged_native_provider_contract,
     commit_provider_detail_from_paths, commit_provider_detail_from_paths_observed,
-    commit_relay_profile_transaction_at, save_settings_with_provider_guard_at,
-    save_settings_with_provider_guard_at_observed, settings_snapshot_for_ui_projection,
-    switch_relay_profile_blocking_at, ui_provider_topology_projection,
+    commit_relay_profile_transaction_at, save_settings_value_with_provider_guard_at,
+    save_settings_with_provider_guard_at, save_settings_with_provider_guard_at_observed,
+    settings_snapshot_for_ui_projection, switch_relay_profile_blocking_at,
+    ui_provider_topology_projection,
 };
 use crate::provider_commit::{
     CatalogMode, CatalogOverlay, CatalogState, CustomModel, OfficialSnapshot, ProfileCatalogDraft,
@@ -485,8 +486,13 @@ fn responses_only_load_rejection_precedes_auth_migration() {
     .unwrap();
     let persisted_bytes = fs::read(&fixture.paths.settings_path).unwrap();
     let before = fixture.file_generation();
+    let mut valid_request_settings = initial.clone();
+    valid_request_settings.relay_profiles[0].protocol = RelayProtocol::Responses;
+    valid_request_settings.relay_profiles[0]
+        .auth_contents
+        .clear();
     let request = ProviderCommitRequest {
-        topology: ProviderOwnedTopologyDraft::from_settings(&initial),
+        topology: ProviderOwnedTopologyDraft::from_settings(&valid_request_settings),
         catalog_drafts: vec![catalog_draft("sub2api")],
         focused_profile_id: Some("sub2api".to_string()),
         action: ProviderCommitAction::Save,
@@ -506,6 +512,56 @@ fn responses_only_load_rejection_precedes_auth_migration() {
         fs::read(&fixture.paths.settings_path).unwrap(),
         persisted_bytes
     );
+    assert_eq!(fixture.file_generation(), before);
+}
+
+#[test]
+fn caller_raw_toml_rejection_precedes_persisted_auth_migration_and_any_checkpoint() {
+    let initial = settings_with(
+        vec![canonical_profile(
+            "sub2api",
+            "gpt-5.6-sol",
+            "https://relay.example/v1",
+            "provider-key",
+        )],
+        "sub2api",
+    );
+    let fixture = Fixture::new(&initial, &state_with_official());
+    let mut persisted_value: Value =
+        serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+    persisted_value["relayProfiles"][0]["authContents"] =
+        json!(r#"{"OPENAI_API_KEY":"provider-key"}"#);
+    fs::write(
+        &fixture.paths.settings_path,
+        serde_json::to_vec_pretty(&persisted_value).unwrap(),
+    )
+    .unwrap();
+    let persisted = fixture.read_settings();
+    let mut invalid = persisted.clone();
+    invalid.relay_profiles[0].config_contents = invalid.relay_profiles[0]
+        .config_contents
+        .replace("wire_api = \"responses\"", "wire_api = \"chat\"");
+    let before = fixture.file_generation();
+    let mut checkpoints = Vec::new();
+
+    let error = commit_provider_detail_from_paths_observed(
+        &fixture.paths,
+        request(
+            &persisted,
+            &invalid,
+            "sub2api",
+            ProviderCommitAction::Save,
+            102,
+        ),
+        |checkpoint| {
+            checkpoints.push(checkpoint);
+            Ok(())
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code(), ProviderCommitErrorCode::InvalidDraft);
+    assert!(checkpoints.is_empty());
     assert_eq!(fixture.file_generation(), before);
 }
 
@@ -1593,6 +1649,72 @@ fn generic_settings_save_allows_unrelated_changes_but_rejects_every_provider_own
 }
 
 #[test]
+fn generic_settings_wire_rejects_explicit_retired_fields_in_incoming_and_persisted_json() {
+    let profile = canonical_profile(
+        "sub2api",
+        "gpt-5.6-sol",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    let initial = settings_with(vec![profile], "sub2api");
+    let retired = [
+        ("aggregateRelayProfiles", json!([]), false),
+        ("activeAggregateRelayId", json!(""), false),
+        ("protocol", json!("responses"), true),
+        ("upstreamBaseUrl", json!(""), true),
+    ];
+
+    for (field, value, profile_field) in retired {
+        let fixture = Fixture::new(&initial, &state_with_official());
+        let mut incoming: Value =
+            serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+        incoming["codexGoalsEnabled"] = json!(true);
+        if profile_field {
+            incoming["relayProfiles"][0][field] = value.clone();
+        } else {
+            incoming[field] = value.clone();
+        }
+        let before = fixture.file_generation();
+
+        let error =
+            save_settings_value_with_provider_guard_at(&fixture.paths, incoming).unwrap_err();
+
+        assert_eq!(
+            error,
+            GenericSettingsSaveError::IncomingSettingsInvalid,
+            "{field}"
+        );
+        assert_eq!(fixture.file_generation(), before, "incoming {field}");
+
+        let fixture = Fixture::new(&initial, &state_with_official());
+        let incoming: Value =
+            serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+        let mut persisted = incoming.clone();
+        if profile_field {
+            persisted["relayProfiles"][0][field] = value;
+        } else {
+            persisted[field] = value;
+        }
+        let persisted_bytes = serde_json::to_vec_pretty(&persisted).unwrap();
+        fs::write(&fixture.paths.settings_path, &persisted_bytes).unwrap();
+
+        let error =
+            save_settings_value_with_provider_guard_at(&fixture.paths, incoming).unwrap_err();
+
+        assert_eq!(
+            error,
+            GenericSettingsSaveError::PersistedSettingsInvalid,
+            "{field}"
+        );
+        assert_eq!(
+            fs::read(&fixture.paths.settings_path).unwrap(),
+            persisted_bytes,
+            "persisted {field}"
+        );
+    }
+}
+
+#[test]
 fn generic_settings_save_accepts_real_ui_derived_provider_shape_for_unrelated_changes() {
     let first = canonical_profile(
         "sub2api",
@@ -1782,10 +1904,10 @@ fn direct_invoke_matrix_rejects_provider_bypasses_without_mutating_any_generatio
 
         let error = save_settings_with_provider_guard_at(&fixture.paths, incoming).unwrap_err();
 
-        let expected = if case == "auth-contents" {
-            GenericSettingsSaveError::ProviderAuthProhibited
-        } else {
-            GenericSettingsSaveError::ProviderOwnedDifference
+        let expected = match case {
+            "auth-contents" => GenericSettingsSaveError::ProviderAuthProhibited,
+            "invalid-provider-toml" => GenericSettingsSaveError::IncomingSettingsInvalid,
+            _ => GenericSettingsSaveError::ProviderOwnedDifference,
         };
         assert_eq!(error, expected, "unexpected error for {case}");
         assert!(!error.to_string().contains("provider-bypass-sentinel"));
@@ -2235,6 +2357,232 @@ fn topology_adapter_accepts_one_complete_ui_canonical_generation() {
             .collect::<Vec<_>>(),
         vec!["relay-b", "relay-a"]
     );
+}
+
+#[test]
+fn topology_reorder_preserves_a_surviving_legacy_profile_contract_byte_for_byte() {
+    let active = canonical_profile(
+        "relay-a",
+        "gpt-5.6-sol",
+        "https://a.example/v1",
+        "provider-key-a",
+    );
+    let mut legacy = canonical_profile(
+        "legacy",
+        "gpt-5.6-sol",
+        "https://legacy.example/v1",
+        "legacy-key",
+    );
+    legacy.config_contents = GOLDEN_UNTOUCHED_BYSTANDER_ALIAS.to_string();
+    let initial = settings_with(vec![active, legacy], "relay-a");
+    let fixture = Fixture::new(&initial, &state_with_official());
+    let persisted: BackendSettings =
+        serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+    let mut topology = ui_provider_topology_projection(
+        settings_snapshot_for_ui_projection(persisted.clone()).unwrap(),
+    )
+    .unwrap();
+    topology.relay_profiles.reverse();
+    let request = ProviderCommitRequest {
+        topology,
+        catalog_drafts: Vec::new(),
+        focused_profile_id: None,
+        action: ProviderCommitAction::Save,
+        previous_active_relay_id: persisted.active_relay_id.clone(),
+        confirm_context_cleanup: false,
+        draft_revision: 44,
+        expected_provider_fingerprint: provider_owned_fingerprint(
+            &ProviderOwnedTopologyDraft::from_settings(&persisted),
+        )
+        .unwrap(),
+    };
+
+    commit_provider_detail_from_paths(&fixture.paths, request).unwrap();
+
+    assert_eq!(
+        raw_stored_profile_config(&fixture.paths.settings_path, "legacy"),
+        GOLDEN_UNTOUCHED_BYSTANDER_ALIAS,
+        "a topology-only reorder rewrote a surviving provider contract"
+    );
+}
+
+#[test]
+fn focused_commit_omitting_an_inactive_bystander_fails_without_mutation() {
+    let active = canonical_profile(
+        "relay-a",
+        "gpt-5.6-sol",
+        "https://a.example/v1",
+        "provider-key-a",
+    );
+    let inactive = canonical_profile(
+        "relay-b",
+        "gpt-5.6-sol",
+        "https://b.example/v1",
+        "provider-key-b",
+    );
+    let initial = settings_with(vec![active, inactive], "relay-a");
+    let fixture = Fixture::new(&initial, &state_with_official());
+    let persisted = fixture.read_settings();
+    let mut omitted = persisted.clone();
+    omitted
+        .relay_profiles
+        .retain(|profile| profile.id == "relay-a");
+    let before = fixture.file_generation();
+
+    let error = commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(
+            &persisted,
+            &omitted,
+            "relay-a",
+            ProviderCommitAction::Save,
+            45,
+        ),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code(), ProviderCommitErrorCode::InvalidDraft);
+    assert_eq!(
+        error.reason(),
+        "focused provider detail cannot omit a persisted bystander profile"
+    );
+    assert_eq!(fixture.file_generation(), before);
+}
+
+#[test]
+fn focused_commit_applies_only_the_focused_profile_contract() {
+    let active = canonical_profile(
+        "relay-a",
+        "gpt-5.6-sol",
+        "https://a.example/v1",
+        "provider-key-a",
+    );
+    let inactive = canonical_profile(
+        "relay-b",
+        "gpt-5.6-sol",
+        "https://b.example/v1",
+        "provider-key-b",
+    );
+    let mut initial = settings_with(vec![active, inactive], "relay-a");
+    initial.relay_test_model = "persisted-test-model".to_string();
+    let fixture = Fixture::new(&initial, &state_with_official());
+    let persisted = fixture.read_settings();
+    let bystander_before = raw_stored_profile_config(&fixture.paths.settings_path, "relay-b");
+    let mut forged = persisted.clone();
+    forged.relay_profiles.reverse();
+    forged.relay_profiles_enabled = false;
+    forged.relay_test_model = "forged-topology-test-model".to_string();
+    let focused = forged
+        .relay_profiles
+        .iter_mut()
+        .find(|profile| profile.id == "relay-a")
+        .unwrap();
+    *focused = canonical_profile(
+        "relay-a",
+        "gpt-5.6-sol",
+        "https://a-updated.example/v1",
+        "provider-key-a-updated",
+    );
+
+    commit_provider_detail_from_paths(
+        &fixture.paths,
+        request(
+            &persisted,
+            &forged,
+            "relay-a",
+            ProviderCommitAction::Save,
+            47,
+        ),
+    )
+    .unwrap();
+
+    let saved: BackendSettings =
+        serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+    assert_eq!(
+        saved
+            .relay_profiles
+            .iter()
+            .map(|profile| profile.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["relay-a", "relay-b"]
+    );
+    assert!(saved.relay_profiles_enabled);
+    assert_eq!(saved.relay_test_model, "persisted-test-model");
+    assert_eq!(
+        fixture
+            .read_settings()
+            .relay_profiles
+            .iter()
+            .find(|profile| profile.id == "relay-a")
+            .unwrap()
+            .base_url,
+        "https://a-updated.example/v1"
+    );
+    assert_eq!(
+        raw_stored_profile_config(&fixture.paths.settings_path, "relay-b"),
+        bystander_before
+    );
+}
+
+#[test]
+fn active_and_inactive_commits_reject_legacy_raw_provider_toml_without_mutation() {
+    let a = canonical_profile(
+        "relay-a",
+        "gpt-5.6-sol",
+        "https://a.example/v1",
+        "provider-key-a",
+    );
+    let b = canonical_profile(
+        "relay-b",
+        "gpt-5.6-sol",
+        "https://b.example/v1",
+        "provider-key-b",
+    );
+    let initial = settings_with(vec![a, b], "relay-a");
+
+    for focused in ["relay-a", "relay-b"] {
+        for legacy in ["chat-wire", "missing-wire", "chat-marker", "proxy-url"] {
+            let fixture = Fixture::new(&initial, &state_with_official());
+            let persisted = fixture.read_settings();
+            let mut next = persisted.clone();
+            let profile = next
+                .relay_profiles
+                .iter_mut()
+                .find(|profile| profile.id == focused)
+                .unwrap();
+            profile.config_contents = match legacy {
+                "chat-wire" => profile
+                    .config_contents
+                    .replace("wire_api = \"responses\"", "wire_api = \"chat\""),
+                "missing-wire" => profile
+                    .config_contents
+                    .replace("wire_api = \"responses\"\n", ""),
+                "chat-marker" => format!(
+                    "codex_plus_chat_base_url = \"https://legacy.example/v1\"\n{}",
+                    profile.config_contents
+                ),
+                "proxy-url" => profile.config_contents.replace(
+                    &format!("base_url = \"{}\"", profile.base_url),
+                    "base_url = \"http://127.0.0.1:57321/v1\"",
+                ),
+                _ => unreachable!(),
+            };
+            let before = fixture.file_generation();
+
+            let error = commit_provider_detail_from_paths(
+                &fixture.paths,
+                request(&persisted, &next, focused, ProviderCommitAction::Save, 46),
+            )
+            .unwrap_err();
+
+            assert_eq!(
+                error.code(),
+                ProviderCommitErrorCode::InvalidDraft,
+                "{focused} {legacy}"
+            );
+            assert_eq!(fixture.file_generation(), before, "{focused} {legacy}");
+        }
+    }
 }
 
 #[test]
@@ -4154,6 +4502,8 @@ fn explicit_pure_oauth_exit_deletes_the_provider_without_leaving_a_dormant_copy(
     );
     assert_eq!(confirmed.status, NativeCapabilityDraftStatus::Ready);
     assert_eq!(confirmed.draft.catalog_mode, CatalogMode::NativeOfficial);
+    assert!(confirmed.draft.profile.base_url.is_empty());
+    assert!(confirmed.draft.profile.upstream_base_url.is_empty());
 
     let mut next = persisted.clone();
     next.relay_profiles[0] = confirmed.draft.profile.clone();

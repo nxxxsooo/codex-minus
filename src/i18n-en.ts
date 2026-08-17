@@ -346,6 +346,8 @@ export const EN_PLAIN: Record<string, string> = {
   "官方混合 API 不应在 auth.json 中保存 OPENAI_API_KEY。请清理此供应商的 auth.json 后再切换。":
     "Official mixed API should not store OPENAI_API_KEY in auth.json. Clear this provider's auth.json before switching.",
   "官方登录": "Official login",
+  "官方登录＋不写 API Key＋Responses API": "Official login + no API Key written + Responses API",
+  "官方登录＋混入 API Key＋Responses API": "Official login + mixed-in API Key + Responses API",
   "官方登录模式": "Official login mode",
   "对话居中宽度": "Centered conversation width",
   "导入 Codex++ 供应商": "Import Codex++ provider",

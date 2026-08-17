@@ -138,6 +138,7 @@ import {
 } from "./provider-detail-draft-state";
 import {
   deriveProviderNativeCapabilityView,
+  providerAccessModeHint,
   providerTransitionDecisionForStructuredPatch,
 } from "./provider-native-capability-view";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
@@ -211,7 +212,6 @@ import {
   normalizeDuplicateTomlTables,
   tomlKey,
   ensureTrailingNewline,
-  rootTomlStringValue,
   codexModelFromConfig,
   codexBaseUrlFromConfig,
   codexExperimentalBearerTokenFromConfig,
@@ -2779,7 +2779,7 @@ function RelayProfileEditor({
         </Field>
         {profile.relayMode === "official" ? (
           <Field className="relay-field-mode" label={t("接入模式")}>
-            <p className="field-hint">{t("官方登录＋混入 API Key＋Responses API")}</p>
+            <p className="field-hint">{t(providerAccessModeHint(profile))}</p>
           </Field>
         ) : null}
         {showApiFields ? (
