@@ -11,7 +11,7 @@ use codex_plus_core::settings::{
 };
 use codex_plus_core::status::LaunchStatus;
 use codex_plus_core::zed_remote::{ZedOpenStrategy, ZedRemoteProject};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer, ser::Error as _};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -54,6 +54,7 @@ pub struct OverviewPayload {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SettingsPayload {
+    #[serde(serialize_with = "serialize_settings_for_frontend")]
     pub settings: BackendSettings,
     pub settings_path: String,
     pub user_scripts: Value,
@@ -279,6 +280,7 @@ pub struct LiveAuthStatusPayload {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelaySwitchPayload {
+    #[serde(serialize_with = "serialize_settings_for_frontend")]
     pub settings: BackendSettings,
     pub relay: RelayPayload,
     pub settings_path: String,
@@ -291,12 +293,14 @@ pub struct RelaySwitchPayload {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsBackfillPayload {
+    #[serde(serialize_with = "serialize_settings_for_frontend")]
     pub settings: BackendSettings,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextEntriesPayload {
+    #[serde(serialize_with = "serialize_settings_for_frontend")]
     pub settings: BackendSettings,
     pub entries: codex_plus_core::relay_config::CodexContextEntries,
 }
@@ -2332,7 +2336,10 @@ impl ProviderCommitPaths {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderCommitPayload {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_optional_settings_for_frontend"
+    )]
     pub settings: Option<BackendSettings>,
     pub draft_revision: u64,
     pub provider_fingerprint: String,
@@ -4300,11 +4307,7 @@ async fn test_relay_profile_with_compatibility(
         "供应商测试请求",
     )
     .await?;
-    if !responses_output_limit_fallback_allowed(
-        profile.protocol,
-        initial.http_status,
-        &initial.response_preview,
-    ) {
+    if !responses_output_limit_fallback_allowed(initial.http_status, &initial.response_preview) {
         return Ok(RelayProfileCompatibilityTestResult {
             http_status: initial.http_status,
             endpoint: initial.endpoint,
@@ -4345,12 +4348,8 @@ async fn test_relay_profile_with_compatibility(
     })
 }
 
-fn responses_output_limit_fallback_allowed(
-    protocol: codex_plus_core::settings::RelayProtocol,
-    http_status: u16,
-    response_text: &str,
-) -> bool {
-    if protocol != codex_plus_core::settings::RelayProtocol::Responses || http_status != 400 {
+fn responses_output_limit_fallback_allowed(http_status: u16, response_text: &str) -> bool {
+    if http_status != 400 {
         return false;
     }
 
@@ -4510,6 +4509,21 @@ pub(crate) fn sanitize_provider_doctor_result(
 
 #[tauri::command]
 pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayProfileTestPayload> {
+    if crate::provider_commit::validate_responses_only_profile(&profile).is_err() {
+        return sanitize_provider_test_result(
+            &profile,
+            failed(
+                "供应商测试拒绝了不受支持的路由配置。",
+                RelayProfileTestPayload {
+                    http_status: 0,
+                    endpoint: String::new(),
+                    response_preview: String::new(),
+                    compatibility_fallback_used: false,
+                    initial_http_status: None,
+                },
+            ),
+        );
+    }
     let profile_name = if profile.name.trim().is_empty() {
         "未命名供应商".to_string()
     } else {
@@ -4576,6 +4590,18 @@ pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayPro
 pub async fn fetch_relay_profile_models(
     profile: RelayProfile,
 ) -> CommandResult<RelayProfileModelsPayload> {
+    if crate::provider_commit::validate_responses_only_profile(&profile).is_err() {
+        return sanitize_provider_models_result(
+            &profile,
+            failed(
+                "模型获取拒绝了不受支持的路由配置。",
+                RelayProfileModelsPayload {
+                    models: Vec::new(),
+                    endpoint: String::new(),
+                },
+            ),
+        );
+    }
     let profile_name = if profile.name.trim().is_empty() {
         "未命名供应商".to_string()
     } else {
@@ -4625,6 +4651,24 @@ pub async fn fetch_relay_profile_models(
 
 #[tauri::command]
 pub async fn diagnose_relay_profile(profile: RelayProfile) -> CommandResult<ProviderDoctorPayload> {
+    if crate::provider_commit::validate_responses_only_profile(&profile).is_err() {
+        return sanitize_provider_doctor_result(
+            &profile,
+            failed(
+                "Provider Doctor 拒绝了不受支持的路由配置。",
+                ProviderDoctorPayload {
+                    profile_name: String::new(),
+                    model: String::new(),
+                    summary: String::new(),
+                    recommendation: String::new(),
+                    checks: Vec::new(),
+                    compatibility_fallback_used: false,
+                    initial_http_status: None,
+                    request_http_status: None,
+                },
+            ),
+        );
+    }
     let profile_name = if profile.name.trim().is_empty() {
         "未命名供应商".to_string()
     } else {
@@ -4703,12 +4747,8 @@ pub async fn diagnose_relay_profile(profile: RelayProfile) -> CommandResult<Prov
         title: "配置完整性".to_string(),
         status: "ok".to_string(),
         detail: format!(
-            "{} / {}",
-            codex_plus_core::relay_config::relay_profile_base_url(&profile),
-            match profile.protocol {
-                codex_plus_core::settings::RelayProtocol::Responses => "Responses API",
-                codex_plus_core::settings::RelayProtocol::ChatCompletions => "Chat Completions",
-            }
+            "{} / Responses API",
+            codex_plus_core::relay_config::relay_profile_base_url(&profile)
         ),
     });
 
@@ -5647,9 +5687,16 @@ fn sanitize_settings_for_output(mut settings: BackendSettings) -> BackendSetting
     settings
 }
 
-pub(crate) fn serialize_settings_without_profile_auth(
-    settings: &BackendSettings,
-) -> anyhow::Result<Vec<u8>> {
+pub(crate) fn frontend_relay_profile_value(profile: &RelayProfile) -> serde_json::Result<Value> {
+    let mut value = serde_json::to_value(profile)?;
+    if let Some(profile) = value.as_object_mut() {
+        profile.remove("protocol");
+        profile.remove("upstreamBaseUrl");
+    }
+    Ok(value)
+}
+
+fn settings_value_for_frontend(settings: &BackendSettings) -> serde_json::Result<Value> {
     let mut value = serde_json::to_value(settings)?;
     if let Some(object) = value.as_object_mut() {
         object.remove("aggregateRelayProfiles");
@@ -5659,9 +5706,45 @@ pub(crate) fn serialize_settings_without_profile_auth(
         for profile in profiles {
             if let Some(profile) = profile.as_object_mut() {
                 profile.remove("authContents");
+                profile.remove("protocol");
+                profile.remove("upstreamBaseUrl");
             }
         }
     }
+    Ok(value)
+}
+
+fn serialize_settings_for_frontend<S>(
+    settings: &BackendSettings,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    settings_value_for_frontend(settings)
+        .map_err(S::Error::custom)?
+        .serialize(serializer)
+}
+
+fn serialize_optional_settings_for_frontend<S>(
+    settings: &Option<BackendSettings>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    settings
+        .as_ref()
+        .map(settings_value_for_frontend)
+        .transpose()
+        .map_err(S::Error::custom)?
+        .serialize(serializer)
+}
+
+pub(crate) fn serialize_settings_without_profile_auth(
+    settings: &BackendSettings,
+) -> anyhow::Result<Vec<u8>> {
+    let value = settings_value_for_frontend(settings)?;
     Ok(serde_json::to_vec_pretty(&value)?)
 }
 
@@ -6559,6 +6642,20 @@ max_threads = 1000
         let value: Value = serde_json::from_slice(&bytes).unwrap();
         assert!(value.get("aggregateRelayProfiles").is_none());
         assert!(value.get("activeAggregateRelayId").is_none());
+        let saved_profile = &value["relayProfiles"][0];
+        assert!(saved_profile.get("protocol").is_none());
+        assert!(saved_profile.get("upstreamBaseUrl").is_none());
+
+        let payload = SettingsPayload {
+            settings,
+            settings_path: "settings.json".to_string(),
+            user_scripts: json!({}),
+            provider_fingerprint: "sha256:test".to_string(),
+        };
+        let frontend = serde_json::to_value(payload).unwrap();
+        let frontend_profile = &frontend["settings"]["relayProfiles"][0];
+        assert!(frontend_profile.get("protocol").is_none());
+        assert!(frontend_profile.get("upstreamBaseUrl").is_none());
     }
 
     #[test]
@@ -7327,6 +7424,38 @@ mod provider_test_compatibility_tests {
     use std::net::TcpListener;
     use std::thread::JoinHandle;
 
+    fn spawn_rejected_provider_server() -> (String, JoinHandle<usize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_millis(750);
+            let mut requests = 0;
+            while std::time::Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        requests += 1;
+                        let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
+                        let mut buffer = [0_u8; 4096];
+                        let _ = stream.read(&mut buffer);
+                        let body = r#"{"error":{"message":"rejected-test-server"}}"#;
+                        let _ = write!(
+                            stream,
+                            "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len(),
+                        );
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("rejected-provider server failed: {error}"),
+                }
+            }
+            requests
+        });
+        (format!("http://{address}/v1"), handle)
+    }
+
     fn spawn_provider_test_server(
         responses: Vec<(u16, String)>,
     ) -> (String, JoinHandle<Vec<Value>>) {
@@ -7399,6 +7528,31 @@ mod provider_test_compatibility_tests {
     }
 
     #[test]
+    fn provider_network_commands_reject_removed_routes_before_any_request() {
+        for kind in ["chat", "proxy"] {
+            let (base_url, server) = spawn_rejected_provider_server();
+            let mut profile = provider_test_profile(base_url, "sk-rejected-route");
+            if kind == "chat" {
+                profile.protocol = codex_plus_core::settings::RelayProtocol::ChatCompletions;
+            } else {
+                profile.base_url = "http://127.0.0.1:57321/v1".to_string();
+            }
+            profile.test_model = "gpt-test".to_string();
+
+            let tested = tauri::async_runtime::block_on(super::test_relay_profile(profile.clone()));
+            let fetched =
+                tauri::async_runtime::block_on(super::fetch_relay_profile_models(profile.clone()));
+            let diagnosed = tauri::async_runtime::block_on(super::diagnose_relay_profile(profile));
+
+            assert_eq!(server.join().unwrap(), 0, "{kind}");
+            assert_eq!(tested.status, "failed", "{kind}");
+            assert_eq!(fetched.status, "failed", "{kind}");
+            assert_eq!(diagnosed.status, "failed", "{kind}");
+            assert!(diagnosed.payload.checks.is_empty(), "{kind}");
+        }
+    }
+
+    #[test]
     fn manager_provider_probe_retries_without_max_output_tokens() {
         let api_key = "sk-manager-fallback-secret";
         let (base_url, server) = spawn_provider_test_server(vec![
@@ -7451,24 +7605,16 @@ mod provider_test_compatibility_tests {
     #[test]
     fn manager_provider_probe_fallback_is_strictly_allowlisted() {
         assert!(responses_output_limit_fallback_allowed(
-            codex_plus_core::settings::RelayProtocol::Responses,
             400,
             r#"{"error":{"message":"Unknown parameter: max_output_tokens","type":"invalid_request_error"}}"#,
         ));
         assert!(responses_output_limit_fallback_allowed(
-            codex_plus_core::settings::RelayProtocol::Responses,
             400,
             r#"{"error":{"message":"Upstream request failed","type":"upstream_error"}}"#,
         ));
         assert!(!responses_output_limit_fallback_allowed(
-            codex_plus_core::settings::RelayProtocol::Responses,
             400,
             r#"{"error":{"message":"model not found","type":"invalid_request_error"}}"#,
-        ));
-        assert!(!responses_output_limit_fallback_allowed(
-            codex_plus_core::settings::RelayProtocol::ChatCompletions,
-            400,
-            r#"{"error":{"message":"Unknown parameter: max_output_tokens"}}"#,
         ));
     }
 

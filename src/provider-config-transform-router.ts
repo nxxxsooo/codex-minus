@@ -10,10 +10,6 @@ import {
   type NewProviderTransientTarget,
 } from "./provider-onboarding.ts";
 
-export const PROTOCOL_PROXY_BASE_URL = "http://127.0.0.1:57321/v1";
-
-export const CHAT_UPSTREAM_BASE_URL_KEY = "codex_plus_chat_base_url";
-
 /// The two provenances a provider config edit can have. A brand-new empty draft materializes the
 /// canonical native-priority contract through `materializeNewProviderConfig` — the one generator —
 /// and an existing config is only ever patched in place, never reconstructed. The retired
@@ -26,9 +22,7 @@ export type ProviderConfigTargetContract =
 export type ProviderConfigProfile = {
   model: string;
   baseUrl: string;
-  upstreamBaseUrl: string;
   apiKey: string;
-  protocol: string;
   configContents: string;
   contextWindow: string;
   autoCompactLimit: string;
@@ -71,14 +65,12 @@ export function applyProviderConfigPatch<T extends ProviderConfigProfile>(
       patch.apiKey ?? "",
     );
   }
-  if ("baseUrl" in patch) next.upstreamBaseUrl = patch.baseUrl ?? "";
-  if ("upstreamBaseUrl" in patch) next.baseUrl = patch.upstreamBaseUrl ?? "";
-  if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch) {
-    const baseUrl = next.protocol === "chatCompletions"
-      ? PROTOCOL_PROXY_BASE_URL
-      : next.upstreamBaseUrl || next.baseUrl;
-    next.configContents = setProviderStringKey(next.configContents, "base_url", baseUrl);
-    next.configContents = removeRootTomlKey(next.configContents, CHAT_UPSTREAM_BASE_URL_KEY);
+  if ("baseUrl" in patch) {
+    next.configContents = setProviderStringKey(
+      next.configContents,
+      "base_url",
+      next.baseUrl,
+    );
   }
   if ("contextWindow" in patch) {
     next.configContents = setRootTomlIntKey(
@@ -209,8 +201,7 @@ export type ProviderDraftTransformAction =
   | "enableNativePriority"
   | "exitPureApi"
   | "exitLegacyCompatibility"
-  | "exitPureOAuth"
-  | "exitChatCompletions";
+  | "exitPureOAuth";
 
 export type ProviderDraftTransformConfirmation =
   | "replaceActorHeader"
@@ -260,7 +251,7 @@ type RouteProviderConfigDraftEditInput<P extends ProviderConfigRoutableProfile> 
 
 /// Fields the browser must not rewrite inside existing TOML: mode and auth transitions delete or
 /// create provider tables, which is the Rust transformer's job.
-const BACKEND_TRANSFORM_FIELDS = ["relayMode", "officialMixApiKey", "protocol"] as const;
+const BACKEND_TRANSFORM_FIELDS = ["relayMode", "officialMixApiKey"] as const;
 
 export function providerConfigPatchRequiresBackendTransform(
   patch: Partial<ProviderConfigRoutableProfile>,

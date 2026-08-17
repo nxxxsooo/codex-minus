@@ -447,51 +447,6 @@ fn successful_active_commit_preserves_context_semantics_and_auth_bytes() {
 }
 
 #[test]
-fn responses_only_rejection_writes_nothing() {
-    let initial = settings_with(
-        vec![canonical_profile(
-            "sub2api",
-            "gpt-5.6-sol",
-            "https://relay.example/v1",
-            "provider-key",
-        )],
-        "sub2api",
-    );
-    let fixture = Fixture::new(&initial, &state_with_official());
-    fs::write(
-        fixture.paths.codex_home.join("config.toml"),
-        rich_live_config(),
-    )
-    .unwrap();
-    let persisted = fixture.read_settings();
-    let mut unsupported = persisted.clone();
-    unsupported.relay_profiles[0].protocol = RelayProtocol::ChatCompletions;
-    let before = fixture.file_generation();
-    let context_before = semantic_context_tables(rich_live_config());
-
-    let error = commit_provider_detail_from_paths(
-        &fixture.paths,
-        request(
-            &persisted,
-            &unsupported,
-            "sub2api",
-            ProviderCommitAction::Save,
-            100,
-        ),
-    )
-    .unwrap_err();
-
-    assert_eq!(error.code(), ProviderCommitErrorCode::InvalidDraft);
-    assert_eq!(fixture.file_generation(), before);
-    assert_eq!(
-        semantic_context_tables(
-            &fs::read_to_string(fixture.paths.codex_home.join("config.toml")).unwrap()
-        ),
-        context_before
-    );
-}
-
-#[test]
 fn responses_only_load_rejection_precedes_auth_migration() {
     let mut unsupported = canonical_profile(
         "sub2api",

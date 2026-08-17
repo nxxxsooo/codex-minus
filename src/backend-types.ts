@@ -85,9 +85,7 @@ export type RelayProfile = {
   name: string;
   model: string;
   baseUrl: string;
-  upstreamBaseUrl: string;
   apiKey: string;
-  protocol: RelayProtocol;
   relayMode: RelayMode;
   officialMixApiKey: boolean;
   testModel: string;
@@ -126,8 +124,6 @@ export type CodexContextEntries = {
   skills: CodexContextEntry[];
   plugins: CodexContextEntry[];
 };
-
-export type RelayProtocol = "responses" | "chatCompletions";
 
 export type RelayMode = "official" | "mixedApi" | "pureApi";
 

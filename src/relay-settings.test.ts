@@ -8,9 +8,7 @@ const ordinaryProfile = (id: string, baseUrl: string) => ({
   id,
   name: id,
   baseUrl,
-  upstreamBaseUrl: baseUrl,
   apiKey: `key-${id}`,
-  protocol: "responses" as const,
   relayMode: "official" as const,
   officialMixApiKey: true,
 });

@@ -58,9 +58,7 @@ pub struct ProviderRelayProfileDraft {
     pub name: String,
     pub model: String,
     pub base_url: String,
-    pub upstream_base_url: String,
     pub api_key: String,
-    pub protocol: RelayProtocol,
     pub relay_mode: RelayMode,
     pub official_mix_api_key: bool,
     pub test_model: String,
@@ -84,9 +82,7 @@ impl From<&RelayProfile> for ProviderRelayProfileDraft {
             name: profile.name.clone(),
             model: profile.model.clone(),
             base_url: profile.base_url.clone(),
-            upstream_base_url: profile.upstream_base_url.clone(),
             api_key: profile.api_key.clone(),
-            protocol: profile.protocol,
             relay_mode: profile.relay_mode,
             official_mix_api_key: profile.official_mix_api_key,
             test_model: profile.test_model.clone(),
@@ -112,9 +108,9 @@ impl From<&ProviderRelayProfileDraft> for RelayProfile {
             name: profile.name.clone(),
             model: profile.model.clone(),
             base_url: profile.base_url.clone(),
-            upstream_base_url: profile.upstream_base_url.clone(),
+            upstream_base_url: profile.base_url.clone(),
             api_key: profile.api_key.clone(),
-            protocol: profile.protocol,
+            protocol: RelayProtocol::Responses,
             relay_mode: profile.relay_mode,
             official_mix_api_key: profile.official_mix_api_key,
             test_model: profile.test_model.clone(),
@@ -1018,9 +1014,7 @@ mod tests {
                     "name": "New",
                     "model": "official-a",
                     "baseUrl": "https://relay.example/v1",
-                    "upstreamBaseUrl": "https://relay.example/v1",
                     "apiKey": "secret-provider-key",
-                    "protocol": "responses",
                     "relayMode": "official",
                     "officialMixApiKey": true,
                     "testModel": "official-a-mini",
@@ -1591,6 +1585,29 @@ mod tests {
             json!({ "state": "ready" });
         assert!(serde_json::from_value::<ProviderCommitRequest>(value).is_err());
 
+        for (field, forged_value) in [
+            ("protocol", json!("chatCompletions")),
+            ("upstreamBaseUrl", json!("https://forged.example/v1")),
+        ] {
+            let mut value = serde_json::to_value(request_for(
+                &settings,
+                &settings,
+                Some("relay-a"),
+                vec![catalog_draft(
+                    "relay-a",
+                    CatalogMode::OfficialPlusCustom,
+                    CatalogOverlay::default(),
+                )],
+                ProviderCommitAction::Save,
+            ))
+            .unwrap();
+            value["topology"]["relayProfiles"][0][field] = forged_value;
+            assert!(
+                serde_json::from_value::<ProviderCommitRequest>(value).is_err(),
+                "removed provider field {field} must be rejected"
+            );
+        }
+
         let base = serde_json::to_value(request_for(
             &settings,
             &settings,
@@ -1724,17 +1741,9 @@ mod tests {
     }
 
     #[test]
-    fn responses_only_request_validation_rejects_chat_completion_profiles() {
-        let active = mixed_profile("relay-a", "official-a");
-        let persisted = settings_with(vec![active.clone()], "relay-a");
+    fn responses_only_request_validation_rejects_persisted_chat_completion_profiles() {
         let mut chat = mixed_profile("relay-chat", "chat-model");
         chat.protocol = RelayProtocol::ChatCompletions;
-        let next = settings_with(vec![active, chat.clone()], "relay-a");
-        let topology = request_for(&persisted, &next, None, vec![], ProviderCommitAction::Save);
-        assert!(
-            plan_provider_topology_commit(&persisted, &state_with_official(), &topology).is_err()
-        );
-
         let persisted_chat = settings_with(vec![chat], "relay-chat");
         let detail = request_for(
             &persisted_chat,

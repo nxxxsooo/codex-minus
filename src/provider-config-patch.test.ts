@@ -64,7 +64,6 @@ custom_flag = "keep"
       transientTarget: undefined,
       model: "gpt-old",
       baseUrl: "https://old.example/v1",
-      upstreamBaseUrl: "https://old.example/v1",
       apiKey: "old-key",
       configContents: existing,
     };
@@ -117,7 +116,6 @@ http_headers = { "x-openai-actor-authorization" = "local-image-extension", "x-un
       transientTarget: undefined,
       model: "gpt-5.5",
       baseUrl: "https://before.example/v1",
-      upstreamBaseUrl: "https://before.example/v1",
       apiKey: "provider-key",
       configContents: existing,
     };

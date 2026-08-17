@@ -14,9 +14,7 @@ const firstProfile: ProviderRelayProfileSource & Record<string, unknown> = {
   name: "Relay A",
   model: "gpt-5.4",
   baseUrl: "https://a.example/v1",
-  upstreamBaseUrl: "https://a.example/v1",
   apiKey: "secret-a",
-  protocol: "responses",
   relayMode: "official",
   officialMixApiKey: true,
   testModel: "gpt-5.4-mini",
@@ -76,8 +74,6 @@ describe("provider-owned commit request", () => {
     assert.equal(commitModule.providerDeleteAvailable("relay-a", "relay-a", 2), false);
     assert.equal(commitModule.providerDeleteAvailable("relay-b", "relay-a", 2), true);
     assert.equal(commitModule.providerDeleteAvailable("relay-b", "relay-a", 1), false);
-    assert.equal(commitModule.managedCatalogCapable(firstProfile), true);
-    assert.equal(commitModule.managedCatalogCapable({ ...firstProfile, protocol: "chatCompletions" }), false);
 
     let state: { latestRevision: number; baseline: string | null } = {
       latestRevision: 0,
@@ -131,9 +127,7 @@ describe("provider-owned commit request", () => {
           name: "Relay A",
           model: "gpt-5.4",
           baseUrl: "https://a.example/v1",
-          upstreamBaseUrl: "https://a.example/v1",
           apiKey: "secret-a",
-          protocol: "responses",
           relayMode: "official",
           officialMixApiKey: true,
           testModel: "gpt-5.4-mini",
@@ -415,36 +409,8 @@ describe("provider-owned commit request", () => {
     assert.deepEqual(invocation.request.catalogDrafts, [{ ...sourceDraft, profileId: "relay-copy" }]);
   });
 
-  it("emits no catalog draft for chat-completions copies and rejects a capable copy without source state", () => {
+  it("rejects a copied provider without its source catalog state", () => {
     assert.ok(commitModule, "provider commit request builders must exist");
-    const chatCompletions = {
-      ...firstProfile,
-      id: "chat-a",
-      name: "Chat A",
-      relayMode: "pureApi",
-      protocol: "chatCompletions",
-    };
-    const chatCopy = { ...chatCompletions, id: "chat-copy", name: "Chat A copy" };
-    const incapable = commitModule.buildProviderMutationInvocation({
-      kind: "copy",
-      copySourceProfileId: "chat-a",
-      settings: settingsWith([firstProfile, chatCompletions, chatCopy]),
-      persistedSettings: settingsWith([firstProfile, chatCompletions]),
-      catalogDrafts: [{
-        profileId: "chat-a",
-        mode: "native-official",
-        modeExplicit: true,
-        upstreamTopology: "direct",
-        externalPointer: null,
-        overlay: emptyOverlay(),
-      }],
-      previousActiveRelayId: "relay-a",
-      confirmContextCleanup: false,
-      draftRevision: 54,
-      expectedProviderFingerprint: "sha256:chat-copy",
-    });
-    assert.deepEqual(incapable.request.catalogDrafts, []);
-
     assert.throws(() => commitModule.buildProviderMutationInvocation({
       kind: "copy",
       copySourceProfileId: "relay-b",
@@ -453,7 +419,7 @@ describe("provider-owned commit request", () => {
       catalogDrafts: [],
       previousActiveRelayId: "relay-a",
       confirmContextCleanup: false,
-      draftRevision: 55,
+      draftRevision: 54,
       expectedProviderFingerprint: "sha256:missing-source-draft",
     }), /requires its source catalog draft/);
   });

@@ -17,7 +17,6 @@ import type {
   RelayContextSelection,
   RelayMode,
   RelayProfile,
-  RelayProtocol,
 } from "./backend-types.ts";
 import { splitContextConfigText, contextSelectionForAllEntries } from "./codex-context-entries.ts";
 import {
@@ -30,8 +29,6 @@ import {
 } from "./codex-toml.ts";
 import {
   applyProviderConfigPatch,
-  CHAT_UPSTREAM_BASE_URL_KEY,
-  PROTOCOL_PROXY_BASE_URL,
   providerConfigPatchRequiresBackendTransform,
   type ProviderConfigTargetContract,
 } from "./provider-config-transform-router.ts";
@@ -98,9 +95,7 @@ export const defaultSettings: BackendSettings = {
       name: t("默认中转"),
       model: "",
       baseUrl: "",
-      upstreamBaseUrl: "",
       apiKey: "",
-      protocol: "responses",
       relayMode: "official",
       officialMixApiKey: false,
       testModel: "",
@@ -145,9 +140,7 @@ export function normalizeSettings(settings: BackendSettings): BackendSettings {
             name: t("默认中转"),
             model: "",
             baseUrl: settings.relayBaseUrl || defaultSettings.relayBaseUrl,
-            upstreamBaseUrl: settings.relayBaseUrl || defaultSettings.relayBaseUrl,
             apiKey: settings.relayApiKey || "",
-            protocol: "responses" as RelayProtocol,
             relayMode: "official" as RelayMode,
             officialMixApiKey: false,
             testModel: "",
@@ -205,9 +198,7 @@ export function normalizeRelayProfile(profile: RelayProfile, defaultContextSelec
     ...profile,
     model: profile.model || "",
     baseUrl: profile.baseUrl || defaultSettings.relayBaseUrl,
-    upstreamBaseUrl: profile.upstreamBaseUrl || profile.baseUrl || "",
     apiKey: profile.apiKey || "",
-    protocol: profile.protocol === "chatCompletions" ? "chatCompletions" : "responses",
     relayMode,
     officialMixApiKey,
     // A provider is tested with the model it starts on. Clearing a legacy per-profile test value
@@ -276,7 +267,7 @@ export function providerConfigTargetContract(
 ): ProviderConfigTargetContract {
   if (!brandNew) return { target: "preserveExisting", source: "existing" };
   // Every brand-new draft is native-priority by construction: `createNewRelayProfileDraft` fixes
-  // mode, protocol, and key mixing, so provenance is the whole decision left to make. The profile
+  // mode and key mixing, so provenance is the whole decision left to make. The profile
   // parameter stays because a contract is decided per profile, and callers should keep saying
   // which one they mean.
   return { target: "nativePriority", source: "brand-new-empty" };
@@ -285,9 +276,6 @@ export function providerConfigTargetContract(
 export function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
   const configContents = profile.configContents || "";
   const configBaseUrl = codexBaseUrlFromConfig(configContents);
-  const chatUpstreamBaseUrl = rootTomlStringValue(configContents, CHAT_UPSTREAM_BASE_URL_KEY);
-  const isProxyConfig = configBaseUrl === PROTOCOL_PROXY_BASE_URL;
-  const upstreamBaseUrl = profile.upstreamBaseUrl || chatUpstreamBaseUrl || (configBaseUrl && !isProxyConfig ? configBaseUrl : profile.baseUrl || "");
   const configApiKey = codexExperimentalBearerTokenFromConfig(configContents);
   const configModel = codexModelFromConfig(configContents);
   // 如果用户输入了带后缀的模型名，优先保留在界面的「配置模型」字段中；
@@ -298,8 +286,7 @@ export function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile
   return {
     ...profile,
     model,
-    baseUrl: upstreamBaseUrl,
-    upstreamBaseUrl,
+    baseUrl: configBaseUrl || profile.baseUrl || "",
     apiKey: configApiKey || profile.apiKey || "",
     contextWindow: codexTopLevelIntFromConfig(configContents, "model_context_window"),
     autoCompactLimit: codexTopLevelIntFromConfig(configContents, "model_auto_compact_token_limit"),

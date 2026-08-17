@@ -201,9 +201,6 @@ export function beginProviderDetailNativePriorityUpgrade<
   const externalOwnership = state.inspection?.fields.some(
     (entry) => entry.reason === "externalCatalog",
   ) ?? false;
-  const chatCompatibility = state.inspection?.state === "compatibility" && (
-    state.inspection.fields.some((entry) => entry.reason === "chatCompletions")
-  );
   const legacyProviderIdRequiresRename = state.inspection?.fields.some(
     (entry) => entry.reason === "legacyProviderIdRequiresRename",
   ) ?? false;
@@ -215,7 +212,6 @@ export function beginProviderDetailNativePriorityUpgrade<
   if (
     (
       state.inspection?.state !== "upgradeAvailable"
-      && !chatCompatibility
       && !actorHeaderIsOnlyConflict
     )
     || externalOwnership
@@ -227,7 +223,6 @@ export function beginProviderDetailNativePriorityUpgrade<
     patch: {
       relayMode: "official",
       officialMixApiKey: true,
-      protocol: "responses",
     },
     target: { target: "preserveExisting", source: "existing" },
     transition: { action: "enableNativePriority", confirmations: [] },
@@ -253,7 +248,6 @@ export function beginProviderDetailLegacyIdUpgrade<
     patch: {
       relayMode: "official",
       officialMixApiKey: true,
-      protocol: "responses",
     },
     target: { target: "preserveExisting", source: "existing" },
     transition: { action: "enableNativePriority", confirmations: [] },
@@ -373,11 +367,9 @@ export function settleProviderDetailTransform<P extends ProviderDetailProfile>(
     state: {
       ...state,
       profile: applied.profile,
-      catalogDraft: applied.profile.protocol === "chatCompletions"
-        ? null
-        : state.catalogDraft
-          ? { ...state.catalogDraft, mode: applied.catalogMode }
-          : null,
+      catalogDraft: state.catalogDraft
+        ? { ...state.catalogDraft, mode: applied.catalogMode }
+        : null,
       pendingTransformRevision: null,
       pendingTransition: null,
       pendingConfirmation: null,
@@ -658,7 +650,6 @@ function confirmationForResponse(
     && (
       action === "exitPureApi"
       || action === "exitLegacyCompatibility"
-      || action === "exitChatCompletions"
     )
   ) return "confirmCapabilityLoss";
   return null;

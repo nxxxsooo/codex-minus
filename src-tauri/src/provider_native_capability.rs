@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol};
-use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _, ser::Error as _};
 use toml_edit::{DocumentMut, InlineTable, Item, TableLike, Value, value};
 
 use crate::commands::CommandResult;
@@ -31,7 +31,6 @@ pub enum NativeCapabilityState {
 #[serde(rename_all = "camelCase")]
 pub enum NativeCapabilityField {
     RelayMode,
-    Protocol,
     Catalog,
     Configuration,
     ProviderSelection,
@@ -63,7 +62,6 @@ pub enum NativeCapabilityReason {
     PureOAuth,
     PureApi,
     UnsupportedRelayMode,
-    ChatCompletions,
     CatalogModeMismatch,
     CatalogOwnershipUnavailable,
     MalformedToml,
@@ -112,7 +110,6 @@ pub enum NativeCapabilityDraftAction {
     ExitPureApi,
     ExitLegacyCompatibility,
     ExitPureOAuth,
-    ExitChatCompletions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,11 +151,7 @@ where
     D: Deserializer<'de>,
 {
     let profile = RelayProfile::deserialize(deserializer)?;
-    if profile.relay_mode == RelayMode::Aggregate {
-        return Err(D::Error::custom(
-            "local aggregate provider profiles are unsupported",
-        ));
-    }
+    crate::provider_commit::validate_responses_only_profile(&profile).map_err(D::Error::custom)?;
     Ok(profile)
 }
 
@@ -176,9 +169,22 @@ pub struct ProviderNativeCapabilityDraftPreview {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderNativeCapabilityDraft {
+    #[serde(serialize_with = "serialize_profile_for_frontend")]
     pub profile: RelayProfile,
     pub structured_api_key: String,
     pub catalog_mode: CatalogMode,
+}
+
+fn serialize_profile_for_frontend<S>(
+    profile: &RelayProfile,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    crate::commands::frontend_relay_profile_value(profile)
+        .map_err(S::Error::custom)?
+        .serialize(serializer)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -325,18 +331,7 @@ pub fn inspect_profile(
         _ => unreachable!("unsupported provider modes are rejected before inspection"),
     }
 
-    let mut fields = vec![
-        canonical(NativeCapabilityField::RelayMode),
-        if profile.protocol == RelayProtocol::Responses {
-            canonical(NativeCapabilityField::Protocol)
-        } else {
-            field(
-                NativeCapabilityField::Protocol,
-                NativeCapabilityOutcome::Mismatch,
-                NativeCapabilityReason::ChatCompletions,
-            )
-        },
-    ];
+    let mut fields = vec![canonical(NativeCapabilityField::RelayMode)];
     if catalog_mode != CatalogMode::OfficialPlusCustom {
         fields.push(field(
             NativeCapabilityField::Catalog,
@@ -515,14 +510,8 @@ fn evaluate_document(
     let all_canonical = fields
         .iter()
         .all(|entry| entry.outcome == NativeCapabilityOutcome::Satisfied);
-    let chat_compatible = fields.iter().all(|entry| {
-        entry.outcome == NativeCapabilityOutcome::Satisfied
-            || entry.reason == NativeCapabilityReason::ChatCompletions
-    });
     let state = if all_canonical {
         NativeCapabilityState::NativePriority
-    } else if chat_compatible {
-        NativeCapabilityState::Compatibility
     } else if alias_requires_rename && only_alias_mismatch(&fields)
         || legacy_compatible
         || fields.iter().all(|entry| {
@@ -779,8 +768,7 @@ pub fn draft_provider_native_capability_with_boundary(
             enable_native_priority_draft(request, boundary)
         }
         NativeCapabilityDraftAction::ExitPureApi
-        | NativeCapabilityDraftAction::ExitLegacyCompatibility
-        | NativeCapabilityDraftAction::ExitChatCompletions => {
+        | NativeCapabilityDraftAction::ExitLegacyCompatibility => {
             compatibility_exit_draft(request, boundary)
         }
         NativeCapabilityDraftAction::ExitPureOAuth => pure_oauth_exit_draft(request, boundary),
@@ -808,7 +796,6 @@ fn action_requires_persisted_catalog_ownership(action: NativeCapabilityDraftActi
         NativeCapabilityDraftAction::EnableNativePriority
             | NativeCapabilityDraftAction::ExitPureApi
             | NativeCapabilityDraftAction::ExitLegacyCompatibility
-            | NativeCapabilityDraftAction::ExitChatCompletions
             | NativeCapabilityDraftAction::ExitPureOAuth
     )
 }
@@ -1345,9 +1332,6 @@ fn compatibility_exit_draft(
             set_string_preserving_decor(provider, "name", "custom");
             set_string_preserving_decor(provider, "wire_api", MANAGED_WIRE_API);
             set_bool_preserving_decor(provider, "requires_openai_auth", true);
-        }
-        NativeCapabilityDraftAction::ExitChatCompletions => {
-            profile.protocol = RelayProtocol::ChatCompletions;
         }
         _ => unreachable!("only compatibility exit actions reach this helper"),
     }

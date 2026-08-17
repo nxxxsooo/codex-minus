@@ -32,19 +32,16 @@ function existingProfile() {
     transientTarget: undefined,
     relayMode: "official" as const,
     officialMixApiKey: true,
-    protocol: "responses",
     model: "gpt-old",
     baseUrl: "https://old.example/v1",
-    upstreamBaseUrl: "https://old.example/v1",
     apiKey: "old-key",
     configContents: existingConfig,
   };
 }
 
 describe("provider config transform router", () => {
-  it("classifies protocol and mode patches as backend-owned existing transitions", () => {
+  it("classifies mode patches as backend-owned existing transitions", () => {
     for (const patch of [
-      { protocol: "chatCompletions" },
       { relayMode: "pureApi" },
       { officialMixApiKey: false },
     ]) {
@@ -79,7 +76,7 @@ describe("provider config transform router", () => {
     const cases = [
       {
         label: "add actor",
-        patch: { relayMode: "official", officialMixApiKey: true, protocol: "responses" },
+        patch: { relayMode: "official", officialMixApiKey: true },
         transition: { action: "enableNativePriority" as const, confirmations: [] },
       },
       {
@@ -108,17 +105,9 @@ describe("provider config transform router", () => {
       },
       {
         label: "replace actor auth with compatibility auth",
-        patch: { relayMode: "official", officialMixApiKey: true, protocol: "responses" },
+        patch: { relayMode: "official", officialMixApiKey: true },
         transition: {
           action: "exitLegacyCompatibility" as const,
-          confirmations: ["confirmCapabilityLoss" as const],
-        },
-      },
-      {
-        label: "exit to chat completions",
-        patch: { protocol: "chatCompletions" },
-        transition: {
-          action: "exitChatCompletions" as const,
           confirmations: ["confirmCapabilityLoss" as const],
         },
       },
@@ -173,7 +162,6 @@ describe("provider config transform router", () => {
     for (const patch of [
       { relayMode: "pureApi" },
       { officialMixApiKey: false },
-      { protocol: "chatCompletions" },
     ]) {
       assert.throws(
         () => routeProviderConfigDraftEdit({
@@ -247,6 +235,21 @@ describe("provider config transform router", () => {
     assert.match(routed.profile.configContents, /"x-openai-actor-authorization" = "local-image-extension"/);
     assert.match(routed.profile.configContents, /custom_provider_field = "keep-provider"/);
     assert.match(routed.profile.configContents, /"x-unowned" = "keep-header"/);
+  });
+
+  it("patches the real Responses Base URL without a proxy indirection", () => {
+    const routed = routeProviderConfigDraftEdit({
+      profile: existingProfile(),
+      patch: { baseUrl: "https://next.example/v1" },
+      target: existingTarget,
+    });
+    assert.equal(routed.kind, "synchronous");
+    if (routed.kind !== "synchronous") return;
+    assert.equal(routed.profile.baseUrl, "https://next.example/v1");
+    assert.equal(Object.hasOwn(routed.profile, "upstreamBaseUrl"), false);
+    assert.equal(Object.hasOwn(routed.profile, "protocol"), false);
+    assert.match(routed.profile.configContents, /base_url = "https:\/\/next\.example\/v1"/);
+    assert.doesNotMatch(routed.profile.configContents, /codex_plus_chat_base_url|127\.0\.0\.1:57321/);
   });
 
   it("applies only the current ready backend response and preserves its exact transformed TOML", () => {

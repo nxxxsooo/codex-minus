@@ -71,7 +71,6 @@ export function deriveProviderModePresentation(
   if (
     legacyCompatibilityContract
     || reasons.has("pureApi")
-    || reasons.has("chatCompletions")
     || reasons.has("unsupportedRelayMode")
     || reasons.has("legacyProviderIdRequiresRename")
   ) return "advancedCompatibility";
@@ -98,9 +97,6 @@ export function deriveProviderNativeCapabilityView(input: {
   const externalOwnership = input.inspection?.fields.some(
     (entry) => entry.reason === "externalCatalog",
   ) ?? false;
-  const chatCompatibility = state === "compatibility" && (
-    input.inspection?.fields.some((entry) => entry.reason === "chatCompletions") ?? false
-  );
   const legacyProviderIdRequiresRename = input.inspection?.fields.some(
     (entry) => entry.reason === "legacyProviderIdRequiresRename",
   ) ?? false;
@@ -127,7 +123,7 @@ export function deriveProviderNativeCapabilityView(input: {
       ? "manualResolutionRequired" as const
       : actorHeaderIsOnlyConflict
         ? "confirmationRequired" as const
-        : !legacyProviderIdRequiresRename && (state === "upgradeAvailable" || chatCompatibility)
+        : !legacyProviderIdRequiresRename && state === "upgradeAvailable"
           ? "available" as const
           : "unavailable" as const;
   return {
@@ -153,10 +149,9 @@ export function deriveProviderNativeCapabilityView(input: {
   };
 }
 
-type ProviderModeProtocol = {
+type ProviderMode = {
   relayMode: string;
   officialMixApiKey: boolean;
-  protocol: string;
 };
 
 export type ProviderStructuredTransitionDecision =
@@ -165,15 +160,14 @@ export type ProviderStructuredTransitionDecision =
   | { kind: "transition"; transition: ProviderDraftTransition };
 
 export function providerTransitionDecisionForStructuredPatch(
-  current: ProviderModeProtocol,
-  patch: Partial<ProviderModeProtocol>,
+  current: ProviderMode,
+  patch: Partial<ProviderMode>,
 ): ProviderStructuredTransitionDecision {
   const next = { ...current, ...patch };
   const changed = (
     ("relayMode" in patch && patch.relayMode !== current.relayMode)
     || ("officialMixApiKey" in patch
       && patch.officialMixApiKey !== current.officialMixApiKey)
-    || ("protocol" in patch && patch.protocol !== current.protocol)
   );
   if (!changed) return { kind: "noChange" };
   if ("relayMode" in patch || "officialMixApiKey" in patch) {
@@ -187,15 +181,6 @@ export function providerTransitionDecisionForStructuredPatch(
       return {
         kind: "transition",
         transition: { action: "exitPureOAuth", confirmations: [] },
-      };
-    }
-    return { kind: "requiresExplicitUpgrade" };
-  }
-  if ("protocol" in patch) {
-    if (next.protocol === "chatCompletions") {
-      return {
-        kind: "transition",
-        transition: { action: "exitChatCompletions", confirmations: [] },
       };
     }
     return { kind: "requiresExplicitUpgrade" };

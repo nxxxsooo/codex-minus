@@ -42,9 +42,7 @@ function profile() {
     name: "Relay One",
     model: "gpt-5.5",
     baseUrl: "https://relay.example/v1",
-    upstreamBaseUrl: "https://relay.example/v1",
     apiKey: "provider-key",
-    protocol: "responses",
     relayMode: "official",
     officialMixApiKey: true,
     testModel: "gpt-5.5",
@@ -141,23 +139,6 @@ describe("provider detail draft state", () => {
     assert.deepEqual(closed.effects, []);
     assert.equal(closed.state.lifecycle, "closed");
 
-    const chatState = draftState();
-    const chatObserved = applyProviderDetailInspection(
-      chatState,
-      beginProviderDetailInspection(chatState),
-      {
-        profileId: "relay-one",
-        state: "compatibility",
-        fields: [{ field: "protocol", outcome: "mismatch", reason: "chatCompletions" }],
-      },
-    );
-    assert.equal(chatObserved.disposition, "applied");
-    const chatUpgrade = beginProviderDetailNativePriorityUpgrade(chatObserved.state);
-    assert.equal(chatUpgrade.effects[0]?.kind, "transform");
-    if (chatUpgrade.effects[0]?.kind === "transform") {
-      assert.equal(chatUpgrade.effects[0].invocation.request.action, "enableNativePriority");
-    }
-
     const legacyState = draftState();
     const legacyObserved = applyProviderDetailInspection(
       legacyState,
@@ -236,7 +217,6 @@ describe("provider detail draft state", () => {
       patch: {
         relayMode: "official",
         officialMixApiKey: true,
-        protocol: "responses",
       },
       target: existingTarget,
       transition: { action: "enableNativePriority", confirmations: [] },
@@ -721,7 +701,6 @@ describe("provider detail draft state", () => {
 
   it("requires an explicit preview confirmation before compatibility exits can be committed", () => {
     for (const [action, patch, expectedConfirmation] of [
-      ["exitChatCompletions", { protocol: "chatCompletions" }, "confirmCapabilityLoss"],
       ["exitPureApi", { relayMode: "pureApi", officialMixApiKey: false }, "confirmCapabilityLoss"],
       ["exitLegacyCompatibility", { relayMode: "official", officialMixApiKey: true }, "confirmCapabilityLoss"],
       ["exitPureOAuth", { relayMode: "official", officialMixApiKey: false }, "confirmDestructivePureOAuth"],
@@ -794,85 +773,9 @@ describe("provider detail draft state", () => {
     }
   });
 
-  it("commits a confirmed Chat Completions exit without a managed catalog draft", () => {
-    const pending = beginProviderDetailEdit(draftState(), {
-      patch: { protocol: "chatCompletions" },
-      target: existingTarget,
-      transition: { action: "exitChatCompletions", confirmations: [] },
-    });
-    const previewed = settleProviderDetailTransform(
-      pending.state,
-      transformCorrelation(pending),
-      {
-        draftRevision: 1,
-        status: "confirmationRequired",
-        draft: {
-          profile: profile(),
-          structuredApiKey: "provider-key",
-          catalogMode: "official-plus-custom",
-        },
-        blockers: ["capabilityLossConfirmationRequired"],
-        inspection,
-        preview,
-      },
-    );
-    const confirmed = confirmProviderDetailTransition(previewed.state);
-    const transformedConfig = config.replace(
-      'http_headers = { "x-openai-actor-authorization" = "local-image-extension", "x-unowned" = "keep-header" }',
-      'http_headers = { "x-unowned" = "keep-header" }',
-    );
-    const ready = settleProviderDetailTransform(
-      confirmed.state,
-      transformCorrelation(confirmed),
-      {
-        draftRevision: 2,
-        status: "ready",
-        draft: {
-          profile: {
-            ...profile(),
-            protocol: "chatCompletions",
-            configContents: transformedConfig,
-          },
-          structuredApiKey: "provider-key",
-          catalogMode: "official-plus-custom",
-        },
-        blockers: [],
-        inspection,
-        preview,
-      },
-    );
-    assert.equal(ready.disposition, "applied");
-    assert.equal(ready.state.profile.protocol, "chatCompletions");
-    assert.equal(ready.state.catalogDraft, null);
-    assert.equal(ready.state.profile.configContents, transformedConfig);
-
-    for (const kind of ["detailSave", "setCurrent"] as const) {
-      const commit = buildProviderDetailCommitEffect(ready.state, {
-        kind,
-        settings: settings(),
-        persistedSettings: settings(),
-        catalogDrafts: [catalogDraft],
-        focusedProfileWasPersisted: true,
-        previousActiveRelayId: "relay-old",
-        confirmContextCleanup: false,
-        expectedProviderFingerprint: "fingerprint-old",
-        draftRevision: 43,
-      });
-      assert.equal(commit.effects[0].kind, "commit");
-      if (commit.effects[0].kind !== "commit") continue;
-      assert.deepEqual(commit.effects[0].invocation.request.catalogDrafts, [], kind);
-      assert.equal(
-        commit.effects[0].invocation.request.topology.relayProfiles[0].protocol,
-        "chatCompletions",
-        kind,
-      );
-    }
-  });
-
   it("does not misclassify a key-conflict confirmation as an exit confirmation", () => {
     for (const [action, patch] of [
       ["exitPureOAuth", { relayMode: "official", officialMixApiKey: false }],
-      ["exitChatCompletions", { protocol: "chatCompletions" }],
     ] as const) {
       const pending = beginProviderDetailEdit(draftState(), {
         patch,

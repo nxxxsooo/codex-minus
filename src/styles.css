@@ -1702,46 +1702,6 @@ body {
   grid-column: 1;
 }
 
-.relay-field-protocol {
-  grid-column: 1;
-}
-
-.protocol-options {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.protocol-options.three {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.protocol-option {
-  min-height: 40px;
-  border: 1px solid hsl(var(--border) / 0.86);
-  border-radius: 8px;
-  background: hsl(var(--surface-sunken));
-  color: hsl(var(--foreground));
-  font-size: 13px;
-  font-weight: 650;
-  transition:
-    border-color 140ms ease,
-    background-color 140ms ease,
-    box-shadow 140ms ease,
-    transform 140ms ease;
-}
-
-.protocol-option.active {
-  border-color: hsl(var(--primary));
-  background: hsl(var(--primary) / 0.14);
-}
-
-.protocol-option:hover:not(.active) {
-  border-color: hsl(var(--primary) / 0.45);
-  background: hsl(var(--accent));
-  transform: translateY(-1px);
-}
-
 .inline-check {
   display: inline-flex;
   min-height: 40px;
@@ -1787,7 +1747,7 @@ body {
   outline: none;
 }
 
-.relay-protocol-hint {
+.relay-mode-hint {
   margin-top: 12px;
 }
 
@@ -4188,7 +4148,6 @@ select {
 }
 
 .mode-option,
-.protocol-option,
 .segmented button,
 .preset-toggle,
 .preset-btn,
@@ -4202,7 +4161,6 @@ select {
 }
 
 .mode-option:hover,
-.protocol-option:hover:not(.active),
 .segmented button:hover:not(.active),
 .preset-toggle:hover,
 .preset-btn:hover {
@@ -4212,7 +4170,6 @@ select {
 }
 
 .mode-option.active,
-.protocol-option.active,
 .segmented button.active,
 .preset-btn[data-selected="true"] {
   border-color: hsl(var(--brand-accent) / 0.65);

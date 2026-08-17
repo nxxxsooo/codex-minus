@@ -40,7 +40,6 @@ const LOGIC_STILL_IN_THE_SHELL = [
   "relayProfileConfigBrief",
   "relayProfileEditorStatus",
   "relayProfileModeHelp",
-  "relayProtocolLabel",
   "routeSubtitle",
   "routeTitle",
   "stringifyError",
@@ -77,8 +76,8 @@ describe("the application shell holds wiring, not rules", () => {
     // A ceiling, not a target. Lower it when work makes it true; never raise it to make a change fit.
     const lines = shell.split("\n").length;
     assert.ok(
-      lines <= 3241,
-      `App.tsx is ${lines} lines, over the 3241 ceiling — move something out rather than raising it`,
+      lines <= 3218,
+      `App.tsx is ${lines} lines, over the 3218 ceiling — move something out rather than raising it`,
     );
   });
 });

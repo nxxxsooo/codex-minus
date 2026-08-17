@@ -63,8 +63,6 @@ fn classifies_the_binding_fixture_matrix_from_profile_catalog_and_toml() {
     pure_oauth.official_mix_api_key = false;
     let mut pure_api = mixed_profile("pure-api", CANONICAL_INLINE);
     pure_api.relay_mode = RelayMode::PureApi;
-    let mut chat_completions = mixed_profile("chat-completions", CANONICAL_INLINE);
-    chat_completions.protocol = RelayProtocol::ChatCompletions;
     let cases = [
         (
             "canonical native-priority",
@@ -112,12 +110,6 @@ fn classifies_the_binding_fixture_matrix_from_profile_catalog_and_toml() {
             "pure API",
             pure_api,
             CatalogMode::CustomOnly,
-            NativeCapabilityState::Compatibility,
-        ),
-        (
-            "Chat Completions",
-            chat_completions,
-            CatalogMode::OfficialPlusCustom,
             NativeCapabilityState::Compatibility,
         ),
         (
@@ -358,18 +350,6 @@ http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
             )
         );
     }
-
-    let mut chat_legacy = mixed_profile("chat-legacy", LEGACY_CODEX_PLUS_PLUS);
-    chat_legacy.protocol = RelayProtocol::ChatCompletions;
-    let inspection = inspect_profile(&chat_legacy, CatalogMode::OfficialPlusCustom);
-    assert_eq!(inspection.state, NativeCapabilityState::Degraded);
-    assert_eq!(
-        reason(&inspection, NativeCapabilityField::ProviderSelection),
-        (
-            NativeCapabilityOutcome::Mismatch,
-            NativeCapabilityReason::LegacyProviderIdRequiresRename,
-        )
-    );
 }
 
 #[test]
@@ -405,7 +385,6 @@ fn public_enums_are_sanitized_camel_case_and_field_order_is_stable() {
             .collect::<Vec<_>>(),
         vec![
             NativeCapabilityField::RelayMode,
-            NativeCapabilityField::Protocol,
             NativeCapabilityField::Catalog,
             NativeCapabilityField::ProviderSelection,
             NativeCapabilityField::BaseUrl,

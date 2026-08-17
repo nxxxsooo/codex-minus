@@ -93,7 +93,6 @@ import {
 import {
   buildProviderMutationInvocation,
   catalogDraftAvailability,
-  managedCatalogCapable,
   providerDeleteAvailable,
   providerCommitFailureNotice,
   providerCommitFailureShouldReconcileForm,
@@ -174,7 +173,6 @@ import type {
   RelayProfile,
   RelayProfileModelsResult,
   RelayProfileTestResult,
-  RelayProtocol,
   RelayResult,
   RemoveEnvConflictsResult,
   Route,
@@ -916,11 +914,8 @@ export function App() {
     });
     setRelaySwitching(true);
     try {
-      const selectedCatalogDraft = selectedAfterSave.protocol === "chatCompletions"
-        ? null
-        : catalogDraftOverride ?? catalogDraftForProfile(selectedAfterSave);
-      if (selectedAfterSave.protocol !== "chatCompletions"
-        && !selectedCatalogDraft) {
+      const selectedCatalogDraft = catalogDraftOverride ?? catalogDraftForProfile(selectedAfterSave);
+      if (!selectedCatalogDraft) {
         showNotice(t("模型目录不可用"), t("当前供应商的完整模型目录状态尚未加载，请刷新后重试。"), "failed");
         return;
       }
@@ -2120,7 +2115,7 @@ function SortableRelayProfileCard({
       </span>
       <span className="relay-summary">
         <strong>{profile.name || t("未命名供应商")}</strong>
-        <small>{relayModeLabel(profile.relayMode)} · {relayProtocolLabel(profile.protocol)} · {relayProfileConfigBrief(profile)}</small>
+        <small>{relayModeLabel(profile.relayMode)} · {relayProfileConfigBrief(profile)}</small>
       </span>
       <span className="relay-card-actions">
         <Button
@@ -2421,8 +2416,7 @@ function RelayProfileDetail({
     let step;
     try {
       const hasTransitionFields = "relayMode" in patch
-        || "officialMixApiKey" in patch
-        || "protocol" in patch;
+        || "officialMixApiKey" in patch;
       const decision = target.source === "existing" && hasTransitionFields
         ? providerTransitionDecisionForStructuredPatch(current.profile, patch)
         : null;
@@ -2440,7 +2434,6 @@ function RelayProfileDetail({
         const {
           relayMode,
           officialMixApiKey,
-          protocol,
           ...ordinaryPatch
         } = patch;
         if (Object.keys(ordinaryPatch).length) {
@@ -2454,7 +2447,6 @@ function RelayProfileDetail({
           ? {
               ...(relayMode === undefined ? {} : { relayMode }),
               ...(officialMixApiKey === undefined ? {} : { officialMixApiKey }),
-              ...(protocol === undefined ? {} : { protocol }),
             }
           : ordinaryPatch;
         if (!Object.keys(routedPatch).length) return;
@@ -2527,7 +2519,7 @@ function RelayProfileDetail({
       const next = isNew
         ? addRelayProfile(form, normalizedDraft)
         : updateRelayProfile(form, profile.id, normalizedDraft);
-      const catalogCapable = normalizedDraft.protocol !== "chatCompletions";
+      const catalogCapable = true;
       const catalogAvailability = catalogDraftAvailability(!isNew, catalogCapable, !!catalogProfile);
       if (catalogAvailability === "unavailable" || (catalogCapable && !catalogDraft)) {
         await actions.showMessage(
@@ -2537,8 +2529,7 @@ function RelayProfileDetail({
         );
         return;
       }
-      const managedCatalog = normalizedDraft.protocol !== "chatCompletions"
-        && !!catalogDraft
+      const managedCatalog = !!catalogDraft
         && managedCatalogMode(catalogDraft.mode);
       const contextConflicts = managedCatalog
         ? providerManagedContextConflictKeys(
@@ -2553,9 +2544,7 @@ function RelayProfileDetail({
       const saved = await actions.commitProviderDetail(
         next,
         normalizedDraft.id,
-        normalizedDraft.protocol === "chatCompletions"
-          ? null
-          : catalogDraft,
+        catalogDraft,
         !isNew,
         "detailSave",
         confirmContextCleanup,
@@ -2591,9 +2580,7 @@ function RelayProfileDetail({
     void actions.switchRelayProfile(
       next,
       previousActiveRelayId,
-      normalizedDraft.protocol === "chatCompletions" || !catalogDraft
-        ? undefined
-        : catalogDraft,
+      catalogDraft ?? undefined,
     );
   };
   const navigateBack = () => {
@@ -2657,7 +2644,7 @@ function RelayProfileDetail({
         </section>
       )}
         <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={replaceDraft} onProfileEdit={editDraft} onSwitch={switchDraft} actions={actions} catalogProfile={catalogProfile} draftCommitBlocked={detailState.pendingTransformRevision !== null || detailState.pendingConfirmation !== null || detailState.pendingLegacyProviderIdResolution !== null || detailState.blockers.length > 0} />
-      {!managedCatalogCapable(draft) ? null : catalogDraft ? (
+      {catalogDraft ? (
         <CatalogProfileEditor
           catalog={modelCatalog}
           draft={catalogDraft}
@@ -2837,13 +2824,7 @@ function RelayProfileEditor({
           </div>
         ) : null}
       </div>
-      {showApiFields && profile.protocol === "chatCompletions" ? (
-        <div className="hint-line relay-protocol-hint">
-          <MessageCircle className="h-4 w-4" />
-          <span>{t("此上游依赖本地 127.0.0.1:57321 协议代理转成 Responses API；Codex Minus 不提供该代理，选择此协议后 Codex 将无法请求，请慎用。")}</span>
-        </div>
-      ) : null}
-      <div className="hint-line relay-protocol-hint">
+      <div className="hint-line relay-mode-hint">
         <ShieldCheck className="h-4 w-4" />
         <span>{relayProfileModeHelp(profile)}</span>
       </div>
@@ -3102,7 +3083,7 @@ function routeTitle(route: Route) {
 
 function routeSubtitle(route: Route) {
   const subtitles: Record<Route, string> = {
-    relay: t("管理 API 供应商、协议、Key 与配置文件"),
+    relay: t("管理 API 供应商、Key 与配置文件"),
     sessions: t("查看、删除和修复 Codex 本地会话"),
   };
   return subtitles[route];
@@ -3132,10 +3113,6 @@ function providerInitial(name: string) {
 function truncateSessionDeletePreview(value: string) {
   const normalized = value.trim();
   return normalized.length > 20 ? `${normalized.slice(0, 20)}...` : normalized;
-}
-
-function relayProtocolLabel(protocol: RelayProtocol): string {
-  return protocol === "chatCompletions" ? t("Chat Completions 转 Responses") : "Responses API";
 }
 
 function relayModeLabel(mode: RelayMode): string {

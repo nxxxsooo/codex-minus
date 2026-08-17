@@ -24,7 +24,6 @@ describe("provider caller wiring", () => {
     assert.match(source, /catalogDraftAvailability\(!isNew/);
     assert.match(source, /providerDeleteAvailable\(profile\.id/);
     assert.match(source, /catalogEditingAvailability\(isNew \|\| !!summary\?\.managedAvailable\)/);
-    assert.match(source, /!managedCatalogCapable\(draft\) \? null/);
     assert.doesNotMatch(source, /call<RelaySwitchResult>\("switch_relay_profile"/);
     assert.doesNotMatch(source, /call<RelaySwitchResult>\("save_active_relay_profile"/);
     assert.doesNotMatch(source, /relayProfileSwitchCommand/);

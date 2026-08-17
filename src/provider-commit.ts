@@ -17,9 +17,7 @@ export type ProviderRelayProfileSource = {
   name: string;
   model: string;
   baseUrl: string;
-  upstreamBaseUrl: string;
   apiKey: string;
-  protocol: string;
   relayMode: string;
   officialMixApiKey: boolean;
   testModel: string;
@@ -222,11 +220,9 @@ export function buildProviderMutationInvocation(input: ProviderMutationInvocatio
     if (!source || !sameCopySignature(source, newProfiles[0])) {
       throw new Error("copied provider profile does not match its explicit source");
     }
-    if (managedCatalogCapable(newProfiles[0])) {
-      const sourceDraft = suppliedById.get(source.id);
-      if (!sourceDraft) throw new Error("catalog-capable copy requires its source catalog draft");
-      catalogDrafts.push({ ...sourceDraft, profileId: newProfiles[0].id });
-    }
+    const sourceDraft = suppliedById.get(source.id);
+    if (!sourceDraft) throw new Error("catalog-capable copy requires its source catalog draft");
+    catalogDrafts.push({ ...sourceDraft, profileId: newProfiles[0].id });
   } else if (newProfiles.length) {
     throw new Error("only the copy topology action may add a provider profile");
   }
@@ -238,10 +234,6 @@ export function buildProviderMutationInvocation(input: ProviderMutationInvocatio
       catalogDrafts,
     }),
   };
-}
-
-export function managedCatalogCapable(profile: ProviderRelayProfileSource): boolean {
-  return profile.protocol !== "chatCompletions";
 }
 
 export function projectProviderOwnedTopology(settings: ProviderSettingsSource): ProviderOwnedTopologyDraft {
@@ -263,9 +255,7 @@ function projectRelayProfile(profile: ProviderRelayProfileSource): ProviderRelay
     name: profile.name,
     model: profile.model,
     baseUrl: profile.baseUrl,
-    upstreamBaseUrl: profile.upstreamBaseUrl,
     apiKey: profile.apiKey,
-    protocol: profile.protocol,
     relayMode: profile.relayMode,
     officialMixApiKey: profile.officialMixApiKey,
     testModel: profile.testModel,
@@ -360,7 +350,6 @@ function buildEnvelope(
 function implicitMixedCatalogEligible(profile: ProviderRelayProfileDraft): boolean {
   return profile.relayMode === "official"
     && profile.officialMixApiKey
-    && profile.protocol === "responses"
     && !/^\s*model_catalog_json\s*=/m.test(profile.configContents);
 }
 

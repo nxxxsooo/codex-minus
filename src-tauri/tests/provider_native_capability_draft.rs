@@ -43,9 +43,15 @@ fn request(
 #[test]
 fn typescript_transform_request_shape_deserializes_through_the_real_serde_boundary() {
     let profile = mixed_profile("serde", "same-secret", &canonical_source("inline"));
+    let mut frontend_profile = serde_json::to_value(profile).unwrap();
+    frontend_profile.as_object_mut().unwrap().remove("protocol");
+    frontend_profile
+        .as_object_mut()
+        .unwrap()
+        .remove("upstreamBaseUrl");
     let wire = serde_json::json!({
         "draftRevision": 73,
-        "profile": profile,
+        "profile": frontend_profile,
         "catalogMode": "official-plus-custom",
         "action": "enableNativePriority",
         "confirmations": ["replaceActorHeader", "useStructuredKey"]
@@ -54,6 +60,8 @@ fn typescript_transform_request_shape_deserializes_through_the_real_serde_bounda
     let request: ProviderNativeCapabilityDraftRequest = serde_json::from_value(wire).unwrap();
     assert_eq!(request.draft_revision, 73);
     assert_eq!(request.catalog_mode, CatalogMode::OfficialPlusCustom);
+    assert_eq!(request.profile.protocol, RelayProtocol::Responses);
+    assert!(request.profile.upstream_base_url.is_empty());
     assert_eq!(
         request.action,
         NativeCapabilityDraftAction::EnableNativePriority
@@ -723,47 +731,6 @@ fn pure_oauth_requires_destructive_confirmation_then_removes_the_complete_select
 }
 
 #[test]
-fn protocol_change_to_chat_completions_is_an_explicit_capability_loss_exit() {
-    let original = mixed_profile("chat-exit", "same-secret", enabled_exit_source());
-    let unconfirmed = draft_provider_native_capability(&request(
-        original.clone(),
-        CatalogMode::OfficialPlusCustom,
-        NativeCapabilityDraftAction::ExitChatCompletions,
-    ));
-    assert_eq!(
-        unconfirmed.status,
-        NativeCapabilityDraftStatus::ConfirmationRequired
-    );
-    assert_eq!(unconfirmed.draft.profile.protocol, RelayProtocol::Responses);
-    assert_eq!(
-        unconfirmed.draft.profile.config_contents,
-        original.config_contents
-    );
-
-    let mut confirmed_request = request(
-        original,
-        CatalogMode::OfficialPlusCustom,
-        NativeCapabilityDraftAction::ExitChatCompletions,
-    );
-    confirmed_request
-        .confirmations
-        .push(NativeCapabilityDraftConfirmation::ConfirmCapabilityLoss);
-    let confirmed = draft_provider_native_capability(&confirmed_request);
-    assert_eq!(confirmed.status, NativeCapabilityDraftStatus::Ready);
-    assert_eq!(
-        confirmed.draft.profile.protocol,
-        RelayProtocol::ChatCompletions
-    );
-    assert!(confirmed.preview.capability_loss);
-    assert_eq!(
-        provider(&parsed(&confirmed), "RelayOne")
-            .get("arbitrary")
-            .and_then(Item::as_str),
-        Some("keep-provider")
-    );
-}
-
-#[test]
 fn every_compatibility_exit_rejects_a_non_string_semantic_actor_header() {
     let malformed = enabled_exit_source().replace(
         "\"x-openai-actor-authorization\" = \"local-image-extension\"",
@@ -772,7 +739,6 @@ fn every_compatibility_exit_rejects_a_non_string_semantic_actor_header() {
     for action in [
         NativeCapabilityDraftAction::ExitPureApi,
         NativeCapabilityDraftAction::ExitLegacyCompatibility,
-        NativeCapabilityDraftAction::ExitChatCompletions,
     ] {
         let mut request = request(
             mixed_profile("malformed-exit", "same-secret", &malformed),
@@ -826,7 +792,6 @@ fn external_ownership_blocks_every_native_exit_even_when_confirmed() {
     for action in [
         NativeCapabilityDraftAction::ExitPureApi,
         NativeCapabilityDraftAction::ExitLegacyCompatibility,
-        NativeCapabilityDraftAction::ExitChatCompletions,
         NativeCapabilityDraftAction::ExitPureOAuth,
     ] {
         let mut exit = request(original.clone(), CatalogMode::External, action);
@@ -888,7 +853,6 @@ fn persisted_external_ownership_cannot_be_forged_to_managed_at_the_command_bound
     for action in [
         NativeCapabilityDraftAction::ExitPureApi,
         NativeCapabilityDraftAction::ExitLegacyCompatibility,
-        NativeCapabilityDraftAction::ExitChatCompletions,
         NativeCapabilityDraftAction::ExitPureOAuth,
     ] {
         let mut forged = request(original.clone(), CatalogMode::OfficialPlusCustom, action);
@@ -1003,7 +967,6 @@ fn persisted_managed_ownership_allows_only_confirmed_exit_drafts() {
     for action in [
         NativeCapabilityDraftAction::ExitPureApi,
         NativeCapabilityDraftAction::ExitLegacyCompatibility,
-        NativeCapabilityDraftAction::ExitChatCompletions,
         NativeCapabilityDraftAction::ExitPureOAuth,
     ] {
         let mut exit = request(original.clone(), CatalogMode::External, action);
@@ -1180,6 +1143,12 @@ fn complete_response_keeps_provider_secret_only_in_declared_local_draft_fields()
         ]
     );
     assert_eq!(serialized["draft"]["profile"]["authContents"], "");
+    assert!(serialized["draft"]["profile"].get("protocol").is_none());
+    assert!(
+        serialized["draft"]["profile"]
+            .get("upstreamBaseUrl")
+            .is_none()
+    );
     assert!(
         !serde_json::to_string(&serialized["blockers"])
             .unwrap()
