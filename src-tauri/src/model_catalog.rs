@@ -613,6 +613,25 @@ pub async fn adopt_external_model_catalog(
         .expect("blocking command panicked")
 }
 
+#[derive(Debug, Clone)]
+struct CatalogCommandPaths {
+    app_state: PathBuf,
+    codex_home: PathBuf,
+    settings_path: PathBuf,
+    catalog_state_path: PathBuf,
+}
+
+impl CatalogCommandPaths {
+    fn defaults() -> Self {
+        Self {
+            app_state: codex_plus_core::paths::default_app_state_dir(),
+            codex_home: codex_plus_core::relay_config::default_codex_home_dir(),
+            settings_path: codex_plus_core::paths::default_settings_path(),
+            catalog_state_path: catalog_state_path(),
+        }
+    }
+}
+
 fn model_catalog_status_blocking() -> CommandResult<CatalogStatusPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let result = (|| -> anyhow::Result<CatalogStatusPayload> {
@@ -653,19 +672,32 @@ fn validate_adoption_commit_binding(
 fn adopt_external_model_catalog_blocking(
     request: AdoptCatalogRequest,
 ) -> CommandResult<AdoptionPreviewPayload> {
-    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    adopt_external_model_catalog_blocking_at(
+        &CatalogCommandPaths::defaults(),
+        request,
+        verify_target_cli_fresh,
+    )
+}
+
+fn adopt_external_model_catalog_blocking_at(
+    paths: &CatalogCommandPaths,
+    request: AdoptCatalogRequest,
+    verify_target: impl FnOnce() -> anyhow::Result<VerifiedTargetIdentity>,
+) -> CommandResult<AdoptionPreviewPayload> {
+    let home = &paths.codex_home;
     let result = (|| -> anyhow::Result<AdoptionPreviewPayload> {
         let _guard = live_state::lock()?;
-        live_state::prepare_secret_paths(&home)?;
-        live_state::recover_locked()?;
-        let mut settings = sanitized_settings()?;
+        live_state::prepare_secret_paths_at(&paths.app_state, &paths.settings_path, home)?;
+        live_state::recover_locked_at(&paths.app_state)?;
+        let mut settings = sanitized_settings_at(&paths.settings_path)?;
         let profile_index = settings
             .relay_profiles
             .iter()
             .position(|profile| profile.id == request.profile_id)
             .context("供应商不存在")?;
         let profile = settings.relay_profiles[profile_index].clone();
-        let mut state = load_and_migrate_state(&settings, &home)?;
+        let mut state =
+            load_and_migrate_state_from_path(&settings, home, &paths.catalog_state_path)?;
         let profile_state = state.profiles.get(&profile.id).context("缺少目录状态")?;
         ensure!(
             profile_state.mode == CatalogMode::External,
@@ -675,13 +707,13 @@ fn adopt_external_model_catalog_blocking(
             .external_pointer
             .clone()
             .context("外部目录指针为空")?;
-        let source = resolve_catalog_pointer(&home, &pointer)?;
+        let source = resolve_catalog_pointer(home, &pointer)?;
         let source_bytes = fs::read(&source)?;
         let source_hash = content_hash(&source_bytes);
         let raw: Value = serde_json::from_slice(&source_bytes)?;
         validate_catalog_structure(&raw)?;
         validate_effective_catalog_offline(&raw)?;
-        let target = verify_target_cli_fresh()?;
+        let target = verify_target()?;
         let catalog_client_version = catalog_declared_version(&raw);
         let version_status =
             external_version_status(catalog_client_version.as_deref(), &target.client_version);
@@ -726,10 +758,8 @@ fn adopt_external_model_catalog_blocking(
                 );
                 settings.relay_profiles[profile_index].config_contents =
                     remove_global_context_keys(&profile.config_contents)?;
-                settings_mutation = Some(adoption_settings_mutation(
-                    &codex_plus_core::paths::default_settings_path(),
-                    &settings,
-                )?);
+                settings_mutation =
+                    Some(adoption_settings_mutation(&paths.settings_path, &settings)?);
             }
             let profile = &settings.relay_profiles[profile_index];
             let source_config = if profile.id == settings.active_relay_id {
@@ -738,7 +768,7 @@ fn adopt_external_model_catalog_blocking(
                 profile.config_contents.clone()
             };
             let mut mutations = vec![FileMutation::text(
-                adoption_backup_path(&profile.id),
+                adoption_backup_path_at(&paths.app_state, &profile.id),
                 sanitize_nonsecret_config_backup(&source_config)?,
             )];
             if let Some(mutation) = settings_mutation {
@@ -746,7 +776,7 @@ fn adopt_external_model_catalog_blocking(
             }
             if profile.id == settings.active_relay_id {
                 let plan = plan_active_profile_with_state(
-                    &home,
+                    home,
                     &settings,
                     &source_config,
                     &mut state,
@@ -757,11 +787,11 @@ fn adopt_external_model_catalog_blocking(
                     home.join("config.toml"),
                     plan.config_contents,
                 ));
-            } else if let Some(mutation) = materialize_profile(&mut state, profile, &home)? {
+            } else if let Some(mutation) = materialize_profile(&mut state, profile, home)? {
                 mutations.push(mutation);
             }
-            mutations.push(state_mutation(&state)?);
-            live_state::commit_locked(&mutations)?;
+            mutations.push(state_mutation_at(&state, &paths.catalog_state_path)?);
+            live_state::commit_locked_verified_at(&paths.app_state, &mutations, || Ok(()))?;
         }
         Ok(payload)
     })();
@@ -919,7 +949,11 @@ pub fn record_provider_evidence(
 }
 
 fn sanitized_settings() -> anyhow::Result<BackendSettings> {
-    let mut settings = SettingsStore::default().load()?;
+    sanitized_settings_at(&codex_plus_core::paths::default_settings_path())
+}
+
+fn sanitized_settings_at(path: &Path) -> anyhow::Result<BackendSettings> {
+    let mut settings = SettingsStore::new(path.to_path_buf()).load()?;
     crate::provider_commit::validate_responses_only_settings(&settings)?;
     for profile in &mut settings.relay_profiles {
         profile.auth_contents.clear();
@@ -2352,14 +2386,12 @@ fn resolve_catalog_pointer(home: &Path, pointer: &str) -> anyhow::Result<PathBuf
     Ok(canonical)
 }
 
-fn adoption_backup_path(profile_id: &str) -> PathBuf {
-    codex_plus_core::paths::default_app_state_dir()
-        .join("backups")
-        .join(format!(
-            "catalog-adoption-{}-{}.toml",
-            sanitize_profile_id(profile_id),
-            now_ms()
-        ))
+fn adoption_backup_path_at(app_state: &Path, profile_id: &str) -> PathBuf {
+    app_state.join("backups").join(format!(
+        "catalog-adoption-{}-{}.toml",
+        sanitize_profile_id(profile_id),
+        now_ms()
+    ))
 }
 
 fn sanitize_nonsecret_config_backup(config: &str) -> anyhow::Result<String> {
@@ -3697,28 +3729,145 @@ mod tests {
     }
 
     #[test]
-    fn adoption_context_cleanup_writes_the_canonical_settings_shape() {
+    fn committed_external_adoption_context_cleanup_writes_the_canonical_settings_file() {
         let temp = tempfile::tempdir().unwrap();
-        let settings_path = temp.path().join("settings.json");
+        let paths = CatalogCommandPaths {
+            app_state: temp.path().join("app-state"),
+            codex_home: temp.path().join("codex-home"),
+            settings_path: temp.path().join("settings.json"),
+            catalog_state_path: temp.path().join("model-catalog-state.json"),
+        };
+        fs::create_dir_all(&paths.app_state).unwrap();
+        fs::create_dir_all(&paths.codex_home).unwrap();
+        let external_config = r#"model = "gpt-5.6-sol"
+model_provider = "ExternalRelay"
+model_catalog_json = "external.json"
+model_context_window = 123456
+
+[model_providers.ExternalRelay]
+name = "OpenAI"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = "provider-key"
+http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
+"#;
         let settings = BackendSettings {
-            relay_profiles: vec![RelayProfile {
-                id: "external".to_string(),
-                relay_mode: RelayMode::Official,
-                protocol: codex_plus_core::settings::RelayProtocol::Responses,
-                official_mix_api_key: true,
-                auth_contents: "oauth-copy-must-not-persist".to_string(),
-                ..RelayProfile::default()
-            }],
-            active_relay_id: "external".to_string(),
+            relay_profiles: vec![
+                RelayProfile {
+                    id: "active".to_string(),
+                    relay_mode: RelayMode::Official,
+                    protocol: codex_plus_core::settings::RelayProtocol::Responses,
+                    ..RelayProfile::default()
+                },
+                RelayProfile {
+                    id: "external".to_string(),
+                    model: "gpt-5.6-sol".to_string(),
+                    base_url: "https://relay.example/v1".to_string(),
+                    upstream_base_url: "https://relay.example/v1".to_string(),
+                    api_key: "provider-key".to_string(),
+                    relay_mode: RelayMode::Official,
+                    protocol: codex_plus_core::settings::RelayProtocol::Responses,
+                    official_mix_api_key: true,
+                    config_contents: external_config.to_string(),
+                    auth_contents: "oauth-copy-must-not-persist".to_string(),
+                    ..RelayProfile::default()
+                },
+            ],
+            active_relay_id: "active".to_string(),
             ..BackendSettings::default()
         };
+        fs::write(
+            &paths.settings_path,
+            serde_json::to_vec_pretty(&settings).unwrap(),
+        )
+        .unwrap();
+        let external = bundled_official_snapshot().unwrap();
+        fs::write(
+            paths.codex_home.join("external.json"),
+            serde_json::to_vec_pretty(&external.raw_catalog).unwrap(),
+        )
+        .unwrap();
+        let mut state = CatalogState::default();
+        state.profiles.insert(
+            "external".to_string(),
+            ProfileCatalogState {
+                mode: CatalogMode::External,
+                mode_explicit: true,
+                external_pointer: Some("external.json".to_string()),
+                ..ProfileCatalogState::default()
+            },
+        );
+        fs::write(
+            &paths.catalog_state_path,
+            serde_json::to_vec_pretty(&state).unwrap(),
+        )
+        .unwrap();
+        let verified_target = || {
+            Ok(VerifiedTargetIdentity {
+                cli_path: "/verified/codex".to_string(),
+                client_version: external.client_version.clone(),
+                identity_hash: "sha256:verified-target".to_string(),
+                capability_available: true,
+                capability_message: "verified".to_string(),
+            })
+        };
+        let preview = adopt_external_model_catalog_blocking_at(
+            &paths,
+            AdoptCatalogRequest {
+                profile_id: "external".to_string(),
+                commit: false,
+                expected_source_hash: None,
+                expected_target_client_version: None,
+                expected_version_status: None,
+                accept_version_mismatch: false,
+                confirm_context_cleanup: false,
+            },
+            verified_target,
+        );
+        assert_eq!(preview.status, "ok", "{}", preview.message);
+        let committed = adopt_external_model_catalog_blocking_at(
+            &paths,
+            AdoptCatalogRequest {
+                profile_id: "external".to_string(),
+                commit: true,
+                expected_source_hash: Some(preview.payload.source_hash.clone()),
+                expected_target_client_version: Some(preview.payload.target_client_version.clone()),
+                expected_version_status: Some(preview.payload.version_status.clone()),
+                accept_version_mismatch: preview.payload.version_status == "mismatch",
+                confirm_context_cleanup: true,
+            },
+            verified_target,
+        );
+        assert_eq!(committed.status, "ok", "{}", committed.message);
+        assert!(committed.payload.committed);
 
-        let mutation = adoption_settings_mutation(&settings_path, &settings).unwrap();
-        fs::write(&mutation.path, mutation.contents.unwrap()).unwrap();
-        let value: Value = serde_json::from_slice(&fs::read(&settings_path).unwrap()).unwrap();
+        let value: Value =
+            serde_json::from_slice(&fs::read(&paths.settings_path).unwrap()).unwrap();
         assert!(value.get("aggregateRelayProfiles").is_none());
         assert!(value.get("activeAggregateRelayId").is_none());
-        assert!(value["relayProfiles"][0].get("authContents").is_none());
+        assert!(
+            value["relayProfiles"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|profile| profile.get("authContents").is_none())
+        );
+        let saved_external = value["relayProfiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|profile| profile["id"] == "external")
+            .unwrap();
+        assert!(
+            !saved_external["configContents"]
+                .as_str()
+                .unwrap()
+                .contains("model_context_window")
+        );
+        let saved_state: CatalogState =
+            serde_json::from_slice(&fs::read(&paths.catalog_state_path).unwrap()).unwrap();
+        assert_ne!(saved_state.profiles["external"].mode, CatalogMode::External);
     }
 
     #[test]
