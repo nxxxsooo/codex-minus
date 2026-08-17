@@ -57,7 +57,7 @@ shasum -a 256 -c SHA256SUMS
 - settings、provider config、模型目录与 live 指针通过一个可恢复事务提交，失败时恢复完整上一代。
 - 切换后读取实际 `model_provider`，相同 provider 不触发会话扫描。
 - 检查可能覆盖供应商配置的 `OPENAI_*` 环境变量。
-- 供应商快速测试与 Provider Doctor 遇到严格匹配的 Responses HTTP 400 字段兼容错误时，会在 Manager 内省略可选的 `max_output_tokens` 重试一次并明确标记；认证、模型、限流、普通上游错误和 Chat Completions 不重试。
+- 供应商快速测试与 Provider Doctor 遇到严格匹配的 Responses HTTP 400 字段兼容错误时，会在 Manager 内省略可选的 `max_output_tokens` 重试一次并明确标记；认证、模型、限流和普通上游错误不重试。
 
 ### 原生能力优先
 
@@ -111,7 +111,7 @@ shasum -a 256 -c SHA256SUMS
 - Windows 构建通过 CI 自动生成，未在本地进行 Windows 实机测试。
 - Credential-bearing 官方目录刷新当前验证下限为内嵌 `codex-cli 0.147.0-alpha.1`；已验证 macOS OpenAI Team ID `2DC432GLL2`。不支持 keyring-only 或无法安全读取的认证存储。
 - Windows 已实现 Authenticode/OpenAI publisher gate，但尚未完成 Windows 实机 OAuth 刷新验证。
-- 「Chat Completions 协议」和「本地成员聚合」依赖上游 launcher 提供的 `127.0.0.1:57321` 代理，本项目不包含该代理，请勿使用。由远端服务完成路由、对 Codex 仅暴露一个 Responses Base URL 和 Key 的服务端复合供应商不受此限制。
+- Codex Minus 仅支持 Responses 供应商。服务端复合供应商应对 Codex 暴露一个 Responses Base URL 和 Key，并作为普通供应商接入。
 - 会话归档用于整理，不会压缩数据或释放磁盘空间。
 
 ## 架构

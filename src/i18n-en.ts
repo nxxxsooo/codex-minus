@@ -102,7 +102,6 @@ export const EN_PLAIN: Record<string, string> = {
   "API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。":
     "Expands plugin marketplace requests in API Key mode to show the full plugin list. Usually unnecessary in official/mixed mode.",
   "API Key 环境变量": "API Key environment variable",
-  "Chat Completions 转 Responses": "Chat Completions to Responses",
   "Codex 启动参数": "Codex launch arguments",
   "Codex 工具与插件": "Codex tools & plugins",
   "Codex 应用": "Codex app",
@@ -618,7 +617,6 @@ export const EN_PLAIN: Record<string, string> = {
   "移除最近记录": "Remove from recent",
   "立刻修复历史会话": "Repair historical sessions now",
   "第三方": "Third party",
-  "策略": "Strategy",
   "管理 API 供应商、Key 与配置文件": "Manage API providers, keys and config files",
   "管理 Codex SSH 项目并加入 Zed workspace": "Manage Codex SSH projects and add them to a Zed workspace",
   "管理工具入口": "Manager entrypoint",
@@ -703,7 +701,6 @@ export const EN_PLAIN: Record<string, string> = {
   "选择 png / jpg / webp / gif / bmp": "Select png / jpg / webp / gif / bmp",
   "选择会话": "Select session",
   "选择图片": "Select image",
-  "选择已有供应商作为成员，保存后写入 settings payload": "Select existing providers as members; saving writes them to the settings payload",
   "选择应用目录": "Select app directory",
   "选择覆盖图片": "Select overlay image",
   "通用配置文件": "Common config file",
