@@ -552,6 +552,7 @@ git commit -m "test: pin legacy model reset ownership"
 
 **Interfaces:**
 - Consumes: pure plan plus exposed model-catalog helpers from Tasks 1-2, `ProviderCommitPaths`, `FileMutation`, Context protection, and live-state journal.
+- Precondition: the caller holds the coordinator and has already completed `migrate_legacy_profile_auth_locked_at`, so settings contain no copied OAuth residue before this function can create a recovery snapshot.
 - Produces:
 
 ```rust
@@ -611,7 +612,6 @@ Expected: FAIL because no migration entry point or transaction mutations exist.
 The caller already owns the coordinator. Implement this order:
 
 ```rust
-migrate_legacy_profile_auth_locked_at(&paths.settings_path)?;
 let raw_settings = std::fs::read(&paths.settings_path)?;
 let settings: BackendSettings = serde_json::from_slice(&raw_settings)?;
 let state = crate::model_catalog::load_and_migrate_state_from_path(
