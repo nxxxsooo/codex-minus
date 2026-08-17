@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use crate::commands::{CommandResult, discover_target_codex_cli};
 use crate::live_state::{self, FileMutation};
 
-const STATE_VERSION: u32 = 3;
+const STATE_VERSION: u32 = 4;
 const STATE_FILE: &str = "model-catalog-state.json";
 const GENERATED_DIR: &str = "model-catalogs";
 const GENERATED_PREFIX: &str = "codex-minus-";
@@ -177,6 +177,7 @@ pub enum UpstreamTopology {
 pub struct ProfileCatalogState {
     pub mode: CatalogMode,
     pub mode_explicit: bool,
+    pub legacy_model_reset_version: u32,
     pub upstream_topology: UpstreamTopology,
     pub overlay: CatalogOverlay,
     pub external_pointer: Option<String>,
@@ -194,6 +195,7 @@ impl Default for ProfileCatalogState {
         Self {
             mode: CatalogMode::NativeOfficial,
             mode_explicit: false,
+            legacy_model_reset_version: 0,
             upstream_topology: UpstreamTopology::Direct,
             overlay: CatalogOverlay::default(),
             external_pointer: None,
