@@ -89,7 +89,10 @@ describe("the settings baseline epoch", () => {
     const second = baseline.registerSettingsRead(first.state);
     let noticeState = baseline.createLegacyModelResetNoticeState();
 
-    const current = baseline.consumeLegacyModelResetNotice(noticeState, null);
+    const current = baseline.consumeLegacyModelResetNotice(noticeState, {
+      eventId: "generation-current",
+      message: null,
+    });
     noticeState = current.state;
     assert.equal(current.notice, null);
     assert.equal(
@@ -99,7 +102,10 @@ describe("the settings baseline epoch", () => {
 
     const obsolete = baseline.consumeLegacyModelResetNotice(
       noticeState,
-      "legacy reset completed",
+      {
+        eventId: "generation-reset",
+        message: "legacy reset completed",
+      },
     );
     noticeState = obsolete.state;
     assert.equal(obsolete.notice, "legacy reset completed");
@@ -114,10 +120,45 @@ describe("the settings baseline epoch", () => {
 
     const duplicate = baseline.consumeLegacyModelResetNotice(
       noticeState,
-      "legacy reset completed",
+      {
+        eventId: "generation-reset",
+        message: "legacy reset completed",
+      },
     );
     assert.equal(duplicate.notice, null);
     assert.equal(duplicate.state, noticeState);
+  });
+
+  it("deduplicates one reset generation across direct and load messages without hiding a later reset", () => {
+    const baseline = requireBaselineModule();
+    let noticeState = baseline.createLegacyModelResetNoticeState();
+
+    const direct = baseline.consumeLegacyModelResetNotice(noticeState, {
+      eventId: "provider-generation-A",
+      message: "direct reset completed; requested edit was not saved",
+    });
+    noticeState = direct.state;
+    assert.equal(
+      direct.notice,
+      "direct reset completed; requested edit was not saved",
+    );
+
+    const overlappingLoad = baseline.consumeLegacyModelResetNotice(noticeState, {
+      eventId: "provider-generation-A",
+      message: "startup reset completed",
+    });
+    assert.equal(overlappingLoad.notice, null);
+    assert.equal(overlappingLoad.state, noticeState);
+
+    const laterReset = baseline.consumeLegacyModelResetNotice(noticeState, {
+      eventId: "provider-generation-B",
+      message: "direct reset completed; requested edit was not saved",
+    });
+    assert.equal(
+      laterReset.notice,
+      "direct reset completed; requested edit was not saved",
+    );
+    assert.notEqual(laterReset.state, noticeState);
   });
 
   it("lets a provider success invalidate an earlier settings read", () => {

@@ -2450,6 +2450,7 @@ enum LegacyModelResetFailure {
     SettingsUnreadable,
     SettingsInvalidJson,
     PersistedProviderInvalid,
+    LegacyModelListInvalid,
     LegacyModelWindowsInvalid,
     LiveConfigInvalid,
     CatalogUnavailable,
@@ -2463,6 +2464,7 @@ impl std::fmt::Display for LegacyModelResetFailure {
             Self::SettingsUnreadable => "provider settings file is unreadable",
             Self::SettingsInvalidJson => "provider settings are invalid JSON",
             Self::PersistedProviderInvalid => "a saved provider profile failed normalization",
+            Self::LegacyModelListInvalid => "saved legacy model list is invalid",
             Self::LegacyModelWindowsInvalid => "saved legacy model windows are invalid",
             Self::LiveConfigInvalid => "live provider config is invalid",
             Self::CatalogUnavailable => "provider catalog state is unavailable",
@@ -2492,6 +2494,10 @@ fn provider_commit_failure_for_legacy_model_reset(error: anyhow::Error) -> Provi
             ProviderCommitErrorCode::InputUnavailable,
             "a saved provider profile failed normalization",
         ),
+        Some(LegacyModelResetFailure::LegacyModelListInvalid) => provider_commit_failure(
+            ProviderCommitErrorCode::InputUnavailable,
+            "saved legacy model list is invalid",
+        ),
         Some(LegacyModelResetFailure::LegacyModelWindowsInvalid) => provider_commit_failure(
             ProviderCommitErrorCode::InputUnavailable,
             "saved legacy model windows are invalid",
@@ -2508,6 +2514,22 @@ fn provider_commit_failure_for_legacy_model_reset(error: anyhow::Error) -> Provi
             ProviderCommitErrorCode::TransactionFailed,
             "provider transaction failed",
         ),
+    }
+}
+
+fn classify_legacy_model_reset_catalog_error(error: &anyhow::Error) -> LegacyModelResetFailure {
+    if error
+        .downcast_ref::<crate::model_catalog::InvalidLegacyModelWindows>()
+        .is_some()
+    {
+        LegacyModelResetFailure::LegacyModelWindowsInvalid
+    } else if error
+        .downcast_ref::<crate::model_catalog::InvalidLegacyModelList>()
+        .is_some()
+    {
+        LegacyModelResetFailure::LegacyModelListInvalid
+    } else {
+        LegacyModelResetFailure::CatalogUnavailable
     }
 }
 
@@ -2559,28 +2581,18 @@ pub(crate) fn migrate_legacy_model_state_locked_at(
                 .collect::<std::collections::BTreeSet<_>>()
         })
         .unwrap_or_default();
-    let state = crate::model_catalog::load_and_migrate_state_from_path(
+    let state = crate::model_catalog::load_and_migrate_state_for_legacy_reset_from_path(
         &settings,
         &paths.codex_home,
         &paths.catalog_state_path,
     )
-    .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::CatalogUnavailable))?;
+    .map_err(|error| legacy_model_reset_error(classify_legacy_model_reset_catalog_error(&error)))?;
     let official = crate::model_catalog::visible_official_slugs(&state)
         .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::CatalogUnavailable))?;
     let Some(mut plan) = crate::legacy_model_reset::plan_legacy_model_reset(
         &settings, &state, &official,
     )
-    .map_err(|error| {
-        let failure = if error
-            .downcast_ref::<crate::model_catalog::InvalidLegacyModelWindows>()
-            .is_some()
-        {
-            LegacyModelResetFailure::LegacyModelWindowsInvalid
-        } else {
-            LegacyModelResetFailure::CatalogUnavailable
-        };
-        legacy_model_reset_error(failure)
-    })?
+    .map_err(|error| legacy_model_reset_error(classify_legacy_model_reset_catalog_error(&error)))?
     else {
         return Ok(LegacyModelResetOutcome::default());
     };

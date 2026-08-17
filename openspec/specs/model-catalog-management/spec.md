@@ -241,11 +241,18 @@ The system SHALL migrate existing relay model rows without copying credentials a
 - **WHEN** a profile has an explicit mode, external pointer, implicit `native-official` or `custom-only` mode, user-created/preset row, unknown provenance, or a modified/user-added official override that does not exactly match legacy reconstruction
 - **THEN** startup does not delete or rewrite that owned or ambiguous model state
 
+#### Scenario: Missing catalog state is classified before legacy reconstruction
+
+- **WHEN** reset evaluates either persisted explicit/native/custom-only/external ownership or a missing catalog-state file/profile entry whose profile contract or pointer derives as external, native, custom-only, pure-OAuth, pure-API, Aggregate, or Chat, and that profile carries malformed or overlong dormant legacy list/window fields
+- **THEN** reset startup preserves or derives a preservation-safe profile state and persists its one-time marker without parsing those dormant fields, preserves any external pointer and mode ownership, and creates no usable custom catalog from the invalid data
+- **AND** only a missing-state ordinary mixed Responses profile derived as implicit `official-plus-custom` may enter strict reset reconstruction, including the existing manager-generated-pointer recovery case
+
 #### Scenario: Destructive legacy reconstruction requires valid window evidence
 
 - **WHEN** an eligible implicit `official-plus-custom` profile has nonblank `modelWindows` that is not a JSON object mapping every supplied slug to a string that trim-parses as a positive `u64`
 - **THEN** the manager rejects the reset before recording its marker or mutating settings or catalog state and reports a static input-unavailable reason
-- **AND** the earlier catalog-state bootstrap migration retains its permissive compatibility behavior because it does not authorize deletion
+- **AND** an invalid legacy list rejected during the same strict reset-only reconstruction also reports a static input-unavailable reason
+- **AND** generic catalog-state bootstrap outside reset retains its permissive compatibility behavior because it does not authorize deletion
 
 #### Scenario: An overlay edit establishes explicit ownership
 
@@ -303,7 +310,7 @@ The system SHALL expose enough status to distinguish official freshness, overlay
 
 ### Requirement: An implicit catalog mode follows the current default
 
-A catalog mode that was derived rather than chosen SHALL be re-derived when state is loaded, the same way an implicit external pointer is already re-derived. A mode the user chose explicitly SHALL never be re-derived.
+A catalog mode that was derived rather than chosen SHALL be re-derived during general state loading, the same way an implicit external pointer is already re-derived. A reset-only eligibility load MAY defer that re-derivation for an unmarked profile carrying dormant legacy signals solely to persist a preservation marker without parsing or destructively resetting those fields; after the marker is present, the following general load SHALL re-derive the mode normally without writing it. A mode the user chose explicitly SHALL never be re-derived.
 
 A stale implicit mode otherwise deadlocks its profile: the provider contract rejects every commit while the mode disagrees, and correcting the mode requires a commit.
 
@@ -311,6 +318,11 @@ A stale implicit mode otherwise deadlocks its profile: the provider contract rej
 
 - **WHEN** state carries an implicit catalog mode that disagrees with the mode the current default rule derives for that profile
 - **THEN** the loaded mode becomes the current default and the profile can be committed
+
+#### Scenario: Reset eligibility defers one implicit-mode correction
+
+- **WHEN** reset-only loading finds an unmarked implicit native or custom-only state with dormant legacy signals that must be preserved without parsing
+- **THEN** it records the preservation marker against the persisted mode, and the subsequent general load re-derives the current default mode in memory without changing the persisted marker generation
 
 #### Scenario: An explicit mode is preserved
 

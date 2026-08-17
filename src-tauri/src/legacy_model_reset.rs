@@ -40,17 +40,11 @@ pub(crate) fn plan_legacy_model_reset(
             .get(&profile.id)
             .cloned()
             .unwrap_or_default();
-        if !has_legacy_signal(profile, &existing_state)
-            || existing_state.legacy_model_reset_version >= LEGACY_MODEL_RESET_VERSION
-        {
+        if !legacy_model_reset_needs_evaluation(profile, &existing_state) {
             continue;
         }
 
-        if !ordinary_mixed_responses(profile)
-            || existing_state.mode != CatalogMode::OfficialPlusCustom
-            || existing_state.external_pointer.is_some()
-            || existing_state.mode_explicit
-        {
+        if !legacy_model_reset_eligible(profile, &existing_state) {
             let state_entry = next_state.profiles.entry(profile.id.clone()).or_default();
             let marker_changed =
                 state_entry.legacy_model_reset_version < LEGACY_MODEL_RESET_VERSION;
@@ -147,20 +141,30 @@ pub(crate) fn set_top_level_model(config: &str, model: &str) -> anyhow::Result<S
     Ok(document.to_string())
 }
 
-fn ordinary_mixed_responses(profile: &RelayProfile) -> bool {
+pub(crate) fn legacy_model_reset_eligible(
+    profile: &RelayProfile,
+    state: &ProfileCatalogState,
+) -> bool {
     profile.relay_mode == RelayMode::Official
         && profile.official_mix_api_key
         && profile.protocol == RelayProtocol::Responses
+        && state.mode == CatalogMode::OfficialPlusCustom
+        && state.external_pointer.is_none()
+        && !state.mode_explicit
 }
 
-fn has_legacy_signal(profile: &RelayProfile, state: &ProfileCatalogState) -> bool {
-    !profile.model_list.trim().is_empty()
-        || has_nonempty_legacy_model_windows(&profile.model_windows)
-        || state
-            .overlay
-            .custom
-            .iter()
-            .any(|model| model.template_provenance == "legacy-model-list")
+pub(crate) fn legacy_model_reset_needs_evaluation(
+    profile: &RelayProfile,
+    state: &ProfileCatalogState,
+) -> bool {
+    state.legacy_model_reset_version < LEGACY_MODEL_RESET_VERSION
+        && (!profile.model_list.trim().is_empty()
+            || has_nonempty_legacy_model_windows(&profile.model_windows)
+            || state
+                .overlay
+                .custom
+                .iter()
+                .any(|model| model.template_provenance == "legacy-model-list"))
 }
 
 fn has_nonempty_legacy_model_windows(model_windows: &str) -> bool {
@@ -576,7 +580,12 @@ fit_marker = "keep"
             Ok(_) => panic!("eligible invalid legacy data was accepted"),
         };
 
-        assert!(error.to_string().contains("model slug is too long"));
+        assert!(
+            error
+                .downcast_ref::<crate::model_catalog::InvalidLegacyModelList>()
+                .is_some()
+        );
+        assert_eq!(error.to_string(), "legacy model list is invalid");
         assert_eq!(state.profiles["eva"].legacy_model_reset_version, 0);
         assert_eq!(settings.relay_profiles[0].model_list, invalid_model_list);
         assert_eq!(settings.relay_profiles[0].model_windows, "{}");

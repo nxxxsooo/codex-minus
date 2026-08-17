@@ -1510,6 +1510,303 @@ fn legacy_model_reset_marker_only_bookkeeping_keeps_a_legitimate_request_current
 }
 
 #[test]
+fn legacy_model_reset_missing_profile_bootstrap_marks_ineligible_dormant_data_without_a_load_gate()
+{
+    let invalid_model_list = "x".repeat(161);
+    for missing_state in ["missing-file", "missing-profile"] {
+        for shape in [
+            "external-pointer",
+            "pure-oauth",
+            "pure-api",
+            "chat-completions",
+            "aggregate",
+        ] {
+            let profile_id = format!("{missing_state}-{shape}");
+            let mut profile = match shape {
+                "pure-oauth" => pure_oauth_profile(&profile_id),
+                "pure-api" => legacy_pure_api_profile(&profile_id, ""),
+                _ => canonical_profile(
+                    &profile_id,
+                    "gpt-5.6-sol",
+                    "https://dormant.example/v1",
+                    "dormant-provider-key",
+                ),
+            };
+            let (expected_mode, expected_pointer) = match shape {
+                "external-pointer" => {
+                    let pointer = format!("/private/{profile_id}.json");
+                    profile.config_contents = crate::model_catalog::set_root_catalog_pointer(
+                        &profile.config_contents,
+                        Some(&pointer),
+                    )
+                    .unwrap();
+                    (CatalogMode::External, Some(pointer))
+                }
+                "pure-oauth" => (CatalogMode::NativeOfficial, None),
+                "pure-api" => (CatalogMode::CustomOnly, None),
+                "chat-completions" => {
+                    profile.protocol = RelayProtocol::ChatCompletions;
+                    (CatalogMode::OfficialPlusCustom, None)
+                }
+                "aggregate" => {
+                    profile.relay_mode = RelayMode::Aggregate;
+                    (CatalogMode::NativeOfficial, None)
+                }
+                _ => unreachable!(),
+            };
+            profile.model_list = invalid_model_list.clone();
+            profile.model_windows = "{not-json".to_string();
+            let fixture = Fixture::new(
+                &settings_with(vec![profile], &profile_id),
+                &state_with_official(),
+            );
+            if missing_state == "missing-file" {
+                fs::remove_file(&fixture.paths.catalog_state_path).unwrap();
+            }
+            let settings_before = fs::read(&fixture.paths.settings_path).unwrap();
+            let live_before = fs::read(fixture.paths.codex_home.join("config.toml")).unwrap();
+            let auth_before = fs::read(fixture.paths.codex_home.join("auth.json")).unwrap();
+
+            let first = load_settings_blocking_at(&fixture.paths);
+
+            assert_eq!(first.status, "ok", "{missing_state}/{shape}");
+            assert!(
+                !first.payload.provider_fingerprint.is_empty(),
+                "{missing_state}/{shape}"
+            );
+            assert_eq!(
+                fs::read(&fixture.paths.settings_path).unwrap(),
+                settings_before,
+                "{missing_state}/{shape}"
+            );
+            assert_eq!(
+                fs::read(fixture.paths.codex_home.join("config.toml")).unwrap(),
+                live_before,
+                "{missing_state}/{shape}"
+            );
+            assert_eq!(
+                fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
+                auth_before,
+                "{missing_state}/{shape}"
+            );
+            assert!(
+                !fixture
+                    .paths
+                    .codex_home
+                    .join(crate::model_catalog::generated_relative_path(&profile_id))
+                    .exists(),
+                "{missing_state}/{shape}"
+            );
+            let state = fixture.read_state();
+            let profile_state = &state.profiles[&profile_id];
+            assert_eq!(profile_state.mode, expected_mode, "{missing_state}/{shape}");
+            assert_eq!(
+                profile_state.external_pointer, expected_pointer,
+                "{missing_state}/{shape}"
+            );
+            assert!(
+                profile_state.overlay.custom.is_empty(),
+                "{missing_state}/{shape}"
+            );
+            assert!(
+                profile_state.overlay.official.is_empty(),
+                "{missing_state}/{shape}"
+            );
+            assert_eq!(
+                profile_state.legacy_model_reset_version,
+                crate::legacy_model_reset::LEGACY_MODEL_RESET_VERSION,
+                "{missing_state}/{shape}"
+            );
+
+            let generation_after_first = fixture.file_generation();
+            let second = load_settings_blocking_at(&fixture.paths);
+            assert_eq!(second.status, "ok", "{missing_state}/{shape}/second");
+            assert_eq!(
+                fixture.file_generation(),
+                generation_after_first,
+                "{missing_state}/{shape}/second"
+            );
+        }
+    }
+}
+
+#[test]
+fn legacy_model_reset_command_entry_preserves_existing_explicit_native_custom_and_external_modes() {
+    let invalid_model_list = "x".repeat(161);
+    for (shape, mode, explicit, pointer) in [
+        ("explicit", CatalogMode::OfficialPlusCustom, true, None),
+        (
+            "external",
+            CatalogMode::External,
+            false,
+            Some("/private/existing-external.json"),
+        ),
+        ("native", CatalogMode::NativeOfficial, false, None),
+        ("custom-only", CatalogMode::CustomOnly, false, None),
+    ] {
+        let mut profile = canonical_profile(
+            shape,
+            "gpt-5.6-sol",
+            "https://preserved.example/v1",
+            "preserved-provider-key",
+        );
+        profile.model_list = invalid_model_list.clone();
+        profile.model_windows = "{not-json".to_string();
+        if let Some(pointer) = pointer {
+            profile.config_contents = crate::model_catalog::set_root_catalog_pointer(
+                &profile.config_contents,
+                Some(pointer),
+            )
+            .unwrap();
+        }
+        let mut state = state_with_official();
+        state.profiles.insert(
+            shape.to_string(),
+            crate::model_catalog::ProfileCatalogState {
+                mode,
+                mode_explicit: explicit,
+                external_pointer: pointer.map(ToString::to_string),
+                ..crate::model_catalog::ProfileCatalogState::default()
+            },
+        );
+        let fixture = Fixture::new(&settings_with(vec![profile], shape), &state);
+        let settings_before = fs::read(&fixture.paths.settings_path).unwrap();
+
+        let result = load_settings_blocking_at(&fixture.paths);
+
+        assert_eq!(result.status, "ok", "{shape}");
+        assert_eq!(
+            fs::read(&fixture.paths.settings_path).unwrap(),
+            settings_before,
+            "{shape}"
+        );
+        let profile_state = &fixture.read_state().profiles[shape];
+        assert_eq!(profile_state.mode, mode, "{shape}");
+        assert_eq!(profile_state.mode_explicit, explicit, "{shape}");
+        assert_eq!(
+            profile_state.legacy_model_reset_version,
+            crate::legacy_model_reset::LEGACY_MODEL_RESET_VERSION,
+            "{shape}"
+        );
+        let state_bytes_after_marker = fs::read(&fixture.paths.catalog_state_path).unwrap();
+        let generic = crate::model_catalog::load_and_migrate_state_from_path(
+            &fixture.read_settings(),
+            &fixture.paths.codex_home,
+            &fixture.paths.catalog_state_path,
+        )
+        .unwrap_or_else(|error| panic!("{shape} generic load parsed dormant data: {error}"));
+        assert_eq!(
+            generic.profiles[shape].mode,
+            if matches!(shape, "native" | "custom-only") {
+                CatalogMode::OfficialPlusCustom
+            } else {
+                mode
+            },
+            "{shape}"
+        );
+        assert_eq!(
+            fs::read(&fixture.paths.catalog_state_path).unwrap(),
+            state_bytes_after_marker,
+            "{shape}: generic re-derivation must remain read-only"
+        );
+    }
+}
+
+#[test]
+fn legacy_model_reset_missing_eligible_profile_maps_invalid_model_list_to_input_unavailable() {
+    let fixture = eva_legacy_model_fixture();
+    fs::remove_file(&fixture.paths.catalog_state_path).unwrap();
+    let mut settings: BackendSettings =
+        serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+    settings.relay_profiles[0].model_list = "model-list-secret-sentinel".repeat(9);
+    settings.relay_profiles[0].model_windows = "{}".to_string();
+    fs::write(
+        &fixture.paths.settings_path,
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    let request = request(&settings, &settings, "eva", ProviderCommitAction::Save, 921);
+    let before = fixture.file_generation();
+
+    let load = load_settings_blocking_at(&fixture.paths);
+    assert_eq!(load.status, "failed");
+    assert_eq!(fixture.file_generation(), before);
+
+    let error = commit_provider_detail_from_paths_raw(&fixture.paths, request).unwrap_err();
+
+    assert_eq!(error.code(), ProviderCommitErrorCode::InputUnavailable);
+    assert_eq!(error.reason(), "saved legacy model list is invalid");
+    assert!(!error.to_string().contains("model-list-secret-sentinel"));
+    assert_eq!(fixture.file_generation(), before);
+}
+
+#[test]
+fn legacy_model_reset_missing_external_profile_marker_does_not_gate_a_valid_direct_commit() {
+    let profile_id = "external-missing-state";
+    let pointer = "/private/external-missing-state.json";
+    let mut profile = canonical_profile(
+        profile_id,
+        "gpt-5.6-sol",
+        "https://external.example/v1",
+        "external-provider-key",
+    );
+    profile.model_list = "x".repeat(161);
+    profile.model_windows = "{not-json".to_string();
+    profile.config_contents =
+        crate::model_catalog::set_root_catalog_pointer(&profile.config_contents, Some(pointer))
+            .unwrap();
+    let settings = settings_with(vec![profile], profile_id);
+    let fixture = Fixture::new(&settings, &state_with_official());
+    fs::remove_file(&fixture.paths.catalog_state_path).unwrap();
+    let persisted = fixture.read_settings();
+    let mut expected_state = state_with_official();
+    expected_state.profiles.insert(
+        profile_id.to_string(),
+        crate::model_catalog::ProfileCatalogState {
+            mode: CatalogMode::External,
+            external_pointer: Some(pointer.to_string()),
+            ..crate::model_catalog::ProfileCatalogState::default()
+        },
+    );
+    let mut direct = request(
+        &persisted,
+        &persisted,
+        profile_id,
+        ProviderCommitAction::Save,
+        922,
+    );
+    direct.catalog_drafts = vec![ProfileCatalogDraft {
+        profile_id: profile_id.to_string(),
+        mode: CatalogMode::External,
+        mode_explicit: false,
+        upstream_topology: UpstreamTopology::Direct,
+        external_pointer: Some(pointer.to_string()),
+        overlay: CatalogOverlay::default(),
+    }];
+    direct.expected_provider_fingerprint = provider_generation_fingerprint(
+        &ProviderOwnedTopologyDraft::from_settings(&persisted),
+        &expected_state,
+    )
+    .unwrap();
+
+    let payload = commit_provider_detail_from_paths_raw(&fixture.paths, direct).unwrap();
+
+    assert_eq!(payload.draft_revision, 922);
+    assert!(payload.error_code.is_none());
+    assert!(!payload.legacy_model_reset_applied);
+    let state = fixture.read_state();
+    assert_eq!(state.profiles[profile_id].mode, CatalogMode::External);
+    assert_eq!(
+        state.profiles[profile_id].external_pointer.as_deref(),
+        Some(pointer)
+    );
+    assert_eq!(
+        state.profiles[profile_id].legacy_model_reset_version,
+        crate::legacy_model_reset::LEGACY_MODEL_RESET_VERSION
+    );
+}
+
+#[test]
 fn legacy_model_reset_marker_only_settings_drift_aborts_before_state_write() {
     let mut profile = canonical_profile(
         "external",

@@ -905,10 +905,33 @@ fn load_and_migrate_state(settings: &BackendSettings, home: &Path) -> anyhow::Re
     load_and_migrate_state_from_path(settings, home, &state_path())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StateLoadPolicy {
+    General,
+    LegacyReset,
+}
+
 pub(crate) fn load_and_migrate_state_from_path(
     settings: &BackendSettings,
     home: &Path,
     path: &Path,
+) -> anyhow::Result<CatalogState> {
+    load_and_migrate_state_with_policy(settings, home, path, StateLoadPolicy::General)
+}
+
+pub(crate) fn load_and_migrate_state_for_legacy_reset_from_path(
+    settings: &BackendSettings,
+    home: &Path,
+    path: &Path,
+) -> anyhow::Result<CatalogState> {
+    load_and_migrate_state_with_policy(settings, home, path, StateLoadPolicy::LegacyReset)
+}
+
+fn load_and_migrate_state_with_policy(
+    settings: &BackendSettings,
+    home: &Path,
+    path: &Path,
+    policy: StateLoadPolicy,
 ) -> anyhow::Result<CatalogState> {
     let mut state = match fs::read(&path) {
         Ok(bytes) => {
@@ -961,7 +984,22 @@ pub(crate) fn load_and_migrate_state_from_path(
             if entry.mode == CatalogMode::External {
                 entry.external_pointer = user_owned_pointer.map(ToString::to_string);
             }
-            entry.overlay = migrate_legacy_overlay(profile, &official_slugs)?;
+            // Reset startup must classify ownership before touching dormant legacy fields. Only
+            // the one missing-state shape that can actually reset gets strict reconstruction;
+            // every ineligible shape reaches the planner as an empty preservation-safe entry.
+            entry.overlay = match policy {
+                StateLoadPolicy::General => migrate_legacy_overlay(profile, &official_slugs)?,
+                StateLoadPolicy::LegacyReset
+                    if crate::legacy_model_reset::legacy_model_reset_needs_evaluation(
+                        profile, entry,
+                    ) && crate::legacy_model_reset::legacy_model_reset_eligible(
+                        profile, entry,
+                    ) =>
+                {
+                    legacy_overlay_for_official_slugs(profile, &official_slugs)?
+                }
+                StateLoadPolicy::LegacyReset => CatalogOverlay::default(),
+            };
         } else if !entry.mode_explicit {
             match existing_pointer.as_deref() {
                 Some(pointer) if !manager_owned_pointer_path(&profile.id, pointer, entry) => {
@@ -969,10 +1007,17 @@ pub(crate) fn load_and_migrate_state_from_path(
                     entry.external_pointer = Some(pointer.to_string());
                 }
                 Some(_) => {}
-                // An implicit mode is a derived value, not a user choice. Leaving a stale one in
-                // place deadlocks the profile: the provider contract rejects every commit while
-                // the mode disagrees, and correcting the mode requires a commit.
-                None => entry.mode = default_mode(profile, None, entry.upstream_topology),
+                // General loading continues to re-derive an implicit mode. Reset loading delays
+                // that compatibility rewrite only while dormant legacy state still needs its
+                // preservation marker, so native/custom-only ownership reaches the planner intact.
+                None if policy == StateLoadPolicy::General
+                    || !crate::legacy_model_reset::legacy_model_reset_needs_evaluation(
+                        profile, entry,
+                    ) =>
+                {
+                    entry.mode = default_mode(profile, None, entry.upstream_topology)
+                }
+                None => {}
             }
         }
         if profile.relay_mode == RelayMode::Aggregate
@@ -1000,6 +1045,21 @@ impl std::error::Error for InvalidLegacyModelWindows {}
 
 fn invalid_legacy_model_windows() -> anyhow::Error {
     anyhow::Error::new(InvalidLegacyModelWindows)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InvalidLegacyModelList;
+
+impl std::fmt::Display for InvalidLegacyModelList {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("legacy model list is invalid")
+    }
+}
+
+impl std::error::Error for InvalidLegacyModelList {}
+
+fn invalid_legacy_model_list() -> anyhow::Error {
+    anyhow::Error::new(InvalidLegacyModelList)
 }
 
 pub(crate) fn migrate_legacy_overlay(
@@ -1059,6 +1119,19 @@ pub(crate) fn legacy_overlay_for_current_official(
     state: &CatalogState,
     profile: &RelayProfile,
 ) -> anyhow::Result<CatalogOverlay> {
+    let official_slugs = state
+        .official
+        .as_ref()
+        .map(|snapshot| catalog_slugs(&snapshot.raw_catalog))
+        .transpose()?
+        .unwrap_or_default();
+    legacy_overlay_for_official_slugs(profile, &official_slugs)
+}
+
+fn legacy_overlay_for_official_slugs(
+    profile: &RelayProfile,
+    official_slugs: &BTreeSet<String>,
+) -> anyhow::Result<CatalogOverlay> {
     let raw_windows = profile.model_windows.trim();
     let windows = if raw_windows.is_empty() {
         BTreeMap::new()
@@ -1076,21 +1149,8 @@ pub(crate) fn legacy_overlay_for_current_official(
             return Err(invalid_legacy_model_windows());
         }
     }
-    legacy_overlay_for_current_official_with_windows(state, profile, &windows)
-}
-
-fn legacy_overlay_for_current_official_with_windows(
-    state: &CatalogState,
-    profile: &RelayProfile,
-    windows: &BTreeMap<String, String>,
-) -> anyhow::Result<CatalogOverlay> {
-    let official_slugs = state
-        .official
-        .as_ref()
-        .map(|snapshot| catalog_slugs(&snapshot.raw_catalog))
-        .transpose()?
-        .unwrap_or_default();
-    migrate_legacy_overlay_with_windows(profile, &official_slugs, windows)
+    migrate_legacy_overlay_with_windows(profile, official_slugs, &windows)
+        .map_err(|_| invalid_legacy_model_list())
 }
 
 fn default_mode(
@@ -4376,6 +4436,32 @@ mod implicit_catalog_mode_tests {
         assert_eq!(
             migrated.profiles["default"].mode,
             CatalogMode::NativeOfficial
+        );
+    }
+
+    #[test]
+    fn generic_missing_profile_bootstrap_keeps_permissive_legacy_compatibility() {
+        let mut profile = mixed_profile("legacy");
+        profile.model_list = "custom-x".to_string();
+        profile.model_windows = "{not-json".to_string();
+        let settings = BackendSettings {
+            relay_profiles: vec![profile],
+            active_relay_id: "legacy".to_string(),
+            ..BackendSettings::default()
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let state = load_and_migrate_state_from_path(
+            &settings,
+            temp.path(),
+            &temp.path().join("missing-state.json"),
+        )
+        .unwrap();
+
+        assert_eq!(state.profiles["legacy"].overlay.custom.len(), 1);
+        assert_eq!(state.profiles["legacy"].overlay.custom[0].slug, "custom-x");
+        assert_eq!(
+            state.profiles["legacy"].overlay.custom[0].context_window,
+            272_000
         );
     }
 }

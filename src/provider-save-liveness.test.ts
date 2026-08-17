@@ -159,10 +159,38 @@ describe("a provider save always settles", () => {
     assert.ok(refresh.length > 0, "the settings read was located");
     assert.match(
       refresh,
-      /consumeLegacyModelResetNotice\([\s\S]*?result\.legacy_model_reset_notice[\s\S]*?if \(notice\.notice\) showNotice\([\s\S]*?if \(!settingsBaseline\.settingsReadResponseCanAdopt\([\s\S]*?return null;/,
+      /consumeLegacyModelResetNotice\([\s\S]*?eventId: result\.provider_fingerprint[\s\S]*?message: result\.legacy_model_reset_notice[\s\S]*?if \(notice\.notice\) showNotice\([\s\S]*?if \(!settingsBaseline\.settingsReadResponseCanAdopt\([\s\S]*?return null;/,
       "a stale response can report its one-time reset notice without adopting stale settings",
     );
     assert.match(refresh, /installSettingsBaseline\(baseline\)/);
+  });
+
+  it("consumes a direct reset notice before every obsolete-response exit and never shows it twice", () => {
+    const submit = appSource.match(
+      /const submitProviderCommit = async[\s\S]*?\n  \};/,
+    )?.[0] ?? "";
+    assert.ok(submit.length > 0, "the provider commit response handler was located");
+    assert.match(
+      submit,
+      /consumeLegacyModelResetNotice\([\s\S]*?eventId: result\.providerFingerprint[\s\S]*?message: result\.message/,
+      "the direct response and settings reload share the committed generation identity",
+    );
+    const consumeAt = submit.indexOf("consumeLegacyModelResetNotice");
+    const refreshAt = submit.indexOf("providerCommitResponseRequiresAuthoritativeRefresh");
+    const ignoreAt = submit.indexOf('if (settled.disposition === "ignore") return false;');
+    assert.ok(
+      consumeAt >= 0 && consumeAt < refreshAt && refreshAt < ignoreAt,
+      "a committed reset is shown before either obsolete-response return",
+    );
+    const currentResetBranch = submit.match(
+      /if \(resetApplied && nextBaseline && selectedSettings\) \{[\s\S]*?return false;\n      \}/,
+    )?.[0] ?? "";
+    assert.ok(currentResetBranch.length > 0, "the current direct-reset branch was located");
+    assert.doesNotMatch(
+      currentResetBranch,
+      /showNotice\(/,
+      "the current branch must not show the already-consumed reset event again",
+    );
   });
 
   it("makes every authoritative reconciliation replace the form from durable settings", () => {

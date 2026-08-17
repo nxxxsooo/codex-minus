@@ -21,6 +21,11 @@ export type SettingsReadRegistration = Readonly<{
 
 export type LegacyModelResetNoticeState = ReadonlySet<string>;
 
+export type LegacyModelResetNoticeEvent = Readonly<{
+  eventId: string | null | undefined;
+  message: string | null | undefined;
+}>;
+
 export function createSettingsBaselineEpochState(): SettingsBaselineEpochState {
   return { baselineEpoch: 0, latestReadRevision: 0 };
 }
@@ -55,12 +60,15 @@ export function createLegacyModelResetNoticeState(): LegacyModelResetNoticeState
 
 export function consumeLegacyModelResetNotice(
   state: LegacyModelResetNoticeState,
-  value: string | null | undefined,
+  event: LegacyModelResetNoticeEvent,
 ): { state: LegacyModelResetNoticeState; notice: string | null } {
-  const notice = value?.trim() ?? "";
-  if (!notice || state.has(notice)) return { state, notice: null };
+  const notice = event.message?.trim() ?? "";
+  if (!notice) return { state, notice: null };
+  const eventId = event.eventId?.trim() ?? "";
+  const identity = eventId ? `generation:${eventId}` : `message:${notice}`;
+  if (state.has(identity)) return { state, notice: null };
   const next = new Set(state);
-  next.add(notice);
+  next.add(identity);
   return { state: next, notice };
 }
 

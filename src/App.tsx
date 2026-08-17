@@ -298,7 +298,7 @@ export function App() {
     settingsBaselineEpoch.current = registered.state;
     const result = await run(() => call<SettingsResult>("load_settings"));
     if (!result) return null;
-    const notice = settingsBaseline.consumeLegacyModelResetNotice(legacyModelResetNotices.current, result.legacy_model_reset_notice);
+    const notice = settingsBaseline.consumeLegacyModelResetNotice(legacyModelResetNotices.current, { eventId: result.provider_fingerprint, message: result.legacy_model_reset_notice });
     legacyModelResetNotices.current = notice.state;
     if (notice.notice) showNotice(t("模型目录已恢复"), notice.notice, "ok");
     if (!settingsBaseline.settingsReadResponseCanAdopt(registered.request, settingsBaselineEpoch.current)) return null;
@@ -777,12 +777,12 @@ export function App() {
     const nextBaseline = (succeeded || resetApplied) && selectedSettings
       ? settingsBaseline.settingsBaselineFromProviderCommit(result, selectedSettings, priorBaseline)
       : null;
-    const settled = settleProviderCommit(
-      providerCommitState.current,
-      result.draftRevision,
-      succeeded,
-      nextBaseline,
-    );
+    const settled = settleProviderCommit(providerCommitState.current, result.draftRevision, succeeded, nextBaseline);
+    if (resetApplied) {
+      const notice = settingsBaseline.consumeLegacyModelResetNotice(legacyModelResetNotices.current, { eventId: result.providerFingerprint, message: result.message });
+      legacyModelResetNotices.current = notice.state;
+      if (notice.notice) showNotice(t("模型目录已恢复"), notice.notice, result.status, providerCommitFailureNotice(result.message, result.errorCode, result.reason).detail);
+    }
     if (providerCommitResponseRequiresAuthoritativeRefresh(succeeded, resetApplied, settled.disposition)) {
       void refreshAuthoritativeProviderState();
       return false;
@@ -794,7 +794,6 @@ export function App() {
     if (settled.disposition === "report") {
       if (resetApplied && nextBaseline && selectedSettings) {
         setModelCatalog(null); refreshAfterCommit();
-        showNotice(t("模型目录已恢复"), result.message, result.status, providerCommitFailureNotice(result.message, result.errorCode, result.reason).detail);
         return false;
       }
       await reconcileTopologyFailure(settled.disposition);

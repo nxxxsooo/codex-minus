@@ -329,6 +329,114 @@ describe("provider-owned commit request", () => {
     }
   });
 
+  it("reports delayed reset A exactly once while B success or failure converges every visible generation", () => {
+    assert.ok(commitModule && baselineModule);
+    for (const bSucceeded of [true, false]) {
+      for (const responseOrder of ["A-then-B", "B-then-A"] as const) {
+        let commitState: { latestRevision: number; baseline: string | null } = {
+          latestRevision: 0,
+          baseline: "generation-0",
+        };
+        commitState = commitModule.registerProviderCommit(commitState, 1);
+        commitState = commitModule.registerProviderCommit(commitState, 2);
+        let epoch = baselineModule.createSettingsBaselineEpochState();
+        let noticeState = baselineModule.createLegacyModelResetNoticeState();
+        const shownNotices: string[] = [];
+        const pendingReads: Array<{ revision: number; baselineEpochAtStart: number }> = [];
+        let visibleBaseline = "generation-0";
+        let visibleForm = "draft-B";
+        let visibleCatalog = "generation-0";
+        let catalogRevision = 0;
+        const durableGeneration = bSucceeded ? "generation-B" : "generation-A";
+        const consumeResetNotice = (message: string) => {
+          const consumed = baselineModule.consumeLegacyModelResetNotice(noticeState, {
+            eventId: "generation-A",
+            message,
+          });
+          noticeState = consumed.state;
+          if (consumed.notice) shownNotices.push(consumed.notice);
+        };
+        const install = (generation: string) => {
+          epoch = baselineModule.advanceSettingsBaselineEpoch(epoch);
+          visibleBaseline = generation;
+          visibleForm = generation;
+          commitState = { ...commitState, baseline: generation };
+          catalogRevision += 1;
+          assert.equal(
+            commitModule.modelCatalogResponseCanAdopt(
+              catalogRevision,
+              catalogRevision,
+              generation,
+              generation,
+            ),
+            true,
+          );
+          visibleCatalog = generation;
+        };
+        const issueAuthoritativeRefresh = () => {
+          const registered = baselineModule.registerSettingsRead(epoch);
+          epoch = registered.state;
+          pendingReads.push(registered.request);
+        };
+        const settleA = () => {
+          const settled = commitModule.settleProviderCommit(
+            commitState,
+            1,
+            false,
+            "obsolete-reset-generation-A",
+          );
+          commitState = settled.state;
+          assert.equal(settled.disposition, "ignore");
+          consumeResetNotice("direct reset A; requested edit was not saved");
+          if (commitModule.providerCommitResponseRequiresAuthoritativeRefresh(
+            false,
+            true,
+            settled.disposition,
+          )) issueAuthoritativeRefresh();
+        };
+        const settleB = () => {
+          const settled = commitModule.settleProviderCommit(
+            commitState,
+            2,
+            bSucceeded,
+            bSucceeded ? "generation-B" : null,
+          );
+          commitState = settled.state;
+          assert.equal(settled.disposition, bSucceeded ? "apply" : "report");
+          if (bSucceeded) {
+            install("generation-B");
+          } else {
+            issueAuthoritativeRefresh();
+          }
+        };
+
+        if (responseOrder === "A-then-B") {
+          settleA(); settleB();
+        } else {
+          settleB(); settleA();
+        }
+        for (const read of pendingReads) {
+          if (baselineModule.settingsReadResponseCanAdopt(read, epoch)) {
+            consumeResetNotice("startup reset A");
+            install(durableGeneration);
+          }
+        }
+        consumeResetNotice("duplicate direct reset A");
+
+        const label = JSON.stringify({ bSucceeded, responseOrder });
+        assert.deepEqual(
+          shownNotices,
+          ["direct reset A; requested edit was not saved"],
+          label,
+        );
+        assert.equal(visibleBaseline, durableGeneration, label);
+        assert.equal(visibleForm, durableGeneration, label);
+        assert.equal(commitState.baseline, durableGeneration, label);
+        assert.equal(visibleCatalog, durableGeneration, label);
+      }
+    }
+  });
+
   it("revokes an old catalog response before settings-first reset convergence", () => {
     assert.ok(commitModule);
     const oldCatalogRevision = 7;
