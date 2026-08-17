@@ -4,8 +4,9 @@ use crate::commands::{
     GenericSettingsSaveError, ProviderCommitCheckpoint, ProviderCommitErrorCode,
     ProviderCommitPaths, ProviderCommitPayload, assert_staged_native_provider_contract,
     commit_provider_detail_from_paths, commit_provider_detail_from_paths_observed,
-    save_settings_with_provider_guard_at, save_settings_with_provider_guard_at_observed,
-    settings_snapshot_for_ui_projection, ui_provider_topology_projection,
+    commit_relay_profile_transaction, save_settings_with_provider_guard_at,
+    save_settings_with_provider_guard_at_observed, settings_snapshot_for_ui_projection,
+    ui_provider_topology_projection,
 };
 use crate::provider_commit::{
     CatalogMode, CatalogOverlay, CatalogState, CustomModel, OfficialSnapshot, ProfileCatalogDraft,
@@ -526,6 +527,56 @@ fn responses_only_load_rejection_precedes_auth_migration() {
         persisted_bytes
     );
     assert_eq!(fixture.file_generation(), before);
+}
+
+#[test]
+fn relay_transaction_rejection_precedes_migration_staging_and_context_mutation() {
+    let initial = settings_with(
+        vec![canonical_profile(
+            "sub2api",
+            "gpt-5.6-sol",
+            "https://relay.example/v1",
+            "provider-key",
+        )],
+        "sub2api",
+    );
+    for unsupported in [
+        {
+            let mut settings = initial.clone();
+            settings.relay_profiles[0].protocol = RelayProtocol::ChatCompletions;
+            settings
+        },
+        {
+            let mut settings = initial.clone();
+            settings.relay_profiles[0].base_url = "http://127.0.0.1:57321/v1".to_string();
+            settings
+        },
+        {
+            let mut settings = initial.clone();
+            settings.relay_profiles[0].auth_contents =
+                r#"{"OPENAI_API_KEY":"incoming-auth-must-not-migrate"}"#.to_string();
+            settings
+        },
+    ] {
+        let fixture = Fixture::new(&initial, &state_with_official());
+        fs::write(
+            fixture.paths.codex_home.join("config.toml"),
+            rich_live_config(),
+        )
+        .unwrap();
+        let before = fixture.file_generation();
+        let context_before = semantic_context_tables(rich_live_config());
+
+        assert!(commit_relay_profile_transaction(unsupported, "sub2api", false).is_err());
+
+        assert_eq!(fixture.file_generation(), before);
+        assert_eq!(
+            semantic_context_tables(
+                &fs::read_to_string(fixture.paths.codex_home.join("config.toml")).unwrap()
+            ),
+            context_before
+        );
+    }
 }
 
 #[test]

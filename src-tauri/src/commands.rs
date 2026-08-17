@@ -3933,6 +3933,18 @@ fn switch_relay_profile_blocking(
     let previous_active_relay_id = request.previous_active_relay_id;
     let confirm_context_cleanup = request.confirm_context_cleanup;
     let target_relay_id = request.settings.active_relay_id.clone();
+    if let Err(error) = validate_relay_profile_transaction_input(&request.settings) {
+        return failed(
+            &format!("供应商切换失败：{error}"),
+            relay_switch_payload(
+                BackendSettings::default(),
+                codex_plus_core::relay_config::relay_status_from_home(&home),
+                None,
+                previous_provider.clone(),
+                previous_provider,
+            ),
+        );
+    }
     log_manager_event(
         "manager.switch_relay_profile.start",
         json!({
@@ -3970,7 +3982,7 @@ fn switch_relay_profile_blocking(
             let current_provider = current_effective_provider_from_home(&home);
             let settings = SettingsStore::default()
                 .load()
-                .map(sanitize_settings_for_output)
+                .map(safe_relay_switch_failure_settings)
                 .unwrap_or_default();
             log_manager_event(
                 "manager.switch_relay_profile.failed",
@@ -3988,11 +4000,12 @@ fn switch_relay_profile_blocking(
     }
 }
 
-fn commit_relay_profile_transaction(
+pub(crate) fn commit_relay_profile_transaction(
     mut settings: BackendSettings,
     previous_active_relay_id: &str,
     confirm_context_cleanup: bool,
 ) -> anyhow::Result<BackendSettings> {
+    validate_relay_profile_transaction_input(&settings)?;
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let _guard = live_state::lock()?;
     live_state::prepare_secret_paths(&home)?;
@@ -4040,6 +4053,24 @@ fn commit_relay_profile_transaction(
         Ok(())
     })?;
     Ok(sanitize_settings_for_output(settings))
+}
+
+fn validate_relay_profile_transaction_input(settings: &BackendSettings) -> anyhow::Result<()> {
+    crate::provider_commit::validate_responses_only_settings(settings)?;
+    anyhow::ensure!(
+        settings
+            .relay_profiles
+            .iter()
+            .all(|profile| profile.auth_contents.is_empty()),
+        "incoming authContents is prohibited"
+    );
+    Ok(())
+}
+
+fn safe_relay_switch_failure_settings(settings: BackendSettings) -> BackendSettings {
+    validate_relay_profile_transaction_input(&settings)
+        .map(|()| sanitize_settings_for_output(settings))
+        .unwrap_or_default()
 }
 
 fn backfill_profile_config_only(
@@ -4233,6 +4264,14 @@ pub fn backfill_relay_profile_from_live(
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let mut settings = request.settings;
     let requested_profile_id = request.profile_id.clone();
+    if let Err(error) = validate_relay_profile_transaction_input(&settings) {
+        return failed(
+            &format!("回填当前供应商配置失败：{error}"),
+            SettingsBackfillPayload {
+                settings: BackendSettings::default(),
+            },
+        );
+    }
     log_manager_event(
         "manager.backfill_relay_profile_from_live.start",
         json!({
@@ -5979,6 +6018,95 @@ pub async fn adapt_active_sessions_to_current_provider(
 #[cfg(test)]
 mod session_lifecycle_tests {
     use super::*;
+
+    fn responses_only_settings_for_route_tests() -> BackendSettings {
+        let mut settings = BackendSettings::default();
+        settings.relay_profiles_enabled = true;
+        settings
+    }
+
+    fn unsupported_route_settings(kind: &str) -> BackendSettings {
+        let mut settings = responses_only_settings_for_route_tests();
+        match kind {
+            "chat" => {
+                settings.relay_profiles[0].protocol =
+                    codex_plus_core::settings::RelayProtocol::ChatCompletions
+            }
+            "proxy" => {
+                settings.relay_profiles[0].base_url = "http://127.0.0.1:57321/v1".to_string()
+            }
+            "auth" => {
+                settings.relay_profiles[0].auth_contents =
+                    r#"{"OPENAI_API_KEY":"incoming-auth-must-not-migrate"}"#.to_string()
+            }
+            _ => panic!("unknown unsupported route test fixture"),
+        }
+        settings
+    }
+
+    #[test]
+    fn switch_and_save_routes_reject_removed_topologies_before_the_transaction() {
+        for kind in ["chat", "proxy", "auth"] {
+            let settings = unsupported_route_settings(kind);
+            assert!(validate_relay_profile_transaction_input(&settings).is_err());
+
+            let switch =
+                tauri::async_runtime::block_on(switch_relay_profile(RelayProfileSwitchRequest {
+                    settings: settings.clone(),
+                    previous_active_relay_id: String::new(),
+                    confirm_context_cleanup: false,
+                }));
+            assert_eq!(switch.status, "failed");
+            assert!(
+                crate::provider_commit::validate_responses_only_settings(&switch.payload.settings)
+                    .is_ok()
+            );
+
+            let save = tauri::async_runtime::block_on(save_active_relay_profile(
+                RelayProfileSwitchRequest {
+                    settings,
+                    previous_active_relay_id: String::new(),
+                    confirm_context_cleanup: false,
+                },
+            ));
+            assert_eq!(save.status, "failed");
+            assert!(
+                crate::provider_commit::validate_responses_only_settings(&save.payload.settings)
+                    .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn backfill_route_rejects_removed_topologies_with_a_safe_fallback() {
+        for kind in ["chat", "proxy", "auth"] {
+            let result = backfill_relay_profile_from_live(BackfillRelayProfileRequest {
+                settings: unsupported_route_settings(kind),
+                profile_id: "default".to_string(),
+            });
+
+            assert_eq!(result.status, "failed");
+            assert!(
+                crate::provider_commit::validate_responses_only_settings(&result.payload.settings)
+                    .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn switch_failure_fallback_never_reflects_rejected_persisted_topology() {
+        for kind in ["chat", "proxy", "auth"] {
+            let fallback = safe_relay_switch_failure_settings(unsupported_route_settings(kind));
+
+            assert!(crate::provider_commit::validate_responses_only_settings(&fallback).is_ok());
+            assert!(
+                fallback
+                    .relay_profiles
+                    .iter()
+                    .all(|profile| profile.auth_contents.is_empty())
+            );
+        }
+    }
 
     fn session(
         id: &str,
