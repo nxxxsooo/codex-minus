@@ -2519,9 +2519,8 @@ function RelayProfileDetail({
       const next = isNew
         ? addRelayProfile(form, normalizedDraft)
         : updateRelayProfile(form, profile.id, normalizedDraft);
-      const catalogCapable = true;
-      const catalogAvailability = catalogDraftAvailability(!isNew, catalogCapable, !!catalogProfile);
-      if (catalogAvailability === "unavailable" || (catalogCapable && !catalogDraft)) {
+      const catalogAvailability = catalogDraftAvailability(!isNew, !!catalogProfile);
+      if (catalogAvailability === "unavailable" || !catalogDraft) {
         await actions.showMessage(
           t("模型目录不可用"),
           t("当前供应商的完整模型目录状态尚未加载，请刷新后重试。"),

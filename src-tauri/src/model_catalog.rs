@@ -875,10 +875,6 @@ fn plan_active_profile_with_state(
             config = set_root_catalog_pointer(&config, profile_state.external_pointer.as_deref())?;
         }
         CatalogMode::OfficialPlusCustom | CatalogMode::CustomOnly => {
-            ensure!(
-                managed_catalog_capable(&profile),
-                "该供应商不支持托管模型目录"
-            );
             validate_upstream_topology(&profile, profile_state.upstream_topology)?;
             let conflicts = global_context_conflicts(&config);
             if !conflicts.is_empty() {
@@ -1206,6 +1202,7 @@ pub(crate) fn validate_upstream_topology(
     profile: &RelayProfile,
     topology: UpstreamTopology,
 ) -> anyhow::Result<()> {
+    crate::provider_commit::validate_responses_only_profile(profile)?;
     if topology == UpstreamTopology::Direct {
         return Ok(());
     }
@@ -1213,10 +1210,6 @@ pub(crate) fn validate_upstream_topology(
         profile.relay_mode == RelayMode::PureApi
             || (profile.relay_mode == RelayMode::Official && profile.official_mix_api_key),
         "服务端复合供应商必须使用纯 API 或官方登录混入 API Key 模式"
-    );
-    ensure!(
-        profile.protocol == codex_plus_core::settings::RelayProtocol::Responses,
-        "服务端复合供应商必须使用 Responses API"
     );
     ensure!(
         !codex_plus_core::relay_config::relay_profile_base_url(profile)
@@ -1388,7 +1381,7 @@ fn status_payload(
                 mode: item.mode,
                 mode_explicit: item.mode_explicit,
                 upstream_topology: item.upstream_topology,
-                managed_available: managed_catalog_capable(profile),
+                managed_available: true,
                 context_conflicts,
                 external_pointer: item.external_pointer,
                 generated_path: item.generated_path,
@@ -2299,10 +2292,6 @@ fn catalog_file_matches(path: &Path, expected_hash: &str) -> anyhow::Result<bool
     Ok(true)
 }
 
-pub(crate) fn managed_catalog_capable(profile: &RelayProfile) -> bool {
-    profile.protocol != codex_plus_core::settings::RelayProtocol::ChatCompletions
-}
-
 pub(crate) fn generated_relative_path(profile_id: &str) -> String {
     let identity = hash_text(profile_id);
     format!(
@@ -2921,7 +2910,7 @@ mod tests {
     }
 
     #[test]
-    fn server_side_composite_is_explicit_and_keeps_proxy_modes_blocked() {
+    fn server_side_composite_supports_an_accepted_responses_profile() {
         let profile = RelayProfile {
             relay_mode: RelayMode::PureApi,
             protocol: codex_plus_core::settings::RelayProtocol::Responses,
@@ -2994,11 +2983,25 @@ mod tests {
         assert!(
             validate_upstream_topology(&pure_oauth, UpstreamTopology::ServerSideComposite).is_err()
         );
+    }
 
-        let mut chat = profile;
+    #[test]
+    fn catalog_rejects_profiles_outside_the_responses_only_contract() {
+        let profile = RelayProfile {
+            relay_mode: RelayMode::PureApi,
+            protocol: codex_plus_core::settings::RelayProtocol::Responses,
+            base_url: "https://relay.example/v1".to_string(),
+            api_key: "provider-key".to_string(),
+            ..RelayProfile::default()
+        };
+
+        let mut chat = profile.clone();
         chat.protocol = codex_plus_core::settings::RelayProtocol::ChatCompletions;
-        assert!(validate_upstream_topology(&chat, UpstreamTopology::ServerSideComposite).is_err());
-        assert!(!managed_catalog_capable(&chat));
+        assert!(validate_upstream_topology(&chat, UpstreamTopology::Direct).is_err());
+
+        let mut aggregate = profile;
+        aggregate.relay_mode = RelayMode::Aggregate;
+        assert!(validate_upstream_topology(&aggregate, UpstreamTopology::Direct).is_err());
     }
 
     #[test]

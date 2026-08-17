@@ -87,7 +87,7 @@ export type ProviderCommitInvocation = {
   request: ProviderCommitRequest;
 };
 
-export type CatalogDraftAvailability = "not-required" | "implicit" | "persisted" | "unavailable";
+export type CatalogDraftAvailability = "implicit" | "persisted" | "unavailable";
 export type ProviderCommitResponseDisposition = "apply" | "adopt-baseline" | "report" | "ignore";
 export type ProviderCommitUiState<T> = {
   latestRevision: number;
@@ -136,10 +136,8 @@ export function settleProviderCommit<T>(
 
 export function catalogDraftAvailability(
   profileWasPersisted: boolean,
-  catalogCapable: boolean,
   persistedSummaryAvailable: boolean,
 ): CatalogDraftAvailability {
-  if (!catalogCapable) return "not-required";
   if (!profileWasPersisted) return "implicit";
   return persistedSummaryAvailable ? "persisted" : "unavailable";
 }

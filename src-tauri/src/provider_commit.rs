@@ -550,7 +550,7 @@ pub fn validate_provider_detail_request(
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .context("focused provider profile is required")?;
-    let focused_profile = request
+    request
         .topology
         .relay_profiles
         .iter()
@@ -572,12 +572,9 @@ pub fn validate_provider_detail_request(
         .iter()
         .filter(|draft| draft.profile_id == focused_id)
         .count();
-    let expected = usize::from(model_catalog::managed_catalog_capable(&RelayProfile::from(
-        focused_profile,
-    )));
     ensure!(
-        supplied == expected,
-        "focused provider profile must carry exactly the catalog drafts its capability supports"
+        supplied == 1,
+        "focused provider profile must carry exactly one complete catalog draft"
     );
     Ok(())
 }
@@ -687,7 +684,6 @@ fn validate_common_request(
             .relay_profiles
             .iter()
             .any(|persisted| persisted.id == profile.id)
-            || !model_catalog::managed_catalog_capable(&RelayProfile::from(profile))
         {
             continue;
         }
@@ -708,10 +704,6 @@ fn validate_catalog_draft(
     profile: &RelayProfile,
     draft: &ProfileCatalogDraft,
 ) -> anyhow::Result<()> {
-    ensure!(
-        model_catalog::managed_catalog_capable(profile),
-        "catalog-incapable provider profiles cannot carry catalog drafts"
-    );
     model_catalog::validate_overlay(&draft.overlay)?;
     model_catalog::validate_upstream_topology(profile, draft.upstream_topology)?;
     match draft.mode {

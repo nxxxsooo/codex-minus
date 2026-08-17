@@ -67,10 +67,9 @@ describe("provider-owned commit request", () => {
     assert.equal(commitModule.providerCommitResponseDisposition(8, 9, false), "ignore");
     assert.equal(commitModule.providerCommitResponseDisposition(9, 9, true), "apply");
     assert.equal(commitModule.providerCommitResponseDisposition(9, 9, false), "report");
-    assert.equal(commitModule.catalogDraftAvailability(true, true, false), "unavailable");
-    assert.equal(commitModule.catalogDraftAvailability(true, true, true), "persisted");
-    assert.equal(commitModule.catalogDraftAvailability(false, true, false), "implicit");
-    assert.equal(commitModule.catalogDraftAvailability(true, false, false), "not-required");
+    assert.equal(commitModule.catalogDraftAvailability(true, false), "unavailable");
+    assert.equal(commitModule.catalogDraftAvailability(true, true), "persisted");
+    assert.equal(commitModule.catalogDraftAvailability(false, false), "implicit");
     assert.equal(commitModule.providerDeleteAvailable("relay-a", "relay-a", 2), false);
     assert.equal(commitModule.providerDeleteAvailable("relay-b", "relay-a", 2), true);
     assert.equal(commitModule.providerDeleteAvailable("relay-b", "relay-a", 1), false);
