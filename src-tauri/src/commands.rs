@@ -5588,12 +5588,6 @@ fn migrate_legacy_profile_auth_locked_at(settings_path: &Path) -> anyhow::Result
             continue;
         }
         migrate_persisted_legacy_api_key_auth(profile)?;
-        // Startup relocates a credential; it does not normalize a provider contract. The core
-        // storage normalizer rewrites the whole provider table — it renames a legacy provider
-        // alias to its own `custom` shape, drops the table it replaces along with the actor
-        // header, and restores `requires_openai_auth = true` by default. Running it here would
-        // migrate a profile the user never opened, with no preview, no revision, and no consent.
-        sanitize_profile_after_core_normalize_fallible(profile)?;
         profile.config_contents = retain_provider_owned_profile_config(&profile.config_contents)
             .context("persisted provider config ownership is invalid")?;
         migrated += 1;
@@ -6301,6 +6295,70 @@ requires_openai_auth = true
         assert!(!raw.contains("authContents"));
         assert!(!raw.contains("oauth-access-sentinel"));
         assert!(!profile.config_contents.contains("oauth-access-sentinel"));
+    }
+
+    #[test]
+    fn load_time_legacy_migration_preserves_pure_api_contract_field_semantics() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let mut settings = BackendSettings::default();
+        let config = r#"model = "gpt-5.6-terra"
+model_provider = "PureAPI"
+
+[model_providers.PureAPI]
+name = "OpenAI"
+base_url = "https://example.test/v1"
+wire_api = "responses"
+requires_openai_auth = true
+custom_field = "preserve-me"
+
+[model_providers.PureAPI.http_headers]
+x-openai-actor-authorization = "pure-header"
+"#;
+
+        settings.relay_profiles = vec![RelayProfile {
+            id: "pure".to_string(),
+            model: "gpt-5.6-terra".to_string(),
+            relay_mode: codex_plus_core::settings::RelayMode::PureApi,
+            base_url: "https://example.test/v1".to_string(),
+            upstream_base_url: "https://example.test/v1".to_string(),
+            config_contents: config.to_string(),
+            auth_contents: r#"{
+                "OPENAI_API_KEY": "provider-key-sentinel",
+                "auth_mode": "chatgpt",
+                "tokens": {"access_token": "oauth-access-sentinel"}
+            }"#
+            .to_string(),
+            ..RelayProfile::default()
+        }];
+
+        std::fs::write(&settings_path, serde_json::to_vec_pretty(&settings).unwrap()).unwrap();
+        let _guard = live_state::lock().unwrap();
+
+        assert_eq!(migrate_legacy_profile_auth_locked_at(&settings_path).unwrap(), 1);
+
+        let bytes = std::fs::read(&settings_path).unwrap();
+        let raw = String::from_utf8(bytes).unwrap();
+        let migrated: BackendSettings = serde_json::from_slice(raw.as_bytes()).unwrap();
+        let profile = &migrated.relay_profiles[0];
+        let document: toml_edit::DocumentMut = profile.config_contents.parse().unwrap();
+        let provider = document["model_providers"]["PureAPI"].clone();
+
+        assert_eq!(provider_bearer_token_from_config_exact(&profile.config_contents).as_deref(), Some("provider-key-sentinel"));
+        assert_eq!(document["model_provider"].as_str(), Some("PureAPI"));
+        assert_eq!(document["model"].as_str(), Some("gpt-5.6-terra"));
+        assert_eq!(provider["name"].as_str(), Some("OpenAI"));
+        assert_eq!(provider["base_url"].as_str(), Some("https://example.test/v1"));
+        assert_eq!(provider["wire_api"].as_str(), Some("responses"));
+        assert_eq!(provider["requires_openai_auth"].as_bool(), Some(true));
+        assert_eq!(provider["custom_field"].as_str(), Some("preserve-me"));
+        assert_eq!(
+            provider["http_headers"]["x-openai-actor-authorization"].as_str(),
+            Some("pure-header")
+        );
+        assert_eq!(provider["experimental_bearer_token"].as_str(), Some("provider-key-sentinel"));
+        assert!(!raw.contains("authContents"));
+        assert!(!raw.contains("oauth-access-sentinel"));
     }
 
     /// Golden: a legacy mixed contract, exactly as authored.
