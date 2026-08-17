@@ -2433,7 +2433,6 @@ pub(crate) struct LegacyModelResetOutcome {
     pub(crate) reset_profiles: Vec<crate::legacy_model_reset::ResetProfileSummary>,
     pub(crate) active_restart_required: bool,
     committed_settings: Option<BackendSettings>,
-    provider_fingerprint: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2672,7 +2671,7 @@ pub(crate) fn migrate_legacy_model_state_locked_at(
             ensure_live_config_selects_profile(
                 &live,
                 &profile.config_contents,
-                &state,
+                &plan.state,
                 &profile.id,
                 !persisted_state_profile_ids.contains(&profile.id),
             )?;
@@ -2747,25 +2746,20 @@ pub(crate) fn migrate_legacy_model_state_locked_at(
     let reset_profiles = plan.reset_profiles.clone();
     let committed_state = plan.state.clone();
     let committed_settings = sanitize_settings_for_output(plan.settings.clone());
-    let committed_provider_fingerprint = crate::provider_commit::provider_generation_fingerprint(
-        &crate::provider_commit::ProviderOwnedTopologyDraft::from_settings(&committed_settings),
-        &committed_state,
-    )
-    .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))?;
-    let reset_marker_profile_ids = committed_state
-        .profiles
+    let reset_marker_profile_ids = committed_settings
+        .relay_profiles
         .iter()
-        .filter(|(profile_id, profile)| {
-            profile.legacy_model_reset_version
-                == crate::legacy_model_reset::LEGACY_MODEL_RESET_VERSION
-                && state
-                    .profiles
-                    .get(*profile_id)
-                    .map(|prior| prior.legacy_model_reset_version)
-                    .unwrap_or_default()
-                    < crate::legacy_model_reset::LEGACY_MODEL_RESET_VERSION
+        .map(|profile| profile.id.as_str())
+        .filter(|profile_id| {
+            crate::legacy_model_reset::legacy_model_reset_evaluation_version(
+                &committed_state,
+                profile_id,
+            ) == crate::legacy_model_reset::LEGACY_MODEL_RESET_VERSION
+                && crate::legacy_model_reset::legacy_model_reset_evaluation_version(
+                    &state, profile_id,
+                ) < crate::legacy_model_reset::LEGACY_MODEL_RESET_VERSION
         })
-        .map(|(profile_id, _)| profile_id.clone())
+        .map(ToString::to_string)
         .collect::<Vec<_>>();
     let before_commit_observed = std::cell::Cell::new(false);
     let observe = std::cell::RefCell::new(&mut observe);
@@ -2796,11 +2790,10 @@ pub(crate) fn migrate_legacy_model_state_locked_at(
                 serde_json::from_slice(&std::fs::read(&paths.catalog_state_path)?)?;
             for profile_id in &reset_marker_profile_ids {
                 anyhow::ensure!(
-                    stored_state
-                        .profiles
-                        .get(profile_id)
-                        .is_some_and(|profile| profile.legacy_model_reset_version
-                            == crate::legacy_model_reset::LEGACY_MODEL_RESET_VERSION),
+                    crate::legacy_model_reset::legacy_model_reset_evaluation_version(
+                        &stored_state,
+                        profile_id,
+                    ) == crate::legacy_model_reset::LEGACY_MODEL_RESET_VERSION,
                     "legacy model reset marker was not committed"
                 );
             }
@@ -2823,7 +2816,6 @@ pub(crate) fn migrate_legacy_model_state_locked_at(
     Ok(LegacyModelResetOutcome {
         reset_profiles,
         active_restart_required,
-        provider_fingerprint: committed_provider_fingerprint,
         committed_settings: Some(committed_settings),
     })
 }
@@ -3224,15 +3216,26 @@ pub fn commit_provider_detail_from_paths_observed(
     let legacy_reset = migrate_legacy_model_state_locked_at(paths, |_| Ok(()))
         .map_err(provider_commit_failure_for_legacy_model_reset)?;
     if !legacy_reset.reset_profiles.is_empty() {
+        let committed_settings = legacy_reset.committed_settings.ok_or_else(|| {
+            provider_commit_failure(
+                ProviderCommitErrorCode::TransactionFailed,
+                "provider transaction failed",
+            )
+        })?;
+        // Reset loading intentionally preserves stale implicit modes long enough to decide
+        // eligibility. A direct response must not expose that transitional generation: use the
+        // same General loader as immediate settings/status and the next real CAS. If unrelated
+        // generic compatibility data is independently unreadable, the reset still committed and
+        // its truthful fallback payload remains available for authoritative reconciliation.
+        let (authoritative_settings, authoritative_fingerprint) =
+            match settings_payload_value_at(paths) {
+                Ok(payload) => (payload.settings, payload.provider_fingerprint),
+                Err(_) => (committed_settings, String::new()),
+            };
         let payload = ProviderCommitPayload::legacy_model_reset_applied(
-            legacy_reset.committed_settings.ok_or_else(|| {
-                provider_commit_failure(
-                    ProviderCommitErrorCode::TransactionFailed,
-                    "provider transaction failed",
-                )
-            })?,
+            authoritative_settings,
             request.draft_revision,
-            legacy_reset.provider_fingerprint,
+            authoritative_fingerprint,
             legacy_reset.active_restart_required,
         );
         return Err(provider_commit_failure(

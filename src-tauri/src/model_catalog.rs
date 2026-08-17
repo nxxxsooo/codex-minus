@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use crate::commands::{CommandResult, discover_target_codex_cli};
 use crate::live_state::{self, FileMutation};
 
-const STATE_VERSION: u32 = 4;
+const STATE_VERSION: u32 = 5;
 const STATE_FILE: &str = "model-catalog-state.json";
 const GENERATED_DIR: &str = "model-catalogs";
 const GENERATED_PREFIX: &str = "codex-minus-";
@@ -87,6 +87,9 @@ pub struct CatalogState {
     pub official: Option<OfficialSnapshot>,
     pub target: Option<VerifiedTargetIdentity>,
     pub profiles: BTreeMap<String, ProfileCatalogState>,
+    /// One-time reset evaluation for profiles that intentionally have no persisted catalog state.
+    /// Keeping this separate prevents bookkeeping from becoming false catalog ownership.
+    pub legacy_model_reset_evaluated_profiles: BTreeMap<String, u32>,
     pub last_diff: CatalogDiff,
     pub operation_generation: u64,
 }
@@ -99,6 +102,7 @@ impl Default for CatalogState {
             official: None,
             target: None,
             profiles: BTreeMap::new(),
+            legacy_model_reset_evaluated_profiles: BTreeMap::new(),
             last_diff: CatalogDiff::default(),
             operation_generation: 0,
         }
@@ -965,9 +969,22 @@ fn load_and_migrate_state_with_policy(
         .map(|profile| profile.id.clone())
         .collect::<BTreeSet<_>>();
     state.profiles.retain(|id, _| profile_ids.contains(id));
+    state
+        .legacy_model_reset_evaluated_profiles
+        .retain(|id, _| profile_ids.contains(id));
     for profile in &settings.relay_profiles {
         let existing_pointer = root_catalog_pointer(&profile.config_contents);
         let state_has_profile = state.profiles.contains_key(&profile.id);
+        let defer_implicit_mode = policy == StateLoadPolicy::LegacyReset
+            && crate::legacy_model_reset::legacy_model_reset_needs_evaluation(profile, &state);
+        if !state_has_profile && policy == StateLoadPolicy::LegacyReset {
+            // Missing profiles must remain missing here: a catalog-state object created only to
+            // carry reset bookkeeping suppresses the General loader's permissive bootstrap and can
+            // turn a deterministic manager pointer into apparent external ownership. The planner
+            // derives a temporary classification, then persists real state only for an eligible
+            // reset; ineligible IDs receive a separate top-level marker.
+            continue;
+        }
         let entry = state.profiles.entry(profile.id.clone()).or_default();
         if !state_has_profile {
             // A pointer at the exact path this manager generates for this exact profile is our own
@@ -976,30 +993,8 @@ fn load_and_migrate_state_with_policy(
             // rejected for not preserving a pointer the editor has no way to send, and correcting
             // the mode requires a save. `manager_owned_pointer_path` cannot answer this, because it
             // asks the state for a generated path and the state is what is being built here.
-            let user_owned_pointer = existing_pointer.as_deref().filter(|pointer| {
-                classify_manager_pointer_ownership(&profile.id, Some(pointer), None)
-                    == ManagerPointerOwnership::External
-            });
-            entry.mode = default_mode(profile, user_owned_pointer, entry.upstream_topology);
-            if entry.mode == CatalogMode::External {
-                entry.external_pointer = user_owned_pointer.map(ToString::to_string);
-            }
-            // Reset startup must classify ownership before touching dormant legacy fields. Only
-            // the one missing-state shape that can actually reset gets strict reconstruction;
-            // every ineligible shape reaches the planner as an empty preservation-safe entry.
-            entry.overlay = match policy {
-                StateLoadPolicy::General => migrate_legacy_overlay(profile, &official_slugs)?,
-                StateLoadPolicy::LegacyReset
-                    if crate::legacy_model_reset::legacy_model_reset_needs_evaluation(
-                        profile, entry,
-                    ) && crate::legacy_model_reset::legacy_model_reset_eligible(
-                        profile, entry,
-                    ) =>
-                {
-                    legacy_overlay_for_official_slugs(profile, &official_slugs)?
-                }
-                StateLoadPolicy::LegacyReset => CatalogOverlay::default(),
-            };
+            *entry = derive_missing_profile_state_without_legacy_overlay(profile);
+            entry.overlay = migrate_legacy_overlay(profile, &official_slugs)?;
         } else if !entry.mode_explicit {
             match existing_pointer.as_deref() {
                 Some(pointer) if !manager_owned_pointer_path(&profile.id, pointer, entry) => {
@@ -1010,11 +1005,7 @@ fn load_and_migrate_state_with_policy(
                 // General loading continues to re-derive an implicit mode. Reset loading delays
                 // that compatibility rewrite only while dormant legacy state still needs its
                 // preservation marker, so native/custom-only ownership reaches the planner intact.
-                None if policy == StateLoadPolicy::General
-                    || !crate::legacy_model_reset::legacy_model_reset_needs_evaluation(
-                        profile, entry,
-                    ) =>
-                {
+                None if policy == StateLoadPolicy::General || !defer_implicit_mode => {
                     entry.mode = default_mode(profile, None, entry.upstream_topology)
                 }
                 None => {}
@@ -1030,6 +1021,30 @@ fn load_and_migrate_state_with_policy(
         let _ = home;
     }
     Ok(state)
+}
+
+/// Derives missing-profile ownership without consulting deprecated model-list/window contents.
+/// Reset planning uses this value only as an eligibility decision; General loading remains the
+/// owner of permissive overlay bootstrap.
+pub(crate) fn derive_missing_profile_state_without_legacy_overlay(
+    profile: &RelayProfile,
+) -> ProfileCatalogState {
+    let existing_pointer = root_catalog_pointer(&profile.config_contents);
+    let user_owned_pointer = existing_pointer.as_deref().filter(|pointer| {
+        classify_manager_pointer_ownership(&profile.id, Some(pointer), None)
+            == ManagerPointerOwnership::External
+    });
+    let mut entry = ProfileCatalogState::default();
+    entry.mode = default_mode(profile, user_owned_pointer, entry.upstream_topology);
+    if entry.mode == CatalogMode::External {
+        entry.external_pointer = user_owned_pointer.map(ToString::to_string);
+    }
+    if profile.relay_mode == RelayMode::Aggregate
+        || profile.protocol == codex_plus_core::settings::RelayProtocol::ChatCompletions
+    {
+        entry.action_required = Some("该供应商依赖未提供的代理能力。".to_string());
+    }
+    entry
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

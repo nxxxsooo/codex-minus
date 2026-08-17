@@ -35,27 +35,63 @@ pub(crate) fn plan_legacy_model_reset(
     let mut changed = false;
 
     for profile in &mut next_settings.relay_profiles {
+        if legacy_model_reset_evaluation_version(&next_state, &profile.id)
+            >= LEGACY_MODEL_RESET_VERSION
+        {
+            continue;
+        }
+        let state_was_missing = !next_state.profiles.contains_key(&profile.id);
         let existing_state = next_state
             .profiles
             .get(&profile.id)
             .cloned()
-            .unwrap_or_default();
-        if !legacy_model_reset_needs_evaluation(profile, &existing_state) {
+            .unwrap_or_else(|| {
+                crate::model_catalog::derive_missing_profile_state_without_legacy_overlay(profile)
+            });
+        // Eligibility is established from provider/catalog ownership before raw legacy fields are
+        // treated as a signal. Signal detection itself is trim-only; only eligible profiles reach
+        // strict list/window deserialization below.
+        let eligible = legacy_model_reset_eligible(profile, &existing_state);
+        if !legacy_model_reset_has_raw_signal(profile, Some(&existing_state)) {
             continue;
         }
 
-        if !legacy_model_reset_eligible(profile, &existing_state) {
-            let state_entry = next_state.profiles.entry(profile.id.clone()).or_default();
-            let marker_changed =
-                state_entry.legacy_model_reset_version < LEGACY_MODEL_RESET_VERSION;
-            state_entry.legacy_model_reset_version = LEGACY_MODEL_RESET_VERSION;
+        if !eligible {
+            let marker_changed = if state_was_missing {
+                let marker = next_state
+                    .legacy_model_reset_evaluated_profiles
+                    .entry(profile.id.clone())
+                    .or_default();
+                let changed = *marker < LEGACY_MODEL_RESET_VERSION;
+                *marker = LEGACY_MODEL_RESET_VERSION;
+                changed
+            } else {
+                let state_entry = next_state
+                    .profiles
+                    .get_mut(&profile.id)
+                    .expect("state exists");
+                let changed = state_entry.legacy_model_reset_version < LEGACY_MODEL_RESET_VERSION;
+                state_entry.legacy_model_reset_version = LEGACY_MODEL_RESET_VERSION;
+                changed
+            };
             changed |= marker_changed;
             continue;
         }
 
         let legacy_overlay =
             crate::model_catalog::legacy_overlay_for_current_official(&next_state, profile)?;
-        let state_entry = next_state.profiles.entry(profile.id.clone()).or_default();
+        if state_was_missing {
+            let mut bootstrap = existing_state;
+            bootstrap.overlay = legacy_overlay.clone();
+            next_state.profiles.insert(profile.id.clone(), bootstrap);
+            next_state
+                .legacy_model_reset_evaluated_profiles
+                .remove(&profile.id);
+        }
+        let state_entry = next_state
+            .profiles
+            .get_mut(&profile.id)
+            .expect("eligible reset state exists");
         let marker_changed = state_entry.legacy_model_reset_version < LEGACY_MODEL_RESET_VERSION;
         state_entry.legacy_model_reset_version = LEGACY_MODEL_RESET_VERSION;
         let removed = exact_legacy_slugs(state_entry);
@@ -155,31 +191,40 @@ pub(crate) fn legacy_model_reset_eligible(
 
 pub(crate) fn legacy_model_reset_needs_evaluation(
     profile: &RelayProfile,
-    state: &ProfileCatalogState,
+    state: &CatalogState,
 ) -> bool {
-    state.legacy_model_reset_version < LEGACY_MODEL_RESET_VERSION
-        && (!profile.model_list.trim().is_empty()
-            || has_nonempty_legacy_model_windows(&profile.model_windows)
-            || state
+    legacy_model_reset_evaluation_version(state, &profile.id) < LEGACY_MODEL_RESET_VERSION
+        && legacy_model_reset_has_raw_signal(profile, state.profiles.get(&profile.id))
+}
+
+pub(crate) fn legacy_model_reset_evaluation_version(state: &CatalogState, profile_id: &str) -> u32 {
+    state
+        .profiles
+        .get(profile_id)
+        .map(|profile| profile.legacy_model_reset_version)
+        .unwrap_or_default()
+        .max(
+            state
+                .legacy_model_reset_evaluated_profiles
+                .get(profile_id)
+                .copied()
+                .unwrap_or_default(),
+        )
+}
+
+pub(crate) fn legacy_model_reset_has_raw_signal(
+    profile: &RelayProfile,
+    state: Option<&ProfileCatalogState>,
+) -> bool {
+    !profile.model_list.trim().is_empty()
+        || !profile.model_windows.trim().is_empty()
+        || state.is_some_and(|state| {
+            state
                 .overlay
                 .custom
                 .iter()
-                .any(|model| model.template_provenance == "legacy-model-list"))
-}
-
-fn has_nonempty_legacy_model_windows(model_windows: &str) -> bool {
-    let value = model_windows.trim();
-    if value.is_empty() {
-        return false;
-    }
-    serde_json::from_str::<serde_json::Value>(value)
-        .map(|parsed| match parsed {
-            serde_json::Value::Object(entries) => !entries.is_empty(),
-            serde_json::Value::Array(entries) => !entries.is_empty(),
-            serde_json::Value::Null => false,
-            _ => true,
+                .any(|model| model.template_provenance == "legacy-model-list")
         })
-        .unwrap_or(true)
 }
 
 fn exact_legacy_slugs(state: &ProfileCatalogState) -> BTreeSet<String> {
@@ -682,6 +727,130 @@ fit_marker = "keep"
     }
 
     #[test]
+    fn eligible_window_only_nonblank_invalid_values_fail_before_marker_or_mutation() {
+        let invalid = [
+            ("malformed-json", "{not-json"),
+            ("null", "null"),
+            ("empty-array", "[]"),
+            ("number-scalar", "272000"),
+            ("boolean-scalar", "true"),
+            ("string-scalar", r#""272000""#),
+            ("non-string-value", r#"{"unused":272000}"#),
+            ("zero-value", r#"{"unused":"0"}"#),
+        ];
+        let official = BTreeSet::from(["gpt-5.6-terra".to_string()]);
+
+        for (label, model_windows) in invalid {
+            let settings = eva_settings("gpt-5.6-terra", "", model_windows);
+            let state =
+                state_with_profile("eva", CatalogMode::OfficialPlusCustom, false, Vec::new());
+            let settings_before = serde_json::to_vec(&settings).unwrap();
+            let state_before = serde_json::to_vec(&state).unwrap();
+
+            let error = match plan_legacy_model_reset(&settings, &state, &official) {
+                Err(error) => error,
+                Ok(_) => panic!("{label}: window-only invalid evidence was accepted"),
+            };
+
+            assert!(
+                error
+                    .downcast_ref::<crate::model_catalog::InvalidLegacyModelWindows>()
+                    .is_some(),
+                "{label}: {error}"
+            );
+            assert_eq!(
+                error.to_string(),
+                "legacy model windows are invalid",
+                "{label}"
+            );
+            assert_eq!(
+                serde_json::to_vec(&settings).unwrap(),
+                settings_before,
+                "{label}"
+            );
+            assert_eq!(serde_json::to_vec(&state).unwrap(), state_before, "{label}");
+        }
+    }
+
+    #[test]
+    fn eligible_window_only_blank_and_valid_maps_have_explicit_evaluation_semantics() {
+        let official = BTreeSet::from(["gpt-5.6-terra".to_string()]);
+
+        for (label, model_windows) in [("blank", ""), ("whitespace", "   \t\n")] {
+            let settings = eva_settings("gpt-5.6-terra", "", model_windows);
+            let state =
+                state_with_profile("eva", CatalogMode::OfficialPlusCustom, false, Vec::new());
+
+            assert!(
+                plan_legacy_model_reset(&settings, &state, &official)
+                    .unwrap()
+                    .is_none(),
+                "{label}: canonical blank data is not a legacy signal"
+            );
+            assert_eq!(
+                state.profiles["eva"].legacy_model_reset_version, 0,
+                "{label}"
+            );
+        }
+
+        for (label, model_windows) in [
+            ("empty-map", "{}"),
+            ("positive-map", r#"{"unused":" 272000 "}"#),
+        ] {
+            let settings = eva_settings("gpt-5.6-terra", "", model_windows);
+            let state =
+                state_with_profile("eva", CatalogMode::OfficialPlusCustom, false, Vec::new());
+
+            let plan = plan_legacy_model_reset(&settings, &state, &official)
+                .unwrap_or_else(|error| panic!("{label}: {error}"))
+                .expect("a nonblank valid window map must be evaluated once");
+
+            assert!(plan.reset_profiles.is_empty(), "{label}");
+            assert_eq!(
+                plan.state.profiles["eva"].legacy_model_reset_version,
+                super::LEGACY_MODEL_RESET_VERSION,
+                "{label}"
+            );
+            assert_eq!(
+                plan.settings.relay_profiles[0].model_windows, model_windows,
+                "{label}: marker-only evaluation must preserve dormant data"
+            );
+        }
+    }
+
+    #[test]
+    fn ineligible_window_only_values_are_marked_without_strict_deserialization() {
+        let values = [
+            ("malformed-json", "{window-secret-sentinel"),
+            ("null", "null"),
+            ("empty-array", "[]"),
+            ("scalar", "272000"),
+            ("wrong-value-type", r#"{"unused":[]}"#),
+        ];
+        let official = BTreeSet::from(["gpt-5.6-terra".to_string()]);
+
+        for (label, model_windows) in values {
+            let settings = eva_settings("gpt-5.6-terra", "", model_windows);
+            let state = state_with_profile("eva", CatalogMode::NativeOfficial, false, Vec::new());
+
+            let plan = plan_legacy_model_reset(&settings, &state, &official)
+                .unwrap_or_else(|error| panic!("{label}: ineligible windows were parsed: {error}"))
+                .expect("an ineligible raw signal must receive its preservation marker");
+
+            assert!(plan.reset_profiles.is_empty(), "{label}");
+            assert_eq!(
+                plan.state.profiles["eva"].legacy_model_reset_version,
+                super::LEGACY_MODEL_RESET_VERSION,
+                "{label}"
+            );
+            assert_eq!(
+                plan.settings.relay_profiles[0].model_windows, model_windows,
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
     fn reset_removes_only_exact_legacy_derived_official_overrides() {
         let settings = eva_settings(
             "gpt-5",
@@ -868,7 +1037,7 @@ fit_marker = "keep"
 
     #[test]
     fn profile_without_legacy_signals_is_a_byte_identical_noop() {
-        let settings = eva_settings("gpt-5.6-terra", "", "{}");
+        let settings = eva_settings("gpt-5.6-terra", "", "");
         let state = state_with_profile(
             "eva",
             CatalogMode::OfficialPlusCustom,

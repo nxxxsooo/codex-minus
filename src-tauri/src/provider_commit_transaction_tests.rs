@@ -162,6 +162,12 @@ fn state_with_official() -> CatalogState {
     }
 }
 
+fn top_level_legacy_reset_marker(state: &CatalogState, profile_id: &str) -> u64 {
+    serde_json::to_value(state).unwrap()["legacyModelResetEvaluatedProfiles"][profile_id]
+        .as_u64()
+        .unwrap_or_default()
+}
+
 fn catalog_draft(profile_id: &str) -> ProfileCatalogDraft {
     ProfileCatalogDraft {
         profile_id: profile_id.to_string(),
@@ -1102,13 +1108,11 @@ fn legacy_model_reset_response_token_matches_returned_settings_with_pure_api_bys
             .as_bool(),
         Some(false)
     );
+    let immediate_status = load_settings_blocking_at(&fixture.paths);
+    assert_eq!(immediate_status.status, "ok");
     assert_eq!(
         replacement.provider_fingerprint,
-        provider_generation_fingerprint(
-            &ProviderOwnedTopologyDraft::from_settings(returned),
-            &fixture.read_state(),
-        )
-        .unwrap()
+        immediate_status.payload.provider_fingerprint
     );
 
     let mut rebased = request(returned, returned, "eva", ProviderCommitAction::Save, 911);
@@ -1121,6 +1125,153 @@ fn legacy_model_reset_response_token_matches_returned_settings_with_pure_api_bys
             .overlay
             .custom
             .is_empty()
+    );
+}
+
+#[test]
+fn legacy_model_reset_direct_payload_matches_immediate_status_and_next_cas_after_bystander_derivation()
+ {
+    for stale_mode in [CatalogMode::NativeOfficial, CatalogMode::CustomOnly] {
+        let (fixture, _) = state_only_legacy_overlay_fixture();
+        let mut settings: BackendSettings =
+            serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+        let mut bystander = canonical_profile(
+            "implicit-bystander",
+            "gpt-5.6-sol",
+            "https://bystander.example/v1",
+            "bystander-provider-key",
+        );
+        bystander.model_windows = "{}".to_string();
+        settings.relay_profiles.push(bystander);
+        fs::write(
+            &fixture.paths.settings_path,
+            serde_json::to_vec_pretty(&settings).unwrap(),
+        )
+        .unwrap();
+        let mut state = fixture.read_state();
+        state.profiles.insert(
+            "implicit-bystander".to_string(),
+            crate::model_catalog::ProfileCatalogState {
+                mode: stale_mode,
+                mode_explicit: false,
+                ..crate::model_catalog::ProfileCatalogState::default()
+            },
+        );
+        fs::write(
+            &fixture.paths.catalog_state_path,
+            serde_json::to_vec_pretty(&state).unwrap(),
+        )
+        .unwrap();
+        let persisted = fixture.read_settings();
+        let mut stale = request(
+            &persisted,
+            &persisted,
+            "eva",
+            ProviderCommitAction::Save,
+            912,
+        );
+        stale.catalog_drafts[0].overlay.custom = vec![CustomModel {
+            slug: "gpt-5".to_string(),
+            display_name: "gpt-5".to_string(),
+            template_provenance: "legacy-model-list".to_string(),
+            ..CustomModel::default()
+        }];
+        let reset_state = crate::model_catalog::load_and_migrate_state_for_legacy_reset_from_path(
+            &persisted,
+            &fixture.paths.codex_home,
+            &fixture.paths.catalog_state_path,
+        )
+        .unwrap();
+        stale.expected_provider_fingerprint = provider_generation_fingerprint(
+            &ProviderOwnedTopologyDraft::from_settings(&persisted),
+            &reset_state,
+        )
+        .unwrap();
+
+        let first = commit_provider_detail_from_paths_raw(&fixture.paths, stale).unwrap_err();
+        let replacement = first.reset_payload().unwrap();
+        let status = load_settings_blocking_at(&fixture.paths);
+
+        assert_eq!(status.status, "ok", "{stale_mode:?}");
+        assert_eq!(
+            replacement.provider_fingerprint, status.payload.provider_fingerprint,
+            "{stale_mode:?}: direct reset and immediate status exposed different generations"
+        );
+        let authoritative = status.payload.settings;
+        let mut rebased = request(
+            &authoritative,
+            &authoritative,
+            "eva",
+            ProviderCommitAction::Save,
+            913,
+        );
+        rebased.expected_provider_fingerprint = replacement.provider_fingerprint.clone();
+
+        let committed = commit_provider_detail_from_paths_raw(&fixture.paths, rebased)
+            .unwrap_or_else(|error| panic!("{stale_mode:?}: next real CAS failed: {error:?}"));
+
+        assert!(committed.error_code.is_none(), "{stale_mode:?}");
+    }
+}
+
+#[test]
+fn legacy_model_reset_direct_payload_never_mints_a_transitional_token_when_general_status_is_unavailable()
+ {
+    let (fixture, _) = state_only_legacy_overlay_fixture();
+    let mut settings: BackendSettings =
+        serde_json::from_slice(&fs::read(&fixture.paths.settings_path).unwrap()).unwrap();
+    let mut bystander = legacy_pure_api_profile("invalid-missing-bystander", "");
+    bystander.model_list = "model-list-secret-sentinel".repeat(9);
+    bystander.model_windows = "null".to_string();
+    settings.relay_profiles.push(bystander);
+    fs::write(
+        &fixture.paths.settings_path,
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    let persisted = fixture.read_settings();
+    let mut stale = request(
+        &persisted,
+        &persisted,
+        "eva",
+        ProviderCommitAction::Save,
+        914,
+    );
+    stale.catalog_drafts[0].overlay.custom = vec![CustomModel {
+        slug: "gpt-5".to_string(),
+        display_name: "gpt-5".to_string(),
+        template_provenance: "legacy-model-list".to_string(),
+        ..CustomModel::default()
+    }];
+    let reset_state = crate::model_catalog::load_and_migrate_state_for_legacy_reset_from_path(
+        &persisted,
+        &fixture.paths.codex_home,
+        &fixture.paths.catalog_state_path,
+    )
+    .unwrap();
+    stale.expected_provider_fingerprint = provider_generation_fingerprint(
+        &ProviderOwnedTopologyDraft::from_settings(&persisted),
+        &reset_state,
+    )
+    .unwrap();
+
+    let first = commit_provider_detail_from_paths_raw(&fixture.paths, stale).unwrap_err();
+    let replacement = first
+        .reset_payload()
+        .expect("the committed reset stays truthful");
+
+    assert!(replacement.legacy_model_reset_applied);
+    assert!(
+        replacement.provider_fingerprint.is_empty(),
+        "a reset-only transitional state is not an editor CAS baseline"
+    );
+    assert_eq!(load_settings_blocking_at(&fixture.paths).status, "failed");
+    let state = fixture.read_state();
+    assert!(state.profiles["eva"].overlay.custom.is_empty());
+    assert!(!state.profiles.contains_key("invalid-missing-bystander"));
+    assert_eq!(
+        top_level_legacy_reset_marker(&state, "invalid-missing-bystander"),
+        u64::from(crate::legacy_model_reset::LEGACY_MODEL_RESET_VERSION)
     );
 }
 
@@ -1510,124 +1661,113 @@ fn legacy_model_reset_marker_only_bookkeeping_keeps_a_legitimate_request_current
 }
 
 #[test]
-fn legacy_model_reset_missing_profile_bootstrap_marks_ineligible_dormant_data_without_a_load_gate()
+fn legacy_model_reset_missing_ineligible_profile_keeps_generic_custom_bootstrap_and_manager_pointer_recovery()
 {
-    let invalid_model_list = "x".repeat(161);
     for missing_state in ["missing-file", "missing-profile"] {
-        for shape in [
-            "external-pointer",
-            "pure-oauth",
-            "pure-api",
-            "chat-completions",
-            "aggregate",
-        ] {
-            let profile_id = format!("{missing_state}-{shape}");
-            let mut profile = match shape {
-                "pure-oauth" => pure_oauth_profile(&profile_id),
-                "pure-api" => legacy_pure_api_profile(&profile_id, ""),
-                _ => canonical_profile(
-                    &profile_id,
-                    "gpt-5.6-sol",
-                    "https://dormant.example/v1",
-                    "dormant-provider-key",
-                ),
-            };
-            let (expected_mode, expected_pointer) = match shape {
-                "external-pointer" => {
-                    let pointer = format!("/private/{profile_id}.json");
-                    profile.config_contents = crate::model_catalog::set_root_catalog_pointer(
-                        &profile.config_contents,
-                        Some(&pointer),
-                    )
-                    .unwrap();
-                    (CatalogMode::External, Some(pointer))
-                }
-                "pure-oauth" => (CatalogMode::NativeOfficial, None),
-                "pure-api" => (CatalogMode::CustomOnly, None),
-                "chat-completions" => {
-                    profile.protocol = RelayProtocol::ChatCompletions;
-                    (CatalogMode::OfficialPlusCustom, None)
-                }
-                "aggregate" => {
-                    profile.relay_mode = RelayMode::Aggregate;
-                    (CatalogMode::NativeOfficial, None)
-                }
-                _ => unreachable!(),
-            };
-            profile.model_list = invalid_model_list.clone();
+        for pointer_shape in ["absent", "deterministic-manager"] {
+            let case = format!("{missing_state}/{pointer_shape}");
+            let profile_id = format!("pure-api-{missing_state}-{pointer_shape}");
+            let custom_model = format!("team-model-{missing_state}-{pointer_shape}");
+            let mut profile = legacy_pure_api_profile(&profile_id, "");
+            profile.model = custom_model.clone();
+            profile.config_contents = crate::legacy_model_reset::set_top_level_model(
+                &profile.config_contents,
+                &custom_model,
+            )
+            .unwrap();
+            profile.model_list = custom_model.clone();
             profile.model_windows = "{not-json".to_string();
-            let fixture = Fixture::new(
-                &settings_with(vec![profile], &profile_id),
-                &state_with_official(),
-            );
+            if pointer_shape == "deterministic-manager" {
+                profile.config_contents = crate::model_catalog::set_root_catalog_pointer(
+                    &profile.config_contents,
+                    Some(&crate::model_catalog::generated_relative_path(&profile_id)),
+                )
+                .unwrap();
+            }
+            let settings = settings_with(vec![profile], &profile_id);
+            let fixture = Fixture::new(&settings, &state_with_official());
             if missing_state == "missing-file" {
                 fs::remove_file(&fixture.paths.catalog_state_path).unwrap();
             }
-            let settings_before = fs::read(&fixture.paths.settings_path).unwrap();
-            let live_before = fs::read(fixture.paths.codex_home.join("config.toml")).unwrap();
-            let auth_before = fs::read(fixture.paths.codex_home.join("auth.json")).unwrap();
 
-            let first = load_settings_blocking_at(&fixture.paths);
+            let reset = prepare_settings_load_at(&fixture.paths)
+                .unwrap_or_else(|error| panic!("{case}: reset prepass failed: {error}"));
 
-            assert_eq!(first.status, "ok", "{missing_state}/{shape}");
+            assert!(reset.reset_profiles.is_empty(), "{case}");
+            let persisted_state = fixture.read_state();
             assert!(
-                !first.payload.provider_fingerprint.is_empty(),
-                "{missing_state}/{shape}"
+                !persisted_state.profiles.contains_key(&profile_id),
+                "{case}: an evaluation marker became a catalog-state placeholder"
             );
             assert_eq!(
-                fs::read(&fixture.paths.settings_path).unwrap(),
-                settings_before,
-                "{missing_state}/{shape}"
-            );
-            assert_eq!(
-                fs::read(fixture.paths.codex_home.join("config.toml")).unwrap(),
-                live_before,
-                "{missing_state}/{shape}"
-            );
-            assert_eq!(
-                fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
-                auth_before,
-                "{missing_state}/{shape}"
-            );
-            assert!(
-                !fixture
-                    .paths
-                    .codex_home
-                    .join(crate::model_catalog::generated_relative_path(&profile_id))
-                    .exists(),
-                "{missing_state}/{shape}"
-            );
-            let state = fixture.read_state();
-            let profile_state = &state.profiles[&profile_id];
-            assert_eq!(profile_state.mode, expected_mode, "{missing_state}/{shape}");
-            assert_eq!(
-                profile_state.external_pointer, expected_pointer,
-                "{missing_state}/{shape}"
-            );
-            assert!(
-                profile_state.overlay.custom.is_empty(),
-                "{missing_state}/{shape}"
-            );
-            assert!(
-                profile_state.overlay.official.is_empty(),
-                "{missing_state}/{shape}"
-            );
-            assert_eq!(
-                profile_state.legacy_model_reset_version,
-                crate::legacy_model_reset::LEGACY_MODEL_RESET_VERSION,
-                "{missing_state}/{shape}"
+                top_level_legacy_reset_marker(&persisted_state, &profile_id),
+                u64::from(crate::legacy_model_reset::LEGACY_MODEL_RESET_VERSION),
+                "{case}"
             );
 
-            let generation_after_first = fixture.file_generation();
-            let second = load_settings_blocking_at(&fixture.paths);
-            assert_eq!(second.status, "ok", "{missing_state}/{shape}/second");
+            let general = crate::model_catalog::load_and_migrate_state_from_path(
+                &fixture.read_settings(),
+                &fixture.paths.codex_home,
+                &fixture.paths.catalog_state_path,
+            )
+            .unwrap_or_else(|error| panic!("{case}: generic bootstrap failed: {error}"));
+            let profile_state = &general.profiles[&profile_id];
+            assert_eq!(profile_state.mode, CatalogMode::CustomOnly, "{case}");
+            assert!(profile_state.external_pointer.is_none(), "{case}");
+            assert_eq!(profile_state.overlay.custom.len(), 1, "{case}");
+            assert_eq!(profile_state.overlay.custom[0].slug, custom_model, "{case}");
             assert_eq!(
-                fixture.file_generation(),
-                generation_after_first,
-                "{missing_state}/{shape}/second"
+                fixture.read_settings().relay_profiles[0].model,
+                custom_model,
+                "{case}: generic bootstrap changed the custom default"
             );
         }
     }
+}
+
+#[test]
+fn legacy_model_reset_missing_ineligible_invalid_data_marks_before_unchanged_generic_failure() {
+    let profile_id = "invalid-pure-api";
+    let mut profile = legacy_pure_api_profile(profile_id, "");
+    profile.model_list = "model-list-secret-sentinel".repeat(9);
+    profile.model_windows = "null".to_string();
+    let fixture = Fixture::new(
+        &settings_with(vec![profile], profile_id),
+        &state_with_official(),
+    );
+    let settings_before = fs::read(&fixture.paths.settings_path).unwrap();
+
+    let reset = prepare_settings_load_at(&fixture.paths)
+        .expect("invalid ineligible data must not block reset evaluation");
+
+    assert!(reset.reset_profiles.is_empty());
+    assert_eq!(
+        fs::read(&fixture.paths.settings_path).unwrap(),
+        settings_before
+    );
+    let state_after_reset = fixture.read_state();
+    assert!(!state_after_reset.profiles.contains_key(profile_id));
+    assert_eq!(
+        top_level_legacy_reset_marker(&state_after_reset, profile_id),
+        u64::from(crate::legacy_model_reset::LEGACY_MODEL_RESET_VERSION)
+    );
+
+    let generic_error = crate::model_catalog::load_and_migrate_state_from_path(
+        &fixture.read_settings(),
+        &fixture.paths.codex_home,
+        &fixture.paths.catalog_state_path,
+    )
+    .expect_err("generic bootstrap keeps its existing invalid-list validation");
+    assert!(generic_error.to_string().contains("model slug is too long"));
+    assert!(
+        !generic_error
+            .to_string()
+            .contains("model-list-secret-sentinel")
+    );
+    assert_eq!(
+        fixture.read_state().profiles.contains_key(profile_id),
+        false
+    );
 }
 
 #[test]
@@ -1750,8 +1890,8 @@ fn legacy_model_reset_missing_external_profile_marker_does_not_gate_a_valid_dire
         "https://external.example/v1",
         "external-provider-key",
     );
-    profile.model_list = "x".repeat(161);
-    profile.model_windows = "{not-json".to_string();
+    profile.model_list.clear();
+    profile.model_windows = "null".to_string();
     profile.config_contents =
         crate::model_catalog::set_root_catalog_pointer(&profile.config_contents, Some(pointer))
             .unwrap();
@@ -1801,8 +1941,8 @@ fn legacy_model_reset_missing_external_profile_marker_does_not_gate_a_valid_dire
         Some(pointer)
     );
     assert_eq!(
-        state.profiles[profile_id].legacy_model_reset_version,
-        crate::legacy_model_reset::LEGACY_MODEL_RESET_VERSION
+        top_level_legacy_reset_marker(&state, profile_id),
+        u64::from(crate::legacy_model_reset::LEGACY_MODEL_RESET_VERSION)
     );
 }
 

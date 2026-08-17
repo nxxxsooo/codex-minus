@@ -244,13 +244,20 @@ The system SHALL migrate existing relay model rows without copying credentials a
 #### Scenario: Missing catalog state is classified before legacy reconstruction
 
 - **WHEN** reset evaluates either persisted explicit/native/custom-only/external ownership or a missing catalog-state file/profile entry whose profile contract or pointer derives as external, native, custom-only, pure-OAuth, pure-API, Aggregate, or Chat, and that profile carries malformed or overlong dormant legacy list/window fields
-- **THEN** reset startup preserves or derives a preservation-safe profile state and persists its one-time marker without parsing those dormant fields, preserves any external pointer and mode ownership, and creates no usable custom catalog from the invalid data
+- **THEN** reset startup classifies eligibility without deserializing those dormant fields, preserves persisted profile state, and records a missing ineligible profile ID in a separate top-level evaluation marker without creating a `ProfileCatalogState` placeholder
 - **AND** only a missing-state ordinary mixed Responses profile derived as implicit `official-plus-custom` may enter strict reset reconstruction, including the existing manager-generated-pointer recovery case
+
+#### Scenario: General bootstrap follows missing-profile reset evaluation
+
+- **WHEN** a missing ineligible profile has received the separate reset-evaluation marker and General state loading follows
+- **THEN** the profile remains absent from persisted catalog ownership while General loading performs its existing permissive bootstrap, including recovering valid pure-API/custom-only `modelList` rows and defaults and treating the deterministic per-profile generated pointer as manager-owned rather than external
+- **AND** invalid generic bootstrap input retains its existing explicit validation outcome without undoing or blocking the completed reset prepass
 
 #### Scenario: Destructive legacy reconstruction requires valid window evidence
 
 - **WHEN** an eligible implicit `official-plus-custom` profile has nonblank `modelWindows` that is not a JSON object mapping every supplied slug to a string that trim-parses as a positive `u64`
 - **THEN** the manager rejects the reset before recording its marker or mutating settings or catalog state and reports a static input-unavailable reason
+- **AND** nonblank `null`, array, and scalar values are signals that enter this strict validation even when `modelList` and legacy overlay rows are absent, while blank/whitespace input is not a signal and `{}` is valid marker-only evidence when there is no row to remove
 - **AND** an invalid legacy list rejected during the same strict reset-only reconstruction also reports a static input-unavailable reason
 - **AND** generic catalog-state bootstrap outside reset retains its permissive compatibility behavior because it does not authorize deletion
 
@@ -263,6 +270,12 @@ The system SHALL migrate existing relay model rows without copying credentials a
 
 - **WHEN** the affected profile is active
 - **THEN** settings, catalog state, generated catalog, and live config commit atomically under Context protection while live auth remains byte-for-byte unchanged
+
+#### Scenario: Direct reset response uses the final General generation
+
+- **WHEN** a direct provider commit first applies a legacy reset while another profile requires post-evaluation General bootstrap or implicit-mode derivation
+- **THEN** the reset payload returns the same sanitized settings and provider-generation fingerprint that immediate settings/status exposes, and that fingerprint passes the next real provider compare-and-swap
+- **AND** if General status is independently unavailable, the truthful reset payload carries no transitional reset-only fingerprint
 
 #### Scenario: Legacy reset is idempotent and does not gate ordinary profiles
 
@@ -310,7 +323,7 @@ The system SHALL expose enough status to distinguish official freshness, overlay
 
 ### Requirement: An implicit catalog mode follows the current default
 
-A catalog mode that was derived rather than chosen SHALL be re-derived during general state loading, the same way an implicit external pointer is already re-derived. A reset-only eligibility load MAY defer that re-derivation for an unmarked profile carrying dormant legacy signals solely to persist a preservation marker without parsing or destructively resetting those fields; after the marker is present, the following general load SHALL re-derive the mode normally without writing it. A mode the user chose explicitly SHALL never be re-derived.
+A catalog mode that was derived rather than chosen SHALL be re-derived during general state loading, the same way an implicit external pointer is already re-derived. For an existing state entry, a reset-only eligibility load MAY defer that re-derivation for an unmarked profile carrying dormant legacy signals solely to persist a preservation marker without parsing or destructively resetting those fields; after the marker is present, the following general load SHALL re-derive the mode normally without writing it. A missing ineligible profile SHALL remain absent and use the separate top-level evaluation marker so General loading still owns initial mode, overlay, and pointer bootstrap. A mode the user chose explicitly SHALL never be re-derived.
 
 A stale implicit mode otherwise deadlocks its profile: the provider contract rejects every commit while the mode disagrees, and correcting the mode requires a commit.
 
