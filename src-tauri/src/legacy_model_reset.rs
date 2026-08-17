@@ -47,13 +47,14 @@ pub(crate) fn plan_legacy_model_reset(
         }
 
         let state_entry = next_state.profiles.entry(profile.id.clone()).or_default();
+        let marker_changed = state_entry.legacy_model_reset_version < LEGACY_MODEL_RESET_VERSION;
+        state_entry.legacy_model_reset_version = LEGACY_MODEL_RESET_VERSION;
         if !ordinary_mixed_responses(profile)
             || state_entry.mode == CatalogMode::External
             || state_entry.external_pointer.is_some()
             || state_entry.mode_explicit
         {
-            state_entry.legacy_model_reset_version = LEGACY_MODEL_RESET_VERSION;
-            changed = true;
+            changed |= marker_changed;
             continue;
         }
 
@@ -62,15 +63,21 @@ pub(crate) fn plan_legacy_model_reset(
             top_level_model(&profile.config_contents).unwrap_or_else(|| profile.model.clone());
         let mut next_model = previous_model.clone();
 
+        let overlay_changed = state_entry
+            .overlay
+            .custom
+            .iter()
+            .any(|model| model.template_provenance == "legacy-model-list");
         state_entry
             .overlay
             .custom
             .retain(|model| model.template_provenance != "legacy-model-list");
-        state_entry.overlay.official.clear();
-        state_entry.legacy_model_reset_version = LEGACY_MODEL_RESET_VERSION;
-        profile.model_list.clear();
-        profile.model_windows.clear();
+        let official_overrides_cleared = !state_entry.overlay.official.is_empty();
+        if official_overrides_cleared {
+            state_entry.overlay.official.clear();
+        }
 
+        let mut default_changed = false;
         if removed.contains(&previous_model) {
             ensure!(
                 official_visible_slugs.contains(CANONICAL_MIXED_DEFAULT_MODEL),
@@ -79,16 +86,23 @@ pub(crate) fn plan_legacy_model_reset(
             next_model = CANONICAL_MIXED_DEFAULT_MODEL.to_string();
             profile.model = next_model.clone();
             profile.config_contents = set_top_level_model(&profile.config_contents, &next_model)?;
+            default_changed = true;
         }
 
-        changed = true;
-        reset_profiles.push(ResetProfileSummary {
-            profile_id: profile.id.clone(),
-            removed_slugs: removed.into_iter().collect(),
-            previous_model,
-            next_model,
-            active: profile.id == settings.active_relay_id,
-        });
+        let state_changed = marker_changed || overlay_changed || official_overrides_cleared;
+        let profile_reset = !removed.is_empty() || official_overrides_cleared || default_changed;
+        changed |= state_changed;
+        if profile_reset {
+            profile.model_list.clear();
+            profile.model_windows.clear();
+            reset_profiles.push(ResetProfileSummary {
+                profile_id: profile.id.clone(),
+                removed_slugs: removed.into_iter().collect(),
+                previous_model,
+                next_model,
+                active: profile.id == settings.active_relay_id,
+            });
+        }
     }
 
     if !changed {
@@ -125,12 +139,27 @@ fn ordinary_mixed_responses(profile: &RelayProfile) -> bool {
 
 fn has_legacy_signal(profile: &RelayProfile, state: &ProfileCatalogState) -> bool {
     !profile.model_list.trim().is_empty()
-        || !profile.model_windows.trim().is_empty()
+        || has_nonempty_legacy_model_windows(&profile.model_windows)
         || state
             .overlay
             .custom
             .iter()
             .any(|model| model.template_provenance == "legacy-model-list")
+}
+
+fn has_nonempty_legacy_model_windows(model_windows: &str) -> bool {
+    let value = model_windows.trim();
+    if value.is_empty() {
+        return false;
+    }
+    serde_json::from_str::<serde_json::Value>(value)
+        .map(|parsed| match parsed {
+            serde_json::Value::Object(entries) => !entries.is_empty(),
+            serde_json::Value::Array(entries) => !entries.is_empty(),
+            serde_json::Value::Null => false,
+            _ => true,
+        })
+        .unwrap_or(true)
 }
 
 fn exact_legacy_slugs(state: &ProfileCatalogState) -> BTreeSet<String> {
@@ -153,6 +182,7 @@ mod tests {
     use super::{plan_legacy_model_reset, top_level_model};
     use crate::model_catalog::{
         CatalogMode, CatalogOverlay, CatalogState, CustomModel, ProfileCatalogState,
+        compose_profile_catalog,
     };
 
     fn custom(slug: &str, provenance: &str) -> CustomModel {
@@ -241,6 +271,33 @@ fit_marker = "keep"
         (settings, state, official)
     }
 
+    fn matrix_fixture(
+        id: &str,
+        mode: CatalogMode,
+        explicit: bool,
+        pointer: Option<&str>,
+        provenance: &str,
+    ) -> (BackendSettings, CatalogState, BTreeSet<String>) {
+        let mut settings = eva_settings("claude-or-legacy", "claude-or-legacy", "{}");
+        settings.relay_profiles[0].id = id.to_string();
+        settings.active_relay_id = id.to_string();
+        let mut state = state_with_profile(
+            id,
+            mode,
+            explicit,
+            vec![custom("claude-or-legacy", provenance)],
+        );
+        state.profiles.get_mut(id).unwrap().external_pointer = pointer.map(ToString::to_string);
+        let official = BTreeSet::from(["gpt-5.6-terra".to_string()]);
+        (settings, state, official)
+    }
+
+    fn without_top_level_model(config: &str) -> String {
+        let mut document: toml_edit::DocumentMut = config.parse().unwrap();
+        document.remove("model");
+        document.to_string()
+    }
+
     #[test]
     fn eva_implicit_legacy_gpt5_resets_to_official_terra() {
         let (settings, state, official) = eva_legacy_fixture();
@@ -263,5 +320,186 @@ fit_marker = "keep"
             CatalogMode::OfficialPlusCustom
         );
         assert_eq!(plan.reset_profiles[0].removed_slugs, vec!["gpt-5"]);
+    }
+
+    #[test]
+    fn reset_matrix_preserves_every_explicit_or_ambiguous_owner() {
+        let cases = [
+            (
+                "explicit",
+                CatalogMode::OfficialPlusCustom,
+                true,
+                None,
+                "legacy-model-list",
+                false,
+            ),
+            (
+                "external",
+                CatalogMode::External,
+                false,
+                Some("C:/models.json"),
+                "legacy-model-list",
+                false,
+            ),
+            (
+                "user-created",
+                CatalogMode::OfficialPlusCustom,
+                false,
+                None,
+                "user-created",
+                false,
+            ),
+            (
+                "unknown",
+                CatalogMode::OfficialPlusCustom,
+                false,
+                None,
+                "",
+                false,
+            ),
+            (
+                "legacy",
+                CatalogMode::OfficialPlusCustom,
+                false,
+                None,
+                "legacy-model-list",
+                true,
+            ),
+        ];
+
+        for (id, mode, explicit, pointer, provenance, reset_expected) in cases {
+            let (settings, state, official) =
+                matrix_fixture(id, mode, explicit, pointer, provenance);
+            let plan = plan_legacy_model_reset(&settings, &state, &official).unwrap();
+            assert_eq!(
+                plan.as_ref()
+                    .is_some_and(|plan| !plan.reset_profiles.is_empty()),
+                reset_expected,
+                "{id}"
+            );
+            if !reset_expected {
+                let next = plan.map(|plan| plan.state).unwrap_or(state);
+                assert_eq!(next.profiles[id].overlay.custom[0].slug, "claude-or-legacy");
+            }
+        }
+    }
+
+    #[test]
+    fn adjacent_user_custom_survives_legacy_row_removal() {
+        let settings = eva_settings("gpt-5", "gpt-5\nclaude-opus-5", "{}");
+        let mut state = state_with_profile(
+            "eva",
+            CatalogMode::OfficialPlusCustom,
+            false,
+            vec![custom("gpt-5", "legacy-model-list")],
+        );
+        state
+            .profiles
+            .get_mut("eva")
+            .unwrap()
+            .overlay
+            .custom
+            .push(custom("claude-opus-5", "user-created"));
+        let official = BTreeSet::from(["gpt-5.6-terra".to_string()]);
+
+        let plan = plan_legacy_model_reset(&settings, &state, &official)
+            .unwrap()
+            .unwrap();
+
+        let custom = &plan.state.profiles["eva"].overlay.custom;
+        assert_eq!(custom.len(), 1);
+        assert_eq!(custom[0].slug, "claude-opus-5");
+        assert_eq!(custom[0].template_provenance, "user-created");
+    }
+
+    #[test]
+    fn valid_official_or_retained_custom_default_never_changes() {
+        let official = BTreeSet::from(["gpt-5.6-terra".to_string(), "gpt-5.6-luna".to_string()]);
+        for default_model in ["gpt-5.6-luna", "claude-opus-5"] {
+            let settings = eva_settings(default_model, "gpt-5\nclaude-opus-5", "{}");
+            let mut state = state_with_profile(
+                "eva",
+                CatalogMode::OfficialPlusCustom,
+                false,
+                vec![custom("gpt-5", "legacy-model-list")],
+            );
+            state
+                .profiles
+                .get_mut("eva")
+                .unwrap()
+                .overlay
+                .custom
+                .push(custom("claude-opus-5", "user-created"));
+
+            let plan = plan_legacy_model_reset(&settings, &state, &official)
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(
+                top_level_model(&plan.settings.relay_profiles[0].config_contents).as_deref(),
+                Some(default_model),
+            );
+        }
+    }
+
+    #[test]
+    fn second_reset_is_a_byte_identical_noop() {
+        let (settings, state, official) = eva_legacy_fixture();
+        let first = plan_legacy_model_reset(&settings, &state, &official)
+            .unwrap()
+            .unwrap();
+        let settings_bytes = serde_json::to_vec(&first.settings).unwrap();
+        let state_bytes = serde_json::to_vec(&first.state).unwrap();
+
+        let second = plan_legacy_model_reset(&first.settings, &first.state, &official).unwrap();
+
+        assert!(second.is_none());
+        assert_eq!(serde_json::to_vec(&first.settings).unwrap(), settings_bytes);
+        assert_eq!(serde_json::to_vec(&first.state).unwrap(), state_bytes);
+    }
+
+    #[test]
+    fn profile_without_legacy_signals_is_a_byte_identical_noop() {
+        let settings = eva_settings("gpt-5.6-terra", "", "{}");
+        let state = state_with_profile(
+            "eva",
+            CatalogMode::OfficialPlusCustom,
+            false,
+            vec![custom("claude-opus-5", "user-created")],
+        );
+        let official = BTreeSet::from(["gpt-5.6-terra".to_string()]);
+
+        assert!(
+            plan_legacy_model_reset(&settings, &state, &official)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn eva_reset_catalog_contains_terra_and_not_gpt5() {
+        let (settings, state, official) = eva_legacy_fixture();
+        let original_config = settings.relay_profiles[0].config_contents.clone();
+        let plan = plan_legacy_model_reset(&settings, &state, &official)
+            .unwrap()
+            .unwrap();
+        let catalog = compose_profile_catalog(
+            &plan.state,
+            &plan.settings.relay_profiles[0],
+            &plan.state.profiles["eva"],
+        )
+        .unwrap();
+        let slugs = catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|model| model["slug"].as_str())
+            .collect::<Vec<_>>();
+        assert!(slugs.contains(&"gpt-5.6-terra"));
+        assert!(!slugs.contains(&"gpt-5"));
+        assert_eq!(
+            without_top_level_model(&plan.settings.relay_profiles[0].config_contents),
+            without_top_level_model(&original_config),
+        );
     }
 }

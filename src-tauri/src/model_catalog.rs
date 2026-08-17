@@ -789,7 +789,7 @@ pub fn plan_active_profile(
     Ok(plan)
 }
 
-fn plan_active_profile_with_state(
+pub(crate) fn plan_active_profile_with_state(
     home: &Path,
     settings: &BackendSettings,
     provider_config: &str,
@@ -1794,6 +1794,28 @@ fn catalog_slugs(value: &Value) -> anyhow::Result<BTreeSet<String>> {
         .collect())
 }
 
+pub(crate) fn visible_official_slugs(state: &CatalogState) -> anyhow::Result<BTreeSet<String>> {
+    Ok(state
+        .official
+        .as_ref()
+        .map(|snapshot| {
+            catalog_models(&snapshot.raw_catalog).map(|models| {
+                models
+                    .iter()
+                    .filter(|model| model.get("visibility").and_then(Value::as_str) != Some("hide"))
+                    .filter_map(|model| {
+                        model
+                            .get("slug")
+                            .and_then(Value::as_str)
+                            .map(ToString::to_string)
+                    })
+                    .collect()
+            })
+        })
+        .transpose()?
+        .unwrap_or_default())
+}
+
 fn catalog_compatibility_projection(
     value: &Value,
 ) -> anyhow::Result<BTreeMap<String, (String, String, Option<u64>, Option<u64>)>> {
@@ -2184,7 +2206,7 @@ fn validate_slug(slug: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn materialize_profile(
+pub(crate) fn materialize_profile(
     state: &mut CatalogState,
     profile: &RelayProfile,
     home: &Path,
@@ -2635,6 +2657,20 @@ mod tests {
                 }
             ]
         })
+    }
+
+    #[test]
+    fn visible_official_slugs_excludes_hidden_models() {
+        let mut state = CatalogState::default();
+        state.official = Some(OfficialSnapshot {
+            raw_catalog: official_catalog(),
+            ..OfficialSnapshot::default()
+        });
+
+        assert_eq!(
+            visible_official_slugs(&state).unwrap(),
+            BTreeSet::from(["official-a".to_string()])
+        );
     }
 
     #[test]
