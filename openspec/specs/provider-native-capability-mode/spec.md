@@ -534,7 +534,7 @@ A provider contract SHALL change only through an explicit commit focused on that
 
 This is not automatic by default: the pinned core's storage normalizer rewrites a whole provider table on sight — it renames a legacy provider-ID alias to its own identity, discards the table it replaces along with the actor header that table carried, and restores `requires_openai_auth = true` where the value is absent. The system SHALL therefore confine that normalizer to the profile a commit is focused on, and SHALL NOT run it as part of reading, migrating credentials, or saving a neighbouring profile.
 
-The startup credential migration SHALL remain permitted to remove legacy OAuth fields and, for a provider-key profile, relocate an agreed legacy API-key copy out of persisted settings, because that removes stored credential material rather than changing a contract, and SHALL NOT decide the official-auth requirement while doing so.
+The startup credential migration SHALL remain permitted, for a provider-key profile, to move an agreed provider key out of `authContents` into the owner-only persisted provider bearer and to remove the unauthorized copied OAuth and legacy representation. Those operations repair credential ownership without changing the provider contract; migration SHALL NOT decide the official-auth requirement while doing so.
 
 #### Scenario: Startup leaves an unopened contract alone
 
