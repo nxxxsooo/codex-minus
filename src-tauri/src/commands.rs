@@ -5638,7 +5638,16 @@ impl std::fmt::Display for LegacyProfileAuthMigrationError {
     }
 }
 
-impl std::error::Error for LegacyProfileAuthMigrationError {}
+impl std::error::Error for LegacyProfileAuthMigrationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::SettingsUnreadable(error)
+            | Self::SettingsInvalidJson(error)
+            | Self::ProfileReconciliation(error)
+            | Self::SecureStorage(error) => Some(error.as_ref()),
+        }
+    }
+}
 
 fn migrate_legacy_profile_auth_locked_at(
     settings_path: &Path,
@@ -6616,6 +6625,48 @@ requires_openai_auth = true
             assert_eq!(failure.code(), expected_code);
             assert_eq!(failure.reason(), expected_reason);
             assert!(!failure.to_string().contains("sentinel"));
+        }
+    }
+
+    #[test]
+    fn pre_snapshot_auth_migration_preserves_each_inner_source_without_leaking_it_to_commit_ipc() {
+        let cases = [
+            (
+                LegacyProfileAuthMigrationError::SettingsUnreadable(anyhow::anyhow!(
+                    "unreadable source sentinel"
+                )),
+                "provider settings file is unreadable",
+            ),
+            (
+                LegacyProfileAuthMigrationError::SettingsInvalidJson(anyhow::anyhow!(
+                    "invalid JSON source sentinel"
+                )),
+                "provider settings are invalid JSON",
+            ),
+            (
+                LegacyProfileAuthMigrationError::ProfileReconciliation(anyhow::anyhow!(
+                    "reconciliation source sentinel"
+                )),
+                "a saved provider profile failed auth migration",
+            ),
+            (
+                LegacyProfileAuthMigrationError::SecureStorage(anyhow::anyhow!(
+                    "storage source sentinel"
+                )),
+                "provider transaction failed",
+            ),
+        ];
+
+        for (error, expected_reason) in cases {
+            let error_as_dyn: &dyn std::error::Error = &error;
+            let source = error_as_dyn
+                .source()
+                .expect("typed error must retain its source");
+            assert!(source.to_string().contains("source sentinel"));
+
+            let failure = provider_commit_failure_for_legacy_auth_migration(error);
+            assert_eq!(failure.reason(), expected_reason);
+            assert!(!failure.to_string().contains("source sentinel"));
         }
     }
 
