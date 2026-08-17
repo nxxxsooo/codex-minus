@@ -97,13 +97,14 @@ import {
   modelCatalogResponseCanAdopt, providerDeleteAvailable,
   providerCommitFailureNotice,
   providerCommitFailureShouldReconcileForm,
-  providerCommitResetRequiresAuthoritativeRefresh, registerProviderCommit, registerSettingsRefresh,
-  settingsRefreshResponseCanAdopt, settleProviderCommit,
+  providerCommitResetRequiresAuthoritativeRefresh, registerProviderCommit,
+  settleProviderCommit,
   type ProviderCommitResponseDisposition,
   type ProfileCatalogDraft,
   type ProviderCommitUiState,
   type ProviderMutationKind,
 } from "./provider-commit";
+import * as settingsBaseline from "./settings-baseline";
 import { LiveConfigPanel } from "./relay-config-panels";
 import { providerDoctorSteps } from "./provider-doctor-steps";
 import { isSuccessStatus, statusClass, statusLabel } from "./status-presentation";
@@ -267,7 +268,7 @@ export function App() {
     latestRevision: 0,
     baseline: null,
   });
-  const settingsRequestRevision = useRef(0);
+  const settingsBaselineEpoch = useRef(settingsBaseline.createSettingsBaselineEpochState());
   const modelCatalogRequestRevision = useRef(0);
 
   const call = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
@@ -285,20 +286,25 @@ export function App() {
     }
   };
 
+  const installSettingsBaseline = (baseline: SettingsResult, form: BackendSettings | null) => {
+    settingsBaselineEpoch.current = settingsBaseline.advanceSettingsBaselineEpoch(settingsBaselineEpoch.current);
+    providerCommitState.current = { ...providerCommitState.current, baseline };
+    setSettings(baseline);
+    if (form !== null) setSettingsForm(form);
+  };
+
   const refreshSettings = async (silent = false) => {
-    const request = registerSettingsRefresh(settingsRequestRevision.current, providerCommitState.current.baseline?.provider_fingerprint ?? null);
-    settingsRequestRevision.current = request.revision;
+    const registered = settingsBaseline.registerSettingsRead(settingsBaselineEpoch.current);
+    settingsBaselineEpoch.current = registered.state;
     const result = await run(() => call<SettingsResult>("load_settings"));
-    if (!result || !settingsRefreshResponseCanAdopt(request, settingsRequestRevision.current, providerCommitState.current.baseline?.provider_fingerprint ?? null)) return null;
+    if (!result || !settingsBaseline.settingsReadResponseCanAdopt(registered.request, settingsBaselineEpoch.current)) return null;
     if (!result.provider_fingerprint) {
       showNotice(t("设置已加载"), result.message, "failed");
       return null;
     }
     const normalized = normalizeSettings(result.settings);
     const baseline = { ...result, settings: normalized };
-    providerCommitState.current = { ...providerCommitState.current, baseline };
-    setSettings(baseline);
-    setSettingsForm(normalized);
+    installSettingsBaseline(baseline, normalized);
     if (!silent) showResultNotice(t("设置已加载"), result, { silentSuccess: true });
     return normalized;
   };
@@ -629,27 +635,25 @@ export function App() {
 
   const saveSettings = async () => {
     const next = normalizeSettings(settingsForm);
+    settingsBaselineEpoch.current = settingsBaseline.advanceSettingsBaselineEpoch(settingsBaselineEpoch.current);
     const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
     if (result) {
       const normalized = normalizeSettings(result.settings);
       const baseline = { ...result, settings: normalized };
-      providerCommitState.current = { ...providerCommitState.current, baseline };
-      setSettings(baseline);
-      setSettingsForm(normalized);
+      installSettingsBaseline(baseline, normalized);
       showNotice(t("设置保存"), result.message, result.status);
     }
   };
 
   const saveSettingsValue = async (next: BackendSettings, silent = true) => {
     const normalized = normalizeSettings(next);
+    settingsBaselineEpoch.current = settingsBaseline.advanceSettingsBaselineEpoch(settingsBaselineEpoch.current);
     setSettingsForm(normalized);
     const result = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
     if (result) {
       const normalized = normalizeSettings(result.settings);
       const baseline = { ...result, settings: normalized };
-      providerCommitState.current = { ...providerCommitState.current, baseline };
-      setSettings(baseline);
-      setSettingsForm(normalized);
+      installSettingsBaseline(baseline, normalized);
       if (!silent || !isSuccessStatus(result.status)) showNotice(t("设置保存"), result.message, result.status);
     }
     return !!result && isSuccessStatus(result.status);
@@ -744,8 +748,7 @@ export function App() {
       if (!providerCommitFailureShouldReconcileForm(invocation.request.focusedProfileId, disposition)) return;
       const baseline = providerCommitState.current.baseline;
       if (baseline) {
-        setSettings(baseline);
-        setSettingsForm(normalizeSettings(baseline.settings));
+        installSettingsBaseline(baseline, normalizeSettings(baseline.settings));
       } else {
         await refreshSettings(true);
       }
@@ -755,7 +758,6 @@ export function App() {
       result = await call<ProviderCommitResult>(invocation.command, { request: invocation.request });
     } catch (error) {
       const settled = settleProviderCommit(providerCommitState.current, revision, false, null);
-      providerCommitState.current = settled.state;
       if (settled.disposition === "report") {
         await reconcileTopologyFailure(settled.disposition);
         showErrorNotice(t("调用失败"), error);
@@ -767,14 +769,7 @@ export function App() {
     const selectedSettings = result.settings ? normalizeSettings(result.settings) : null;
     const priorBaseline = providerCommitState.current.baseline ?? settings;
     const nextBaseline = (succeeded || resetApplied) && selectedSettings
-      ? {
-          status: result.status,
-          message: result.message,
-          settings: selectedSettings,
-          settings_path: priorBaseline?.settings_path ?? "",
-          user_scripts: priorBaseline?.user_scripts ?? {},
-          provider_fingerprint: result.providerFingerprint,
-        }
+      ? settingsBaseline.settingsBaselineFromProviderCommit(result, selectedSettings, priorBaseline)
       : null;
     const settled = settleProviderCommit(
       providerCommitState.current,
@@ -782,7 +777,6 @@ export function App() {
       succeeded,
       nextBaseline,
     );
-    providerCommitState.current = settled.state;
     if (providerCommitResetRequiresAuthoritativeRefresh(resetApplied, settled.disposition)) {
       modelCatalogRequestRevision.current += 1;
       setModelCatalog(null); setModelCatalogLoading(false);
@@ -790,9 +784,14 @@ export function App() {
       return false;
     }
     if (settled.disposition === "ignore") return false;
+    if (nextBaseline && selectedSettings) {
+      installSettingsBaseline(
+        nextBaseline,
+        settled.disposition === "adopt-baseline" ? null : selectedSettings,
+      );
+    }
     if (settled.disposition === "report") {
       if (resetApplied && nextBaseline && selectedSettings) {
-        setSettings(nextBaseline); setSettingsForm(selectedSettings);
         setModelCatalog(null); refreshAfterCommit();
         showNotice(t("模型目录已恢复"), result.message, result.status, providerCommitFailureNotice(result.message, result.errorCode, result.reason).detail);
         return false;
@@ -803,12 +802,10 @@ export function App() {
       return false;
     }
     if (!nextBaseline || !selectedSettings) return false;
-    setSettings(nextBaseline);
     if (settled.disposition === "adopt-baseline") {
       refreshAfterCommit();
       return false;
     }
-    setSettingsForm(selectedSettings);
     refreshAfterCommit();
     return true;
   };
@@ -1270,7 +1267,6 @@ export function App() {
               modelCatalogLoading={modelCatalogLoading}
               envConflicts={envConflicts}
               form={settingsForm}
-              onFormChange={setSettingsForm}
               actions={actions}
             />
           </div>
@@ -1358,7 +1354,6 @@ function RelayScreen({
   modelCatalogLoading,
   envConflicts,
   form,
-  onFormChange,
   actions,
 }: {
   settings: SettingsResult | null;
@@ -1367,7 +1362,6 @@ function RelayScreen({
   modelCatalogLoading: boolean;
   envConflicts: EnvConflictsResult | null;
   form: BackendSettings;
-  onFormChange: (value: BackendSettings) => void;
   actions: Actions;
 }) {
   const normalized = normalizeSettings(form);

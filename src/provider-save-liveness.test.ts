@@ -122,20 +122,20 @@ describe("a provider save always settles", () => {
     assert.ok(refresh.length > 0, "the settings read was located");
     assert.match(
       refresh,
-      /const request = registerSettingsRefresh\(settingsRequestRevision\.current,[\s\S]*?settingsRequestRevision\.current = request\.revision;/,
-      "each settings read registers its monotonic revision before invoking the backend",
+      /const registered = settingsBaseline\.registerSettingsRead\(settingsBaselineEpoch\.current\);[\s\S]*?settingsBaselineEpoch\.current = registered\.state;/,
+      "each settings read registers its request and starting baseline epoch before invoking the backend",
     );
     assert.match(
       refresh,
-      /settingsRefreshResponseCanAdopt\(request, settingsRequestRevision\.current, providerCommitState\.current\.baseline\?\.provider_fingerprint \?\? null\)/,
-      "a settings response must still match its request and starting baseline",
+      /settingsBaseline\.settingsReadResponseCanAdopt\(registered\.request, settingsBaselineEpoch\.current\)/,
+      "a settings response must still be latest and match its starting baseline epoch",
     );
     // A failed read answers with default settings and no fingerprint; adopting it would replace
     // the profiles on screen and postpone the reason until the next save.
     assert.match(refresh, /if \(!result\.provider_fingerprint\) \{[\s\S]*?return null;/);
     const adopt = refresh.slice(refresh.indexOf("provider_fingerprint"));
     assert.ok(
-      adopt.indexOf("return null;") < adopt.indexOf("setSettingsForm"),
+      adopt.indexOf("return null;") < adopt.indexOf("installSettingsBaseline"),
       "the form is only replaced once the read carried a fingerprint",
     );
     for (const command of ["load_settings", "save_settings"]) {
@@ -150,6 +150,88 @@ describe("a provider save always settles", () => {
       );
       assert.match(rust, /settle_blocking\(/);
     }
+  });
+
+  it("invalidates older settings reads at every real baseline or form installer", () => {
+    const installer = appSource.match(
+      /const installSettingsBaseline = \([\s\S]*?\n  \};/,
+    )?.[0] ?? "";
+    assert.ok(installer.length > 0, "the shared baseline installer was located");
+    assert.match(installer, /settingsBaseline\.advanceSettingsBaselineEpoch/);
+    assert.match(installer, /providerCommitState\.current = \{ \.\.\.providerCommitState\.current, baseline \}/);
+    assert.match(installer, /setSettings\(baseline\)/);
+    assert.equal(
+      [...appSource.matchAll(/\bsetSettings\(/g)].length,
+      1,
+      "all baseline writes go through the epoch-owning installer",
+    );
+
+    const refresh = appSource.match(
+      /const refreshSettings = async[\s\S]*?\n  \};/,
+    )?.[0] ?? "";
+    assert.match(refresh, /installSettingsBaseline\(baseline, normalized\)/);
+
+    for (const savePath of ["saveSettings", "saveSettingsValue"]) {
+      const body = appSource.match(
+        new RegExp(`const ${savePath} = async[\\s\\S]*?\\n  \\};`),
+      )?.[0] ?? "";
+      assert.ok(body.length > 0, `${savePath} was located`);
+      assert.match(
+        body,
+        /if \(result\) \{[\s\S]*?installSettingsBaseline\(baseline, normalized\)/,
+        `${savePath} advances the epoch when its authoritative baseline lands`,
+      );
+      const saveEpochAt = body.indexOf("settingsBaseline.advanceSettingsBaselineEpoch");
+      const saveCallAt = body.indexOf('call<SettingsResult>("save_settings"');
+      assert.ok(
+        saveEpochAt >= 0 && saveEpochAt < saveCallAt,
+        `${savePath} invalidates older reads before its save can settle`,
+      );
+    }
+
+    const saveValue = appSource.match(
+      /const saveSettingsValue = async[\s\S]*?\n  \};/,
+    )?.[0] ?? "";
+    const formEpochAt = saveValue.indexOf("settingsBaseline.advanceSettingsBaselineEpoch");
+    const formInstallAt = saveValue.indexOf("setSettingsForm(normalized)");
+    const saveCallAt = saveValue.indexOf('call<SettingsResult>("save_settings"');
+    assert.ok(
+      formEpochAt >= 0 && formEpochAt < formInstallAt && formInstallAt < saveCallAt,
+      "saveSettingsValue invalidates older reads before installing its optimistic form",
+    );
+
+    const submit = appSource.match(
+      /const submitProviderCommit = async[\s\S]*?\n  \};/,
+    )?.[0] ?? "";
+    assert.doesNotMatch(
+      submit,
+      /providerCommitState\.current = settled\.state/,
+      "provider settlement cannot write a baseline before the epoch-owning installer",
+    );
+    const delayedResetAt = submit.indexOf("providerCommitResetRequiresAuthoritativeRefresh");
+    const ignoredResponseAt = submit.indexOf('if (settled.disposition === "ignore") return false;');
+    const providerInstallAt = submit.indexOf("installSettingsBaseline(", ignoredResponseAt);
+    assert.ok(
+      delayedResetAt >= 0
+        && delayedResetAt < ignoredResponseAt
+        && ignoredResponseAt < providerInstallAt,
+      "delayed and ignored provider responses exit before any baseline installation",
+    );
+    assert.match(
+      submit,
+      /if \(nextBaseline && selectedSettings\) \{[\s\S]*?installSettingsBaseline\([\s\S]*?settled\.disposition === "adopt-baseline" \? null : selectedSettings[\s\S]*?\);/,
+      "provider success, reset adoption, and stale-success baseline adoption share the epoch installer",
+    );
+    assert.match(
+      submit,
+      /const baseline = providerCommitState\.current\.baseline;[\s\S]*?if \(baseline\) \{[\s\S]*?installSettingsBaseline\(baseline, normalizeSettings\(baseline\.settings\)\)/,
+      "topology-failure form restoration also invalidates older settings reads",
+    );
+    assert.doesNotMatch(
+      appSource,
+      /onFormChange=\{setSettingsForm\}/,
+      "the raw form setter is not exposed as an epoch-bypassing screen prop",
+    );
   });
 
   it("answers the caller when the blocking body panics and keeps the coordinator usable", () => {

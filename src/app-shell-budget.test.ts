@@ -79,8 +79,8 @@ describe("the application shell holds wiring, not rules", () => {
     // A ceiling, not a target. Lower it when work makes it true; never raise it to make a change fit.
     const lines = shell.split("\n").length;
     assert.ok(
-      lines <= 3500,
-      `App.tsx is ${lines} lines, over the 3500 ceiling — move something out rather than raising it`,
+      lines <= 3494,
+      `App.tsx is ${lines} lines, over the 3494 ceiling — move something out rather than raising it`,
     );
   });
 });

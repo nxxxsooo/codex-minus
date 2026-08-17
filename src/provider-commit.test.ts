@@ -171,55 +171,6 @@ describe("provider-owned commit request", () => {
     }
   });
 
-  it("discards an authoritative settings read when a newer provider generation lands first", () => {
-    assert.ok(commitModule);
-    const resetRefresh = commitModule.registerSettingsRefresh(0, "generation-0");
-    assert.deepEqual(resetRefresh, {
-      revision: 1,
-      providerFingerprintAtStart: "generation-0",
-    });
-    assert.equal(
-      commitModule.settingsRefreshResponseCanAdopt(
-        resetRefresh,
-        resetRefresh.revision,
-        "generation-2",
-      ),
-      false,
-    );
-
-    const initialLoad = commitModule.registerSettingsRefresh(0, null);
-    assert.equal(
-      commitModule.settingsRefreshResponseCanAdopt(initialLoad, initialLoad.revision, null),
-      true,
-    );
-    const explicitRefresh = commitModule.registerSettingsRefresh(
-      resetRefresh.revision,
-      "generation-2",
-    );
-    assert.equal(
-      commitModule.settingsRefreshResponseCanAdopt(
-        explicitRefresh,
-        explicitRefresh.revision,
-        "generation-2",
-      ),
-      true,
-    );
-  });
-
-  it("lets only the latest competing settings refresh adopt", () => {
-    assert.ok(commitModule);
-    const first = commitModule.registerSettingsRefresh(0, "generation-0");
-    const second = commitModule.registerSettingsRefresh(first.revision, "generation-0");
-    assert.equal(
-      commitModule.settingsRefreshResponseCanAdopt(first, second.revision, "generation-0"),
-      false,
-    );
-    assert.equal(
-      commitModule.settingsRefreshResponseCanAdopt(second, second.revision, "generation-0"),
-      true,
-    );
-  });
-
   it("revokes an old catalog response before settings-first reset convergence", () => {
     assert.ok(commitModule);
     const oldCatalogRevision = 7;
@@ -767,7 +718,7 @@ describe("the shell renders failures as sentence plus 详情", () => {
     assert.match(appSource, /succeeded \|\| resetApplied/);
     assert.match(
       appSource,
-      /if \(resetApplied[\s\S]*?setSettings\(nextBaseline\)[\s\S]*?setSettingsForm\(selectedSettings\)[\s\S]*?setModelCatalog\(null\)[\s\S]*?refreshAfterCommit\(\)[\s\S]*?return false;/,
+      /if \(nextBaseline && selectedSettings\) \{[\s\S]*?installSettingsBaseline\([\s\S]*?selectedSettings[\s\S]*?\);[\s\S]*?if \(settled\.disposition === "report"\) \{[\s\S]*?if \(resetApplied && nextBaseline && selectedSettings\) \{[\s\S]*?setModelCatalog\(null\)[\s\S]*?refreshAfterCommit\(\)[\s\S]*?return false;/,
     );
     assert.match(appSource, /const refreshAfterCommit[\s\S]*?refreshModelCatalog\(true, true\)/);
     assert.match(appSource, /modelCatalogResponseCanAdopt\(requestRevision,[\s\S]*?result\?\.providerFingerprint/);
