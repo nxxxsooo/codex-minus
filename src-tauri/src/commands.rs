@@ -1916,9 +1916,9 @@ fn provider_bearer_token_from_config_exact(config_contents: &str) -> Option<Stri
     let doc: toml_edit::DocumentMut = config_contents.parse().ok()?;
     let provider_id = doc.get("model_provider")?.as_str()?.trim();
     doc.get("model_providers")?
-        .as_table()?
+        .as_table_like()?
         .get(provider_id)?
-        .as_table()?
+        .as_table_like()?
         .get("experimental_bearer_token")?
         .as_str()
         .map(ToString::to_string)
@@ -2488,6 +2488,31 @@ fn provider_commit_failure(
     ProviderCommitFailure::new(code, message)
 }
 
+fn provider_commit_failure_for_legacy_auth_migration(
+    error: LegacyProfileAuthMigrationError,
+) -> ProviderCommitFailure {
+    // Keep the loader's input taxonomy intact; only profile-level reconciliation is an auth
+    // migration failure. Security and atomic-write work belongs to the transaction category.
+    match error {
+        LegacyProfileAuthMigrationError::SettingsUnreadable(_) => provider_commit_failure(
+            ProviderCommitErrorCode::InputUnavailable,
+            "provider settings file is unreadable",
+        ),
+        LegacyProfileAuthMigrationError::SettingsInvalidJson(_) => provider_commit_failure(
+            ProviderCommitErrorCode::InputUnavailable,
+            "provider settings are invalid JSON",
+        ),
+        LegacyProfileAuthMigrationError::ProfileReconciliation(_) => provider_commit_failure(
+            ProviderCommitErrorCode::InputUnavailable,
+            "a saved provider profile failed auth migration",
+        ),
+        LegacyProfileAuthMigrationError::SecureStorage(_) => provider_commit_failure(
+            ProviderCommitErrorCode::TransactionFailed,
+            "provider transaction failed",
+        ),
+    }
+}
+
 /// Awaits a blocking command, reporting a panic instead of dropping the reply.
 ///
 /// Re-panicking inside a Tauri command drops its IPC responder without answering, so the caller's
@@ -2566,6 +2591,11 @@ pub fn commit_provider_detail_from_paths_observed(
     live_state::prepare_secret_paths_at(&paths.app_state, &paths.settings_path, &paths.codex_home)
         .map_err(transaction_failure)?;
     live_state::recover_locked_at(&paths.app_state).map_err(transaction_failure)?;
+    // Recovery artifacts snapshot every transaction target before applying it. Scrub legacy
+    // profile auth through the startup's owner-only atomic no-backup path before this commit can
+    // prepare a settings prior stage, so copied OAuth can never enter recovery material.
+    migrate_legacy_profile_auth_locked_at(&paths.settings_path)
+        .map_err(provider_commit_failure_for_legacy_auth_migration)?;
 
     let (persisted_settings_bytes, persisted_settings) =
         load_provider_commit_settings(&paths.settings_path).map_err(|reason| {
@@ -3067,47 +3097,118 @@ fn load_provider_commit_settings(path: &Path) -> Result<(Vec<u8>, BackendSetting
     Ok((bytes, settings))
 }
 
-fn migrate_persisted_legacy_api_key_auth(profile: &mut RelayProfile) -> anyhow::Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PersistedProviderConfigError {
+    Invalid,
+}
+
+impl std::fmt::Display for PersistedProviderConfigError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid => formatter.write_str("persisted provider config is invalid"),
+        }
+    }
+}
+
+impl std::error::Error for PersistedProviderConfigError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PersistedProfileAuthMigrationError {
+    AuthCopyInvalid,
+    ProviderApiKeyMissing,
+    ProviderKeyConflict,
+    ProviderConfig(PersistedProviderConfigError),
+}
+
+impl std::fmt::Display for PersistedProfileAuthMigrationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AuthCopyInvalid => formatter.write_str("persisted provider auth copy is invalid"),
+            Self::ProviderApiKeyMissing => {
+                formatter.write_str("persisted provider API key is missing")
+            }
+            Self::ProviderKeyConflict => formatter.write_str("persisted provider key conflict"),
+            Self::ProviderConfig(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for PersistedProfileAuthMigrationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ProviderConfig(error) => Some(error),
+            Self::AuthCopyInvalid | Self::ProviderApiKeyMissing | Self::ProviderKeyConflict => None,
+        }
+    }
+}
+
+impl From<PersistedProviderConfigError> for PersistedProfileAuthMigrationError {
+    fn from(error: PersistedProviderConfigError) -> Self {
+        Self::ProviderConfig(error)
+    }
+}
+
+fn migrate_persisted_legacy_api_key_auth(
+    profile: &mut RelayProfile,
+) -> Result<(), PersistedProfileAuthMigrationError> {
     if profile.auth_contents.is_empty() {
         return Ok(());
     }
     let value: serde_json::Value = serde_json::from_str(&profile.auth_contents)
-        .map_err(|_| anyhow::anyhow!("persisted provider auth copy is invalid"))?;
+        .map_err(|_| PersistedProfileAuthMigrationError::AuthCopyInvalid)?;
     let object = value
         .as_object()
-        .ok_or_else(|| anyhow::anyhow!("persisted provider auth copy is invalid"))?;
-    anyhow::ensure!(
-        object.len() == 1 && object.contains_key("OPENAI_API_KEY"),
-        "persisted provider auth copy is not API-key-only"
-    );
-    let legacy_key = object
-        .get("OPENAI_API_KEY")
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| anyhow::anyhow!("persisted provider API key is missing"))?;
-    anyhow::ensure!(
-        profile.relay_mode == codex_plus_core::settings::RelayMode::PureApi
-            || (profile.relay_mode == codex_plus_core::settings::RelayMode::Official
-                && profile.official_mix_api_key),
-        "persisted provider auth copy has no provider-key owner"
-    );
-    if !profile.api_key.trim().is_empty() {
-        anyhow::ensure!(
-            profile.api_key.as_bytes() == legacy_key.as_bytes(),
-            "persisted provider key conflict"
-        );
+        .ok_or(PersistedProfileAuthMigrationError::AuthCopyInvalid)?;
+    // Parsing is intentionally complete before deciding whether this profile owns a provider
+    // key: OAuth-only profiles must reject malformed/non-object copies, then discard valid
+    // residue without adopting a legacy API key.
+    if !profile_owns_provider_key(profile) {
+        profile.auth_contents.clear();
+        return Ok(());
     }
-    if let Some(bearer) = provider_bearer_token_from_config_exact(&profile.config_contents) {
-        anyhow::ensure!(
-            bearer.as_bytes() == legacy_key.as_bytes(),
-            "persisted provider bearer conflict"
-        );
+
+    let mut candidates = Vec::new();
+    if let Some(legacy_key) = non_empty_provider_key(
+        object
+            .get("OPENAI_API_KEY")
+            .and_then(serde_json::Value::as_str),
+    ) {
+        candidates.push(legacy_key);
     }
-    profile.api_key = legacy_key.to_string();
+    if let Some(structured_key) = non_empty_provider_key(Some(&profile.api_key)) {
+        candidates.push(structured_key);
+    }
+    if let Some(bearer_key) = provider_bearer_token_from_config_exact(&profile.config_contents)
+        .and_then(|value| non_empty_provider_key(Some(&value)))
+    {
+        candidates.push(bearer_key);
+    }
+    let mut candidates = candidates.into_iter();
+    let agreed_key = candidates
+        .next()
+        .ok_or(PersistedProfileAuthMigrationError::ProviderApiKeyMissing)?;
+    if !candidates.all(|candidate| candidate.as_bytes() == agreed_key.as_bytes()) {
+        return Err(PersistedProfileAuthMigrationError::ProviderKeyConflict);
+    }
+    profile.api_key = agreed_key.clone();
     profile.config_contents =
-        set_provider_config_bearer(&profile.config_contents, legacy_key, None)?;
+        set_provider_config_bearer(&profile.config_contents, &agreed_key, None)
+            .map_err(|_| PersistedProviderConfigError::Invalid)?;
     profile.auth_contents.clear();
     Ok(())
+}
+
+fn profile_owns_provider_key(profile: &RelayProfile) -> bool {
+    profile.relay_mode == codex_plus_core::settings::RelayMode::PureApi
+        || (profile.relay_mode == codex_plus_core::settings::RelayMode::Official
+            && profile.official_mix_api_key)
+}
+
+fn non_empty_provider_key(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
 }
 
 fn sanitized_provider_normalization_error(error: &anyhow::Error) -> &'static str {
@@ -5346,11 +5447,15 @@ fn is_provider_owned_root_item(name: &str) -> bool {
     )
 }
 
-fn retain_provider_owned_profile_config(config: &str) -> anyhow::Result<String> {
+fn retain_provider_owned_profile_config(
+    config: &str,
+) -> Result<String, PersistedProviderConfigError> {
     if config.trim().is_empty() {
         return Ok(String::new());
     }
-    let mut doc: toml_edit::DocumentMut = config.parse()?;
+    let mut doc: toml_edit::DocumentMut = config
+        .parse()
+        .map_err(|_| PersistedProviderConfigError::Invalid)?;
     let keys = doc
         .as_table()
         .iter()
@@ -5571,38 +5676,83 @@ fn migrate_legacy_profile_auth_locked() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn migrate_legacy_profile_auth_locked_at(settings_path: &Path) -> anyhow::Result<usize> {
+#[derive(Debug)]
+enum LegacyProfileAuthMigrationError {
+    SettingsUnreadable(anyhow::Error),
+    SettingsInvalidJson(anyhow::Error),
+    ProfileReconciliation(anyhow::Error),
+    SecureStorage(anyhow::Error),
+}
+
+impl std::fmt::Display for LegacyProfileAuthMigrationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ProfileReconciliation(error) => write!(formatter, "{error:#}"),
+            Self::SettingsUnreadable(error)
+            | Self::SettingsInvalidJson(error)
+            | Self::SecureStorage(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for LegacyProfileAuthMigrationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::SettingsUnreadable(error)
+            | Self::SettingsInvalidJson(error)
+            | Self::ProfileReconciliation(error)
+            | Self::SecureStorage(error) => Some(error.as_ref()),
+        }
+    }
+}
+
+fn migrate_legacy_profile_auth_locked_at(
+    settings_path: &Path,
+) -> Result<usize, LegacyProfileAuthMigrationError> {
     if !settings_path.exists() {
         return Ok(0);
     }
-    live_state::ensure_owner_only_file(&settings_path)?;
-    let raw = std::fs::read(&settings_path)?;
-    let mut settings: BackendSettings =
-        serde_json::from_slice(&raw).context("persisted provider settings are invalid")?;
+    live_state::ensure_owner_only_file(settings_path)
+        .map_err(LegacyProfileAuthMigrationError::SecureStorage)?;
+    let raw = std::fs::read(settings_path).map_err(|error| {
+        LegacyProfileAuthMigrationError::SettingsUnreadable(
+            anyhow::Error::new(error).context("persisted provider settings are unreadable"),
+        )
+    })?;
+    let mut settings: BackendSettings = serde_json::from_slice(&raw).map_err(|error| {
+        LegacyProfileAuthMigrationError::SettingsInvalidJson(
+            anyhow::Error::new(error).context("persisted provider settings are invalid"),
+        )
+    })?;
     let mut migrated = 0;
     for profile in &mut settings.relay_profiles {
         if profile.auth_contents.is_empty() {
             continue;
         }
-        migrate_persisted_legacy_api_key_auth(profile)?;
-        // Startup relocates a credential; it does not normalize a provider contract. The core
-        // storage normalizer rewrites the whole provider table — it renames a legacy provider
-        // alias to its own `custom` shape, drops the table it replaces along with the actor
-        // header, and restores `requires_openai_auth = true` by default. Running it here would
-        // migrate a profile the user never opened, with no preview, no revision, and no consent.
-        sanitize_profile_after_core_normalize_fallible(profile)?;
+        let profile_label = if profile.name.trim().is_empty() {
+            profile.id.trim().to_string()
+        } else {
+            profile.name.trim().to_string()
+        };
+        migrate_persisted_legacy_api_key_auth(profile)
+            .with_context(|| format!("provider profile {profile_label:?} failed auth migration"))
+            .map_err(LegacyProfileAuthMigrationError::ProfileReconciliation)?;
         profile.config_contents = retain_provider_owned_profile_config(&profile.config_contents)
-            .context("persisted provider config ownership is invalid")?;
+            .map_err(PersistedProfileAuthMigrationError::from)
+            .with_context(|| format!("provider profile {profile_label:?} failed auth migration"))
+            .map_err(LegacyProfileAuthMigrationError::ProfileReconciliation)?;
         migrated += 1;
     }
     if migrated == 0 {
         return Ok(0);
     }
-    let bytes = serialize_settings_without_profile_auth(&settings)?;
+    let bytes = serialize_settings_without_profile_auth(&settings)
+        .map_err(LegacyProfileAuthMigrationError::SecureStorage)?;
     // Credential migration intentionally has no prior-file backup. The old file is
     // secured first and then atomically replaced so OAuth copies cannot survive in
     // a recovery artifact.
-    live_state::atomic_write_owner_only(&settings_path, &bytes)?;
+    live_state::atomic_write_owner_only(settings_path, &bytes)
+        .map_err(LegacyProfileAuthMigrationError::SecureStorage)?;
     Ok(migrated)
 }
 
@@ -6252,16 +6402,56 @@ max_threads = 1000
         assert!(!persisted.contains("authContents"));
     }
 
-    #[test]
-    fn load_time_legacy_migration_rejects_mixed_oauth_payload_without_writing() {
+    fn write_legacy_auth_fixture(
+        profile: RelayProfile,
+    ) -> (tempfile::TempDir, std::path::PathBuf, Vec<u8>) {
         let temp = tempfile::tempdir().unwrap();
         let settings_path = temp.path().join("settings.json");
+        let structured_api_key = profile.api_key.clone();
+        let settings = BackendSettings {
+            relay_profiles: vec![profile],
+            ..BackendSettings::default()
+        };
+        let mut serialized = serde_json::to_value(&settings).unwrap();
+        if !structured_api_key.trim().is_empty() {
+            serialized["relayProfiles"][0]["apiKey"] = json!(structured_api_key);
+        }
+        let before = serde_json::to_vec_pretty(&serialized).unwrap();
+        std::fs::write(&settings_path, &before).unwrap();
+        (temp, settings_path, before)
+    }
+
+    fn error_chain_messages(error: &(dyn std::error::Error + 'static)) -> Vec<String> {
+        let mut messages = Vec::new();
+        let mut current = Some(error);
+        while let Some(error) = current {
+            messages.push(error.to_string());
+            current = error.source();
+        }
+        messages
+    }
+
+    fn eva_legacy_settings_bytes() -> Vec<u8> {
         let mut settings = BackendSettings::default();
         settings.relay_profiles = vec![RelayProfile {
-            id: "pure".to_string(),
-            relay_mode: codex_plus_core::settings::RelayMode::PureApi,
+            id: "eva".to_string(),
+            name: "Eva|Codex".to_string(),
+            model: "gpt-5.6-terra".to_string(),
+            relay_mode: codex_plus_core::settings::RelayMode::Official,
+            official_mix_api_key: true,
+            protocol: codex_plus_core::settings::RelayProtocol::Responses,
             base_url: "https://example.test/v1".to_string(),
             upstream_base_url: "https://example.test/v1".to_string(),
+            config_contents: r#"model = "gpt-5.6-terra"
+model_provider = "OpenAI"
+
+[model_providers.OpenAI]
+name = "OpenAI"
+base_url = "https://example.test/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#
+            .to_string(),
             auth_contents: r#"{
                 "OPENAI_API_KEY": "provider-key-sentinel",
                 "auth_mode": "chatgpt",
@@ -6270,15 +6460,446 @@ max_threads = 1000
             .to_string(),
             ..RelayProfile::default()
         }];
-        let before = serde_json::to_vec_pretty(&settings).unwrap();
-        std::fs::write(&settings_path, &before).unwrap();
+
+        serde_json::to_vec_pretty(&settings).unwrap()
+    }
+
+    #[test]
+    fn oauth_only_residue_uses_an_existing_provider_bearer() {
+        let mut profile = RelayProfile {
+            id: "mixed".to_string(),
+            relay_mode: codex_plus_core::settings::RelayMode::Official,
+            official_mix_api_key: true,
+            config_contents: set_provider_config_bearer("", "existing-key", Some(true)).unwrap(),
+            auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"oauth-sentinel"}}"#
+                .to_string(),
+            ..RelayProfile::default()
+        };
+
+        migrate_persisted_legacy_api_key_auth(&mut profile).unwrap();
+
+        assert_eq!(profile.api_key, "existing-key");
+        assert!(profile.auth_contents.is_empty());
+    }
+
+    #[test]
+    fn pure_oauth_discards_the_complete_legacy_copy_without_adopting_its_key() {
+        let mut profile = RelayProfile {
+            id: "official".to_string(),
+            relay_mode: codex_plus_core::settings::RelayMode::Official,
+            official_mix_api_key: false,
+            auth_contents: r#"{"OPENAI_API_KEY":"orphan-key","auth_mode":"chatgpt"}"#.to_string(),
+            ..RelayProfile::default()
+        };
+
+        migrate_persisted_legacy_api_key_auth(&mut profile).unwrap();
+
+        assert!(profile.api_key.is_empty());
+        assert!(provider_bearer_token_from_config_exact(&profile.config_contents).is_none());
+        assert!(profile.auth_contents.is_empty());
+    }
+
+    #[test]
+    fn provider_key_mode_ignores_empty_or_non_string_legacy_keys_when_structured_key_exists() {
+        for auth_contents in [
+            r#"{"OPENAI_API_KEY":"","auth_mode":"chatgpt"}"#,
+            r#"{"OPENAI_API_KEY":null,"auth_mode":"chatgpt"}"#,
+        ] {
+            let mut profile = RelayProfile {
+                id: "mixed".to_string(),
+                relay_mode: codex_plus_core::settings::RelayMode::Official,
+                official_mix_api_key: true,
+                api_key: "existing-key".to_string(),
+                auth_contents: auth_contents.to_string(),
+                ..RelayProfile::default()
+            };
+
+            migrate_persisted_legacy_api_key_auth(&mut profile).unwrap();
+
+            assert_eq!(profile.api_key, "existing-key");
+            assert!(profile.auth_contents.is_empty());
+            assert_eq!(
+                provider_bearer_token_from_config_exact(&profile.config_contents).as_deref(),
+                Some("existing-key")
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_profile_auth_missing_key_identifies_the_profile_without_writing() {
+        let profile = RelayProfile {
+            id: "eva".to_string(),
+            name: "Eva|Codex".to_string(),
+            relay_mode: codex_plus_core::settings::RelayMode::Official,
+            official_mix_api_key: true,
+            auth_contents:
+                r#"{"auth_mode":"chatgpt","tokens":{"access_token":"oauth-access-sentinel"}}"#
+                    .to_string(),
+            ..RelayProfile::default()
+        };
+        let (_temp, settings_path, before) = write_legacy_auth_fixture(profile);
         let _guard = live_state::lock().unwrap();
 
         let error = migrate_legacy_profile_auth_locked_at(&settings_path).unwrap_err();
 
-        assert!(!error.to_string().contains("provider-key-sentinel"));
+        assert!(error.to_string().contains("Eva|Codex"));
         assert!(!error.to_string().contains("oauth-access-sentinel"));
         assert_eq!(std::fs::read(&settings_path).unwrap(), before);
+    }
+
+    #[test]
+    fn legacy_profile_auth_rejects_disagreeing_existing_destinations_without_writing() {
+        for (api_key, config_contents, auth_contents) in [
+            (
+                "structured-key",
+                String::new(),
+                r#"{"OPENAI_API_KEY":"legacy-key","tokens":{"access_token":"oauth-access-sentinel"}}"#,
+            ),
+            (
+                "",
+                set_provider_config_bearer("", "bearer-key", Some(true)).unwrap(),
+                r#"{"OPENAI_API_KEY":"legacy-key","tokens":{"access_token":"oauth-access-sentinel"}}"#,
+            ),
+            (
+                "legacy-key",
+                set_provider_config_bearer("", "bearer-key", Some(true)).unwrap(),
+                r#"{"OPENAI_API_KEY":"legacy-key","tokens":{"access_token":"oauth-access-sentinel"}}"#,
+            ),
+        ] {
+            let profile = RelayProfile {
+                id: "mixed".to_string(),
+                name: "Eva|Codex".to_string(),
+                relay_mode: codex_plus_core::settings::RelayMode::Official,
+                official_mix_api_key: true,
+                api_key: api_key.to_string(),
+                config_contents,
+                auth_contents: auth_contents.to_string(),
+                ..RelayProfile::default()
+            };
+            let (_temp, settings_path, before) = write_legacy_auth_fixture(profile);
+            let _guard = live_state::lock().unwrap();
+
+            let error = migrate_legacy_profile_auth_locked_at(&settings_path).unwrap_err();
+            let messages = error_chain_messages(&error);
+
+            assert!(
+                messages[0].contains("persisted provider key conflict"),
+                "top-level error lacks the conflict category: {messages:?}"
+            );
+            for message in messages {
+                for sentinel in [
+                    "legacy-key",
+                    "structured-key",
+                    "bearer-key",
+                    "oauth-access-sentinel",
+                ] {
+                    assert!(
+                        !message.contains(sentinel),
+                        "conflict error source exposed {sentinel}: {message}"
+                    );
+                }
+            }
+            assert_eq!(std::fs::read(&settings_path).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn malformed_provider_toml_is_opaque_through_every_startup_error_source() {
+        let malformed_config = r#"model_provider = "OpenAI"
+
+[model_providers.OpenAI]
+experimental_bearer_token = "provider-key-config-sentinel" secret_header = "secret-header-config-sentinel"
+"#;
+        let profiles = [
+            RelayProfile {
+                id: "mixed".to_string(),
+                name: "Eva|Projection".to_string(),
+                relay_mode: codex_plus_core::settings::RelayMode::Official,
+                official_mix_api_key: true,
+                config_contents: malformed_config.to_string(),
+                auth_contents: r#"{"OPENAI_API_KEY":"legacy-provider-key-sentinel"}"#.to_string(),
+                ..RelayProfile::default()
+            },
+            RelayProfile {
+                id: "official".to_string(),
+                name: "Eva|Ownership".to_string(),
+                relay_mode: codex_plus_core::settings::RelayMode::Official,
+                official_mix_api_key: false,
+                config_contents: malformed_config.to_string(),
+                auth_contents: r#"{"auth_mode":"chatgpt"}"#.to_string(),
+                ..RelayProfile::default()
+            },
+        ];
+        let _guard = live_state::lock().unwrap();
+
+        for profile in profiles {
+            let expected_label = profile.name.clone();
+            let (_temp, settings_path, before) = write_legacy_auth_fixture(profile);
+
+            let error = migrate_legacy_profile_auth_locked_at(&settings_path).unwrap_err();
+            let messages = error_chain_messages(&error);
+
+            assert!(
+                messages[0].contains(&expected_label),
+                "top-level error lacks safe profile context: {messages:?}"
+            );
+            assert!(
+                messages[0].contains("persisted provider config is invalid"),
+                "top-level error lacks the opaque config category: {messages:?}"
+            );
+            assert!(
+                messages
+                    .iter()
+                    .any(|message| message == "persisted provider config is invalid"),
+                "source chain lacks the typed config category: {messages:?}"
+            );
+            for message in messages {
+                for sentinel in [
+                    "provider-key-config-sentinel",
+                    "secret-header-config-sentinel",
+                    "legacy-provider-key-sentinel",
+                ] {
+                    assert!(
+                        !message.contains(sentinel),
+                        "startup error source exposed {sentinel}: {message}"
+                    );
+                }
+            }
+            assert_eq!(std::fs::read(&settings_path).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn legacy_profile_auth_rejects_invalid_or_non_object_copies_without_writing() {
+        for auth_contents in ["{invalid-json", "[\"not-an-object\"]"] {
+            let profile = RelayProfile {
+                id: "mixed".to_string(),
+                name: "Eva|Codex".to_string(),
+                relay_mode: codex_plus_core::settings::RelayMode::Official,
+                official_mix_api_key: true,
+                auth_contents: auth_contents.to_string(),
+                ..RelayProfile::default()
+            };
+            let (_temp, settings_path, before) = write_legacy_auth_fixture(profile);
+            let _guard = live_state::lock().unwrap();
+
+            let error = migrate_legacy_profile_auth_locked_at(&settings_path).unwrap_err();
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("persisted provider auth copy is invalid")
+            );
+            assert!(!error.to_string().contains("oauth-access-sentinel"));
+            assert_eq!(std::fs::read(&settings_path).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn load_time_legacy_migration_repairs_api_key_plus_oauth_residue() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        std::fs::write(&settings_path, eva_legacy_settings_bytes()).unwrap();
+        let _guard = live_state::lock().unwrap();
+
+        assert_eq!(
+            migrate_legacy_profile_auth_locked_at(&settings_path).unwrap(),
+            1
+        );
+
+        let bytes = std::fs::read(&settings_path).unwrap();
+        let raw = String::from_utf8(bytes.clone()).unwrap();
+        let migrated: BackendSettings = serde_json::from_slice(&bytes).unwrap();
+        let profile = &migrated.relay_profiles[0];
+        let provider_key = provider_bearer_token_from_config_exact(&profile.config_contents);
+        assert_eq!(provider_key.as_deref(), Some("provider-key-sentinel"));
+        assert!(!raw.contains("authContents"));
+        assert!(!raw.contains("oauth-access-sentinel"));
+        assert!(!profile.config_contents.contains("oauth-access-sentinel"));
+    }
+
+    #[test]
+    fn provider_commit_load_accepts_eva_residue_without_mutating_its_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let original = eva_legacy_settings_bytes();
+        std::fs::write(&settings_path, &original).unwrap();
+
+        let (snapshot, loaded) = load_provider_commit_settings(&settings_path).unwrap();
+
+        assert_eq!(snapshot, original);
+        assert_eq!(std::fs::read(&settings_path).unwrap(), original);
+        let profile = &loaded.relay_profiles[0];
+        assert!(profile.auth_contents.is_empty());
+        assert_eq!(profile.api_key, "provider-key-sentinel");
+        assert_eq!(
+            provider_bearer_token_from_config_exact(&profile.config_contents).as_deref(),
+            Some("provider-key-sentinel")
+        );
+    }
+
+    #[test]
+    fn pre_snapshot_auth_migration_maps_each_typed_failure_to_a_static_commit_reason() {
+        let cases = [
+            (
+                LegacyProfileAuthMigrationError::SettingsUnreadable(anyhow::anyhow!(
+                    "read error sentinel"
+                )),
+                ProviderCommitErrorCode::InputUnavailable,
+                "provider settings file is unreadable",
+            ),
+            (
+                LegacyProfileAuthMigrationError::SettingsInvalidJson(anyhow::anyhow!(
+                    "JSON error sentinel"
+                )),
+                ProviderCommitErrorCode::InputUnavailable,
+                "provider settings are invalid JSON",
+            ),
+            (
+                LegacyProfileAuthMigrationError::ProfileReconciliation(anyhow::anyhow!(
+                    "profile error sentinel"
+                )),
+                ProviderCommitErrorCode::InputUnavailable,
+                "a saved provider profile failed auth migration",
+            ),
+            (
+                LegacyProfileAuthMigrationError::SecureStorage(anyhow::anyhow!(
+                    "storage error sentinel"
+                )),
+                ProviderCommitErrorCode::TransactionFailed,
+                "provider transaction failed",
+            ),
+        ];
+
+        for (error, expected_code, expected_reason) in cases {
+            let failure = provider_commit_failure_for_legacy_auth_migration(error);
+
+            assert_eq!(failure.code(), expected_code);
+            assert_eq!(failure.reason(), expected_reason);
+            assert!(!failure.to_string().contains("sentinel"));
+        }
+    }
+
+    #[test]
+    fn pre_snapshot_auth_migration_preserves_each_inner_source_without_leaking_it_to_commit_ipc() {
+        let cases = [
+            (
+                LegacyProfileAuthMigrationError::SettingsUnreadable(anyhow::anyhow!(
+                    "unreadable source sentinel"
+                )),
+                "provider settings file is unreadable",
+            ),
+            (
+                LegacyProfileAuthMigrationError::SettingsInvalidJson(anyhow::anyhow!(
+                    "invalid JSON source sentinel"
+                )),
+                "provider settings are invalid JSON",
+            ),
+            (
+                LegacyProfileAuthMigrationError::ProfileReconciliation(anyhow::anyhow!(
+                    "reconciliation source sentinel"
+                )),
+                "a saved provider profile failed auth migration",
+            ),
+            (
+                LegacyProfileAuthMigrationError::SecureStorage(anyhow::anyhow!(
+                    "storage source sentinel"
+                )),
+                "provider transaction failed",
+            ),
+        ];
+
+        for (error, expected_reason) in cases {
+            let error_as_dyn: &dyn std::error::Error = &error;
+            let source = error_as_dyn
+                .source()
+                .expect("typed error must retain its source");
+            assert!(source.to_string().contains("source sentinel"));
+
+            let failure = provider_commit_failure_for_legacy_auth_migration(error);
+            assert_eq!(failure.reason(), expected_reason);
+            assert!(!failure.to_string().contains("source sentinel"));
+        }
+    }
+
+    #[test]
+    fn load_time_legacy_migration_preserves_pure_api_contract_field_semantics() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let mut settings = BackendSettings::default();
+        let config = r#"model = "gpt-5.6-terra"
+model_provider = "PureAPI"
+
+[model_providers.PureAPI]
+name = "OpenAI"
+base_url = "https://example.test/v1"
+wire_api = "responses"
+requires_openai_auth = true
+custom_field = "preserve-me"
+
+[model_providers.PureAPI.http_headers]
+x-openai-actor-authorization = "pure-header"
+"#;
+
+        settings.relay_profiles = vec![RelayProfile {
+            id: "pure".to_string(),
+            model: "gpt-5.6-terra".to_string(),
+            relay_mode: codex_plus_core::settings::RelayMode::PureApi,
+            base_url: "https://example.test/v1".to_string(),
+            upstream_base_url: "https://example.test/v1".to_string(),
+            config_contents: config.to_string(),
+            auth_contents: r#"{
+                "OPENAI_API_KEY": "provider-key-sentinel",
+                "auth_mode": "chatgpt",
+                "tokens": {"access_token": "oauth-access-sentinel"}
+            }"#
+            .to_string(),
+            ..RelayProfile::default()
+        }];
+
+        std::fs::write(
+            &settings_path,
+            serde_json::to_vec_pretty(&settings).unwrap(),
+        )
+        .unwrap();
+        let _guard = live_state::lock().unwrap();
+
+        assert_eq!(
+            migrate_legacy_profile_auth_locked_at(&settings_path).unwrap(),
+            1
+        );
+
+        let bytes = std::fs::read(&settings_path).unwrap();
+        let raw = String::from_utf8(bytes).unwrap();
+        let migrated: BackendSettings = serde_json::from_slice(raw.as_bytes()).unwrap();
+        let profile = &migrated.relay_profiles[0];
+        let document: toml_edit::DocumentMut = profile.config_contents.parse().unwrap();
+        let provider = document["model_providers"]["PureAPI"].clone();
+
+        assert_eq!(
+            provider_bearer_token_from_config_exact(&profile.config_contents).as_deref(),
+            Some("provider-key-sentinel")
+        );
+        assert_eq!(document["model_provider"].as_str(), Some("PureAPI"));
+        assert_eq!(document["model"].as_str(), Some("gpt-5.6-terra"));
+        assert_eq!(provider["name"].as_str(), Some("OpenAI"));
+        assert_eq!(
+            provider["base_url"].as_str(),
+            Some("https://example.test/v1")
+        );
+        assert_eq!(provider["wire_api"].as_str(), Some("responses"));
+        assert_eq!(provider["requires_openai_auth"].as_bool(), Some(true));
+        assert_eq!(provider["custom_field"].as_str(), Some("preserve-me"));
+        assert_eq!(
+            provider["http_headers"]["x-openai-actor-authorization"].as_str(),
+            Some("pure-header")
+        );
+        assert_eq!(
+            provider["experimental_bearer_token"].as_str(),
+            Some("provider-key-sentinel")
+        );
+        assert!(!raw.contains("authContents"));
+        assert!(!raw.contains("oauth-access-sentinel"));
     }
 
     /// Golden: a legacy mixed contract, exactly as authored.

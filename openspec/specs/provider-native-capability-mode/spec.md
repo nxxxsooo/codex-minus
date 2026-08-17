@@ -419,10 +419,20 @@ The system MUST leave ChatGPT OAuth exclusively under the official client's owne
 - **WHEN** a new Save or Set-as-current request contains any non-empty `authContents`, whether OAuth or API-key-only
 - **THEN** the backend rejects the request, directs OAuth changes to the official client, and directs provider keys to the provider-key field
 
-#### Scenario: Legacy API-key-only auth copy exists on disk
+#### Scenario: Legacy provider auth copy exists on disk
 
-- **WHEN** controlled legacy migration finds only an API key in an already persisted profile `authContents` and no ChatGPT token payload
-- **THEN** it may move that key into the owner-only provider bearer field and delete the legacy copy without writing live auth
+- **WHEN** controlled legacy migration finds an `OPENAI_API_KEY` together with OAuth or other legacy fields in a provider-key profile, and every existing provider-key destination agrees
+- **THEN** it moves the agreed key into the owner-only provider bearer field, deletes the complete legacy copy, and does not read or write live auth
+
+#### Scenario: Legacy OAuth copy has no provider-key owner
+
+- **WHEN** a pure-OAuth profile contains a legacy `authContents` copy, whether or not that copy also contains `OPENAI_API_KEY`
+- **THEN** it deletes the profile copy without creating a provider bearer and leaves live official auth untouched
+
+#### Scenario: Legacy provider auth copy is ambiguous
+
+- **WHEN** provider-key evidence conflicts, the legacy payload is malformed, or a provider-key profile has no usable key source
+- **THEN** migration fails without changing persisted settings or exposing credential material
 
 ### Requirement: Explicit exit and compatibility behavior
 
@@ -524,7 +534,7 @@ A provider contract SHALL change only through an explicit commit focused on that
 
 This is not automatic by default: the pinned core's storage normalizer rewrites a whole provider table on sight — it renames a legacy provider-ID alias to its own identity, discards the table it replaces along with the actor header that table carried, and restores `requires_openai_auth = true` where the value is absent. The system SHALL therefore confine that normalizer to the profile a commit is focused on, and SHALL NOT run it as part of reading, migrating credentials, or saving a neighbouring profile.
 
-The startup credential migration SHALL remain permitted to relocate a legacy API-key copy out of persisted settings, because that removes stored credential material rather than changing a contract, and SHALL NOT decide the official-auth requirement while doing so.
+The startup credential migration SHALL remain permitted, for a provider-key profile, to move an agreed provider key out of `authContents` into the owner-only persisted provider bearer and to remove the unauthorized copied OAuth and legacy representation. Those operations repair credential ownership without changing the provider contract; migration SHALL NOT decide the official-auth requirement while doing so.
 
 #### Scenario: Startup leaves an unopened contract alone
 
@@ -564,4 +574,3 @@ Official authentication SHALL NOT be written by this exit, and a non-external pr
 
 - **WHEN** an active native-priority provider is staged into live configuration and the user then confirms the pure OAuth exit
 - **THEN** live configuration no longer contains that provider's table, identifier, or bearer, persisted settings retain no copy of them, the profile's catalog mode returns to `native-official`, and `auth.json` is byte-identical
-
