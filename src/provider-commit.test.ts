@@ -171,6 +171,108 @@ describe("provider-owned commit request", () => {
     }
   });
 
+  it("discards an authoritative settings read when a newer provider generation lands first", () => {
+    assert.ok(commitModule);
+    const resetRefresh = commitModule.registerSettingsRefresh(0, "generation-0");
+    assert.deepEqual(resetRefresh, {
+      revision: 1,
+      providerFingerprintAtStart: "generation-0",
+    });
+    assert.equal(
+      commitModule.settingsRefreshResponseCanAdopt(
+        resetRefresh,
+        resetRefresh.revision,
+        "generation-2",
+      ),
+      false,
+    );
+
+    const initialLoad = commitModule.registerSettingsRefresh(0, null);
+    assert.equal(
+      commitModule.settingsRefreshResponseCanAdopt(initialLoad, initialLoad.revision, null),
+      true,
+    );
+    const explicitRefresh = commitModule.registerSettingsRefresh(
+      resetRefresh.revision,
+      "generation-2",
+    );
+    assert.equal(
+      commitModule.settingsRefreshResponseCanAdopt(
+        explicitRefresh,
+        explicitRefresh.revision,
+        "generation-2",
+      ),
+      true,
+    );
+  });
+
+  it("lets only the latest competing settings refresh adopt", () => {
+    assert.ok(commitModule);
+    const first = commitModule.registerSettingsRefresh(0, "generation-0");
+    const second = commitModule.registerSettingsRefresh(first.revision, "generation-0");
+    assert.equal(
+      commitModule.settingsRefreshResponseCanAdopt(first, second.revision, "generation-0"),
+      false,
+    );
+    assert.equal(
+      commitModule.settingsRefreshResponseCanAdopt(second, second.revision, "generation-0"),
+      true,
+    );
+  });
+
+  it("revokes an old catalog response before settings-first reset convergence", () => {
+    assert.ok(commitModule);
+    const oldCatalogRevision = 7;
+    const invalidatedRevision = oldCatalogRevision + 1;
+    assert.equal(
+      commitModule.modelCatalogResponseCanAdopt(
+        oldCatalogRevision,
+        invalidatedRevision,
+        "generation-0",
+        "generation-0",
+      ),
+      false,
+    );
+
+    const forcedCatalogRevision = invalidatedRevision + 1;
+    assert.equal(
+      commitModule.modelCatalogResponseCanAdopt(
+        forcedCatalogRevision,
+        forcedCatalogRevision,
+        "generation-1",
+        "generation-1",
+      ),
+      true,
+    );
+    assert.equal(
+      commitModule.modelCatalogResponseCanAdopt(
+        forcedCatalogRevision,
+        forcedCatalogRevision,
+        "generation-0",
+        "generation-1",
+      ),
+      false,
+    );
+    assert.equal(
+      commitModule.modelCatalogResponseCanAdopt(
+        forcedCatalogRevision,
+        forcedCatalogRevision,
+        null,
+        "generation-1",
+      ),
+      false,
+    );
+    assert.equal(
+      commitModule.modelCatalogResponseCanAdopt(
+        forcedCatalogRevision,
+        forcedCatalogRevision,
+        "generation-1",
+        "",
+      ),
+      true,
+    );
+  });
+
   it("builds the literal first-save envelope and supplies an implicit mixed catalog draft", () => {
     assert.ok(commitModule, "provider commit request builders must exist");
     const request = commitModule.buildProviderDetailRequest({
@@ -668,11 +770,22 @@ describe("the shell renders failures as sentence plus 详情", () => {
       /if \(resetApplied[\s\S]*?setSettings\(nextBaseline\)[\s\S]*?setSettingsForm\(selectedSettings\)[\s\S]*?setModelCatalog\(null\)[\s\S]*?refreshAfterCommit\(\)[\s\S]*?return false;/,
     );
     assert.match(appSource, /const refreshAfterCommit[\s\S]*?refreshModelCatalog\(true, true\)/);
-    assert.match(appSource, /result\.providerFingerprint !== expectedProviderFingerprint/);
+    assert.match(appSource, /modelCatalogResponseCanAdopt\(requestRevision,[\s\S]*?result\?\.providerFingerprint/);
     assert.match(appSource, /modelCatalogRequestRevision\.current/);
     assert.match(
       appSource,
       /providerCommitResetRequiresAuthoritativeRefresh\(resetApplied, settled\.disposition\)[\s\S]*?setModelCatalog\(null\)[\s\S]*?refreshSettings\(true\)\.then[\s\S]*?refreshModelCatalog\(true, true\)[\s\S]*?return false;/,
+    );
+    const delayedResetRefresh = appSource.match(
+      /if \(providerCommitResetRequiresAuthoritativeRefresh\(resetApplied, settled\.disposition\)\) \{[\s\S]*?return false;\s*\}/,
+    )?.[0] ?? "";
+    const invalidateAt = delayedResetRefresh.indexOf("modelCatalogRequestRevision.current += 1");
+    const clearAt = delayedResetRefresh.indexOf("setModelCatalog(null)");
+    const settingsAt = delayedResetRefresh.indexOf("refreshSettings(true)");
+    const catalogAt = delayedResetRefresh.indexOf("refreshModelCatalog(true, true)");
+    assert.ok(
+      invalidateAt >= 0 && invalidateAt < clearAt && clearAt < settingsAt && settingsAt < catalogAt,
+      "the delayed reset revokes old catalog reads before clearing and awaiting settings",
     );
   });
 

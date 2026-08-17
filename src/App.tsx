@@ -94,11 +94,11 @@ import {
   buildProviderMutationInvocation,
   catalogDraftAvailability,
   managedCatalogCapable,
-  providerDeleteAvailable,
+  modelCatalogResponseCanAdopt, providerDeleteAvailable,
   providerCommitFailureNotice,
   providerCommitFailureShouldReconcileForm,
-  providerCommitResetRequiresAuthoritativeRefresh, registerProviderCommit,
-  settleProviderCommit,
+  providerCommitResetRequiresAuthoritativeRefresh, registerProviderCommit, registerSettingsRefresh,
+  settingsRefreshResponseCanAdopt, settleProviderCommit,
   type ProviderCommitResponseDisposition,
   type ProfileCatalogDraft,
   type ProviderCommitUiState,
@@ -267,6 +267,7 @@ export function App() {
     latestRevision: 0,
     baseline: null,
   });
+  const settingsRequestRevision = useRef(0);
   const modelCatalogRequestRevision = useRef(0);
 
   const call = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
@@ -285,11 +286,10 @@ export function App() {
   };
 
   const refreshSettings = async (silent = false) => {
+    const request = registerSettingsRefresh(settingsRequestRevision.current, providerCommitState.current.baseline?.provider_fingerprint ?? null);
+    settingsRequestRevision.current = request.revision;
     const result = await run(() => call<SettingsResult>("load_settings"));
-    if (!result) return null;
-    // A read that failed answers with default settings and no fingerprint. Adopting that as the
-    // compare-and-swap baseline would replace the real profiles on screen and hide the reason
-    // until the next save reported a missing fingerprint, so keep the old baseline and say why.
+    if (!result || !settingsRefreshResponseCanAdopt(request, settingsRequestRevision.current, providerCommitState.current.baseline?.provider_fingerprint ?? null)) return null;
     if (!result.provider_fingerprint) {
       showNotice(t("设置已加载"), result.message, "failed");
       return null;
@@ -326,9 +326,7 @@ export function App() {
     setModelCatalogLoading(true);
     try {
       const result = await run(() => call<ModelCatalogStatusResult>("model_catalog_status"));
-      if (requestRevision !== modelCatalogRequestRevision.current) return null;
-      const expectedProviderFingerprint = providerCommitState.current.baseline?.provider_fingerprint;
-      if (result && expectedProviderFingerprint && result.providerFingerprint !== expectedProviderFingerprint) return null;
+      if (!modelCatalogResponseCanAdopt(requestRevision, modelCatalogRequestRevision.current, result?.providerFingerprint ?? null, providerCommitState.current.baseline?.provider_fingerprint ?? null)) return null;
       if (result) {
         setModelCatalog(result);
         if (!silent && !isSuccessStatus(result.status)) showNotice(t("模型目录"), result.message, result.status);
@@ -786,7 +784,9 @@ export function App() {
     );
     providerCommitState.current = settled.state;
     if (providerCommitResetRequiresAuthoritativeRefresh(resetApplied, settled.disposition)) {
-      setModelCatalog(null); void refreshSettings(true).then((refreshed) => { if (refreshed) void refreshModelCatalog(true, true); });
+      modelCatalogRequestRevision.current += 1;
+      setModelCatalog(null); setModelCatalogLoading(false);
+      void refreshSettings(true).then((refreshed) => { if (refreshed) void refreshModelCatalog(true, true); });
       return false;
     }
     if (settled.disposition === "ignore") return false;

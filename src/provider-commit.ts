@@ -105,6 +105,10 @@ export type ProviderCommitUiState<T> = {
   latestRevision: number;
   baseline: T | null;
 };
+export type SettingsRefreshRequest = {
+  revision: number;
+  providerFingerprintAtStart: string | null;
+};
 
 export function providerCommitResponseIsCurrent(responseRevision: number, latestRevision: number): boolean {
   return responseRevision === latestRevision;
@@ -133,6 +137,33 @@ export function providerCommitResetRequiresAuthoritativeRefresh(
   disposition: ProviderCommitResponseDisposition,
 ): boolean {
   return resetApplied && disposition === "ignore";
+}
+
+export function registerSettingsRefresh(
+  latestRevision: number,
+  providerFingerprintAtStart: string | null,
+): SettingsRefreshRequest {
+  return { revision: latestRevision + 1, providerFingerprintAtStart };
+}
+
+export function settingsRefreshResponseCanAdopt(
+  request: SettingsRefreshRequest,
+  latestRevision: number,
+  currentProviderFingerprint: string | null,
+): boolean {
+  return request.revision === latestRevision
+    && request.providerFingerprintAtStart === currentProviderFingerprint;
+}
+
+export function modelCatalogResponseCanAdopt(
+  requestRevision: number,
+  latestRevision: number,
+  responseProviderFingerprint: string | null,
+  currentProviderFingerprint: string | null,
+): boolean {
+  return requestRevision === latestRevision
+    && (!currentProviderFingerprint
+      || responseProviderFingerprint === currentProviderFingerprint);
 }
 
 export function registerProviderCommit<T>(state: ProviderCommitUiState<T>, revision: number): ProviderCommitUiState<T> {

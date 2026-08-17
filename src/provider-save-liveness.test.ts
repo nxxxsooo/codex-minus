@@ -120,6 +120,16 @@ describe("a provider save always settles", () => {
       /const refreshSettings = async[\s\S]*?\n  \};/,
     )?.[0] ?? "";
     assert.ok(refresh.length > 0, "the settings read was located");
+    assert.match(
+      refresh,
+      /const request = registerSettingsRefresh\(settingsRequestRevision\.current,[\s\S]*?settingsRequestRevision\.current = request\.revision;/,
+      "each settings read registers its monotonic revision before invoking the backend",
+    );
+    assert.match(
+      refresh,
+      /settingsRefreshResponseCanAdopt\(request, settingsRequestRevision\.current, providerCommitState\.current\.baseline\?\.provider_fingerprint \?\? null\)/,
+      "a settings response must still match its request and starting baseline",
+    );
     // A failed read answers with default settings and no fingerprint; adopting it would replace
     // the profiles on screen and postpone the reason until the next save.
     assert.match(refresh, /if \(!result\.provider_fingerprint\) \{[\s\S]*?return null;/);
