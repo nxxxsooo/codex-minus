@@ -1,8 +1,8 @@
 use std::fs;
 
 use crate::commands::{
-    GenericSettingsSaveError, LegacyModelResetCheckpoint, ProviderCommitCheckpoint,
-    ProviderCommitErrorCode, ProviderCommitPaths, ProviderCommitPayload,
+    GenericSettingsSaveError, LegacyModelResetCheckpoint, LegacyModelResetOutcome,
+    ProviderCommitCheckpoint, ProviderCommitErrorCode, ProviderCommitPaths, ProviderCommitPayload,
     assert_staged_native_provider_contract,
     commit_provider_detail_from_paths as commit_provider_detail_from_paths_raw,
     commit_provider_detail_from_paths_observed as commit_provider_detail_from_paths_observed_raw,
@@ -1952,12 +1952,61 @@ fn load_settings_returns_legacy_model_reset_notice() {
     assert_eq!(
         legacy_model_reset_notice(&first).as_deref(),
         Some(
-            "已丢弃旧版自动生成的模型列表，并恢复官方模型；启动模型已设为 5.6 Terra。请重启 Codex 后新建任务。"
+            "已丢弃旧版自动生成的模型列表，并恢复官方模型；至少一个启动模型已设为 5.6 Terra。请重启 Codex 后新建任务。"
         ),
     );
 
     let second = migrate_legacy_model_state_locked_at(&fixture.paths, |_| Ok(())).unwrap();
     assert_eq!(legacy_model_reset_notice(&second), None);
+}
+
+#[test]
+fn legacy_model_reset_notice_reports_only_startup_models_that_changed_to_terra() {
+    let summary =
+        |previous_model: &str, next_model: &str| crate::legacy_model_reset::ResetProfileSummary {
+            profile_id: format!("{previous_model}-{next_model}"),
+            removed_slugs: vec!["gpt-5".to_string()],
+            previous_model: previous_model.to_string(),
+            next_model: next_model.to_string(),
+            active: false,
+        };
+    let terra_notice = "已丢弃旧版自动生成的模型列表，并恢复官方模型；至少一个启动模型已设为 5.6 Terra。请重启 Codex 后新建任务。";
+    let preserved_notice = "已丢弃旧版自动生成的模型列表，并恢复官方模型；现有启动模型已保留。请重启 Codex 后新建任务。";
+    let cases = [
+        (
+            "Eva changed to Terra",
+            vec![summary("gpt-5", "gpt-5.6-terra")],
+            terra_notice,
+        ),
+        (
+            "Luna preserved",
+            vec![summary("gpt-5.6-luna", "gpt-5.6-luna")],
+            preserved_notice,
+        ),
+        (
+            "custom preserved",
+            vec![summary("claude-opus-5", "claude-opus-5")],
+            preserved_notice,
+        ),
+        (
+            "mixed profiles",
+            vec![
+                summary("gpt-5", "gpt-5.6-terra"),
+                summary("gpt-5.6-luna", "gpt-5.6-luna"),
+            ],
+            terra_notice,
+        ),
+    ];
+
+    for (name, reset_profiles, expected) in cases {
+        let mut outcome = LegacyModelResetOutcome::default();
+        outcome.reset_profiles = reset_profiles;
+        assert_eq!(
+            legacy_model_reset_notice(&outcome).as_deref(),
+            Some(expected),
+            "{name}"
+        );
+    }
 }
 
 #[test]

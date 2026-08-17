@@ -524,10 +524,23 @@ pub(crate) fn prepare_settings_load_at(
 }
 
 pub(crate) fn legacy_model_reset_notice(reset: &LegacyModelResetOutcome) -> Option<String> {
-    (!reset.reset_profiles.is_empty()).then(|| {
-        "已丢弃旧版自动生成的模型列表，并恢复官方模型；启动模型已设为 5.6 Terra。请重启 Codex 后新建任务。"
-            .to_string()
-    })
+    if reset.reset_profiles.is_empty() {
+        return None;
+    }
+    if reset.reset_profiles.iter().any(|profile| {
+        profile.previous_model != profile.next_model
+            && profile.next_model == crate::legacy_model_reset::CANONICAL_MIXED_DEFAULT_MODEL
+    }) {
+        Some(
+            "已丢弃旧版自动生成的模型列表，并恢复官方模型；至少一个启动模型已设为 5.6 Terra。请重启 Codex 后新建任务。"
+                .to_string(),
+        )
+    } else {
+        Some(
+            "已丢弃旧版自动生成的模型列表，并恢复官方模型；现有启动模型已保留。请重启 Codex 后新建任务。"
+                .to_string(),
+        )
+    }
 }
 
 #[tauri::command]

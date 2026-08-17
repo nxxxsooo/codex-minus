@@ -6,8 +6,10 @@
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
   "模型目录已恢复": "Model catalog restored",
-  "已丢弃旧版自动生成的模型列表，并恢复官方模型；启动模型已设为 5.6 Terra。请重启 Codex 后新建任务。":
-    "The legacy automatically generated model list was discarded and official models were restored; the startup model is now 5.6 Terra. Restart Codex and start a new task.",
+  "已丢弃旧版自动生成的模型列表，并恢复官方模型；至少一个启动模型已设为 5.6 Terra。请重启 Codex 后新建任务。":
+    "The legacy automatically generated model list was discarded and official models were restored; at least one startup model was set to 5.6 Terra. Restart Codex and start a new task.",
+  "已丢弃旧版自动生成的模型列表，并恢复官方模型；现有启动模型已保留。请重启 Codex 后新建任务。":
+    "The legacy automatically generated model list was discarded and official models were restored; existing startup models were preserved. Restart Codex and start a new task.",
   "完整退出并重新启动 Codex / Desktop / IDE 宿主；本工具不会替你结束或重启这些进程。":
     "Fully quit and relaunch the Codex / Desktop / IDE host; this tool never ends or restarts those processes for you.",
   "重启后新建一个任务，本地扩展注册表才会按新的供应商与目录重建。":

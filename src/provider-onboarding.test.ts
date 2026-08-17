@@ -12,6 +12,7 @@ import {
   officialLoginGuide,
   validateNewProviderDraft,
 } from "./provider-onboarding.ts";
+import { EN_PLAIN } from "./i18n-en.ts";
 
 /// Slug -> is-listed, straight from the shipped asset. The bundled baseline is what a brand-new
 /// profile's catalog can actually represent, so the Pro list is validated against it, not against
@@ -144,6 +145,17 @@ http_headers = { "x-owned" = "keep" }
 });
 
 describe("built-in Pro model list", () => {
+  it("ships exact English keys for both truthful reset notices", () => {
+    assert.equal(
+      EN_PLAIN["已丢弃旧版自动生成的模型列表，并恢复官方模型；至少一个启动模型已设为 5.6 Terra。请重启 Codex 后新建任务。"],
+      "The legacy automatically generated model list was discarded and official models were restored; at least one startup model was set to 5.6 Terra. Restart Codex and start a new task.",
+    );
+    assert.equal(
+      EN_PLAIN["已丢弃旧版自动生成的模型列表，并恢复官方模型；现有启动模型已保留。请重启 Codex 后新建任务。"],
+      "The legacy automatically generated model list was discarded and official models were restored; existing startup models were preserved. Restart Codex and start a new task.",
+    );
+  });
+
   it("pins the Terra default across the frontend list, backend reset, and shipped catalog", () => {
     const rust = fs.readFileSync(
       new URL("../src-tauri/src/legacy_model_reset.rs", import.meta.url),
