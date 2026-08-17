@@ -59,6 +59,8 @@ pub struct SettingsPayload {
     pub settings_path: String,
     pub user_scripts: Value,
     pub provider_fingerprint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub legacy_model_reset_notice: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -491,20 +493,59 @@ pub async fn load_settings() -> CommandResult<SettingsPayload> {
 }
 
 fn load_settings_blocking() -> CommandResult<SettingsPayload> {
-    let home = codex_plus_core::relay_config::default_codex_home_dir();
-    let result = (|| -> anyhow::Result<()> {
-        let _guard = live_state::lock()?;
-        live_state::prepare_secret_paths(&home)?;
-        live_state::recover_locked()?;
-        migrate_legacy_profile_auth_locked()?;
-        Ok(())
-    })();
+    load_settings_blocking_at(&ProviderCommitPaths::defaults())
+}
+
+pub(crate) fn load_settings_blocking_at(
+    paths: &ProviderCommitPaths,
+) -> CommandResult<SettingsPayload> {
+    let result = prepare_settings_load_at(paths);
     match result {
-        Ok(()) => settings_payload("设置已加载。", "设置读取失败"),
-        Err(error) => failed(
-            &format!("设置安全检查失败：{error}"),
-            fallback_settings_payload(),
+        Ok(reset) => {
+            let mut result = settings_payload_at(paths, "设置已加载。", "设置读取失败");
+            result.payload.legacy_model_reset_notice = legacy_model_reset_notice(&reset);
+            result
+        }
+        Err(_) => failed(
+            "设置安全检查失败；本地设置不可用或安全事务未完成。",
+            fallback_settings_payload_at(&paths.settings_path),
         ),
+    }
+}
+
+pub(crate) fn prepare_settings_load_at(
+    paths: &ProviderCommitPaths,
+) -> anyhow::Result<LegacyModelResetOutcome> {
+    let _guard = live_state::lock()?;
+    live_state::prepare_secret_paths_at(&paths.app_state, &paths.settings_path, &paths.codex_home)?;
+    live_state::recover_locked_at(&paths.app_state)?;
+    let migrated = migrate_legacy_profile_auth_locked_at(&paths.settings_path)?;
+    if migrated > 0 {
+        log_manager_event(
+            "manager.profile_auth_migration.completed",
+            json!({ "profileCount": migrated }),
+        );
+    }
+    migrate_legacy_model_state_locked_at(paths, |_| Ok(()))
+}
+
+pub(crate) fn legacy_model_reset_notice(reset: &LegacyModelResetOutcome) -> Option<String> {
+    if reset.reset_profiles.is_empty() {
+        return None;
+    }
+    if reset.reset_profiles.iter().any(|profile| {
+        profile.previous_model != profile.next_model
+            && profile.next_model == crate::legacy_model_reset::CANONICAL_MIXED_DEFAULT_MODEL
+    }) {
+        Some(
+            "已丢弃旧版自动生成的模型列表，并恢复官方模型；至少一个启动模型已设为 5.6 Terra。请重启 Codex 后新建任务。"
+                .to_string(),
+        )
+    } else {
+        Some(
+            "已丢弃旧版自动生成的模型列表，并恢复官方模型；现有启动模型已保留。请重启 Codex 后新建任务。"
+                .to_string(),
+        )
     }
 }
 
@@ -2387,6 +2428,521 @@ impl ProviderCommitPaths {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct LegacyModelResetOutcome {
+    pub(crate) reset_profiles: Vec<crate::legacy_model_reset::ResetProfileSummary>,
+    pub(crate) active_restart_required: bool,
+    committed_settings: Option<BackendSettings>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LegacyModelResetCheckpoint {
+    Planned,
+    CatalogMaterialized,
+    BeforeJournalPreparation,
+    BeforeCommit,
+    PostCommitVerification,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegacyModelResetFailure {
+    SettingsUnreadable,
+    SettingsInvalidJson,
+    PersistedProviderInvalid,
+    LegacyModelListInvalid,
+    LegacyModelWindowsInvalid,
+    LiveConfigInvalid,
+    CatalogUnavailable,
+    GenerationChanged,
+    TransactionFailed,
+}
+
+impl std::fmt::Display for LegacyModelResetFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::SettingsUnreadable => "provider settings file is unreadable",
+            Self::SettingsInvalidJson => "provider settings are invalid JSON",
+            Self::PersistedProviderInvalid => "a saved provider profile failed normalization",
+            Self::LegacyModelListInvalid => "saved legacy model list is invalid",
+            Self::LegacyModelWindowsInvalid => "saved legacy model windows are invalid",
+            Self::LiveConfigInvalid => "live provider config is invalid",
+            Self::CatalogUnavailable => "provider catalog state is unavailable",
+            Self::GenerationChanged => "legacy model reset generation changed before commit",
+            Self::TransactionFailed => "legacy model reset transaction failed",
+        })
+    }
+}
+
+impl std::error::Error for LegacyModelResetFailure {}
+
+fn legacy_model_reset_error(failure: LegacyModelResetFailure) -> anyhow::Error {
+    anyhow::Error::new(failure)
+}
+
+fn provider_commit_failure_for_legacy_model_reset(error: anyhow::Error) -> ProviderCommitFailure {
+    match error.downcast_ref::<LegacyModelResetFailure>() {
+        Some(LegacyModelResetFailure::SettingsUnreadable) => provider_commit_failure(
+            ProviderCommitErrorCode::InputUnavailable,
+            "provider settings file is unreadable",
+        ),
+        Some(LegacyModelResetFailure::SettingsInvalidJson) => provider_commit_failure(
+            ProviderCommitErrorCode::InputUnavailable,
+            "provider settings are invalid JSON",
+        ),
+        Some(LegacyModelResetFailure::PersistedProviderInvalid) => provider_commit_failure(
+            ProviderCommitErrorCode::InputUnavailable,
+            "a saved provider profile failed normalization",
+        ),
+        Some(LegacyModelResetFailure::LegacyModelListInvalid) => provider_commit_failure(
+            ProviderCommitErrorCode::InputUnavailable,
+            "saved legacy model list is invalid",
+        ),
+        Some(LegacyModelResetFailure::LegacyModelWindowsInvalid) => provider_commit_failure(
+            ProviderCommitErrorCode::InputUnavailable,
+            "saved legacy model windows are invalid",
+        ),
+        Some(LegacyModelResetFailure::LiveConfigInvalid) => provider_commit_failure(
+            ProviderCommitErrorCode::InputUnavailable,
+            "live provider config is invalid",
+        ),
+        Some(LegacyModelResetFailure::CatalogUnavailable) => provider_commit_failure(
+            ProviderCommitErrorCode::CatalogUnavailable,
+            "provider catalog state is unavailable",
+        ),
+        _ => provider_commit_failure(
+            ProviderCommitErrorCode::TransactionFailed,
+            "provider transaction failed",
+        ),
+    }
+}
+
+fn classify_legacy_model_reset_catalog_error(error: &anyhow::Error) -> LegacyModelResetFailure {
+    if error
+        .downcast_ref::<crate::model_catalog::InvalidLegacyModelWindows>()
+        .is_some()
+    {
+        LegacyModelResetFailure::LegacyModelWindowsInvalid
+    } else if error
+        .downcast_ref::<crate::model_catalog::InvalidLegacyModelList>()
+        .is_some()
+    {
+        LegacyModelResetFailure::LegacyModelListInvalid
+    } else {
+        LegacyModelResetFailure::CatalogUnavailable
+    }
+}
+
+/// Persists one planned legacy-model reset through the existing live-state journal.
+///
+/// The caller must hold the process-wide coordinator and must have completed the owner-only
+/// legacy auth scrub first. Keeping that credential-destruction step outside this transaction is
+/// what prevents copied OAuth bytes from entering a prior-stage recovery artifact.
+pub(crate) fn migrate_legacy_model_state_locked_at(
+    paths: &ProviderCommitPaths,
+    mut observe: impl FnMut(LegacyModelResetCheckpoint) -> anyhow::Result<()>,
+) -> anyhow::Result<LegacyModelResetOutcome> {
+    let raw_settings = match std::fs::read(&paths.settings_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(LegacyModelResetOutcome::default());
+        }
+        Err(_) => {
+            return Err(legacy_model_reset_error(
+                LegacyModelResetFailure::SettingsUnreadable,
+            ));
+        }
+    };
+    let settings: BackendSettings = serde_json::from_slice(&raw_settings)
+        .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::SettingsInvalidJson))?;
+    for profile in &settings.relay_profiles {
+        if !profile.config_contents.trim().is_empty()
+            && profile
+                .config_contents
+                .parse::<toml_edit::DocumentMut>()
+                .is_err()
+        {
+            return Err(legacy_model_reset_error(
+                LegacyModelResetFailure::PersistedProviderInvalid,
+            ));
+        }
+    }
+    let raw_state = read_optional_bytes(&paths.catalog_state_path)
+        .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::CatalogUnavailable))?;
+    let persisted_state_profile_ids = raw_state
+        .as_deref()
+        .map(serde_json::from_slice::<crate::model_catalog::CatalogState>)
+        .transpose()
+        .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::CatalogUnavailable))?
+        .map(|state| {
+            state
+                .profiles
+                .into_keys()
+                .collect::<std::collections::BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let state = crate::model_catalog::load_and_migrate_state_for_legacy_reset_from_path(
+        &settings,
+        &paths.codex_home,
+        &paths.catalog_state_path,
+    )
+    .map_err(|error| legacy_model_reset_error(classify_legacy_model_reset_catalog_error(&error)))?;
+    let official = crate::model_catalog::visible_official_slugs(&state)
+        .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::CatalogUnavailable))?;
+    let Some(mut plan) = crate::legacy_model_reset::plan_legacy_model_reset(
+        &settings, &state, &official,
+    )
+    .map_err(|error| legacy_model_reset_error(classify_legacy_model_reset_catalog_error(&error)))?
+    else {
+        return Ok(LegacyModelResetOutcome::default());
+    };
+    for reset in &plan.reset_profiles {
+        let profile = plan
+            .settings
+            .relay_profiles
+            .iter()
+            .find(|profile| profile.id == reset.profile_id)
+            .ok_or_else(|| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))?;
+        provider_semantic_identity(
+            &profile.config_contents,
+            LegacyModelResetFailure::PersistedProviderInvalid,
+        )?;
+    }
+
+    let auth_path = paths.codex_home.join("auth.json");
+    let auth_before = read_optional_bytes(&auth_path)
+        .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))?;
+    let live_config_path = paths.codex_home.join("config.toml");
+    let active_reset = plan
+        .reset_profiles
+        .iter()
+        .find(|reset| reset.active && plan.settings.relay_profiles_enabled);
+    let live_before =
+        if active_reset.is_some() {
+            Some(std::fs::read(&live_config_path).map_err(|_| {
+                legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed)
+            })?)
+        } else {
+            None
+        };
+    let generated_before = plan
+        .reset_profiles
+        .iter()
+        .map(|reset| {
+            let path = paths
+                .codex_home
+                .join(crate::model_catalog::generated_relative_path(
+                    &reset.profile_id,
+                ));
+            read_optional_bytes(&path)
+                .map(|bytes| (path, bytes))
+                .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    observe(LegacyModelResetCheckpoint::Planned)
+        .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))?;
+
+    let current_typed_settings_bytes = serialize_settings_without_profile_auth(&settings)
+        .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))?;
+    let next_settings_bytes = serialize_settings_without_profile_auth(&plan.settings)
+        .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))?;
+    let mut mutations = Vec::new();
+    if next_settings_bytes != current_typed_settings_bytes {
+        mutations.push(FileMutation::bytes(
+            paths.settings_path.clone(),
+            next_settings_bytes,
+        ));
+    }
+    let mut context_snapshots = Vec::new();
+
+    for reset in plan.reset_profiles.clone() {
+        let profile = plan
+            .settings
+            .relay_profiles
+            .iter()
+            .find(|profile| profile.id == reset.profile_id)
+            .cloned()
+            .ok_or_else(|| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))?;
+        if reset.active && plan.settings.relay_profiles_enabled {
+            let live = String::from_utf8(live_before.clone().ok_or_else(|| {
+                legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed)
+            })?)
+            .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::LiveConfigInvalid))?;
+            ensure_live_config_selects_profile(
+                &live,
+                &profile.config_contents,
+                &plan.state,
+                &profile.id,
+                !persisted_state_profile_ids.contains(&profile.id),
+            )?;
+            let active_plan = crate::model_catalog::plan_active_profile_with_state(
+                &paths.codex_home,
+                &plan.settings,
+                &crate::legacy_model_reset::set_top_level_model(&live, &reset.next_model).map_err(
+                    |_| legacy_model_reset_error(LegacyModelResetFailure::LiveConfigInvalid),
+                )?,
+                &mut plan.state,
+                false,
+            )
+            .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::CatalogUnavailable))?;
+            mutations.extend(active_plan.mutations);
+            let (protected, snapshot) =
+                context_protected_config(&paths.codex_home, &active_plan.config_contents).map_err(
+                    |_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed),
+                )?;
+            mutations.push(FileMutation::text(live_config_path.clone(), protected));
+            context_snapshots.push(snapshot);
+        } else if let Some(mutation) =
+            crate::model_catalog::materialize_profile(&mut plan.state, &profile, &paths.codex_home)
+                .map_err(|_| {
+                    legacy_model_reset_error(LegacyModelResetFailure::CatalogUnavailable)
+                })?
+        {
+            mutations.push(mutation);
+        }
+    }
+    mutations.push(
+        crate::model_catalog::state_mutation_at(&plan.state, &paths.catalog_state_path)
+            .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))?,
+    );
+
+    observe(LegacyModelResetCheckpoint::CatalogMaterialized)
+        .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))?;
+
+    ensure_legacy_model_reset_generation_current(
+        paths,
+        &raw_settings,
+        raw_state.as_deref(),
+        live_before.as_deref(),
+        &generated_before,
+        auth_before.as_deref(),
+    )?;
+
+    let mut expected_preimages = std::collections::BTreeMap::new();
+    expected_preimages.insert(paths.settings_path.clone(), Some(raw_settings.clone()));
+    expected_preimages.insert(paths.catalog_state_path.clone(), raw_state.clone());
+    for (path, prior) in &generated_before {
+        expected_preimages.insert(path.clone(), prior.clone());
+    }
+    if let Some(live) = &live_before {
+        expected_preimages.insert(live_config_path.clone(), Some(live.clone()));
+    }
+    expected_preimages.insert(auth_path.clone(), auth_before.clone());
+    let mutations = mutations
+        .into_iter()
+        .map(|mutation| {
+            let expected = expected_preimages.remove(&mutation.path).ok_or_else(|| {
+                legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed)
+            })?;
+            Ok(mutation.expecting_preimage(expected))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let observed_preconditions = expected_preimages
+        .into_iter()
+        .map(|(path, expected)| live_state::ObservedFilePrecondition::exact(path, expected))
+        .collect::<Vec<_>>();
+
+    let expected_mutations = mutations.clone();
+    let reset_profiles = plan.reset_profiles.clone();
+    let committed_state = plan.state.clone();
+    let committed_settings = sanitize_settings_for_output(plan.settings.clone());
+    let reset_marker_profile_ids = committed_settings
+        .relay_profiles
+        .iter()
+        .map(|profile| profile.id.as_str())
+        .filter(|profile_id| {
+            crate::legacy_model_reset::legacy_model_reset_evaluation_version(
+                &committed_state,
+                profile_id,
+            ) == crate::legacy_model_reset::LEGACY_MODEL_RESET_VERSION
+                && crate::legacy_model_reset::legacy_model_reset_evaluation_version(
+                    &state, profile_id,
+                ) < crate::legacy_model_reset::LEGACY_MODEL_RESET_VERSION
+        })
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let before_commit_observed = std::cell::Cell::new(false);
+    let observe = std::cell::RefCell::new(&mut observe);
+    live_state::commit_locked_verified_at_observed_with_preconditions(
+        &paths.app_state,
+        &mutations,
+        &observed_preconditions,
+        || {
+            observe.borrow_mut()(LegacyModelResetCheckpoint::BeforeJournalPreparation)?;
+            Ok(())
+        },
+        |_| {
+            if !before_commit_observed.replace(true) {
+                observe.borrow_mut()(LegacyModelResetCheckpoint::BeforeCommit)?;
+            }
+            Ok(())
+        },
+        || {
+            verify_legacy_model_reset_mutations(&expected_mutations)?;
+            for snapshot in &context_snapshots {
+                verify_context_tables(&paths.codex_home, snapshot)?;
+            }
+            anyhow::ensure!(
+                read_optional_bytes(&auth_path)? == auth_before,
+                "live auth changed concurrently"
+            );
+            let stored_state: crate::model_catalog::CatalogState =
+                serde_json::from_slice(&std::fs::read(&paths.catalog_state_path)?)?;
+            for profile_id in &reset_marker_profile_ids {
+                anyhow::ensure!(
+                    crate::legacy_model_reset::legacy_model_reset_evaluation_version(
+                        &stored_state,
+                        profile_id,
+                    ) == crate::legacy_model_reset::LEGACY_MODEL_RESET_VERSION,
+                    "legacy model reset marker was not committed"
+                );
+            }
+            Ok(())
+        },
+        || {
+            observe.borrow_mut()(LegacyModelResetCheckpoint::PostCommitVerification)?;
+            Ok(())
+        },
+    )
+    .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::TransactionFailed))?;
+
+    let active_restart_required = reset_profiles.iter().any(|reset| {
+        reset.active
+            && committed_state
+                .profiles
+                .get(&reset.profile_id)
+                .is_some_and(|profile| profile.restart_required)
+    });
+    Ok(LegacyModelResetOutcome {
+        reset_profiles,
+        active_restart_required,
+        committed_settings: Some(committed_settings),
+    })
+}
+
+fn ensure_live_config_selects_profile(
+    live: &str,
+    profile: &str,
+    state: &crate::model_catalog::CatalogState,
+    profile_id: &str,
+    profile_state_was_missing: bool,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        provider_semantic_identity(live, LegacyModelResetFailure::LiveConfigInvalid)?
+            == provider_semantic_identity(
+                profile,
+                LegacyModelResetFailure::PersistedProviderInvalid,
+            )?,
+        LegacyModelResetFailure::GenerationChanged
+    );
+    let live_document = live
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::LiveConfigInvalid))?;
+    let live_pointer =
+        match live_document.get("model_catalog_json") {
+            Some(pointer) => Some(pointer.as_str().map(ToString::to_string).ok_or_else(|| {
+                legacy_model_reset_error(LegacyModelResetFailure::LiveConfigInvalid)
+            })?),
+            None => None,
+        };
+    let profile_state = state.profiles.get(profile_id);
+    let live_ownership = crate::model_catalog::classify_manager_pointer_ownership(
+        profile_id,
+        live_pointer.as_deref(),
+        profile_state,
+    );
+    let persisted_pointer = crate::model_catalog::root_catalog_pointer(profile);
+    let matching_missing_state_pointer = profile_state_was_missing
+        && live_pointer.is_some()
+        && live_pointer == persisted_pointer
+        && live_ownership == crate::model_catalog::ManagerPointerOwnership::UntrackedGenerated
+        && profile_state.is_some_and(|profile| crate::model_catalog::managed_mode(profile.mode));
+    anyhow::ensure!(
+        live_pointer.is_none()
+            || live_ownership == crate::model_catalog::ManagerPointerOwnership::Managed
+            || matching_missing_state_pointer,
+        LegacyModelResetFailure::GenerationChanged
+    );
+    Ok(())
+}
+
+fn provider_semantic_identity(
+    contents: &str,
+    invalid: LegacyModelResetFailure,
+) -> anyhow::Result<serde_json::Value> {
+    let document: serde_json::Value =
+        toml_edit::de::from_str(contents).map_err(|_| legacy_model_reset_error(invalid))?;
+    let provider_id = document
+        .get("model_provider")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| legacy_model_reset_error(invalid))?;
+    let provider = document
+        .get("model_providers")
+        .and_then(|providers| providers.get(provider_id))
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .map(serde_json::Value::Object)
+        .ok_or_else(|| legacy_model_reset_error(invalid))?;
+    Ok(json!({
+        "selectedProviderId": provider_id,
+        "selectedProvider": provider,
+        "baseUrl": document.get("base_url"),
+        "apiKey": document.get("OPENAI_API_KEY"),
+        "chatBaseUrl": document.get("codex_plus_chat_base_url"),
+    }))
+}
+
+fn ensure_legacy_model_reset_generation_current(
+    paths: &ProviderCommitPaths,
+    settings: &[u8],
+    state: Option<&[u8]>,
+    live: Option<&[u8]>,
+    generated: &[(PathBuf, Option<Vec<u8>>)],
+    auth: Option<&[u8]>,
+) -> anyhow::Result<()> {
+    let current = |path: &Path| {
+        read_optional_bytes(path)
+            .map_err(|_| legacy_model_reset_error(LegacyModelResetFailure::GenerationChanged))
+    };
+    anyhow::ensure!(
+        current(&paths.settings_path)?.as_deref() == Some(settings),
+        LegacyModelResetFailure::GenerationChanged
+    );
+    anyhow::ensure!(
+        current(&paths.catalog_state_path)?.as_deref() == state,
+        LegacyModelResetFailure::GenerationChanged
+    );
+    if let Some(live) = live {
+        anyhow::ensure!(
+            current(&paths.codex_home.join("config.toml"))?.as_deref() == Some(live),
+            LegacyModelResetFailure::GenerationChanged
+        );
+    }
+    for (path, expected) in generated {
+        anyhow::ensure!(
+            current(path)? == *expected,
+            LegacyModelResetFailure::GenerationChanged
+        );
+    }
+    anyhow::ensure!(
+        current(&paths.codex_home.join("auth.json"))?.as_deref() == auth,
+        LegacyModelResetFailure::GenerationChanged
+    );
+    Ok(())
+}
+
+fn verify_legacy_model_reset_mutations(mutations: &[FileMutation]) -> anyhow::Result<()> {
+    for mutation in mutations {
+        anyhow::ensure!(
+            read_optional_bytes(&mutation.path)? == mutation.contents,
+            "legacy model reset target hash mismatch"
+        );
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderCommitPayload {
@@ -2395,6 +2951,7 @@ pub struct ProviderCommitPayload {
     pub draft_revision: u64,
     pub provider_fingerprint: String,
     pub restart_required: bool,
+    pub legacy_model_reset_applied: bool,
     pub error_code: Option<ProviderCommitErrorCode>,
     /// Static rejecting rule. Every value is a literal chosen at the failing call site, so the
     /// discriminator can reach the user without a redaction pass over dynamic content.
@@ -2412,8 +2969,26 @@ impl ProviderCommitPayload {
             draft_revision,
             provider_fingerprint: String::new(),
             restart_required: false,
+            legacy_model_reset_applied: false,
             error_code: Some(error_code),
             reason: Some(reason),
+        }
+    }
+
+    fn legacy_model_reset_applied(
+        settings: BackendSettings,
+        draft_revision: u64,
+        provider_fingerprint: String,
+        restart_required: bool,
+    ) -> Self {
+        Self {
+            settings: Some(sanitize_settings_for_output(settings)),
+            draft_revision,
+            provider_fingerprint,
+            restart_required,
+            legacy_model_reset_applied: true,
+            error_code: Some(ProviderCommitErrorCode::StaleState),
+            reason: Some("legacy model reset applied; requested provider edit was not applied"),
         }
     }
 }
@@ -2431,10 +3006,21 @@ pub enum ProviderCommitErrorCode {
     TransactionFailed,
 }
 
-#[derive(Debug)]
 pub struct ProviderCommitFailure {
     code: ProviderCommitErrorCode,
     message: &'static str,
+    reset_payload: Option<ProviderCommitPayload>,
+}
+
+impl std::fmt::Debug for ProviderCommitFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProviderCommitFailure")
+            .field("code", &self.code)
+            .field("message", &self.message)
+            .field("has_reset_payload", &self.reset_payload.is_some())
+            .finish()
+    }
 }
 
 /// Transaction checkpoints exposed only so isolated regression fixtures can inject failures
@@ -2461,7 +3047,11 @@ pub enum ProviderCommitCheckpoint {
 
 impl ProviderCommitFailure {
     fn new(code: ProviderCommitErrorCode, message: &'static str) -> Self {
-        Self { code, message }
+        Self {
+            code,
+            message,
+            reset_payload: None,
+        }
     }
 
     pub fn code(&self) -> ProviderCommitErrorCode {
@@ -2470,6 +3060,15 @@ impl ProviderCommitFailure {
 
     pub fn reason(&self) -> &'static str {
         self.message
+    }
+
+    pub(crate) fn reset_payload(&self) -> Option<&ProviderCommitPayload> {
+        self.reset_payload.as_ref()
+    }
+
+    fn with_reset_payload(mut self, payload: ProviderCommitPayload) -> Self {
+        self.reset_payload = Some(payload);
+        self
     }
 }
 
@@ -2537,16 +3136,12 @@ pub async fn commit_provider_detail(
     request: crate::provider_commit::ProviderCommitRequest,
 ) -> CommandResult<ProviderCommitPayload> {
     let draft_revision = request.draft_revision;
-    let task =
-        tauri::async_runtime::spawn_blocking(move || {
-            match commit_provider_detail_from_paths(&ProviderCommitPaths::defaults(), request) {
-                Ok(payload) => ok("供应商与模型目录已作为同一代提交。", payload),
-                Err(error) => failed(
-                    "供应商提交失败；已保留原有设置与 live 配置。",
-                    ProviderCommitPayload::failure(draft_revision, error.code(), error.reason()),
-                ),
-            }
-        });
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        provider_commit_command_result(
+            draft_revision,
+            commit_provider_detail_from_paths(&ProviderCommitPaths::defaults(), request),
+        )
+    });
     settle_blocking(
         task,
         "供应商提交中断；已保留原有设置与 live 配置。",
@@ -2559,6 +3154,28 @@ pub async fn commit_provider_detail(
         },
     )
     .await
+}
+
+pub(crate) fn provider_commit_command_result(
+    draft_revision: u64,
+    result: Result<ProviderCommitPayload, ProviderCommitFailure>,
+) -> CommandResult<ProviderCommitPayload> {
+    match result {
+        Ok(payload) => ok("供应商与模型目录已作为同一代提交。", payload),
+        Err(error) if error.reset_payload().is_some() => {
+            let payload = error.reset_payload().cloned().unwrap();
+            let message = if payload.restart_required {
+                "已丢弃旧版自动生成的模型列表并恢复官方模型；本次供应商更改尚未保存。请重启 Codex 后新建任务，再检查更新后的设置并重新保存。"
+            } else {
+                "已丢弃旧版自动生成的模型列表并恢复官方模型；本次供应商更改尚未保存。页面已更新，请检查后重新保存。"
+            };
+            failed(message, payload)
+        }
+        Err(error) => failed(
+            "供应商提交失败；已保留原有设置与 live 配置。",
+            ProviderCommitPayload::failure(draft_revision, error.code(), error.reason()),
+        ),
+    }
 }
 
 pub fn commit_provider_detail_from_paths(
@@ -2596,6 +3213,37 @@ pub fn commit_provider_detail_from_paths_observed(
     // prepare a settings prior stage, so copied OAuth can never enter recovery material.
     migrate_legacy_profile_auth_locked_at(&paths.settings_path)
         .map_err(provider_commit_failure_for_legacy_auth_migration)?;
+    let legacy_reset = migrate_legacy_model_state_locked_at(paths, |_| Ok(()))
+        .map_err(provider_commit_failure_for_legacy_model_reset)?;
+    if !legacy_reset.reset_profiles.is_empty() {
+        let committed_settings = legacy_reset.committed_settings.ok_or_else(|| {
+            provider_commit_failure(
+                ProviderCommitErrorCode::TransactionFailed,
+                "provider transaction failed",
+            )
+        })?;
+        // Reset loading intentionally preserves stale implicit modes long enough to decide
+        // eligibility. A direct response must not expose that transitional generation: use the
+        // same General loader as immediate settings/status and the next real CAS. If unrelated
+        // generic compatibility data is independently unreadable, the reset still committed and
+        // its truthful fallback payload remains available for authoritative reconciliation.
+        let (authoritative_settings, authoritative_fingerprint) =
+            match settings_payload_value_at(paths) {
+                Ok(payload) => (payload.settings, payload.provider_fingerprint),
+                Err(_) => (committed_settings, String::new()),
+            };
+        let payload = ProviderCommitPayload::legacy_model_reset_applied(
+            authoritative_settings,
+            request.draft_revision,
+            authoritative_fingerprint,
+            legacy_reset.active_restart_required,
+        );
+        return Err(provider_commit_failure(
+            ProviderCommitErrorCode::StaleState,
+            "legacy model reset applied; requested provider edit was not applied",
+        )
+        .with_reset_payload(payload));
+    }
 
     let (persisted_settings_bytes, persisted_settings) =
         load_provider_commit_settings(&paths.settings_path).map_err(|reason| {
@@ -2627,8 +3275,12 @@ pub fn commit_provider_detail_from_paths_observed(
     // Compare-and-swap is decided here and only here. Restating the accepted baseline keeps the
     // later validators comparing against one agreed generation instead of re-deciding staleness
     // against a form the editor was never shown.
-    request.expected_provider_fingerprint =
-        validate_provider_commit_cas(&persisted_settings, &persisted_as_shown, &request)?;
+    request.expected_provider_fingerprint = validate_provider_commit_cas(
+        &persisted_settings,
+        &persisted_as_shown,
+        &persisted_state,
+        &request,
+    )?;
     validate_provider_commit_catalog_structure(&request)?;
     let focused_id = request.focused_profile_id.clone();
     if focused_id.is_some() {
@@ -3010,8 +3662,9 @@ pub fn commit_provider_detail_from_paths_observed(
             .get(focused_id)
             .is_some_and(|state| state.restart_required)
     });
-    let provider_fingerprint = crate::provider_commit::provider_owned_fingerprint(
+    let provider_fingerprint = crate::provider_commit::provider_generation_fingerprint(
         &ProviderOwnedTopologyDraft::from_settings(&plan.settings),
+        &plan.catalog_state,
     )
     .map_err(|_| {
         provider_commit_failure(
@@ -3024,6 +3677,7 @@ pub fn commit_provider_detail_from_paths_observed(
         draft_revision: plan.draft_revision,
         provider_fingerprint,
         restart_required,
+        legacy_model_reset_applied: false,
         error_code: None,
         reason: None,
     })
@@ -3350,11 +4004,13 @@ fn sanitized_provider_validation_error(
 fn validate_provider_commit_cas(
     persisted_settings: &BackendSettings,
     persisted_as_shown: &BackendSettings,
+    persisted_state: &crate::model_catalog::CatalogState,
     request: &crate::provider_commit::ProviderCommitRequest,
 ) -> Result<String, ProviderCommitFailure> {
-    let fingerprint = |settings: &BackendSettings| {
-        crate::provider_commit::provider_owned_fingerprint(
+    let generation_fingerprint = |settings: &BackendSettings| {
+        crate::provider_commit::provider_generation_fingerprint(
             &crate::provider_commit::ProviderOwnedTopologyDraft::from_settings(settings),
+            persisted_state,
         )
         .map_err(|_| {
             provider_commit_failure(
@@ -3363,16 +4019,24 @@ fn validate_provider_commit_cas(
             )
         })
     };
-    let expected = fingerprint(persisted_settings)?;
+    let expected = generation_fingerprint(persisted_settings)?;
     let accepted = request.expected_provider_fingerprint == expected
-        || request.expected_provider_fingerprint == fingerprint(persisted_as_shown)?;
+        || request.expected_provider_fingerprint == generation_fingerprint(persisted_as_shown)?;
     if !accepted || request.previous_active_relay_id != persisted_settings.active_relay_id {
         return Err(provider_commit_failure(
             ProviderCommitErrorCode::StaleState,
             "provider state changed; reload or merge before saving",
         ));
     }
-    Ok(expected)
+    crate::provider_commit::provider_owned_fingerprint(
+        &crate::provider_commit::ProviderOwnedTopologyDraft::from_settings(persisted_settings),
+    )
+    .map_err(|_| {
+        provider_commit_failure(
+            ProviderCommitErrorCode::InvalidDraft,
+            "provider fingerprint validation failed",
+        )
+    })
 }
 
 fn validate_provider_commit_catalog_structure(
@@ -5597,22 +6261,52 @@ fn open_url(url: &str) -> anyhow::Result<()> {
 }
 
 fn settings_payload(message: &str, failure_context: &str) -> CommandResult<SettingsPayload> {
-    match settings_payload_value() {
+    settings_payload_at(&ProviderCommitPaths::defaults(), message, failure_context)
+}
+
+fn settings_payload_at(
+    paths: &ProviderCommitPaths,
+    message: &str,
+    failure_context: &str,
+) -> CommandResult<SettingsPayload> {
+    match settings_payload_value_at(paths) {
         Ok(payload) => ok(message, payload),
         Err((error, payload)) => failed(&format!("{failure_context}：{error}"), payload),
     }
 }
 
 fn settings_payload_value() -> Result<SettingsPayload, (anyhow::Error, SettingsPayload)> {
-    let store = SettingsStore::default();
-    let settings_path = codex_plus_core::paths::default_settings_path()
-        .to_string_lossy()
-        .to_string();
+    settings_payload_value_at(&ProviderCommitPaths::defaults())
+}
+
+fn settings_payload_value_at(
+    paths: &ProviderCommitPaths,
+) -> Result<SettingsPayload, (anyhow::Error, SettingsPayload)> {
+    let store = SettingsStore::new(paths.settings_path.clone());
+    let settings_path = paths.settings_path.to_string_lossy().to_string();
     match store.load() {
         Ok(settings) => {
             let settings = sanitize_settings_for_output(settings);
-            let provider_fingerprint = crate::provider_commit::provider_owned_fingerprint(
+            let state = crate::model_catalog::load_and_migrate_state_from_path(
+                &settings,
+                &paths.codex_home,
+                &paths.catalog_state_path,
+            )
+            .map_err(|error| {
+                (
+                    error,
+                    SettingsPayload {
+                        settings: BackendSettings::default(),
+                        settings_path: settings_path.clone(),
+                        user_scripts: user_script_inventory(),
+                        provider_fingerprint: String::new(),
+                        legacy_model_reset_notice: None,
+                    },
+                )
+            })?;
+            let provider_fingerprint = crate::provider_commit::provider_generation_fingerprint(
                 &crate::provider_commit::ProviderOwnedTopologyDraft::from_settings(&settings),
+                &state,
             )
             .unwrap_or_default();
             Ok(SettingsPayload {
@@ -5620,6 +6314,7 @@ fn settings_payload_value() -> Result<SettingsPayload, (anyhow::Error, SettingsP
                 settings_path,
                 user_scripts: user_script_inventory(),
                 provider_fingerprint,
+                legacy_model_reset_notice: None,
             })
         }
         Err(error) => Err((
@@ -5629,19 +6324,23 @@ fn settings_payload_value() -> Result<SettingsPayload, (anyhow::Error, SettingsP
                 settings_path,
                 user_scripts: user_script_inventory(),
                 provider_fingerprint: String::new(),
+                legacy_model_reset_notice: None,
             },
         )),
     }
 }
 
 fn fallback_settings_payload() -> SettingsPayload {
+    fallback_settings_payload_at(&codex_plus_core::paths::default_settings_path())
+}
+
+fn fallback_settings_payload_at(settings_path: &Path) -> SettingsPayload {
     SettingsPayload {
         settings: BackendSettings::default(),
-        settings_path: codex_plus_core::paths::default_settings_path()
-            .to_string_lossy()
-            .to_string(),
+        settings_path: settings_path.to_string_lossy().to_string(),
         user_scripts: user_script_inventory(),
         provider_fingerprint: String::new(),
+        legacy_model_reset_notice: None,
     }
 }
 

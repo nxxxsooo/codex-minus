@@ -94,16 +94,17 @@ import {
   buildProviderMutationInvocation,
   catalogDraftAvailability,
   managedCatalogCapable,
-  providerDeleteAvailable,
+  modelCatalogResponseCanAdopt, providerDeleteAvailable,
   providerCommitFailureNotice,
   providerCommitFailureShouldReconcileForm,
-  registerProviderCommit,
+  providerCommitResponseRequiresAuthoritativeRefresh, registerProviderCommit,
   settleProviderCommit,
   type ProviderCommitResponseDisposition,
   type ProfileCatalogDraft,
   type ProviderCommitUiState,
   type ProviderMutationKind,
 } from "./provider-commit";
+import * as settingsBaseline from "./settings-baseline";
 import { LiveConfigPanel } from "./relay-config-panels";
 import { providerDoctorSteps } from "./provider-doctor-steps";
 import { isSuccessStatus, statusClass, statusLabel } from "./status-presentation";
@@ -267,13 +268,15 @@ export function App() {
     latestRevision: 0,
     baseline: null,
   });
+  const settingsBaselineEpoch = useRef(settingsBaseline.createSettingsBaselineEpochState());
+  const legacyModelResetNotices = useRef(settingsBaseline.createLegacyModelResetNoticeState());
+  const modelCatalogRequestRevision = useRef(0);
 
   const call = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
 
   const logDiagnostic = (event: string, detail: Record<string, unknown> = {}) => {
     void invoke("write_diagnostic_event", { event, detail }).catch(() => {});
   };
-
   const run = async <T,>(task: () => Promise<T>): Promise<T | null> => {
     try {
       return await task();
@@ -283,22 +286,30 @@ export function App() {
     }
   };
 
+  const installSettingsBaseline = (baseline: SettingsResult) => {
+    settingsBaselineEpoch.current = settingsBaseline.advanceSettingsBaselineEpoch(settingsBaselineEpoch.current);
+    providerCommitState.current = { ...providerCommitState.current, baseline };
+    setSettings(baseline);
+    setSettingsForm(baseline.settings);
+  };
+
   const refreshSettings = async (silent = false) => {
+    const registered = settingsBaseline.registerSettingsRead(settingsBaselineEpoch.current);
+    settingsBaselineEpoch.current = registered.state;
     const result = await run(() => call<SettingsResult>("load_settings"));
     if (!result) return null;
-    // A read that failed answers with default settings and no fingerprint. Adopting that as the
-    // compare-and-swap baseline would replace the real profiles on screen and hide the reason
-    // until the next save reported a missing fingerprint, so keep the old baseline and say why.
+    const notice = settingsBaseline.consumeLegacyModelResetNotice(legacyModelResetNotices.current, { eventId: result.provider_fingerprint, message: result.legacy_model_reset_notice });
+    legacyModelResetNotices.current = notice.state;
+    if (notice.notice) showNotice(t("模型目录已恢复"), notice.notice, "ok");
+    if (!settingsBaseline.settingsReadResponseCanAdopt(registered.request, settingsBaselineEpoch.current)) return null;
     if (!result.provider_fingerprint) {
       showNotice(t("设置已加载"), result.message, "failed");
       return null;
     }
     const normalized = normalizeSettings(result.settings);
     const baseline = { ...result, settings: normalized };
-    providerCommitState.current = { ...providerCommitState.current, baseline };
-    setSettings(baseline);
-    setSettingsForm(normalized);
-    if (!silent) showResultNotice(t("设置已加载"), result, { silentSuccess: true });
+    installSettingsBaseline(baseline);
+    if (!notice.notice && !silent) showResultNotice(t("设置已加载"), result, { silentSuccess: true });
     return normalized;
   };
 
@@ -319,18 +330,20 @@ export function App() {
     return result;
   };
 
-  const refreshModelCatalog = async (silent = false) => {
-    if (modelCatalogLoading) return null;
+  const refreshModelCatalog = async (silent = false, force = false) => {
+    if (modelCatalogLoading && !force) return null;
+    const requestRevision = ++modelCatalogRequestRevision.current;
     setModelCatalogLoading(true);
     try {
       const result = await run(() => call<ModelCatalogStatusResult>("model_catalog_status"));
+      if (!modelCatalogResponseCanAdopt(requestRevision, modelCatalogRequestRevision.current, result?.providerFingerprint ?? null, providerCommitState.current.baseline?.provider_fingerprint ?? null)) return null;
       if (result) {
         setModelCatalog(result);
         if (!silent && !isSuccessStatus(result.status)) showNotice(t("模型目录"), result.message, result.status);
       }
       return result;
     } finally {
-      setModelCatalogLoading(false);
+      if (requestRevision === modelCatalogRequestRevision.current) setModelCatalogLoading(false);
     }
   };
 
@@ -606,8 +619,8 @@ export function App() {
   const navigate = async (next: Route) => {
     setRoute(next);
     if (next === "relay") {
+      await refreshSettings(true);
       await Promise.all([
-        refreshSettings(true),
         refreshRelay(true),
         refreshRelayFiles(true),
         refreshEnvConflicts(true),
@@ -626,27 +639,25 @@ export function App() {
 
   const saveSettings = async () => {
     const next = normalizeSettings(settingsForm);
+    settingsBaselineEpoch.current = settingsBaseline.advanceSettingsBaselineEpoch(settingsBaselineEpoch.current);
     const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
     if (result) {
       const normalized = normalizeSettings(result.settings);
       const baseline = { ...result, settings: normalized };
-      providerCommitState.current = { ...providerCommitState.current, baseline };
-      setSettings(baseline);
-      setSettingsForm(normalized);
+      installSettingsBaseline(baseline);
       showNotice(t("设置保存"), result.message, result.status);
     }
   };
 
   const saveSettingsValue = async (next: BackendSettings, silent = true) => {
     const normalized = normalizeSettings(next);
+    settingsBaselineEpoch.current = settingsBaseline.advanceSettingsBaselineEpoch(settingsBaselineEpoch.current);
     setSettingsForm(normalized);
     const result = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
     if (result) {
       const normalized = normalizeSettings(result.settings);
       const baseline = { ...result, settings: normalized };
-      providerCommitState.current = { ...providerCommitState.current, baseline };
-      setSettings(baseline);
-      setSettingsForm(normalized);
+      installSettingsBaseline(baseline);
       if (!silent || !isSuccessStatus(result.status)) showNotice(t("设置保存"), result.message, result.status);
     }
     return !!result && isSuccessStatus(result.status);
@@ -731,7 +742,14 @@ export function App() {
   const refreshAfterCommit = () => {
     void refreshRelay(true);
     void refreshRelayFiles(true);
-    void refreshModelCatalog(true);
+    void refreshModelCatalog(true, true);
+  };
+
+  const refreshAuthoritativeProviderState = async () => {
+    modelCatalogRequestRevision.current += 1;
+    setModelCatalog(null); setModelCatalogLoading(false);
+    const refreshed = await refreshSettings(true);
+    if (refreshed) await refreshModelCatalog(true, true);
   };
 
   const submitProviderCommit = async (invocation: ReturnType<typeof buildProviderMutationInvocation>) => {
@@ -739,20 +757,13 @@ export function App() {
     providerCommitState.current = registerProviderCommit(providerCommitState.current, revision);
     const reconcileTopologyFailure = async (disposition: ProviderCommitResponseDisposition) => {
       if (!providerCommitFailureShouldReconcileForm(invocation.request.focusedProfileId, disposition)) return;
-      const baseline = providerCommitState.current.baseline;
-      if (baseline) {
-        setSettings(baseline);
-        setSettingsForm(normalizeSettings(baseline.settings));
-      } else {
-        await refreshSettings(true);
-      }
+      await refreshAuthoritativeProviderState();
     };
     let result: ProviderCommitResult;
     try {
       result = await call<ProviderCommitResult>(invocation.command, { request: invocation.request });
     } catch (error) {
       const settled = settleProviderCommit(providerCommitState.current, revision, false, null);
-      providerCommitState.current = settled.state;
       if (settled.disposition === "report") {
         await reconcileTopologyFailure(settled.disposition);
         showErrorNotice(t("调用失败"), error);
@@ -760,39 +771,37 @@ export function App() {
       return false;
     }
     const succeeded = isSuccessStatus(result.status) && !!result.settings;
+    const resetApplied = result.legacyModelResetApplied === true && !!result.settings && !!result.providerFingerprint;
     const selectedSettings = result.settings ? normalizeSettings(result.settings) : null;
     const priorBaseline = providerCommitState.current.baseline ?? settings;
-    const nextBaseline = succeeded && selectedSettings
-      ? {
-          status: result.status,
-          message: result.message,
-          settings: selectedSettings,
-          settings_path: priorBaseline?.settings_path ?? "",
-          user_scripts: priorBaseline?.user_scripts ?? {},
-          provider_fingerprint: result.providerFingerprint,
-        }
+    const nextBaseline = (succeeded || resetApplied) && selectedSettings
+      ? settingsBaseline.settingsBaselineFromProviderCommit(result, selectedSettings, priorBaseline)
       : null;
-    const settled = settleProviderCommit(
-      providerCommitState.current,
-      result.draftRevision,
-      succeeded,
-      nextBaseline,
-    );
-    providerCommitState.current = settled.state;
+    const settled = settleProviderCommit(providerCommitState.current, result.draftRevision, succeeded, nextBaseline);
+    if (resetApplied) {
+      const notice = settingsBaseline.consumeLegacyModelResetNotice(legacyModelResetNotices.current, { eventId: result.providerFingerprint, message: result.message });
+      legacyModelResetNotices.current = notice.state;
+      if (notice.notice) showNotice(t("模型目录已恢复"), notice.notice, result.status, providerCommitFailureNotice(result.message, result.errorCode, result.reason).detail);
+    }
+    if (providerCommitResponseRequiresAuthoritativeRefresh(succeeded, resetApplied, settled.disposition)) {
+      void refreshAuthoritativeProviderState();
+      return false;
+    }
     if (settled.disposition === "ignore") return false;
+    if (nextBaseline && selectedSettings) {
+      installSettingsBaseline(nextBaseline);
+    }
     if (settled.disposition === "report") {
+      if (resetApplied && nextBaseline && selectedSettings) {
+        setModelCatalog(null); refreshAfterCommit();
+        return false;
+      }
       await reconcileTopologyFailure(settled.disposition);
       const failure = providerCommitFailureNotice(result.message, result.errorCode, result.reason);
       showNotice(t("保存供应商"), failure.sentence, result.status, failure.detail);
       return false;
     }
     if (!nextBaseline || !selectedSettings) return false;
-    setSettings(nextBaseline);
-    if (settled.disposition === "adopt-baseline") {
-      refreshAfterCommit();
-      return false;
-    }
-    setSettingsForm(selectedSettings);
     refreshAfterCommit();
     return true;
   };
@@ -1059,13 +1068,10 @@ export function App() {
   };
 
   useEffect(() => {
-    void Promise.all([
-      refreshSettings(true),
-      refreshRelay(true),
-      refreshRelayFiles(true),
-      refreshEnvConflicts(true),
-      refreshModelCatalog(true),
-    ]);
+    void (async () => {
+      await refreshSettings(true);
+      await Promise.all([refreshRelay(true), refreshRelayFiles(true), refreshEnvConflicts(true), refreshModelCatalog(true)]);
+    })();
     const scheduleMaintenance = () => {
       void refreshSessionLifecycle(true).then((result) => {
         if (result?.archiveEnabled) void runArchiveMaintenance();
@@ -1257,7 +1263,6 @@ export function App() {
               modelCatalogLoading={modelCatalogLoading}
               envConflicts={envConflicts}
               form={settingsForm}
-              onFormChange={setSettingsForm}
               actions={actions}
             />
           </div>
@@ -1345,7 +1350,6 @@ function RelayScreen({
   modelCatalogLoading,
   envConflicts,
   form,
-  onFormChange,
   actions,
 }: {
   settings: SettingsResult | null;
@@ -1354,7 +1358,6 @@ function RelayScreen({
   modelCatalogLoading: boolean;
   envConflicts: EnvConflictsResult | null;
   form: BackendSettings;
-  onFormChange: (value: BackendSettings) => void;
   actions: Actions;
 }) {
   const normalized = normalizeSettings(form);

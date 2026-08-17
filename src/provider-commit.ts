@@ -100,7 +100,7 @@ export type ProviderCommitInvocation = {
 };
 
 export type CatalogDraftAvailability = "not-required" | "implicit" | "persisted" | "unavailable";
-export type ProviderCommitResponseDisposition = "apply" | "adopt-baseline" | "report" | "ignore";
+export type ProviderCommitResponseDisposition = "apply" | "report" | "ignore";
 export type ProviderCommitUiState<T> = {
   latestRevision: number;
   baseline: T | null;
@@ -118,7 +118,7 @@ export function providerCommitResponseDisposition(
   if (providerCommitResponseIsCurrent(responseRevision, latestRevision)) {
     return succeeded ? "apply" : "report";
   }
-  return succeeded ? "adopt-baseline" : "ignore";
+  return "ignore";
 }
 
 export function providerCommitFailureShouldReconcileForm(
@@ -126,6 +126,25 @@ export function providerCommitFailureShouldReconcileForm(
   disposition: ProviderCommitResponseDisposition,
 ): boolean {
   return focusedProfileId === null && disposition === "report";
+}
+
+export function providerCommitResponseRequiresAuthoritativeRefresh(
+  succeeded: boolean,
+  resetApplied: boolean,
+  disposition: ProviderCommitResponseDisposition,
+): boolean {
+  return disposition === "ignore" && (succeeded || resetApplied);
+}
+
+export function modelCatalogResponseCanAdopt(
+  requestRevision: number,
+  latestRevision: number,
+  responseProviderFingerprint: string | null,
+  currentProviderFingerprint: string | null,
+): boolean {
+  return requestRevision === latestRevision
+    && (!currentProviderFingerprint
+      || responseProviderFingerprint === currentProviderFingerprint);
 }
 
 export function registerProviderCommit<T>(state: ProviderCommitUiState<T>, revision: number): ProviderCommitUiState<T> {
@@ -141,7 +160,7 @@ export function settleProviderCommit<T>(
 ): { state: ProviderCommitUiState<T>; disposition: ProviderCommitResponseDisposition } {
   const disposition = providerCommitResponseDisposition(revision, state.latestRevision, succeeded);
   return {
-    state: succeeded && baseline ? { ...state, baseline } : state,
+    state: baseline && disposition !== "ignore" ? { ...state, baseline } : state,
     disposition,
   };
 }

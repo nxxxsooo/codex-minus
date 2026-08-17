@@ -6,6 +6,7 @@ import type { CatalogOverlayDraft } from "./model-catalog-ui.ts";
 import type { ProviderRelayProfileSource } from "./provider-commit.ts";
 
 const commitModule = await import("./provider-commit.ts").catch(() => null);
+const baselineModule = await import("./settings-baseline.ts").catch(() => null);
 
 const emptyOverlay = (): CatalogOverlayDraft => ({ official: {}, custom: [] });
 
@@ -67,7 +68,7 @@ describe("provider-owned commit request", () => {
     assert.ok(commitModule, "provider UI safety helpers must exist");
     assert.equal(commitModule.providerCommitResponseIsCurrent(8, 9), false);
     assert.equal(commitModule.providerCommitResponseIsCurrent(9, 9), true);
-    assert.equal(commitModule.providerCommitResponseDisposition(8, 9, true), "adopt-baseline");
+    assert.equal(commitModule.providerCommitResponseDisposition(8, 9, true), "ignore");
     assert.equal(commitModule.providerCommitResponseDisposition(8, 9, false), "ignore");
     assert.equal(commitModule.providerCommitResponseDisposition(9, 9, true), "apply");
     assert.equal(commitModule.providerCommitResponseDisposition(9, 9, false), "report");
@@ -94,11 +95,43 @@ describe("provider-owned commit request", () => {
     state = commitModule.registerProviderCommit(settled.state, 2);
     state = commitModule.registerProviderCommit(state, 3);
     settled = commitModule.settleProviderCommit(state, 2, true, "persisted-2");
-    assert.equal(settled.disposition, "adopt-baseline");
-    assert.equal(settled.state.baseline, "persisted-2");
+    assert.equal(settled.disposition, "ignore");
+    assert.equal(settled.state.baseline, "persisted-1");
     settled = commitModule.settleProviderCommit(settled.state, 3, false, null);
     assert.equal(settled.disposition, "report");
-    assert.equal(settled.state.baseline, "persisted-2");
+    assert.equal(settled.state.baseline, "persisted-1");
+    const resetSettled = commitModule.settleProviderCommit(
+      settled.state,
+      3,
+      false,
+      "reset-baseline-3",
+    );
+    assert.equal(resetSettled.disposition, "report");
+    assert.equal(resetSettled.state.baseline, "reset-baseline-3");
+    const obsoleteReset = commitModule.settleProviderCommit(
+      resetSettled.state,
+      2,
+      false,
+      "obsolete-reset-baseline-2",
+    );
+    assert.equal(obsoleteReset.disposition, "ignore");
+    assert.equal(obsoleteReset.state.baseline, "reset-baseline-3");
+    assert.equal(
+      commitModule.providerCommitResponseRequiresAuthoritativeRefresh(
+        false,
+        true,
+        obsoleteReset.disposition,
+      ),
+      true,
+    );
+    assert.equal(
+      commitModule.providerCommitResponseRequiresAuthoritativeRefresh(
+        false,
+        false,
+        obsoleteReset.disposition,
+      ),
+      false,
+    );
     assert.equal(
       commitModule.providerCommitFailureShouldReconcileForm(null, settled.disposition),
       true,
@@ -109,6 +142,352 @@ describe("provider-owned commit request", () => {
     );
     assert.equal(commitModule.settleProviderCommit(settled.state, 2, false, null).disposition, "ignore");
     assert.equal(commitModule.providerCommitFailureShouldReconcileForm(null, "ignore"), false);
+  });
+
+  it("never adopts A success after B starts and reconciles A/B truth in both response orders", () => {
+    assert.ok(commitModule);
+    for (const newerSucceeded of [false, true]) {
+      for (const order of ["A-then-B", "B-then-A"] as const) {
+        let state: { latestRevision: number; baseline: string | null } = {
+          latestRevision: 0,
+          baseline: "generation-0",
+        };
+        state = commitModule.registerProviderCommit(state, 1);
+        state = commitModule.registerProviderCommit(state, 2);
+        let refreshCount = 0;
+        const settleA = () => {
+          const settled = commitModule.settleProviderCommit(state, 1, true, "generation-A");
+          state = settled.state;
+          assert.equal(settled.disposition, "ignore", order);
+          assert.notEqual(state.baseline, "generation-A", order);
+          refreshCount += Number(commitModule.providerCommitResponseRequiresAuthoritativeRefresh(
+            true,
+            false,
+            settled.disposition,
+          ));
+        };
+        const settleB = () => {
+          const settled = commitModule.settleProviderCommit(
+            state,
+            2,
+            newerSucceeded,
+            newerSucceeded ? "generation-B" : null,
+          );
+          state = settled.state;
+        };
+        if (order === "A-then-B") {
+          settleA(); settleB();
+        } else {
+          settleB(); settleA();
+        }
+        assert.equal(state.baseline, newerSucceeded ? "generation-B" : "generation-0", order);
+        assert.equal(refreshCount, 1, order);
+      }
+    }
+  });
+
+  it("converges baseline and form to durable A/B truth for focused and topology commits", () => {
+    assert.ok(commitModule && baselineModule);
+    for (const bSucceeded of [true, false]) {
+      for (const bTopology of [false, true]) {
+        for (const responseOrder of ["A-then-B", "B-then-A"] as const) {
+          for (const refreshOrder of ["issued", "reverse"] as const) {
+            let commitState: { latestRevision: number; baseline: string | null } = {
+              latestRevision: 0,
+              baseline: "generation-0",
+            };
+            commitState = commitModule.registerProviderCommit(commitState, 1);
+            commitState = commitModule.registerProviderCommit(commitState, 2);
+            let epoch = baselineModule.createSettingsBaselineEpochState();
+            let visibleBaseline = "generation-0";
+            let visibleForm = "draft-B";
+            const durableGeneration = bSucceeded ? "generation-B" : "generation-A";
+            const pendingReads: Array<{ revision: number; baselineEpochAtStart: number }> = [];
+            const issueAuthoritativeRefresh = () => {
+              const registered = baselineModule.registerSettingsRead(epoch);
+              epoch = registered.state;
+              pendingReads.push(registered.request);
+            };
+            const installDurableGeneration = (generation: string) => {
+              epoch = baselineModule.advanceSettingsBaselineEpoch(epoch);
+              visibleBaseline = generation;
+              visibleForm = generation;
+              commitState = { ...commitState, baseline: generation };
+            };
+            const settleA = () => {
+              const settled = commitModule.settleProviderCommit(
+                commitState,
+                1,
+                true,
+                "generation-A",
+              );
+              assert.equal(settled.disposition, "ignore");
+              if (commitModule.providerCommitResponseRequiresAuthoritativeRefresh(
+                true,
+                false,
+                settled.disposition,
+              )) issueAuthoritativeRefresh();
+            };
+            const settleB = () => {
+              const settled = commitModule.settleProviderCommit(
+                commitState,
+                2,
+                bSucceeded,
+                bSucceeded ? "generation-B" : null,
+              );
+              assert.equal(settled.disposition, bSucceeded ? "apply" : "report");
+              if (bSucceeded) {
+                installDurableGeneration("generation-B");
+              } else if (commitModule.providerCommitFailureShouldReconcileForm(
+                bTopology ? null : "relay-b",
+                settled.disposition,
+              )) {
+                issueAuthoritativeRefresh();
+              }
+            };
+
+            if (responseOrder === "A-then-B") {
+              settleA();
+              settleB();
+            } else {
+              settleB();
+              settleA();
+            }
+
+            assert.equal(
+              pendingReads.length,
+              !bSucceeded && bTopology ? 2 : 1,
+              JSON.stringify({ bSucceeded, bTopology, responseOrder }),
+            );
+            const responses = refreshOrder === "issued"
+              ? pendingReads
+              : [...pendingReads].reverse();
+            for (const request of responses) {
+              if (baselineModule.settingsReadResponseCanAdopt(request, epoch)) {
+                installDurableGeneration(durableGeneration);
+              }
+            }
+
+            const label = JSON.stringify({
+              bSucceeded,
+              bTopology,
+              responseOrder,
+              refreshOrder,
+            });
+            assert.equal(visibleBaseline, durableGeneration, label);
+            assert.equal(visibleForm, durableGeneration, label);
+            assert.equal(commitState.baseline, durableGeneration, label);
+          }
+        }
+      }
+    }
+  });
+
+  it("keeps delayed committed-reset reconciliation in both response orders", () => {
+    assert.ok(commitModule);
+    for (const newerSucceeded of [false, true]) {
+      for (const order of ["reset-then-B", "B-then-reset"] as const) {
+        let state: { latestRevision: number; baseline: string | null } = {
+          latestRevision: 0,
+          baseline: "generation-0",
+        };
+        state = commitModule.registerProviderCommit(state, 1);
+        state = commitModule.registerProviderCommit(state, 2);
+        let refreshCount = 0;
+        const settleReset = () => {
+          const settled = commitModule.settleProviderCommit(
+            state,
+            1,
+            false,
+            "obsolete-reset-generation-1",
+          );
+          state = settled.state;
+          assert.equal(settled.disposition, "ignore", order);
+          refreshCount += Number(commitModule.providerCommitResponseRequiresAuthoritativeRefresh(
+            false,
+            true,
+            settled.disposition,
+          ));
+        };
+        const settleB = () => {
+          const settled = commitModule.settleProviderCommit(
+            state,
+            2,
+            newerSucceeded,
+            newerSucceeded ? "generation-B" : null,
+          );
+          state = settled.state;
+        };
+        if (order === "reset-then-B") {
+          settleReset(); settleB();
+        } else {
+          settleB(); settleReset();
+        }
+        assert.equal(state.baseline, newerSucceeded ? "generation-B" : "generation-0", order);
+        assert.equal(refreshCount, 1, order);
+      }
+    }
+  });
+
+  it("reports delayed reset A exactly once while B success or failure converges every visible generation", () => {
+    assert.ok(commitModule && baselineModule);
+    for (const bSucceeded of [true, false]) {
+      for (const responseOrder of ["A-then-B", "B-then-A"] as const) {
+        let commitState: { latestRevision: number; baseline: string | null } = {
+          latestRevision: 0,
+          baseline: "generation-0",
+        };
+        commitState = commitModule.registerProviderCommit(commitState, 1);
+        commitState = commitModule.registerProviderCommit(commitState, 2);
+        let epoch = baselineModule.createSettingsBaselineEpochState();
+        let noticeState = baselineModule.createLegacyModelResetNoticeState();
+        const shownNotices: string[] = [];
+        const pendingReads: Array<{ revision: number; baselineEpochAtStart: number }> = [];
+        let visibleBaseline = "generation-0";
+        let visibleForm = "draft-B";
+        let visibleCatalog = "generation-0";
+        let catalogRevision = 0;
+        const durableGeneration = bSucceeded ? "generation-B" : "generation-A";
+        const consumeResetNotice = (message: string) => {
+          const consumed = baselineModule.consumeLegacyModelResetNotice(noticeState, {
+            eventId: "generation-A",
+            message,
+          });
+          noticeState = consumed.state;
+          if (consumed.notice) shownNotices.push(consumed.notice);
+        };
+        const install = (generation: string) => {
+          epoch = baselineModule.advanceSettingsBaselineEpoch(epoch);
+          visibleBaseline = generation;
+          visibleForm = generation;
+          commitState = { ...commitState, baseline: generation };
+          catalogRevision += 1;
+          assert.equal(
+            commitModule.modelCatalogResponseCanAdopt(
+              catalogRevision,
+              catalogRevision,
+              generation,
+              generation,
+            ),
+            true,
+          );
+          visibleCatalog = generation;
+        };
+        const issueAuthoritativeRefresh = () => {
+          const registered = baselineModule.registerSettingsRead(epoch);
+          epoch = registered.state;
+          pendingReads.push(registered.request);
+        };
+        const settleA = () => {
+          const settled = commitModule.settleProviderCommit(
+            commitState,
+            1,
+            false,
+            "obsolete-reset-generation-A",
+          );
+          commitState = settled.state;
+          assert.equal(settled.disposition, "ignore");
+          consumeResetNotice("direct reset A; requested edit was not saved");
+          if (commitModule.providerCommitResponseRequiresAuthoritativeRefresh(
+            false,
+            true,
+            settled.disposition,
+          )) issueAuthoritativeRefresh();
+        };
+        const settleB = () => {
+          const settled = commitModule.settleProviderCommit(
+            commitState,
+            2,
+            bSucceeded,
+            bSucceeded ? "generation-B" : null,
+          );
+          commitState = settled.state;
+          assert.equal(settled.disposition, bSucceeded ? "apply" : "report");
+          if (bSucceeded) {
+            install("generation-B");
+          } else {
+            issueAuthoritativeRefresh();
+          }
+        };
+
+        if (responseOrder === "A-then-B") {
+          settleA(); settleB();
+        } else {
+          settleB(); settleA();
+        }
+        for (const read of pendingReads) {
+          if (baselineModule.settingsReadResponseCanAdopt(read, epoch)) {
+            consumeResetNotice("startup reset A");
+            install(durableGeneration);
+          }
+        }
+        consumeResetNotice("duplicate direct reset A");
+
+        const label = JSON.stringify({ bSucceeded, responseOrder });
+        assert.deepEqual(
+          shownNotices,
+          ["direct reset A; requested edit was not saved"],
+          label,
+        );
+        assert.equal(visibleBaseline, durableGeneration, label);
+        assert.equal(visibleForm, durableGeneration, label);
+        assert.equal(commitState.baseline, durableGeneration, label);
+        assert.equal(visibleCatalog, durableGeneration, label);
+      }
+    }
+  });
+
+  it("revokes an old catalog response before settings-first reset convergence", () => {
+    assert.ok(commitModule);
+    const oldCatalogRevision = 7;
+    const invalidatedRevision = oldCatalogRevision + 1;
+    assert.equal(
+      commitModule.modelCatalogResponseCanAdopt(
+        oldCatalogRevision,
+        invalidatedRevision,
+        "generation-0",
+        "generation-0",
+      ),
+      false,
+    );
+
+    const forcedCatalogRevision = invalidatedRevision + 1;
+    assert.equal(
+      commitModule.modelCatalogResponseCanAdopt(
+        forcedCatalogRevision,
+        forcedCatalogRevision,
+        "generation-1",
+        "generation-1",
+      ),
+      true,
+    );
+    assert.equal(
+      commitModule.modelCatalogResponseCanAdopt(
+        forcedCatalogRevision,
+        forcedCatalogRevision,
+        "generation-0",
+        "generation-1",
+      ),
+      false,
+    );
+    assert.equal(
+      commitModule.modelCatalogResponseCanAdopt(
+        forcedCatalogRevision,
+        forcedCatalogRevision,
+        null,
+        "generation-1",
+      ),
+      false,
+    );
+    assert.equal(
+      commitModule.modelCatalogResponseCanAdopt(
+        forcedCatalogRevision,
+        forcedCatalogRevision,
+        "generation-1",
+        "",
+      ),
+      true,
+    );
   });
 
   it("builds the literal first-save envelope and supplies an implicit mixed catalog draft", () => {
@@ -598,6 +977,29 @@ describe("the shell renders failures as sentence plus 详情", () => {
     assert.match(appSource, /showNotice\(t\("保存供应商"\), failure\.sentence, result\.status, failure\.detail\)/);
     // The composed one-string renderer is gone; nothing concatenates a code into the sentence.
     assert.doesNotMatch(appSource, /providerCommitFailureMessage/);
+  });
+
+  it("adopts an automatic-reset baseline while keeping the requested edit failed", () => {
+    assert.match(appSource, /const resetApplied = result\.legacyModelResetApplied === true/);
+    assert.match(appSource, /succeeded \|\| resetApplied/);
+    assert.match(
+      appSource,
+      /if \(nextBaseline && selectedSettings\) \{[\s\S]*?installSettingsBaseline\(nextBaseline\);[\s\S]*?if \(settled\.disposition === "report"\) \{[\s\S]*?if \(resetApplied && nextBaseline && selectedSettings\) \{[\s\S]*?setModelCatalog\(null\)[\s\S]*?refreshAfterCommit\(\)[\s\S]*?return false;/,
+    );
+    assert.match(appSource, /const refreshAfterCommit[\s\S]*?refreshModelCatalog\(true, true\)/);
+    assert.match(appSource, /modelCatalogResponseCanAdopt\(requestRevision,[\s\S]*?result\?\.providerFingerprint/);
+    assert.match(appSource, /modelCatalogRequestRevision\.current/);
+    assert.match(
+      appSource,
+      /providerCommitResponseRequiresAuthoritativeRefresh\(succeeded, resetApplied, settled\.disposition\)[\s\S]*?void refreshAuthoritativeProviderState\(\)[\s\S]*?return false;/,
+    );
+  });
+
+  it("runs the settings migration boundary before startup and relay catalog reads", () => {
+    const navigate = appSource.match(/const navigate = async[\s\S]*?\n  \};/)?.[0] ?? "";
+    assert.match(navigate, /await refreshSettings\(true\);[\s\S]*?refreshModelCatalog\(true\)/);
+    const startup = appSource.match(/useEffect\(\(\) => \{[\s\S]*?scheduleMaintenance/)?.[0] ?? "";
+    assert.match(startup, /await refreshSettings\(true\);[\s\S]*?refreshModelCatalog\(true\)/);
   });
 
   it("keeps every raw thrown error behind 详情 instead of leading with it", () => {

@@ -180,6 +180,7 @@ export type SettingsResult = CommandResult<{
   settings_path: string;
   user_scripts: UserScriptInventory;
   provider_fingerprint: string;
+  legacy_model_reset_notice?: string | null;
 }>;
 
 export type ProviderCommitResult = CommandResult<{
@@ -187,6 +188,7 @@ export type ProviderCommitResult = CommandResult<{
   draftRevision: number;
   providerFingerprint: string;
   restartRequired: boolean;
+  legacyModelResetApplied: boolean;
   errorCode: string | null;
   reason: string | null;
 }>;
@@ -389,6 +391,7 @@ export type ProfileCatalogSummary = {
 
 export type ModelCatalogStatusResult = CommandResult<{
   statePath: string;
+  providerFingerprint: string;
   source: string;
   targetClientVersion: string | null;
   targetCliPath: string | null;

@@ -230,6 +230,58 @@ The system SHALL commit a new official baseline or effective catalog only after 
 ### Requirement: Compatible migration and adoption
 The system SHALL migrate existing relay model rows without copying credentials and SHALL distinguish redundant official rows, official overrides, custom models, per-profile external catalogs, and OAuth copies before changing behavior.
 
+#### Scenario: Unowned legacy model list is reset
+
+- **WHEN** an ordinary mixed Responses profile has implicit `official-plus-custom` catalog state containing exact `legacy-model-list` rows and no external ownership
+- **THEN** the manager removes only those rows and official overrides exactly equal to the values reconstructed from the persisted legacy list/window fields, restores bundled official model content, and clears consumed legacy list fields
+- **THEN** it changes a removed legacy default to `gpt-5.6-terra` only when that slug is absent from both the visible official baseline and retained custom rows
+
+#### Scenario: Explicit or ambiguous catalog ownership is preserved
+
+- **WHEN** a profile has an explicit mode, external pointer, implicit `native-official` or `custom-only` mode, user-created/preset row, unknown provenance, or a modified/user-added official override that does not exactly match legacy reconstruction
+- **THEN** startup does not delete or rewrite that owned or ambiguous model state
+
+#### Scenario: Missing catalog state is classified before legacy reconstruction
+
+- **WHEN** reset evaluates either persisted explicit/native/custom-only/external ownership or a missing catalog-state file/profile entry whose profile contract or pointer derives as external, native, custom-only, pure-OAuth, pure-API, Aggregate, or Chat, and that profile carries malformed or overlong dormant legacy list/window fields
+- **THEN** reset startup classifies eligibility without deserializing those dormant fields, preserves persisted profile state, and records a missing ineligible profile ID in a separate top-level evaluation marker without creating a `ProfileCatalogState` placeholder
+- **AND** only a missing-state ordinary mixed Responses profile derived as implicit `official-plus-custom` may enter strict reset reconstruction, including the existing manager-generated-pointer recovery case
+
+#### Scenario: General bootstrap follows missing-profile reset evaluation
+
+- **WHEN** a missing ineligible profile has received the separate reset-evaluation marker and General state loading follows
+- **THEN** the profile remains absent from persisted catalog ownership while General loading performs its existing permissive bootstrap, including recovering valid pure-API/custom-only `modelList` rows and defaults and treating the deterministic per-profile generated pointer as manager-owned rather than external
+- **AND** invalid generic bootstrap input retains its existing explicit validation outcome without undoing or blocking the completed reset prepass
+
+#### Scenario: Destructive legacy reconstruction requires valid window evidence
+
+- **WHEN** an eligible implicit `official-plus-custom` profile has nonblank `modelWindows` that is not a JSON object mapping every supplied slug to a string that trim-parses as a positive `u64`
+- **THEN** the manager rejects the reset before recording its marker or mutating settings or catalog state and reports a static input-unavailable reason
+- **AND** nonblank `null`, array, and scalar values are signals that enter this strict validation even when `modelList` and legacy overlay rows are absent, while blank/whitespace input is not a signal and `{}` is valid marker-only evidence when there is no row to remove
+- **AND** an invalid legacy list rejected during the same strict reset-only reconstruction also reports a static input-unavailable reason
+- **AND** generic catalog-state bootstrap outside reset retains its permissive compatibility behavior because it does not authorize deletion
+
+#### Scenario: An overlay edit establishes explicit ownership
+
+- **WHEN** a provider commit changes a profile's official or custom overlay
+- **THEN** the persisted catalog state records explicit ownership so a later startup migration cannot classify that edited overlay as unowned legacy state
+
+#### Scenario: Active legacy reset is one protected generation
+
+- **WHEN** the affected profile is active
+- **THEN** settings, catalog state, generated catalog, and live config commit atomically under Context protection while live auth remains byte-for-byte unchanged
+
+#### Scenario: Direct reset response uses the final General generation
+
+- **WHEN** a direct provider commit first applies a legacy reset while another profile requires post-evaluation General bootstrap or implicit-mode derivation
+- **THEN** the reset payload returns the same sanitized settings and provider-generation fingerprint that immediate settings/status exposes, and that fingerprint passes the next real provider compare-and-swap
+- **AND** if General status is independently unavailable, the truthful reset payload carries no transitional reset-only fingerprint
+
+#### Scenario: Legacy reset is idempotent and does not gate ordinary profiles
+
+- **WHEN** reset already ran or the profile has no eligible legacy state
+- **THEN** subsequent startup and provider commits perform no write and add no save/switch rejection
+
 #### Scenario: Existing model matches the official baseline
 - **WHEN** a saved `modelList` entry matches an official slug and has no user override
 - **THEN** migration treats it as redundant official data rather than a custom duplicate
@@ -271,7 +323,7 @@ The system SHALL expose enough status to distinguish official freshness, overlay
 
 ### Requirement: An implicit catalog mode follows the current default
 
-A catalog mode that was derived rather than chosen SHALL be re-derived when state is loaded, the same way an implicit external pointer is already re-derived. A mode the user chose explicitly SHALL never be re-derived.
+A catalog mode that was derived rather than chosen SHALL be re-derived during general state loading, the same way an implicit external pointer is already re-derived. For an existing state entry, a reset-only eligibility load MAY defer that re-derivation for an unmarked profile carrying dormant legacy signals solely to persist a preservation marker without parsing or destructively resetting those fields; after the marker is present, the following general load SHALL re-derive the mode normally without writing it. A missing ineligible profile SHALL remain absent and use the separate top-level evaluation marker so General loading still owns initial mode, overlay, and pointer bootstrap. A mode the user chose explicitly SHALL never be re-derived.
 
 A stale implicit mode otherwise deadlocks its profile: the provider contract rejects every commit while the mode disagrees, and correcting the mode requires a commit.
 
@@ -279,6 +331,11 @@ A stale implicit mode otherwise deadlocks its profile: the provider contract rej
 
 - **WHEN** state carries an implicit catalog mode that disagrees with the mode the current default rule derives for that profile
 - **THEN** the loaded mode becomes the current default and the profile can be committed
+
+#### Scenario: Reset eligibility defers one implicit-mode correction
+
+- **WHEN** reset-only loading finds an unmarked implicit native or custom-only state with dormant legacy signals that must be preserved without parsing
+- **THEN** it records the preservation marker against the persisted mode, and the subsequent general load re-derives the current default mode in memory without changing the persisted marker generation
 
 #### Scenario: An explicit mode is preserved
 
@@ -295,4 +352,3 @@ A custom-only catalog contains no official models, so dropping such a slug remov
 
 - **WHEN** a custom-only profile declares a custom model whose slug the official baseline also carries, and that slug is the profile's default model
 - **THEN** the composed catalog contains exactly that model and planning succeeds
-
