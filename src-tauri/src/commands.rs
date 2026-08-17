@@ -2566,6 +2566,15 @@ pub fn commit_provider_detail_from_paths_observed(
     live_state::prepare_secret_paths_at(&paths.app_state, &paths.settings_path, &paths.codex_home)
         .map_err(transaction_failure)?;
     live_state::recover_locked_at(&paths.app_state).map_err(transaction_failure)?;
+    // Recovery artifacts snapshot every transaction target before applying it. Scrub legacy
+    // profile auth through the startup's owner-only atomic no-backup path before this commit can
+    // prepare a settings prior stage, so copied OAuth can never enter recovery material.
+    migrate_legacy_profile_auth_locked_at(&paths.settings_path).map_err(|_| {
+        provider_commit_failure(
+            ProviderCommitErrorCode::InputUnavailable,
+            "a saved provider profile failed auth migration",
+        )
+    })?;
 
     let (persisted_settings_bytes, persisted_settings) =
         load_provider_commit_settings(&paths.settings_path).map_err(|reason| {

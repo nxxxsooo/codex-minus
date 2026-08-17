@@ -1115,6 +1115,94 @@ fn real_transaction_keeps_secret_stages_private_and_cleans_faulted_recovery_mate
 }
 
 #[test]
+fn eva_residue_is_scrubbed_before_provider_commit_snapshots_or_recovery_artifacts() {
+    const OAUTH_SENTINEL: &str = "eva-oauth-access-sentinel";
+    let eva = RelayProfile {
+        id: "eva".to_string(),
+        name: "Eva|Codex".to_string(),
+        model: "gpt-5.6-terra".to_string(),
+        base_url: "https://example.test/v1".to_string(),
+        upstream_base_url: "https://example.test/v1".to_string(),
+        protocol: RelayProtocol::Responses,
+        relay_mode: RelayMode::Official,
+        official_mix_api_key: true,
+        config_contents: r#"model = "gpt-5.6-terra"
+model_provider = "OpenAI"
+
+[model_providers.OpenAI]
+name = "OpenAI"
+base_url = "https://example.test/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#
+        .to_string(),
+        auth_contents: format!(
+            r#"{{"OPENAI_API_KEY":"provider-key-sentinel","auth_mode":"chatgpt","tokens":{{"access_token":"{OAUTH_SENTINEL}"}}}}"#
+        ),
+        ..RelayProfile::default()
+    };
+    let fixture = Fixture::new(&settings_with(vec![eva], "eva"), &state_with_official());
+    let auth_path = fixture.paths.codex_home.join("auth.json");
+    let auth_before = fs::read(&auth_path).unwrap();
+    // The editor observes this profile after startup's credential scrub: the profile copy is
+    // gone and the provider key is in its selected TOML table. The raw on-disk fixture remains
+    // intentionally legacy-shaped so this commit exercises the pre-snapshot boundary.
+    let mut persisted = fixture.read_settings();
+    persisted.relay_profiles[0].api_key = "provider-key-sentinel".to_string();
+    let mut provider_config = persisted.relay_profiles[0]
+        .config_contents
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap();
+    provider_config["model_providers"]["OpenAI"]["experimental_bearer_token"] =
+        toml_edit::value("provider-key-sentinel");
+    persisted.relay_profiles[0].config_contents = provider_config.to_string();
+    let mut next = persisted.clone();
+    next.relay_profiles[0].name = "Eva migrated".to_string();
+    let app_state = fixture.paths.app_state.clone();
+    let codex_home = fixture.paths.codex_home.clone();
+    let mut inspected_recovery_artifacts = false;
+
+    let result = commit_provider_detail_from_paths_observed(
+        &fixture.paths,
+        request(&persisted, &next, "eva", ProviderCommitAction::Save, 70),
+        |checkpoint| {
+            if checkpoint != ProviderCommitCheckpoint::SettingsPersistence {
+                return Ok(());
+            }
+            inspected_recovery_artifacts = true;
+            for root in [&app_state, &codex_home] {
+                let mut artifacts = BTreeMap::new();
+                collect_files(root, "artifact", &mut artifacts);
+                for (name, bytes) in artifacts {
+                    if name.ends_with("auth.json") {
+                        continue;
+                    }
+                    assert!(
+                        !bytes
+                            .windows(OAUTH_SENTINEL.len())
+                            .any(|window| window == OAUTH_SENTINEL.as_bytes()),
+                        "OAuth payload escaped into {name}"
+                    );
+                }
+            }
+            assert_eq!(fs::read(&auth_path)?, auth_before);
+            Ok(())
+        },
+    );
+
+    assert!(
+        inspected_recovery_artifacts,
+        "commit did not reach recovery-artifact inspection: {:?}",
+        result.as_ref().err()
+    );
+    result.unwrap();
+    assert_eq!(fs::read(&auth_path).unwrap(), auth_before);
+    let final_settings = fs::read_to_string(&fixture.paths.settings_path).unwrap();
+    assert!(!final_settings.contains("authContents"));
+    assert!(!final_settings.contains(OAUTH_SENTINEL));
+}
+
+#[test]
 fn generic_settings_save_allows_unrelated_changes_but_rejects_every_provider_owned_difference() {
     let first = canonical_profile(
         "sub2api",

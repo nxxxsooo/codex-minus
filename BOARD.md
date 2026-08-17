@@ -10,7 +10,7 @@
 
 - **fix/providers**: legacy profile `authContents` containing a provider API key plus stale OAuth fields now migrates automatically instead of blocking settings load
   - why: older Codex Minus/Codex++ Manager versions left Eva's mixed credential copy behind; the strict API-key-only upgrade gate turned product-owned residue into a user repair task
-  - verified: the focused migration regressions, full `cargo test` (183 library + 17 + 21 integration tests), `npm run verify` (212 frontend tests), strict OpenSpec validation, Rust formatting, and diff checks passed
+  - verified: the focused migration regressions, full `cargo test` (184 library + 17 + 21 integration tests), `npm run verify` (212 frontend tests), strict OpenSpec validation, Rust formatting, and diff checks passed
   - refs: `src-tauri/src/commands.rs`, `openspec/specs/provider-native-capability-mode/spec.md`, design and implementation plan
 
 - **chore/repository**: reconciled every remaining branch against stable v0.4.13, closed superseded PR #27, aligned the `AGENTS.md` mixed-auth contract with the behavior released through PR #28, and removed all obsolete local/remote branches plus seven auxiliary worktrees so only `master` remains
