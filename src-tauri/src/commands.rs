@@ -7389,7 +7389,8 @@ custom_field = "preserve-me"
         )
         .unwrap();
         let modes =
-            crate::model_catalog::read_only_catalog_modes_from_state(&migrated, Some(&state));
+            crate::model_catalog::read_only_catalog_modes_from_state(&migrated, Some(&state))
+                .unwrap();
         assert_eq!(std::fs::read(&settings_path).unwrap(), after_migration);
 
         for (id, config, _, expected_state) in goldens {

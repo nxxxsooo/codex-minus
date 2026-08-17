@@ -1100,12 +1100,15 @@ fn default_mode(
     }
 }
 
-pub(crate) fn default_catalog_mode_for_profile(profile: &RelayProfile) -> CatalogMode {
-    default_mode(
+pub(crate) fn default_catalog_mode_for_profile(
+    profile: &RelayProfile,
+) -> anyhow::Result<CatalogMode> {
+    crate::provider_commit::validate_responses_only_profile(profile)?;
+    Ok(default_mode(
         profile,
         root_catalog_pointer(&profile.config_contents).as_deref(),
         UpstreamTopology::Direct,
-    )
+    ))
 }
 
 pub(crate) fn catalog_state_path() -> PathBuf {
@@ -1125,13 +1128,14 @@ pub(crate) fn read_only_catalog_modes_from_path(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(error.into()),
     };
-    Ok(read_only_catalog_modes_from_state(settings, state.as_ref()))
+    read_only_catalog_modes_from_state(settings, state.as_ref())
 }
 
 pub(crate) fn read_only_catalog_modes_from_state(
     settings: &BackendSettings,
     state: Option<&CatalogState>,
-) -> BTreeMap<String, CatalogMode> {
+) -> anyhow::Result<BTreeMap<String, CatalogMode>> {
+    crate::provider_commit::validate_responses_only_settings(settings)?;
     let mut modes = BTreeMap::new();
     for profile in &settings.relay_profiles {
         let pointer = root_catalog_pointer(&profile.config_contents);
@@ -1152,7 +1156,7 @@ pub(crate) fn read_only_catalog_modes_from_state(
         };
         modes.insert(profile.id.clone(), mode);
     }
-    modes
+    Ok(modes)
 }
 
 pub(crate) fn persisted_catalog_mode_from_path(
@@ -2999,9 +3003,70 @@ mod tests {
         chat.protocol = codex_plus_core::settings::RelayProtocol::ChatCompletions;
         assert!(validate_upstream_topology(&chat, UpstreamTopology::Direct).is_err());
 
-        let mut aggregate = profile;
+        let mut aggregate = profile.clone();
         aggregate.relay_mode = RelayMode::Aggregate;
         assert!(validate_upstream_topology(&aggregate, UpstreamTopology::Direct).is_err());
+
+        let mut removed_proxy = profile;
+        removed_proxy.base_url =
+            crate::provider_commit::REMOVED_PROTOCOL_PROXY_BASE_URL.to_string();
+        assert!(validate_upstream_topology(&removed_proxy, UpstreamTopology::Direct).is_err());
+    }
+
+    #[test]
+    fn default_catalog_mode_rejects_profiles_outside_the_responses_only_contract() {
+        let profile = RelayProfile {
+            relay_mode: RelayMode::PureApi,
+            protocol: codex_plus_core::settings::RelayProtocol::Responses,
+            base_url: "https://relay.example/v1".to_string(),
+            ..RelayProfile::default()
+        };
+        assert_eq!(
+            default_catalog_mode_for_profile(&profile).unwrap(),
+            CatalogMode::CustomOnly
+        );
+
+        let mut chat = profile.clone();
+        chat.protocol = codex_plus_core::settings::RelayProtocol::ChatCompletions;
+        assert!(default_catalog_mode_for_profile(&chat).is_err());
+
+        let mut aggregate = profile.clone();
+        aggregate.relay_mode = RelayMode::Aggregate;
+        assert!(default_catalog_mode_for_profile(&aggregate).is_err());
+
+        let mut removed_proxy = profile;
+        removed_proxy.base_url =
+            crate::provider_commit::REMOVED_PROTOCOL_PROXY_BASE_URL.to_string();
+        assert!(default_catalog_mode_for_profile(&removed_proxy).is_err());
+    }
+
+    #[test]
+    fn read_only_catalog_modes_from_state_rejects_legacy_settings() {
+        let profile = RelayProfile {
+            id: "legacy".to_string(),
+            relay_mode: RelayMode::PureApi,
+            protocol: codex_plus_core::settings::RelayProtocol::Responses,
+            base_url: "https://relay.example/v1".to_string(),
+            ..RelayProfile::default()
+        };
+        let settings_for = |profile| BackendSettings {
+            relay_profiles: vec![profile],
+            active_relay_id: "legacy".to_string(),
+            ..BackendSettings::default()
+        };
+
+        let mut chat = profile.clone();
+        chat.protocol = codex_plus_core::settings::RelayProtocol::ChatCompletions;
+        assert!(read_only_catalog_modes_from_state(&settings_for(chat), None).is_err());
+
+        let mut aggregate = profile.clone();
+        aggregate.relay_mode = RelayMode::Aggregate;
+        assert!(read_only_catalog_modes_from_state(&settings_for(aggregate), None).is_err());
+
+        let mut removed_proxy = profile;
+        removed_proxy.base_url =
+            crate::provider_commit::REMOVED_PROTOCOL_PROXY_BASE_URL.to_string();
+        assert!(read_only_catalog_modes_from_state(&settings_for(removed_proxy), None).is_err());
     }
 
     #[test]
@@ -4431,7 +4496,7 @@ mod implicit_catalog_mode_tests {
             ..BackendSettings::default()
         };
         assert_eq!(
-            default_catalog_mode_for_profile(&profile),
+            default_catalog_mode_for_profile(&profile).unwrap(),
             CatalogMode::OfficialPlusCustom
         );
 

@@ -725,16 +725,17 @@ pub fn inspect_profiles(
         ],
         None => settings.relay_profiles.iter().collect(),
     };
-    Ok(profiles
+    profiles
         .into_iter()
         .map(|profile| {
-            let mode = catalog_modes
-                .get(&profile.id)
-                .copied()
-                .unwrap_or_else(|| crate::model_catalog::default_catalog_mode_for_profile(profile));
-            inspect_profile(profile, mode)
+            let mode = match catalog_modes.get(&profile.id).copied() {
+                Some(mode) => mode,
+                None => crate::model_catalog::default_catalog_mode_for_profile(profile)
+                    .map_err(|_| ProviderNativeCapabilityInspectionError::InputUnavailable)?,
+            };
+            Ok(inspect_profile(profile, mode))
         })
-        .collect())
+        .collect()
 }
 
 pub fn draft_provider_native_capability(
