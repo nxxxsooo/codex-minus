@@ -46,20 +46,24 @@ pub(crate) fn plan_legacy_model_reset(
             continue;
         }
 
+        if !ordinary_mixed_responses(profile)
+            || existing_state.mode != CatalogMode::OfficialPlusCustom
+            || existing_state.external_pointer.is_some()
+            || existing_state.mode_explicit
+        {
+            let state_entry = next_state.profiles.entry(profile.id.clone()).or_default();
+            let marker_changed =
+                state_entry.legacy_model_reset_version < LEGACY_MODEL_RESET_VERSION;
+            state_entry.legacy_model_reset_version = LEGACY_MODEL_RESET_VERSION;
+            changed |= marker_changed;
+            continue;
+        }
+
         let legacy_overlay =
             crate::model_catalog::legacy_overlay_for_current_official(&next_state, profile)?;
         let state_entry = next_state.profiles.entry(profile.id.clone()).or_default();
         let marker_changed = state_entry.legacy_model_reset_version < LEGACY_MODEL_RESET_VERSION;
         state_entry.legacy_model_reset_version = LEGACY_MODEL_RESET_VERSION;
-        if !ordinary_mixed_responses(profile)
-            || state_entry.mode != CatalogMode::OfficialPlusCustom
-            || state_entry.external_pointer.is_some()
-            || state_entry.mode_explicit
-        {
-            changed |= marker_changed;
-            continue;
-        }
-
         let removed = exact_legacy_slugs(state_entry);
         let previous_model =
             top_level_model(&profile.config_contents).unwrap_or_else(|| profile.model.clone());
@@ -427,6 +431,153 @@ fit_marker = "keep"
                 );
             }
         }
+    }
+
+    #[test]
+    fn ineligible_profiles_marker_preserve_invalid_dormant_legacy_fields() {
+        let invalid_model_list = "x".repeat(161);
+        let invalid_model_windows = "{not-json";
+        let cases = [
+            (
+                "explicit",
+                CatalogMode::OfficialPlusCustom,
+                true,
+                None,
+                true,
+                RelayProtocol::Responses,
+                RelayMode::Official,
+            ),
+            (
+                "external",
+                CatalogMode::External,
+                false,
+                Some("C:/models.json"),
+                true,
+                RelayProtocol::Responses,
+                RelayMode::Official,
+            ),
+            (
+                "external-pointer",
+                CatalogMode::OfficialPlusCustom,
+                false,
+                Some("C:/models.json"),
+                true,
+                RelayProtocol::Responses,
+                RelayMode::Official,
+            ),
+            (
+                "implicit-native",
+                CatalogMode::NativeOfficial,
+                false,
+                None,
+                true,
+                RelayProtocol::Responses,
+                RelayMode::Official,
+            ),
+            (
+                "implicit-custom-only",
+                CatalogMode::CustomOnly,
+                false,
+                None,
+                true,
+                RelayProtocol::Responses,
+                RelayMode::Official,
+            ),
+            (
+                "pure-oauth",
+                CatalogMode::OfficialPlusCustom,
+                false,
+                None,
+                false,
+                RelayProtocol::Responses,
+                RelayMode::Official,
+            ),
+            (
+                "chat-completions",
+                CatalogMode::OfficialPlusCustom,
+                false,
+                None,
+                true,
+                RelayProtocol::ChatCompletions,
+                RelayMode::Official,
+            ),
+            (
+                "pure-api",
+                CatalogMode::OfficialPlusCustom,
+                false,
+                None,
+                true,
+                RelayProtocol::Responses,
+                RelayMode::PureApi,
+            ),
+        ];
+
+        for (id, mode, explicit, pointer, mixed, protocol, relay_mode) in cases {
+            let mut settings =
+                eva_settings("legacy-row", &invalid_model_list, invalid_model_windows);
+            settings.relay_profiles[0].id = id.to_string();
+            settings.relay_profiles[0].official_mix_api_key = mixed;
+            settings.relay_profiles[0].protocol = protocol;
+            settings.relay_profiles[0].relay_mode = relay_mode;
+            settings.active_relay_id = id.to_string();
+            let mut state = state_with_profile(
+                id,
+                mode,
+                explicit,
+                vec![custom("legacy-row", "legacy-model-list")],
+            );
+            state.profiles.get_mut(id).unwrap().external_pointer = pointer.map(ToString::to_string);
+            let official = BTreeSet::from(["gpt-5.6-terra".to_string()]);
+
+            let plan = plan_legacy_model_reset(&settings, &state, &official)
+                .unwrap_or_else(|error| panic!("{id} parsed dormant legacy data: {error}"))
+                .expect("the preserved profile must record its one-time marker");
+            let next_profile = &plan.settings.relay_profiles[0];
+            let next_state = &plan.state.profiles[id];
+
+            assert!(plan.reset_profiles.is_empty(), "{id}");
+            assert_eq!(next_profile.model_list, invalid_model_list, "{id}");
+            assert_eq!(next_profile.model_windows, invalid_model_windows, "{id}");
+            assert_eq!(next_profile.model, "legacy-row", "{id}");
+            assert_eq!(
+                serde_json::to_value(next_profile).unwrap(),
+                serde_json::to_value(&settings.relay_profiles[0]).unwrap(),
+                "{id}",
+            );
+            let mut expected_state = state.profiles[id].clone();
+            expected_state.legacy_model_reset_version = super::LEGACY_MODEL_RESET_VERSION;
+            assert_eq!(
+                serde_json::to_value(next_state).unwrap(),
+                serde_json::to_value(expected_state).unwrap(),
+                "{id}",
+            );
+            assert_eq!(
+                next_state.legacy_model_reset_version,
+                super::LEGACY_MODEL_RESET_VERSION,
+                "{id}",
+            );
+        }
+    }
+
+    #[test]
+    fn eligible_profile_fails_closed_for_invalid_legacy_reconstruction() {
+        let invalid_model_list = "x".repeat(161);
+        let settings = eva_settings("legacy-row", &invalid_model_list, "{not-json");
+        let state = state_with_profile(
+            "eva",
+            CatalogMode::OfficialPlusCustom,
+            false,
+            vec![custom("legacy-row", "legacy-model-list")],
+        );
+        let official = BTreeSet::from(["gpt-5.6-terra".to_string()]);
+
+        let error = plan_legacy_model_reset(&settings, &state, &official)
+            .expect_err("eligible invalid legacy data must fail closed");
+
+        assert!(error.to_string().contains("model slug is too long"));
+        assert_eq!(state.profiles["eva"].legacy_model_reset_version, 0);
+        assert_eq!(settings.relay_profiles[0].model_list, invalid_model_list);
+        assert_eq!(settings.relay_profiles[0].model_windows, "{not-json");
     }
 
     #[test]

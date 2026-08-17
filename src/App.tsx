@@ -286,14 +286,14 @@ export function App() {
     }
   };
 
-  const installSettingsBaseline = (baseline: SettingsResult, form: BackendSettings | null) => {
+  const installSettingsBaseline = (baseline: SettingsResult) => {
     settingsBaselineEpoch.current = settingsBaseline.advanceSettingsBaselineEpoch(settingsBaselineEpoch.current);
     providerCommitState.current = { ...providerCommitState.current, baseline };
     setSettings(baseline);
-    if (form !== null) setSettingsForm(form);
+    setSettingsForm(baseline.settings);
   };
 
-  const refreshSettings = async (silent = false, replaceForm = true) => {
+  const refreshSettings = async (silent = false) => {
     const registered = settingsBaseline.registerSettingsRead(settingsBaselineEpoch.current);
     settingsBaselineEpoch.current = registered.state;
     const result = await run(() => call<SettingsResult>("load_settings"));
@@ -308,7 +308,7 @@ export function App() {
     }
     const normalized = normalizeSettings(result.settings);
     const baseline = { ...result, settings: normalized };
-    installSettingsBaseline(baseline, replaceForm ? normalized : null);
+    installSettingsBaseline(baseline);
     if (!notice.notice && !silent) showResultNotice(t("设置已加载"), result, { silentSuccess: true });
     return normalized;
   };
@@ -644,7 +644,7 @@ export function App() {
     if (result) {
       const normalized = normalizeSettings(result.settings);
       const baseline = { ...result, settings: normalized };
-      installSettingsBaseline(baseline, normalized);
+      installSettingsBaseline(baseline);
       showNotice(t("设置保存"), result.message, result.status);
     }
   };
@@ -657,7 +657,7 @@ export function App() {
     if (result) {
       const normalized = normalizeSettings(result.settings);
       const baseline = { ...result, settings: normalized };
-      installSettingsBaseline(baseline, normalized);
+      installSettingsBaseline(baseline);
       if (!silent || !isSuccessStatus(result.status)) showNotice(t("设置保存"), result.message, result.status);
     }
     return !!result && isSuccessStatus(result.status);
@@ -745,10 +745,10 @@ export function App() {
     void refreshModelCatalog(true, true);
   };
 
-  const refreshAuthoritativeProviderState = async (replaceForm: boolean) => {
+  const refreshAuthoritativeProviderState = async () => {
     modelCatalogRequestRevision.current += 1;
     setModelCatalog(null); setModelCatalogLoading(false);
-    const refreshed = await refreshSettings(true, replaceForm);
+    const refreshed = await refreshSettings(true);
     if (refreshed) await refreshModelCatalog(true, true);
   };
 
@@ -757,7 +757,7 @@ export function App() {
     providerCommitState.current = registerProviderCommit(providerCommitState.current, revision);
     const reconcileTopologyFailure = async (disposition: ProviderCommitResponseDisposition) => {
       if (!providerCommitFailureShouldReconcileForm(invocation.request.focusedProfileId, disposition)) return;
-      await refreshAuthoritativeProviderState(true);
+      await refreshAuthoritativeProviderState();
     };
     let result: ProviderCommitResult;
     try {
@@ -784,12 +784,12 @@ export function App() {
       nextBaseline,
     );
     if (providerCommitResponseRequiresAuthoritativeRefresh(succeeded, resetApplied, settled.disposition)) {
-      void refreshAuthoritativeProviderState(resetApplied);
+      void refreshAuthoritativeProviderState();
       return false;
     }
     if (settled.disposition === "ignore") return false;
     if (nextBaseline && selectedSettings) {
-      installSettingsBaseline(nextBaseline, selectedSettings);
+      installSettingsBaseline(nextBaseline);
     }
     if (settled.disposition === "report") {
       if (resetApplied && nextBaseline && selectedSettings) {

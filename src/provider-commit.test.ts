@@ -6,6 +6,7 @@ import type { CatalogOverlayDraft } from "./model-catalog-ui.ts";
 import type { ProviderRelayProfileSource } from "./provider-commit.ts";
 
 const commitModule = await import("./provider-commit.ts").catch(() => null);
+const baselineModule = await import("./settings-baseline.ts").catch(() => null);
 
 const emptyOverlay = (): CatalogOverlayDraft => ({ official: {}, custom: [] });
 
@@ -181,6 +182,103 @@ describe("provider-owned commit request", () => {
         }
         assert.equal(state.baseline, newerSucceeded ? "generation-B" : "generation-0", order);
         assert.equal(refreshCount, 1, order);
+      }
+    }
+  });
+
+  it("converges baseline and form to durable A/B truth for focused and topology commits", () => {
+    assert.ok(commitModule && baselineModule);
+    for (const bSucceeded of [true, false]) {
+      for (const bTopology of [false, true]) {
+        for (const responseOrder of ["A-then-B", "B-then-A"] as const) {
+          for (const refreshOrder of ["issued", "reverse"] as const) {
+            let commitState: { latestRevision: number; baseline: string | null } = {
+              latestRevision: 0,
+              baseline: "generation-0",
+            };
+            commitState = commitModule.registerProviderCommit(commitState, 1);
+            commitState = commitModule.registerProviderCommit(commitState, 2);
+            let epoch = baselineModule.createSettingsBaselineEpochState();
+            let visibleBaseline = "generation-0";
+            let visibleForm = "draft-B";
+            const durableGeneration = bSucceeded ? "generation-B" : "generation-A";
+            const pendingReads: Array<{ revision: number; baselineEpochAtStart: number }> = [];
+            const issueAuthoritativeRefresh = () => {
+              const registered = baselineModule.registerSettingsRead(epoch);
+              epoch = registered.state;
+              pendingReads.push(registered.request);
+            };
+            const installDurableGeneration = (generation: string) => {
+              epoch = baselineModule.advanceSettingsBaselineEpoch(epoch);
+              visibleBaseline = generation;
+              visibleForm = generation;
+              commitState = { ...commitState, baseline: generation };
+            };
+            const settleA = () => {
+              const settled = commitModule.settleProviderCommit(
+                commitState,
+                1,
+                true,
+                "generation-A",
+              );
+              assert.equal(settled.disposition, "ignore");
+              if (commitModule.providerCommitResponseRequiresAuthoritativeRefresh(
+                true,
+                false,
+                settled.disposition,
+              )) issueAuthoritativeRefresh();
+            };
+            const settleB = () => {
+              const settled = commitModule.settleProviderCommit(
+                commitState,
+                2,
+                bSucceeded,
+                bSucceeded ? "generation-B" : null,
+              );
+              assert.equal(settled.disposition, bSucceeded ? "apply" : "report");
+              if (bSucceeded) {
+                installDurableGeneration("generation-B");
+              } else if (commitModule.providerCommitFailureShouldReconcileForm(
+                bTopology ? null : "relay-b",
+                settled.disposition,
+              )) {
+                issueAuthoritativeRefresh();
+              }
+            };
+
+            if (responseOrder === "A-then-B") {
+              settleA();
+              settleB();
+            } else {
+              settleB();
+              settleA();
+            }
+
+            assert.equal(
+              pendingReads.length,
+              !bSucceeded && bTopology ? 2 : 1,
+              JSON.stringify({ bSucceeded, bTopology, responseOrder }),
+            );
+            const responses = refreshOrder === "issued"
+              ? pendingReads
+              : [...pendingReads].reverse();
+            for (const request of responses) {
+              if (baselineModule.settingsReadResponseCanAdopt(request, epoch)) {
+                installDurableGeneration(durableGeneration);
+              }
+            }
+
+            const label = JSON.stringify({
+              bSucceeded,
+              bTopology,
+              responseOrder,
+              refreshOrder,
+            });
+            assert.equal(visibleBaseline, durableGeneration, label);
+            assert.equal(visibleForm, durableGeneration, label);
+            assert.equal(commitState.baseline, durableGeneration, label);
+          }
+        }
       }
     }
   });
@@ -778,14 +876,14 @@ describe("the shell renders failures as sentence plus 详情", () => {
     assert.match(appSource, /succeeded \|\| resetApplied/);
     assert.match(
       appSource,
-      /if \(nextBaseline && selectedSettings\) \{[\s\S]*?installSettingsBaseline\([\s\S]*?selectedSettings[\s\S]*?\);[\s\S]*?if \(settled\.disposition === "report"\) \{[\s\S]*?if \(resetApplied && nextBaseline && selectedSettings\) \{[\s\S]*?setModelCatalog\(null\)[\s\S]*?refreshAfterCommit\(\)[\s\S]*?return false;/,
+      /if \(nextBaseline && selectedSettings\) \{[\s\S]*?installSettingsBaseline\(nextBaseline\);[\s\S]*?if \(settled\.disposition === "report"\) \{[\s\S]*?if \(resetApplied && nextBaseline && selectedSettings\) \{[\s\S]*?setModelCatalog\(null\)[\s\S]*?refreshAfterCommit\(\)[\s\S]*?return false;/,
     );
     assert.match(appSource, /const refreshAfterCommit[\s\S]*?refreshModelCatalog\(true, true\)/);
     assert.match(appSource, /modelCatalogResponseCanAdopt\(requestRevision,[\s\S]*?result\?\.providerFingerprint/);
     assert.match(appSource, /modelCatalogRequestRevision\.current/);
     assert.match(
       appSource,
-      /providerCommitResponseRequiresAuthoritativeRefresh\(succeeded, resetApplied, settled\.disposition\)[\s\S]*?void refreshAuthoritativeProviderState\(resetApplied\)[\s\S]*?return false;/,
+      /providerCommitResponseRequiresAuthoritativeRefresh\(succeeded, resetApplied, settled\.disposition\)[\s\S]*?void refreshAuthoritativeProviderState\(\)[\s\S]*?return false;/,
     );
   });
 
