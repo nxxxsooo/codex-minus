@@ -1957,7 +1957,7 @@ fn topology_adapter_accepts_one_complete_ui_canonical_generation() {
 }
 
 #[test]
-fn persisted_legacy_auth_migrates_only_api_key_only_payloads() {
+fn persisted_legacy_api_key_auth_migrates_through_provider_commit() {
     let active = pure_oauth_profile("official");
     let mut api_only =
         legacy_pure_api_profile("legacy", r#"{"OPENAI_API_KEY":"migrated-provider-key"}"#);
@@ -1997,34 +1997,6 @@ fn persisted_legacy_auth_migrates_only_api_key_only_payloads() {
         ),
         "migrated-provider-key"
     );
-
-    for forbidden_auth in [
-        r#"{"auth_mode":"chatgpt","tokens":{"access_token":"oauth-access-sentinel","refresh_token":"oauth-refresh-sentinel"}}"#,
-        r#"{"OPENAI_API_KEY":"provider-key-sentinel","auth_mode":"chatgpt","tokens":{"access_token":"oauth-access-sentinel"}}"#,
-    ] {
-        let forbidden = legacy_pure_api_profile("legacy", forbidden_auth);
-        let initial = settings_with(vec![active.clone(), forbidden], "official");
-        let fixture = Fixture::new(&initial, &state_with_official());
-        let before = fixture.file_generation();
-        let persisted = fixture.read_settings();
-
-        let error = commit_provider_detail_from_paths(
-            &fixture.paths,
-            request(
-                &persisted,
-                &persisted,
-                "legacy",
-                ProviderCommitAction::Save,
-                60,
-            ),
-        )
-        .unwrap_err();
-
-        assert_eq!(error.code(), ProviderCommitErrorCode::InputUnavailable);
-        assert!(!error.to_string().contains("oauth-access-sentinel"));
-        assert!(!error.to_string().contains("provider-key-sentinel"));
-        assert_eq!(fixture.file_generation(), before);
-    }
 }
 
 #[test]

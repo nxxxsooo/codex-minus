@@ -31,7 +31,7 @@
 - Consumes: `RelayProfile`, `provider_bearer_token_from_config_exact(&str) -> Option<String>`, and `set_provider_config_bearer(&str, &str, Option<bool>) -> anyhow::Result<String>`.
 - Produces: the existing `migrate_persisted_legacy_api_key_auth(&mut RelayProfile) -> anyhow::Result<()>` with broader, deterministic migration semantics; no new public API.
 
-- [ ] **Step 1: Replace the rejection regression with Eva's expected successful migration**
+- [x] **Step 1: Replace the rejection regression with Eva's expected successful migration**
 
 Replace `load_time_legacy_migration_rejects_mixed_oauth_payload_without_writing` with a test shaped like the real official-mixed profile:
 
@@ -86,7 +86,7 @@ requires_openai_auth = true
 }
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run:
 
@@ -97,7 +97,7 @@ cargo test load_time_legacy_migration_repairs_api_key_plus_oauth_residue --lib -
 
 Expected: FAIL because the current `object.len() == 1` gate returns `persisted provider auth copy is not API-key-only`.
 
-- [ ] **Step 3: Implement the minimum mixed-residue reconciliation**
+- [x] **Step 3: Implement the minimum mixed-residue reconciliation**
 
 Change `migrate_persisted_legacy_api_key_auth` so additional object fields are ignored, but the non-empty legacy key still must agree with existing provider-key destinations:
 
@@ -154,7 +154,7 @@ fn migrate_persisted_legacy_api_key_auth(profile: &mut RelayProfile) -> anyhow::
 
 Keep helper visibility private and place both helpers beside the migration function.
 
-- [ ] **Step 4: Run the focused regression and nearby migration tests**
+- [x] **Step 4: Run the focused regression and nearby migration tests**
 
 Run:
 
@@ -166,7 +166,7 @@ cargo test normalization_projects_api_key_only_legacy_copy_to_provider_config --
 
 Expected: PASS. The new test proves the current failure is repaired; the existing API-key-only path remains green.
 
-- [ ] **Step 5: Commit the working Eva migration slice**
+- [x] **Step 5: Commit the working Eva migration slice**
 
 ```bash
 git add src-tauri/src/commands.rs
@@ -185,7 +185,7 @@ git commit -m "fix: migrate mixed legacy provider auth copies"
 - Consumes: `profile_owns_provider_key`, `non_empty_provider_key`, and `migrate_legacy_profile_auth_locked_at(&Path) -> anyhow::Result<usize>` from Task 1.
 - Produces: complete migration decision matrix and safe profile identification on startup failures.
 
-- [ ] **Step 1: Add failing tests for every remaining decision boundary**
+- [x] **Step 1: Add failing tests for every remaining decision boundary**
 
 Add focused tests with real serialized `BackendSettings` values:
 
@@ -245,7 +245,7 @@ assert_eq!(std::fs::read(&settings_path).unwrap(), before);
 
 The fixture helper must write only under `tempfile::tempdir()`, return the exact pre-migration bytes, and never print credential sentinels.
 
-- [ ] **Step 2: Run the new tests and verify RED for the unimplemented boundaries**
+- [x] **Step 2: Run the new tests and verify RED for the unimplemented boundaries**
 
 Run:
 
@@ -258,7 +258,7 @@ cargo test legacy_profile_auth --lib -- --nocapture
 
 Expected: at least the missing-profile-context test fails because the current filesystem loop propagates a context-free error. If any behavior test unexpectedly passes, strengthen its assertion to cover the missing observable state rather than weakening the requirement.
 
-- [ ] **Step 3: Add safe profile context to startup migration failures**
+- [x] **Step 3: Add safe profile context to startup migration failures**
 
 Wrap the profile-level migration at the filesystem boundary, where dynamic context is permitted, while preserving static commit failure reasons:
 
@@ -275,7 +275,7 @@ migrate_persisted_legacy_api_key_auth(profile).with_context(|| {
 
 Do not change `ProviderCommitPayload.reason` or `ProviderCommitFailure`: their static-string contract intentionally prevents dynamic credential-bearing error content from crossing IPC.
 
-- [ ] **Step 4: Refine reconciliation only as required by the failing tests**
+- [x] **Step 4: Refine reconciliation only as required by the failing tests**
 
 Keep these invariants in the implementation:
 
@@ -299,7 +299,7 @@ anyhow::ensure!(
 
 An empty or non-string legacy `OPENAI_API_KEY` is ignored only when a valid structured key or bearer already supplies the provider credential. Invalid JSON and non-object payloads always fail before mode-specific cleanup.
 
-- [ ] **Step 5: Run all command-module migration tests**
+- [x] **Step 5: Run all command-module migration tests**
 
 Run:
 
@@ -313,7 +313,7 @@ cargo test normalization_projects_api_key_only_legacy_copy_to_provider_config --
 
 Expected: PASS, with failed migrations retaining byte-identical settings and no error rendering any OAuth or provider-key sentinel.
 
-- [ ] **Step 6: Commit the safety matrix**
+- [x] **Step 6: Commit the safety matrix**
 
 ```bash
 git add src-tauri/src/commands.rs
@@ -333,7 +333,7 @@ git commit -m "test: pin provider auth migration boundaries"
 - Consumes: the completed migration rule from Tasks 1-2, `load_provider_commit_settings(&Path)`, `serialize_settings_without_profile_auth`, and the existing provider transaction/live-auth invariants.
 - Produces: direct evidence that startup and provider-commit loading agree, plus the updated normative specification and completed-work record.
 
-- [ ] **Step 1: Add a failing/behavior-locking commit-load regression before any further production change**
+- [x] **Step 1: Add a failing/behavior-locking commit-load regression before any further production change**
 
 Add a unit test that writes Eva-shaped settings, calls `load_provider_commit_settings`, and asserts both outputs deliberately:
 
@@ -361,7 +361,7 @@ fn provider_commit_load_accepts_eva_residue_without_mutating_its_snapshot() {
 
 Extract `eva_legacy_settings_bytes() -> Vec<u8>` only inside the test module and reuse it in the startup regression. The helper contains sentinel credentials solely in temp-file test data.
 
-- [ ] **Step 2: Run the entry-point test**
+- [x] **Step 2: Run the entry-point test**
 
 Run:
 
@@ -372,7 +372,7 @@ cargo test provider_commit_load_accepts_eva_residue_without_mutating_its_snapsho
 
 Expected: PASS if Tasks 1-2 fully unified the rule. If it fails, change only the shared migration call or test fixture; do not add a second migration implementation.
 
-- [ ] **Step 3: Synchronize the main OpenSpec scenarios**
+- [x] **Step 3: Synchronize the main OpenSpec scenarios**
 
 Replace the API-key-only scenario with explicit mixed-residue behavior:
 
@@ -395,7 +395,7 @@ Replace the API-key-only scenario with explicit mixed-residue behavior:
 
 Update the later startup-credential-migration requirement so it permits removal of legacy OAuth fields as well as relocation of the provider key, while continuing to prohibit implicit provider-contract normalization.
 
-- [ ] **Step 4: Run focused formatting and specification checks**
+- [x] **Step 4: Run focused formatting and specification checks**
 
 Run:
 
@@ -407,7 +407,7 @@ git diff --check
 
 Expected: Rust formatting is clean, the main provider specification passes strict validation, and no diff whitespace errors are reported.
 
-- [ ] **Step 5: Run the complete repository evidence path**
+- [x] **Step 5: Run the complete repository evidence path**
 
 Run:
 
@@ -420,7 +420,7 @@ npm run verify
 
 Expected: all Rust tests, TypeScript checks, frontend tests, and knip pass. No live provider request is sent by these commands.
 
-- [ ] **Step 6: Append the completed-work record only after all checks pass**
+- [x] **Step 6: Append the completed-work record only after all checks pass**
 
 At the top of the `2026-08-17` section in `BOARD.md`, add one entry with:
 
@@ -433,7 +433,7 @@ At the top of the `2026-08-17` section in `BOARD.md`, add one entry with:
 
 Add exact test counts only when the command output reports them directly; do not estimate counts.
 
-- [ ] **Step 7: Re-run document checks and commit the completed change**
+- [x] **Step 7: Re-run document checks and commit the completed change**
 
 Run:
 

@@ -6290,6 +6290,39 @@ max_threads = 1000
         (temp, settings_path, before)
     }
 
+    fn eva_legacy_settings_bytes() -> Vec<u8> {
+        let mut settings = BackendSettings::default();
+        settings.relay_profiles = vec![RelayProfile {
+            id: "eva".to_string(),
+            name: "Eva|Codex".to_string(),
+            model: "gpt-5.6-terra".to_string(),
+            relay_mode: codex_plus_core::settings::RelayMode::Official,
+            official_mix_api_key: true,
+            protocol: codex_plus_core::settings::RelayProtocol::Responses,
+            base_url: "https://example.test/v1".to_string(),
+            upstream_base_url: "https://example.test/v1".to_string(),
+            config_contents: r#"model = "gpt-5.6-terra"
+model_provider = "OpenAI"
+
+[model_providers.OpenAI]
+name = "OpenAI"
+base_url = "https://example.test/v1"
+wire_api = "responses"
+requires_openai_auth = true
+"#
+            .to_string(),
+            auth_contents: r#"{
+                "OPENAI_API_KEY": "provider-key-sentinel",
+                "auth_mode": "chatgpt",
+                "tokens": {"access_token": "oauth-access-sentinel"}
+            }"#
+            .to_string(),
+            ..RelayProfile::default()
+        }];
+
+        serde_json::to_vec_pretty(&settings).unwrap()
+    }
+
     #[test]
     fn oauth_only_residue_uses_an_existing_provider_bearer() {
         let mut profile = RelayProfile {
@@ -6439,38 +6472,13 @@ max_threads = 1000
     fn load_time_legacy_migration_repairs_api_key_plus_oauth_residue() {
         let temp = tempfile::tempdir().unwrap();
         let settings_path = temp.path().join("settings.json");
-        let mut settings = BackendSettings::default();
-        settings.relay_profiles = vec![RelayProfile {
-            id: "eva".to_string(),
-            name: "Eva|Codex".to_string(),
-            model: "gpt-5.6-terra".to_string(),
-            relay_mode: codex_plus_core::settings::RelayMode::Official,
-            official_mix_api_key: true,
-            protocol: codex_plus_core::settings::RelayProtocol::Responses,
-            base_url: "https://example.test/v1".to_string(),
-            upstream_base_url: "https://example.test/v1".to_string(),
-            config_contents: r#"model = "gpt-5.6-terra"
-model_provider = "OpenAI"
-
-[model_providers.OpenAI]
-name = "OpenAI"
-base_url = "https://example.test/v1"
-wire_api = "responses"
-requires_openai_auth = true
-"#
-            .to_string(),
-            auth_contents: r#"{
-                "OPENAI_API_KEY": "provider-key-sentinel",
-                "auth_mode": "chatgpt",
-                "tokens": {"access_token": "oauth-access-sentinel"}
-            }"#
-            .to_string(),
-            ..RelayProfile::default()
-        }];
-        std::fs::write(&settings_path, serde_json::to_vec_pretty(&settings).unwrap()).unwrap();
+        std::fs::write(&settings_path, eva_legacy_settings_bytes()).unwrap();
         let _guard = live_state::lock().unwrap();
 
-        assert_eq!(migrate_legacy_profile_auth_locked_at(&settings_path).unwrap(), 1);
+        assert_eq!(
+            migrate_legacy_profile_auth_locked_at(&settings_path).unwrap(),
+            1
+        );
 
         let bytes = std::fs::read(&settings_path).unwrap();
         let raw = String::from_utf8(bytes.clone()).unwrap();
@@ -6481,6 +6489,26 @@ requires_openai_auth = true
         assert!(!raw.contains("authContents"));
         assert!(!raw.contains("oauth-access-sentinel"));
         assert!(!profile.config_contents.contains("oauth-access-sentinel"));
+    }
+
+    #[test]
+    fn provider_commit_load_accepts_eva_residue_without_mutating_its_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings_path = temp.path().join("settings.json");
+        let original = eva_legacy_settings_bytes();
+        std::fs::write(&settings_path, &original).unwrap();
+
+        let (snapshot, loaded) = load_provider_commit_settings(&settings_path).unwrap();
+
+        assert_eq!(snapshot, original);
+        assert_eq!(std::fs::read(&settings_path).unwrap(), original);
+        let profile = &loaded.relay_profiles[0];
+        assert!(profile.auth_contents.is_empty());
+        assert_eq!(profile.api_key, "provider-key-sentinel");
+        assert_eq!(
+            provider_bearer_token_from_config_exact(&profile.config_contents).as_deref(),
+            Some("provider-key-sentinel")
+        );
     }
 
     #[test]
@@ -6518,10 +6546,17 @@ x-openai-actor-authorization = "pure-header"
             ..RelayProfile::default()
         }];
 
-        std::fs::write(&settings_path, serde_json::to_vec_pretty(&settings).unwrap()).unwrap();
+        std::fs::write(
+            &settings_path,
+            serde_json::to_vec_pretty(&settings).unwrap(),
+        )
+        .unwrap();
         let _guard = live_state::lock().unwrap();
 
-        assert_eq!(migrate_legacy_profile_auth_locked_at(&settings_path).unwrap(), 1);
+        assert_eq!(
+            migrate_legacy_profile_auth_locked_at(&settings_path).unwrap(),
+            1
+        );
 
         let bytes = std::fs::read(&settings_path).unwrap();
         let raw = String::from_utf8(bytes).unwrap();
@@ -6530,11 +6565,17 @@ x-openai-actor-authorization = "pure-header"
         let document: toml_edit::DocumentMut = profile.config_contents.parse().unwrap();
         let provider = document["model_providers"]["PureAPI"].clone();
 
-        assert_eq!(provider_bearer_token_from_config_exact(&profile.config_contents).as_deref(), Some("provider-key-sentinel"));
+        assert_eq!(
+            provider_bearer_token_from_config_exact(&profile.config_contents).as_deref(),
+            Some("provider-key-sentinel")
+        );
         assert_eq!(document["model_provider"].as_str(), Some("PureAPI"));
         assert_eq!(document["model"].as_str(), Some("gpt-5.6-terra"));
         assert_eq!(provider["name"].as_str(), Some("OpenAI"));
-        assert_eq!(provider["base_url"].as_str(), Some("https://example.test/v1"));
+        assert_eq!(
+            provider["base_url"].as_str(),
+            Some("https://example.test/v1")
+        );
         assert_eq!(provider["wire_api"].as_str(), Some("responses"));
         assert_eq!(provider["requires_openai_auth"].as_bool(), Some(true));
         assert_eq!(provider["custom_field"].as_str(), Some("preserve-me"));
@@ -6542,7 +6583,10 @@ x-openai-actor-authorization = "pure-header"
             provider["http_headers"]["x-openai-actor-authorization"].as_str(),
             Some("pure-header")
         );
-        assert_eq!(provider["experimental_bearer_token"].as_str(), Some("provider-key-sentinel"));
+        assert_eq!(
+            provider["experimental_bearer_token"].as_str(),
+            Some("provider-key-sentinel")
+        );
         assert!(!raw.contains("authContents"));
         assert!(!raw.contains("oauth-access-sentinel"));
     }
