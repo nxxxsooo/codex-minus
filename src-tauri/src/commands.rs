@@ -4187,31 +4187,6 @@ fn validate_provider_topology_mutation_scope(
     // no-focus edit legitimately returns a bystander's raw stored contract verbatim. Judging that
     // reply only against core-normalized snapshots would reject a list edit the user never made.
     let persisted_shown = ProviderOwnedTopologyDraft::from_settings(persisted_as_shown);
-    if std::env::var("PI_DEBUG_SCOPE").is_ok() {
-        for (label, base) in [
-            ("raw", &persisted_raw),
-            ("ui", &persisted_ui),
-            ("shown", &persisted_shown),
-        ] {
-            eprintln!("=== baseline {label} ===");
-            eprintln!("active={:?}", base.active_relay_id);
-            eprintln!("common={:?}", base.relay_common_config_contents);
-            eprintln!("context={:?}", base.relay_context_config_contents);
-            for profile in &base.relay_profiles {
-                eprintln!("  profile {}", serde_json::to_string(profile).unwrap());
-            }
-        }
-        eprintln!("=== request ===");
-        eprintln!("active={:?}", request.topology.active_relay_id);
-        eprintln!("common={:?}", request.topology.relay_common_config_contents);
-        eprintln!(
-            "context={:?}",
-            request.topology.relay_context_config_contents
-        );
-        for profile in &request.topology.relay_profiles {
-            eprintln!("  profile {}", serde_json::to_string(profile).unwrap());
-        }
-    }
     validate_against(&persisted_raw)
         .or_else(|_| validate_against(&persisted_ui))
         .or_else(|_| validate_against(&persisted_shown))
