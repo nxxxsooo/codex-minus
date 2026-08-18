@@ -6,6 +6,13 @@
 
 ## Changelog
 
+### 2026-08-18
+
+- **fix/providers**: closed the remaining Responses-only boundary leaks found by full-branch review on `codex/responses-only-providers` — active external-catalog adoption now runs inside the Context transaction, raw `config.toml` `wire_api` and raw `settings.json` legacy fields are rejected before any normalization, detail/topology commits can no longer rewrite unfocused bypass profiles, adoption catalog pointers persist, first catalog read falls back to a default instead of failing, and `openspec/specs` matches the Responses-only contract
+  - why: the six task-level reviews each passed in isolation, but the cross-task review found raw-input and transaction-ownership paths that no single slice owned; a follow-up strictness review added eight more real acceptance violations around dormant tables, mixed-auth `false` preservation, inline backup redaction, pure-OAuth state/overlay restore, startup scrub, and strict byte decoding
+  - verified: `cargo test` passed 230 library + 19 native-capability + 22 draft integration tests; `npm run verify` passed TypeScript, 211 frontend tests, and knip; `npm run vite:build`, `rustfmt`, `git diff --check`, and strict OpenSpec `10/10` all passed; every blocker has a RED→GREEN regression rather than a source-string assertion
+  - refs: branch `codex/responses-only-providers` `bf2c13c`, `src-tauri/src/provider_commit.rs`, `src-tauri/src/commands.rs`, `src-tauri/src/model_catalog.rs`, `openspec/specs/`
+
 ### 2026-08-17
 
 - **release**: 0.4.14 — ships automatic repair of legacy provider `authContents` so Eva can recover through the signed in-app updater instead of editing credential files by hand
