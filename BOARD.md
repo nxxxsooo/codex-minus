@@ -6,6 +6,13 @@
 
 ## Changelog
 
+### 2026-08-18
+
+- **research/host**: established that a startup-time shadow `CODEX_HOME` wrapper can actually reach the macOS GUI Codex, and identified live refresh-token rotation as the controlling hazard of that design
+  - why: the 2026-08-17 probe proved native `image_gen` works through an isolated temporary `CODEX_HOME`, but a headless child app-server tool never appears inside an already-running GUI task; the visible-GUI path needed a feasibility and safety answer before any design was written
+  - verified: the bundled ChatGPT.app Codex host resolves its home as `process.env.CODEX_HOME ?? ~/.codex`, so a launch-time env override is honored and sessions/skills can be shared into the shadow home by symlink; the gate that strips `image_gen` before actor eligibility is the runtime plan check named `image_generation_runtime_enabled` in the installed 0.148 binary — the same role the July source snapshot spells `image_generation_available` — fired by the live `free` plan claim; a full live `auth.json` copy inside a shadow home would let that process rotate the refresh token out from under the official ChatGPT client, so the shadow home may carry only non-refreshable access/ID tokens with the plan claim projected as Unknown, matching the existing official-catalog-refresh rule; the locally available upstream Codex source snapshot predates the Free gate and is not evidence against the installed 0.148 binary. No design document, OpenSpec change, or code exists for the wrapper yet
+  - refs: `/Applications/ChatGPT.app/Contents/Resources/app.asar`, `/Applications/ChatGPT.app/Contents/Resources/codex`, BOARD 2026-08-17 `docs/providers`, `AGENTS.md` OAuth ownership constraint
+
 ### 2026-08-17
 
 - **release**: 0.4.15 — delivers the unowned legacy model-list reset through the signed in-app updater, so Eva's stale `gpt-5` default recovers without manual model switching
