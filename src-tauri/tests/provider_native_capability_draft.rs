@@ -40,12 +40,35 @@ fn request(
     }
 }
 
+fn write_persisted_settings(path: &std::path::Path, settings: &BackendSettings) {
+    let mut value = serde_json::to_value(settings).unwrap();
+    value
+        .as_object_mut()
+        .unwrap()
+        .remove("aggregateRelayProfiles");
+    value
+        .as_object_mut()
+        .unwrap()
+        .remove("activeAggregateRelayId");
+    for profile in value["relayProfiles"].as_array_mut().unwrap() {
+        profile.as_object_mut().unwrap().remove("protocol");
+        profile.as_object_mut().unwrap().remove("upstreamBaseUrl");
+    }
+    std::fs::write(path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+}
+
 #[test]
 fn typescript_transform_request_shape_deserializes_through_the_real_serde_boundary() {
     let profile = mixed_profile("serde", "same-secret", &canonical_source("inline"));
+    let mut frontend_profile = serde_json::to_value(profile).unwrap();
+    frontend_profile.as_object_mut().unwrap().remove("protocol");
+    frontend_profile
+        .as_object_mut()
+        .unwrap()
+        .remove("upstreamBaseUrl");
     let wire = serde_json::json!({
         "draftRevision": 73,
-        "profile": profile,
+        "profile": frontend_profile,
         "catalogMode": "official-plus-custom",
         "action": "enableNativePriority",
         "confirmations": ["replaceActorHeader", "useStructuredKey"]
@@ -54,6 +77,8 @@ fn typescript_transform_request_shape_deserializes_through_the_real_serde_bounda
     let request: ProviderNativeCapabilityDraftRequest = serde_json::from_value(wire).unwrap();
     assert_eq!(request.draft_revision, 73);
     assert_eq!(request.catalog_mode, CatalogMode::OfficialPlusCustom);
+    assert_eq!(request.profile.protocol, RelayProtocol::Responses);
+    assert!(request.profile.upstream_base_url.is_empty());
     assert_eq!(
         request.action,
         NativeCapabilityDraftAction::EnableNativePriority
@@ -65,6 +90,35 @@ fn typescript_transform_request_shape_deserializes_through_the_real_serde_bounda
             NativeCapabilityDraftConfirmation::UseStructuredKey,
         ]
     );
+
+    for (field, value) in [
+        ("protocol", serde_json::json!("responses")),
+        (
+            "upstreamBaseUrl",
+            serde_json::json!("https://forged.example/v1"),
+        ),
+    ] {
+        let mut profile = serde_json::to_value(mixed_profile(
+            "serde-forged",
+            "same-secret",
+            &canonical_source("inline"),
+        ))
+        .unwrap();
+        profile.as_object_mut().unwrap().remove("protocol");
+        profile.as_object_mut().unwrap().remove("upstreamBaseUrl");
+        profile[field] = value;
+        let forged = serde_json::json!({
+            "draftRevision": 74,
+            "profile": profile,
+            "catalogMode": "official-plus-custom",
+            "action": "enableNativePriority",
+            "confirmations": []
+        });
+        assert!(
+            serde_json::from_value::<ProviderNativeCapabilityDraftRequest>(forged).is_err(),
+            "explicit removed field {field} must be rejected"
+        );
+    }
 
     let wrong_case = serde_json::json!({
         "draftRevision": 74,
@@ -85,6 +139,54 @@ fn typescript_transform_request_shape_deserializes_through_the_real_serde_bounda
         "confirmations": [],
     });
     assert!(serde_json::from_value::<ProviderNativeCapabilityDraftRequest>(retired).is_err());
+
+    let mut aggregate_profile = serde_json::to_value(mixed_profile(
+        "serde-aggregate",
+        "same-secret",
+        &canonical_source("inline"),
+    ))
+    .unwrap();
+    aggregate_profile["relayMode"] = serde_json::json!("aggregate");
+    let aggregate = serde_json::json!({
+        "draftRevision": 76,
+        "profile": aggregate_profile,
+        "catalogMode": "native-official",
+        "action": "inspect",
+        "confirmations": [],
+    });
+    assert!(serde_json::from_value::<ProviderNativeCapabilityDraftRequest>(aggregate).is_err());
+}
+
+#[test]
+fn typescript_transform_request_rejects_removed_raw_provider_toml_at_serde_boundary() {
+    let canonical = canonical_source("inline");
+    let invalid = [
+        canonical.replace("wire_api = \"responses\"", "wire_api = \"chat\""),
+        canonical.replace("wire_api = \"responses\"\n", ""),
+        format!("codex_plus_chat_base_url = \"https://relay.example/v1\"\n{canonical}"),
+        canonical.replace(
+            "base_url = \"https://relay.example/v1\"",
+            "base_url = \"http://127.0.0.1:57321/v1\"",
+        ),
+    ];
+    for config_contents in invalid {
+        let mut profile = serde_json::to_value(mixed_profile(
+            "serde-legacy",
+            "same-secret",
+            &config_contents,
+        ))
+        .unwrap();
+        profile.as_object_mut().unwrap().remove("protocol");
+        profile.as_object_mut().unwrap().remove("upstreamBaseUrl");
+        let wire = serde_json::json!({
+            "draftRevision": 75,
+            "profile": profile,
+            "catalogMode": "official-plus-custom",
+            "action": "enableNativePriority",
+            "confirmations": []
+        });
+        assert!(serde_json::from_value::<ProviderNativeCapabilityDraftRequest>(wire).is_err());
+    }
 }
 
 fn parsed(
@@ -119,7 +221,7 @@ unrelated_root = "keep-root"
 [model_providers.RelayOne] # provider-comment
 name = "custom" # name-comment
 base_url = "https://relay.example/v1" # base-comment
-wire_api = "chat"
+wire_api = "responses"
 requires_openai_auth = true
 experimental_bearer_token = "same-secret" # bearer-comment
 arbitrary_provider_key = "keep-provider" # arbitrary-comment
@@ -208,6 +310,30 @@ fn enabling_edits_only_owned_fields_and_preserves_nonlegacy_identity_evidence_an
             );
         }
     }
+}
+
+#[test]
+fn enabling_preserves_an_existing_false_official_auth_requirement() {
+    let source = canonical_source("inline").replace(
+        "requires_openai_auth = true",
+        "requires_openai_auth = false",
+    );
+    let profile = mixed_profile("profile", "same-secret", &source);
+
+    let payload = draft_provider_native_capability(&request(
+        profile,
+        CatalogMode::NativeOfficial,
+        NativeCapabilityDraftAction::EnableNativePriority,
+    ));
+
+    assert_eq!(payload.status, NativeCapabilityDraftStatus::Ready);
+    let document = parsed(&payload);
+    assert_eq!(
+        provider(&document, "RelayOne")
+            .get("requires_openai_auth")
+            .and_then(Item::as_bool),
+        Some(false)
+    );
 }
 
 #[test]
@@ -707,47 +833,6 @@ fn pure_oauth_requires_destructive_confirmation_then_removes_the_complete_select
 }
 
 #[test]
-fn protocol_change_to_chat_completions_is_an_explicit_capability_loss_exit() {
-    let original = mixed_profile("chat-exit", "same-secret", enabled_exit_source());
-    let unconfirmed = draft_provider_native_capability(&request(
-        original.clone(),
-        CatalogMode::OfficialPlusCustom,
-        NativeCapabilityDraftAction::ExitChatCompletions,
-    ));
-    assert_eq!(
-        unconfirmed.status,
-        NativeCapabilityDraftStatus::ConfirmationRequired
-    );
-    assert_eq!(unconfirmed.draft.profile.protocol, RelayProtocol::Responses);
-    assert_eq!(
-        unconfirmed.draft.profile.config_contents,
-        original.config_contents
-    );
-
-    let mut confirmed_request = request(
-        original,
-        CatalogMode::OfficialPlusCustom,
-        NativeCapabilityDraftAction::ExitChatCompletions,
-    );
-    confirmed_request
-        .confirmations
-        .push(NativeCapabilityDraftConfirmation::ConfirmCapabilityLoss);
-    let confirmed = draft_provider_native_capability(&confirmed_request);
-    assert_eq!(confirmed.status, NativeCapabilityDraftStatus::Ready);
-    assert_eq!(
-        confirmed.draft.profile.protocol,
-        RelayProtocol::ChatCompletions
-    );
-    assert!(confirmed.preview.capability_loss);
-    assert_eq!(
-        provider(&parsed(&confirmed), "RelayOne")
-            .get("arbitrary")
-            .and_then(Item::as_str),
-        Some("keep-provider")
-    );
-}
-
-#[test]
 fn every_compatibility_exit_rejects_a_non_string_semantic_actor_header() {
     let malformed = enabled_exit_source().replace(
         "\"x-openai-actor-authorization\" = \"local-image-extension\"",
@@ -756,7 +841,6 @@ fn every_compatibility_exit_rejects_a_non_string_semantic_actor_header() {
     for action in [
         NativeCapabilityDraftAction::ExitPureApi,
         NativeCapabilityDraftAction::ExitLegacyCompatibility,
-        NativeCapabilityDraftAction::ExitChatCompletions,
     ] {
         let mut request = request(
             mixed_profile("malformed-exit", "same-secret", &malformed),
@@ -810,7 +894,6 @@ fn external_ownership_blocks_every_native_exit_even_when_confirmed() {
     for action in [
         NativeCapabilityDraftAction::ExitPureApi,
         NativeCapabilityDraftAction::ExitLegacyCompatibility,
-        NativeCapabilityDraftAction::ExitChatCompletions,
         NativeCapabilityDraftAction::ExitPureOAuth,
     ] {
         let mut exit = request(original.clone(), CatalogMode::External, action);
@@ -854,7 +937,7 @@ fn persisted_external_ownership_cannot_be_forged_to_managed_at_the_command_bound
     let temp = tempfile::tempdir().unwrap();
     let settings_path = temp.path().join("settings.json");
     let catalog_state_path = temp.path().join("model-catalog-state.json");
-    std::fs::write(&settings_path, serde_json::to_vec(&settings).unwrap()).unwrap();
+    write_persisted_settings(&settings_path, &settings);
     std::fs::write(
         &catalog_state_path,
         serde_json::to_vec(&serde_json::json!({
@@ -872,7 +955,6 @@ fn persisted_external_ownership_cannot_be_forged_to_managed_at_the_command_bound
     for action in [
         NativeCapabilityDraftAction::ExitPureApi,
         NativeCapabilityDraftAction::ExitLegacyCompatibility,
-        NativeCapabilityDraftAction::ExitChatCompletions,
         NativeCapabilityDraftAction::ExitPureOAuth,
     ] {
         let mut forged = request(original.clone(), CatalogMode::OfficialPlusCustom, action);
@@ -907,7 +989,7 @@ fn exit_transform_fails_closed_when_persisted_catalog_ownership_is_unavailable()
     settings.relay_profiles.push(original.clone());
     let temp = tempfile::tempdir().unwrap();
     let settings_path = temp.path().join("settings.json");
-    std::fs::write(&settings_path, serde_json::to_vec(&settings).unwrap()).unwrap();
+    write_persisted_settings(&settings_path, &settings);
 
     for (case, contents) in [
         ("missing", None),
@@ -969,7 +1051,7 @@ fn persisted_managed_ownership_allows_only_confirmed_exit_drafts() {
     let temp = tempfile::tempdir().unwrap();
     let settings_path = temp.path().join("settings.json");
     let catalog_state_path = temp.path().join("model-catalog-state.json");
-    std::fs::write(&settings_path, serde_json::to_vec(&settings).unwrap()).unwrap();
+    write_persisted_settings(&settings_path, &settings);
     std::fs::write(
         &catalog_state_path,
         serde_json::to_vec(&serde_json::json!({
@@ -987,7 +1069,6 @@ fn persisted_managed_ownership_allows_only_confirmed_exit_drafts() {
     for action in [
         NativeCapabilityDraftAction::ExitPureApi,
         NativeCapabilityDraftAction::ExitLegacyCompatibility,
-        NativeCapabilityDraftAction::ExitChatCompletions,
         NativeCapabilityDraftAction::ExitPureOAuth,
     ] {
         let mut exit = request(original.clone(), CatalogMode::External, action);
@@ -1044,7 +1125,7 @@ fn revisioned_command_uses_only_the_injected_read_only_inspection_boundary() {
     let temp = tempfile::tempdir().unwrap();
     let settings_path = temp.path().join("settings.json");
     let catalog_state_path = temp.path().join("model-catalog-state.json");
-    std::fs::write(&settings_path, serde_json::to_vec(&settings).unwrap()).unwrap();
+    write_persisted_settings(&settings_path, &settings);
     std::fs::write(
         &catalog_state_path,
         serde_json::to_vec(&serde_json::json!({
@@ -1163,7 +1244,13 @@ fn complete_response_keeps_provider_secret_only_in_declared_local_draft_fields()
             "/draft/structuredApiKey".to_string(),
         ]
     );
-    assert_eq!(serialized["draft"]["profile"]["authContents"], "");
+    assert!(serialized["draft"]["profile"].get("authContents").is_none());
+    assert!(serialized["draft"]["profile"].get("protocol").is_none());
+    assert!(
+        serialized["draft"]["profile"]
+            .get("upstreamBaseUrl")
+            .is_none()
+    );
     assert!(
         !serde_json::to_string(&serialized["blockers"])
             .unwrap()

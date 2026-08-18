@@ -9,7 +9,7 @@
 /// The one structural helper, `normalizeDuplicateTomlTables`, exists because grafting sections back
 /// together can otherwise emit the same `[table]` header twice, which TOML rejects.
 
-import type { ContextKind, RelayProfile } from "./backend-types";
+import type { ContextKind, RelayProfile } from "./backend-types.ts";
 
 /// The `config.toml` table each context kind lives in.
 ///

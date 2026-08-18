@@ -298,10 +298,6 @@ pub fn atomic_write_owner_only(path: &Path, bytes: &[u8]) -> anyhow::Result<()> 
     write_result
 }
 
-pub fn commit_locked(mutations: &[FileMutation]) -> anyhow::Result<()> {
-    commit_locked_verified(mutations, || Ok(()))
-}
-
 pub fn commit_locked_verified(
     mutations: &[FileMutation],
     verify: impl FnOnce() -> anyhow::Result<()>,

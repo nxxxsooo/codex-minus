@@ -17,9 +17,7 @@ export type ProviderRelayProfileSource = {
   name: string;
   model: string;
   baseUrl: string;
-  upstreamBaseUrl: string;
   apiKey: string;
-  protocol: string;
   relayMode: string;
   officialMixApiKey: boolean;
   testModel: string;
@@ -40,19 +38,10 @@ export type ProviderRelayProfileDraft = Omit<ProviderRelayProfileSource, "modelI
   modelInsertMode: string;
 };
 
-export type ProviderAggregateDraft = {
-  id: string;
-  name: string;
-  strategy: string;
-  members: Array<{ relayId: string; weight: number }>;
-};
-
 export type ProviderSettingsSource = {
   relayProfilesEnabled: boolean;
   relayProfiles: ProviderRelayProfileSource[];
-  aggregateRelayProfiles: ProviderAggregateDraft[];
   activeRelayId: string;
-  activeAggregateRelayId: string;
   relayBaseUrl: string;
   relayApiKey: string;
   relayCommonConfigContents: string;
@@ -89,7 +78,6 @@ export type ProviderMutationKind =
   | "reorder"
   | "copy"
   | "delete"
-  | "aggregateCleanup"
   | "testModel"
   | "detailSave"
   | "setCurrent";
@@ -99,7 +87,7 @@ export type ProviderCommitInvocation = {
   request: ProviderCommitRequest;
 };
 
-export type CatalogDraftAvailability = "not-required" | "implicit" | "persisted" | "unavailable";
+export type CatalogDraftAvailability = "implicit" | "persisted" | "unavailable";
 export type ProviderCommitResponseDisposition = "apply" | "report" | "ignore";
 export type ProviderCommitUiState<T> = {
   latestRevision: number;
@@ -167,10 +155,8 @@ export function settleProviderCommit<T>(
 
 export function catalogDraftAvailability(
   profileWasPersisted: boolean,
-  catalogCapable: boolean,
   persistedSummaryAvailable: boolean,
 ): CatalogDraftAvailability {
-  if (!catalogCapable) return "not-required";
   if (!profileWasPersisted) return "implicit";
   return persistedSummaryAvailable ? "persisted" : "unavailable";
 }
@@ -251,11 +237,9 @@ export function buildProviderMutationInvocation(input: ProviderMutationInvocatio
     if (!source || !sameCopySignature(source, newProfiles[0])) {
       throw new Error("copied provider profile does not match its explicit source");
     }
-    if (managedCatalogCapable(newProfiles[0])) {
-      const sourceDraft = suppliedById.get(source.id);
-      if (!sourceDraft) throw new Error("catalog-capable copy requires its source catalog draft");
-      catalogDrafts.push({ ...sourceDraft, profileId: newProfiles[0].id });
-    }
+    const sourceDraft = suppliedById.get(source.id);
+    if (!sourceDraft) throw new Error("catalog-capable copy requires its source catalog draft");
+    catalogDrafts.push({ ...sourceDraft, profileId: newProfiles[0].id });
   } else if (newProfiles.length) {
     throw new Error("only the copy topology action may add a provider profile");
   }
@@ -269,25 +253,11 @@ export function buildProviderMutationInvocation(input: ProviderMutationInvocatio
   };
 }
 
-export function managedCatalogCapable(profile: ProviderRelayProfileSource): boolean {
-  return profile.relayMode !== "aggregate" && profile.protocol !== "chatCompletions";
-}
-
 export function projectProviderOwnedTopology(settings: ProviderSettingsSource): ProviderOwnedTopologyDraft {
   return {
     relayProfilesEnabled: settings.relayProfilesEnabled,
     relayProfiles: settings.relayProfiles.map(projectRelayProfile),
-    aggregateRelayProfiles: settings.aggregateRelayProfiles.map((aggregate) => ({
-      id: aggregate.id,
-      name: aggregate.name,
-      strategy: aggregate.strategy,
-      members: aggregate.members.map((member) => ({
-        relayId: member.relayId,
-        weight: member.weight,
-      })),
-    })),
     activeRelayId: settings.activeRelayId,
-    activeAggregateRelayId: settings.activeAggregateRelayId,
     relayBaseUrl: settings.relayBaseUrl,
     relayApiKey: settings.relayApiKey,
     relayCommonConfigContents: settings.relayCommonConfigContents,
@@ -302,9 +272,7 @@ function projectRelayProfile(profile: ProviderRelayProfileSource): ProviderRelay
     name: profile.name,
     model: profile.model,
     baseUrl: profile.baseUrl,
-    upstreamBaseUrl: profile.upstreamBaseUrl,
     apiKey: profile.apiKey,
-    protocol: profile.protocol,
     relayMode: profile.relayMode,
     officialMixApiKey: profile.officialMixApiKey,
     testModel: profile.testModel,
@@ -399,7 +367,6 @@ function buildEnvelope(
 function implicitMixedCatalogEligible(profile: ProviderRelayProfileDraft): boolean {
   return profile.relayMode === "official"
     && profile.officialMixApiKey
-    && profile.protocol === "responses"
     && !/^\s*model_catalog_json\s*=/m.test(profile.configContents);
 }
 

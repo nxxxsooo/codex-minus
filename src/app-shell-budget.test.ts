@@ -20,8 +20,6 @@ const shell = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
 /// and small input parsers used by one form. They are the least valuable to move and the least
 /// costly to leave, which is why they are last.
 const LOGIC_STILL_IN_THE_SHELL = [
-  "aggregateStrategyHelp",
-  "aggregateStrategyLabel",
   "boundedPercentOrDefault",
   "boundedPercentOrNull",
   "catalogDraftErrorLabel",
@@ -42,7 +40,6 @@ const LOGIC_STILL_IN_THE_SHELL = [
   "relayProfileConfigBrief",
   "relayProfileEditorStatus",
   "relayProfileModeHelp",
-  "relayProtocolLabel",
   "routeSubtitle",
   "routeTitle",
   "stringifyError",
@@ -79,8 +76,8 @@ describe("the application shell holds wiring, not rules", () => {
     // A ceiling, not a target. Lower it when work makes it true; never raise it to make a change fit.
     const lines = shell.split("\n").length;
     assert.ok(
-      lines <= 3490,
-      `App.tsx is ${lines} lines, over the 3490 ceiling — move something out rather than raising it`,
+      lines <= 3221,
+      `App.tsx is ${lines} lines, over the 3221 ceiling — move something out rather than raising it`,
     );
   });
 });

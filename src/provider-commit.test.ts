@@ -15,9 +15,7 @@ const firstProfile: ProviderRelayProfileSource & Record<string, unknown> = {
   name: "Relay A",
   model: "gpt-5.4",
   baseUrl: "https://a.example/v1",
-  upstreamBaseUrl: "https://a.example/v1",
   apiKey: "secret-a",
-  protocol: "responses",
   relayMode: "official",
   officialMixApiKey: true,
   testModel: "gpt-5.4-mini",
@@ -50,9 +48,7 @@ function settingsWith(profiles: Array<ProviderRelayProfileSource & Record<string
   return {
     relayProfilesEnabled: true,
     relayProfiles: profiles,
-    aggregateRelayProfiles: [],
     activeRelayId: "relay-a",
-    activeAggregateRelayId: "",
     relayBaseUrl: "https://a.example/v1",
     relayApiKey: "secret-a",
     relayCommonConfigContents: "# common\n",
@@ -72,15 +68,12 @@ describe("provider-owned commit request", () => {
     assert.equal(commitModule.providerCommitResponseDisposition(8, 9, false), "ignore");
     assert.equal(commitModule.providerCommitResponseDisposition(9, 9, true), "apply");
     assert.equal(commitModule.providerCommitResponseDisposition(9, 9, false), "report");
-    assert.equal(commitModule.catalogDraftAvailability(true, true, false), "unavailable");
-    assert.equal(commitModule.catalogDraftAvailability(true, true, true), "persisted");
-    assert.equal(commitModule.catalogDraftAvailability(false, true, false), "implicit");
-    assert.equal(commitModule.catalogDraftAvailability(true, false, false), "not-required");
+    assert.equal(commitModule.catalogDraftAvailability(true, false), "unavailable");
+    assert.equal(commitModule.catalogDraftAvailability(true, true), "persisted");
+    assert.equal(commitModule.catalogDraftAvailability(false, false), "implicit");
     assert.equal(commitModule.providerDeleteAvailable("relay-a", "relay-a", 2), false);
     assert.equal(commitModule.providerDeleteAvailable("relay-b", "relay-a", 2), true);
     assert.equal(commitModule.providerDeleteAvailable("relay-b", "relay-a", 1), false);
-    assert.equal(commitModule.managedCatalogCapable(firstProfile), true);
-    assert.equal(commitModule.managedCatalogCapable({ ...firstProfile, protocol: "chatCompletions" }), false);
 
     let state: { latestRevision: number; baseline: string | null } = {
       latestRevision: 0,
@@ -512,9 +505,7 @@ describe("provider-owned commit request", () => {
           name: "Relay A",
           model: "gpt-5.4",
           baseUrl: "https://a.example/v1",
-          upstreamBaseUrl: "https://a.example/v1",
           apiKey: "secret-a",
-          protocol: "responses",
           relayMode: "official",
           officialMixApiKey: true,
           testModel: "gpt-5.4-mini",
@@ -530,9 +521,7 @@ describe("provider-owned commit request", () => {
           modelWindows: "{}",
           userAgent: "relay-a-agent",
         }],
-        aggregateRelayProfiles: [],
         activeRelayId: "relay-a",
-        activeAggregateRelayId: "",
         relayBaseUrl: "https://a.example/v1",
         relayApiKey: "secret-a",
         relayCommonConfigContents: "# common\n",
@@ -622,19 +611,12 @@ describe("provider-owned commit request", () => {
     assert.equal(request.draftRevision, 19);
   });
 
-  it("projects enable, reorder, copy, delete, aggregate cleanup, and test-model mutations literally", () => {
+  it("projects the exact ordinary-provider topology for enable, reorder, copy, delete, and test-model mutations", () => {
     assert.ok(commitModule, "provider commit request builders must exist");
-    const aggregate = {
-      id: "aggregate-main",
-      name: "Aggregate",
-      strategy: "failover",
-      members: [{ relayId: "relay-b", weight: 2 }],
-    };
     const request = commitModule.buildProviderTopologyRequest({
       settings: {
         ...settingsWith([secondProfile, { ...firstProfile, id: "relay-copy", name: "Relay A copy" }]),
         relayProfilesEnabled: false,
-        aggregateRelayProfiles: [aggregate],
         activeRelayId: "relay-b",
         relayTestModel: "topology-test-model",
       },
@@ -657,12 +639,16 @@ describe("provider-owned commit request", () => {
     assert.equal(request.topology.relayProfilesEnabled, false);
     assert.equal(request.topology.relayTestModel, "topology-test-model");
     assert.equal(request.topology.relayProfiles[0].testModel, "gpt-5.4-mini");
-    assert.deepEqual(request.topology.aggregateRelayProfiles, [{
-      id: "aggregate-main",
-      name: "Aggregate",
-      strategy: "failover",
-      members: [{ relayId: "relay-b", weight: 2 }],
-    }]);
+    assert.deepEqual(Object.keys(request.topology).sort(), [
+      "activeRelayId",
+      "relayApiKey",
+      "relayBaseUrl",
+      "relayCommonConfigContents",
+      "relayContextConfigContents",
+      "relayProfiles",
+      "relayProfilesEnabled",
+      "relayTestModel",
+    ]);
     assert.equal(request.focusedProfileId, null);
     assert.deepEqual(request.catalogDrafts, [{
       profileId: "relay-copy",
@@ -704,7 +690,7 @@ describe("provider-owned commit request", () => {
       draftRevision: 51,
       expectedProviderFingerprint: "sha256:provider-ui",
     };
-    for (const kind of ["enablement", "reorder", "copy", "delete", "aggregateCleanup", "testModel"] as const) {
+    for (const kind of ["enablement", "reorder", "copy", "delete", "testModel"] as const) {
       const invocation = kind === "copy"
         ? commitModule.buildProviderMutationInvocation({
             ...common,
@@ -801,36 +787,8 @@ describe("provider-owned commit request", () => {
     assert.deepEqual(invocation.request.catalogDrafts, [{ ...sourceDraft, profileId: "relay-copy" }]);
   });
 
-  it("emits no catalog draft for incapable copies and rejects a capable copy without source state", () => {
+  it("rejects a copied provider without its source catalog state", () => {
     assert.ok(commitModule, "provider commit request builders must exist");
-    const aggregate = {
-      ...firstProfile,
-      id: "aggregate-a",
-      name: "Aggregate A",
-      relayMode: "aggregate",
-      protocol: "responses",
-    };
-    const aggregateCopy = { ...aggregate, id: "aggregate-copy", name: "Aggregate A copy" };
-    const incapable = commitModule.buildProviderMutationInvocation({
-      kind: "copy",
-      copySourceProfileId: "aggregate-a",
-      settings: settingsWith([firstProfile, aggregate, aggregateCopy]),
-      persistedSettings: settingsWith([firstProfile, aggregate]),
-      catalogDrafts: [{
-        profileId: "aggregate-a",
-        mode: "native-official",
-        modeExplicit: true,
-        upstreamTopology: "direct",
-        externalPointer: null,
-        overlay: emptyOverlay(),
-      }],
-      previousActiveRelayId: "relay-a",
-      confirmContextCleanup: false,
-      draftRevision: 54,
-      expectedProviderFingerprint: "sha256:aggregate-copy",
-    });
-    assert.deepEqual(incapable.request.catalogDrafts, []);
-
     assert.throws(() => commitModule.buildProviderMutationInvocation({
       kind: "copy",
       copySourceProfileId: "relay-b",
@@ -839,7 +797,7 @@ describe("provider-owned commit request", () => {
       catalogDrafts: [],
       previousActiveRelayId: "relay-a",
       confirmContextCleanup: false,
-      draftRevision: 55,
+      draftRevision: 54,
       expectedProviderFingerprint: "sha256:missing-source-draft",
     }), /requires its source catalog draft/);
   });

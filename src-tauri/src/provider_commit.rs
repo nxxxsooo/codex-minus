@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, ensure};
 use codex_plus_core::settings::{
-    AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
-    RelayContextSelection, RelayMode, RelayModelInsertMode, RelayProfile, RelayProtocol,
+    BackendSettings, RelayContextSelection, RelayMode, RelayModelInsertMode, RelayProfile,
+    RelayProtocol,
 };
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use serde_json::Value;
@@ -23,12 +23,118 @@ pub enum ProviderCommitAction {
     SetCurrent,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderContextSelectionDraft {
     pub mcp_servers: Vec<String>,
     pub skills: Vec<String>,
     pub plugins: Vec<String>,
+}
+
+/// Strict frontend provider input. Responses is reconstructed at the adapter instead of accepted
+/// as caller-controlled state; compatibility-only upstream fields are therefore unknown fields.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderRelayProfileInput {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub relay_mode: RelayMode,
+    #[serde(default)]
+    pub official_mix_api_key: bool,
+    #[serde(default)]
+    pub test_model: String,
+    #[serde(default)]
+    pub config_contents: String,
+    #[serde(default)]
+    pub auth_contents: String,
+    #[serde(default = "default_true")]
+    pub use_common_config: bool,
+    #[serde(default)]
+    pub context_selection: ProviderContextSelectionDraft,
+    #[serde(default)]
+    pub context_selection_initialized: bool,
+    #[serde(default)]
+    pub context_window: String,
+    #[serde(default)]
+    pub auto_compact_limit: String,
+    #[serde(default)]
+    pub model_insert_mode: RelayModelInsertMode,
+    #[serde(default)]
+    pub model_list: String,
+    #[serde(default)]
+    pub model_windows: String,
+    #[serde(default)]
+    pub user_agent: String,
+    #[serde(default)]
+    pub transient_target: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl From<RelayProfile> for ProviderRelayProfileInput {
+    fn from(profile: RelayProfile) -> Self {
+        Self {
+            id: profile.id,
+            name: profile.name,
+            model: profile.model,
+            base_url: profile.base_url,
+            api_key: profile.api_key,
+            relay_mode: profile.relay_mode,
+            official_mix_api_key: profile.official_mix_api_key,
+            test_model: profile.test_model,
+            config_contents: profile.config_contents,
+            auth_contents: profile.auth_contents,
+            use_common_config: profile.use_common_config,
+            context_selection: ProviderContextSelectionDraft::from(&profile.context_selection),
+            context_selection_initialized: profile.context_selection_initialized,
+            context_window: profile.context_window,
+            auto_compact_limit: profile.auto_compact_limit,
+            model_insert_mode: profile.model_insert_mode,
+            model_list: profile.model_list,
+            model_windows: profile.model_windows,
+            user_agent: profile.user_agent,
+            transient_target: None,
+        }
+    }
+}
+
+impl From<ProviderRelayProfileInput> for RelayProfile {
+    fn from(profile: ProviderRelayProfileInput) -> Self {
+        Self {
+            id: profile.id,
+            name: profile.name,
+            model: profile.model,
+            base_url: profile.base_url.clone(),
+            upstream_base_url: profile.base_url,
+            api_key: profile.api_key,
+            protocol: RelayProtocol::Responses,
+            relay_mode: profile.relay_mode,
+            official_mix_api_key: profile.official_mix_api_key,
+            test_model: profile.test_model,
+            config_contents: profile.config_contents,
+            auth_contents: profile.auth_contents,
+            use_common_config: profile.use_common_config,
+            context_selection: RelayContextSelection::from(&profile.context_selection),
+            context_selection_initialized: profile.context_selection_initialized,
+            context_window: profile.context_window,
+            auto_compact_limit: profile.auto_compact_limit,
+            model_insert_mode: profile.model_insert_mode,
+            model_list: profile.model_list,
+            model_windows: profile.model_windows,
+            user_agent: profile.user_agent,
+        }
+    }
 }
 
 impl From<&RelayContextSelection> for ProviderContextSelectionDraft {
@@ -53,66 +159,12 @@ impl From<&ProviderContextSelectionDraft> for RelayContextSelection {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ProviderAggregateMemberDraft {
-    pub relay_id: String,
-    pub weight: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ProviderAggregateDraft {
-    pub id: String,
-    pub name: String,
-    pub strategy: AggregateRelayStrategy,
-    pub members: Vec<ProviderAggregateMemberDraft>,
-}
-
-impl From<&AggregateRelayProfile> for ProviderAggregateDraft {
-    fn from(aggregate: &AggregateRelayProfile) -> Self {
-        Self {
-            id: aggregate.id.clone(),
-            name: aggregate.name.clone(),
-            strategy: aggregate.strategy,
-            members: aggregate
-                .members
-                .iter()
-                .map(|member| ProviderAggregateMemberDraft {
-                    relay_id: member.relay_id.clone(),
-                    weight: member.weight,
-                })
-                .collect(),
-        }
-    }
-}
-
-impl From<&ProviderAggregateDraft> for AggregateRelayProfile {
-    fn from(aggregate: &ProviderAggregateDraft) -> Self {
-        Self {
-            id: aggregate.id.clone(),
-            name: aggregate.name.clone(),
-            strategy: aggregate.strategy,
-            members: aggregate
-                .members
-                .iter()
-                .map(|member| AggregateRelayMember {
-                    relay_id: member.relay_id.clone(),
-                    weight: member.weight,
-                })
-                .collect(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderRelayProfileDraft {
     pub id: String,
     pub name: String,
     pub model: String,
     pub base_url: String,
-    pub upstream_base_url: String,
     pub api_key: String,
-    pub protocol: RelayProtocol,
     pub relay_mode: RelayMode,
     pub official_mix_api_key: bool,
     pub test_model: String,
@@ -136,9 +188,7 @@ impl From<&RelayProfile> for ProviderRelayProfileDraft {
             name: profile.name.clone(),
             model: profile.model.clone(),
             base_url: profile.base_url.clone(),
-            upstream_base_url: profile.upstream_base_url.clone(),
             api_key: profile.api_key.clone(),
-            protocol: profile.protocol,
             relay_mode: profile.relay_mode,
             official_mix_api_key: profile.official_mix_api_key,
             test_model: profile.test_model.clone(),
@@ -164,9 +214,9 @@ impl From<&ProviderRelayProfileDraft> for RelayProfile {
             name: profile.name.clone(),
             model: profile.model.clone(),
             base_url: profile.base_url.clone(),
-            upstream_base_url: profile.upstream_base_url.clone(),
+            upstream_base_url: profile.base_url.clone(),
             api_key: profile.api_key.clone(),
-            protocol: profile.protocol,
+            protocol: RelayProtocol::Responses,
             relay_mode: profile.relay_mode,
             official_mix_api_key: profile.official_mix_api_key,
             test_model: profile.test_model.clone(),
@@ -190,9 +240,7 @@ impl From<&ProviderRelayProfileDraft> for RelayProfile {
 pub struct ProviderOwnedTopologyDraft {
     pub relay_profiles_enabled: bool,
     pub relay_profiles: Vec<ProviderRelayProfileDraft>,
-    pub aggregate_relay_profiles: Vec<ProviderAggregateDraft>,
     pub active_relay_id: String,
-    pub active_aggregate_relay_id: String,
     pub relay_base_url: String,
     pub relay_api_key: String,
     pub relay_common_config_contents: String,
@@ -209,13 +257,7 @@ impl ProviderOwnedTopologyDraft {
                 .iter()
                 .map(ProviderRelayProfileDraft::from)
                 .collect(),
-            aggregate_relay_profiles: settings
-                .aggregate_relay_profiles
-                .iter()
-                .map(ProviderAggregateDraft::from)
-                .collect(),
             active_relay_id: settings.active_relay_id.clone(),
-            active_aggregate_relay_id: settings.active_aggregate_relay_id.clone(),
             relay_base_url: settings.relay_base_url.clone(),
             relay_api_key: settings.relay_api_key.clone(),
             relay_common_config_contents: settings.relay_common_config_contents.clone(),
@@ -228,13 +270,9 @@ impl ProviderOwnedTopologyDraft {
         let mut next = persisted.clone();
         next.relay_profiles_enabled = self.relay_profiles_enabled;
         next.relay_profiles = self.relay_profiles.iter().map(RelayProfile::from).collect();
-        next.aggregate_relay_profiles = self
-            .aggregate_relay_profiles
-            .iter()
-            .map(AggregateRelayProfile::from)
-            .collect();
+        next.aggregate_relay_profiles.clear();
         next.active_relay_id = self.active_relay_id.clone();
-        next.active_aggregate_relay_id = self.active_aggregate_relay_id.clone();
+        next.active_aggregate_relay_id.clear();
         next.relay_base_url = self.relay_base_url.clone();
         next.relay_api_key = self.relay_api_key.clone();
         next.relay_common_config_contents = self.relay_common_config_contents.clone();
@@ -445,15 +483,21 @@ pub fn provider_generation_fingerprint(
     let catalogs = topology
         .relay_profiles
         .iter()
-        .map(|profile| {
-            let stored = state.profiles.get(&profile.id).cloned().unwrap_or_else(|| {
-                let relay_profile = RelayProfile::from(profile);
-                ProfileCatalogState {
-                    mode: model_catalog::default_catalog_mode_for_profile(&relay_profile),
-                    ..ProfileCatalogState::default()
+        .map(|profile| -> anyhow::Result<_> {
+            let stored = match state.profiles.get(&profile.id).cloned() {
+                Some(stored) => stored,
+                None => {
+                    // A profile the state has never seen still has to be fingerprinted, and the
+                    // default mode is only defined for a Responses-only profile. Refuse rather
+                    // than fingerprint a removed provider shape as if it were ordinary.
+                    let relay_profile = RelayProfile::from(profile);
+                    ProfileCatalogState {
+                        mode: model_catalog::default_catalog_mode_for_profile(&relay_profile)?,
+                        ..ProfileCatalogState::default()
+                    }
                 }
-            });
-            (
+            };
+            Ok((
                 profile.id.clone(),
                 EditableCatalogFingerprintMaterial {
                     mode: stored.mode,
@@ -462,9 +506,9 @@ pub fn provider_generation_fingerprint(
                     overlay: stored.overlay,
                     external_pointer: stored.external_pointer,
                 },
-            )
+            ))
         })
-        .collect();
+        .collect::<anyhow::Result<_>>()?;
     let material = ProviderGenerationFingerprintMaterial {
         version: "provider-generation-v1",
         topology,
@@ -486,6 +530,210 @@ pub fn provider_fingerprint_status(
     })
 }
 
+pub(crate) const REMOVED_PROTOCOL_PROXY_BASE_URL: &str = "http://127.0.0.1:57321/v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResponsesOnlyProviderError {
+    UnsupportedProtocol,
+    LocalAggregate,
+    RemovedProxy,
+    InvalidProviderConfig,
+    RetiredChatMarker,
+}
+
+impl std::fmt::Display for ResponsesOnlyProviderError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::UnsupportedProtocol => "only Responses API provider profiles are supported",
+            Self::LocalAggregate => "local aggregate provider profiles are unsupported",
+            Self::RemovedProxy => "the removed local proxy base URL is unsupported",
+            Self::InvalidProviderConfig => "provider config TOML is invalid",
+            Self::RetiredChatMarker => "the retired Chat Completions marker is unsupported",
+        })
+    }
+}
+
+impl std::error::Error for ResponsesOnlyProviderError {}
+
+/// Codex trims surrounding whitespace before it resolves an effective base URL, so a padded
+/// value still reaches the removed local protocol proxy. Compare every candidate the same way.
+pub(crate) fn is_removed_protocol_proxy_base_url(value: &str) -> bool {
+    value.trim().trim_end_matches('/')
+        == REMOVED_PROTOCOL_PROXY_BASE_URL.trim().trim_end_matches('/')
+}
+
+pub(crate) fn validate_responses_only_profile(
+    profile: &RelayProfile,
+) -> Result<(), ResponsesOnlyProviderError> {
+    if profile.relay_mode == RelayMode::Aggregate {
+        return Err(ResponsesOnlyProviderError::LocalAggregate);
+    }
+    if profile.protocol != RelayProtocol::Responses {
+        return Err(ResponsesOnlyProviderError::UnsupportedProtocol);
+    }
+    if is_removed_protocol_proxy_base_url(&profile.base_url) {
+        return Err(ResponsesOnlyProviderError::RemovedProxy);
+    }
+    validate_responses_only_provider_toml(profile)?;
+    Ok(())
+}
+
+fn validate_responses_only_provider_toml(
+    profile: &RelayProfile,
+) -> Result<(), ResponsesOnlyProviderError> {
+    let api_bearing = profile.relay_mode != RelayMode::Official
+        || profile.official_mix_api_key
+        || !profile.base_url.trim().is_empty()
+        || !profile.api_key.trim().is_empty();
+    if profile.config_contents.trim().is_empty() {
+        return if api_bearing {
+            Err(ResponsesOnlyProviderError::InvalidProviderConfig)
+        } else {
+            Ok(())
+        };
+    }
+    let document = profile
+        .config_contents
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|_| ResponsesOnlyProviderError::InvalidProviderConfig)?;
+    if document.as_table().contains_key("codex_plus_chat_base_url") {
+        return Err(ResponsesOnlyProviderError::RetiredChatMarker);
+    }
+    if let Some(base_url) = document.get("base_url") {
+        let base_url = base_url
+            .as_str()
+            .ok_or(ResponsesOnlyProviderError::InvalidProviderConfig)?;
+        if is_removed_protocol_proxy_base_url(base_url) {
+            return Err(ResponsesOnlyProviderError::RemovedProxy);
+        }
+    }
+    if let Some(providers) = document.get("model_providers") {
+        let providers = providers
+            .as_table_like()
+            .ok_or(ResponsesOnlyProviderError::InvalidProviderConfig)?;
+        for (_, provider) in providers.iter() {
+            let provider = provider
+                .as_table_like()
+                .ok_or(ResponsesOnlyProviderError::InvalidProviderConfig)?;
+            if provider.get("codex_plus_chat_base_url").is_some() {
+                return Err(ResponsesOnlyProviderError::RetiredChatMarker);
+            }
+            if provider.get("wire_api").and_then(toml_edit::Item::as_str) != Some("responses") {
+                return Err(ResponsesOnlyProviderError::UnsupportedProtocol);
+            }
+            if let Some(base_url) = provider.get("base_url") {
+                let base_url = base_url
+                    .as_str()
+                    .ok_or(ResponsesOnlyProviderError::InvalidProviderConfig)?;
+                if is_removed_protocol_proxy_base_url(base_url) {
+                    return Err(ResponsesOnlyProviderError::RemovedProxy);
+                }
+            }
+        }
+    }
+    let Some(provider_id) = document.get("model_provider") else {
+        return if api_bearing || document.get("model_providers").is_some() {
+            Err(ResponsesOnlyProviderError::InvalidProviderConfig)
+        } else {
+            Ok(())
+        };
+    };
+    let provider_id = provider_id
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(ResponsesOnlyProviderError::InvalidProviderConfig)?;
+    let provider = document
+        .get("model_providers")
+        .and_then(toml_edit::Item::as_table_like)
+        .and_then(|providers| providers.get(provider_id))
+        .and_then(toml_edit::Item::as_table_like);
+    let Some(provider) = provider else {
+        if provider_id == "openai"
+            && profile.relay_mode == RelayMode::Official
+            && !profile.official_mix_api_key
+        {
+            return Ok(());
+        }
+        return Err(ResponsesOnlyProviderError::InvalidProviderConfig);
+    };
+    if provider.get("codex_plus_chat_base_url").is_some() {
+        return Err(ResponsesOnlyProviderError::RetiredChatMarker);
+    }
+    if provider.get("wire_api").and_then(toml_edit::Item::as_str) != Some("responses") {
+        return Err(ResponsesOnlyProviderError::UnsupportedProtocol);
+    }
+    if let Some(base_url) = provider.get("base_url") {
+        let base_url = base_url
+            .as_str()
+            .ok_or(ResponsesOnlyProviderError::InvalidProviderConfig)?;
+        if is_removed_protocol_proxy_base_url(base_url) {
+            return Err(ResponsesOnlyProviderError::RemovedProxy);
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_responses_only_settings(
+    settings: &BackendSettings,
+) -> Result<(), ResponsesOnlyProviderError> {
+    if !settings.aggregate_relay_profiles.is_empty()
+        || !settings.active_aggregate_relay_id.trim().is_empty()
+    {
+        return Err(ResponsesOnlyProviderError::LocalAggregate);
+    }
+    for profile in &settings.relay_profiles {
+        validate_responses_only_profile(profile)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn deserialize_responses_only_settings(bytes: &[u8]) -> anyhow::Result<BackendSettings> {
+    let value: Value =
+        serde_json::from_slice(bytes).context("provider settings are invalid JSON")?;
+    deserialize_responses_only_settings_value(value)
+}
+
+pub(crate) fn deserialize_responses_only_settings_value(
+    value: Value,
+) -> anyhow::Result<BackendSettings> {
+    let root = value
+        .as_object()
+        .context("provider settings must be a JSON object")?;
+    ensure!(
+        !root.contains_key("aggregateRelayProfiles")
+            && !root.contains_key("activeAggregateRelayId"),
+        "provider settings contain removed top-level fields"
+    );
+    if let Some(profiles) = value.get("relayProfiles").and_then(Value::as_array) {
+        for profile in profiles {
+            if let Some(profile) = profile.as_object() {
+                ensure!(
+                    !profile.contains_key("protocol") && !profile.contains_key("upstreamBaseUrl"),
+                    "provider settings contain removed profile fields"
+                );
+            }
+        }
+    }
+    let settings: BackendSettings = serde_json::from_value(value)
+        .context("provider settings do not match the supported schema")?;
+    validate_responses_only_settings(&settings)?;
+    Ok(settings)
+}
+
+pub(crate) fn validate_provider_commit_wire_preflight(
+    request: &ProviderCommitRequest,
+) -> anyhow::Result<()> {
+    for profile in &request.topology.relay_profiles {
+        ensure!(
+            profile.auth_contents.is_empty(),
+            "incoming authContents is prohibited"
+        );
+        validate_responses_only_profile(&RelayProfile::from(profile))?;
+    }
+    Ok(())
+}
+
 pub fn validate_provider_detail_request(
     persisted_settings: &BackendSettings,
     persisted_state: &CatalogState,
@@ -497,12 +745,32 @@ pub fn validate_provider_detail_request(
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .context("focused provider profile is required")?;
-    let focused_profile = request
+    request
         .topology
         .relay_profiles
         .iter()
         .find(|profile| profile.id == focused_id)
         .context("focused provider profile is missing from the topology draft")?;
+    for persisted in &persisted_settings.relay_profiles {
+        ensure!(
+            request
+                .topology
+                .relay_profiles
+                .iter()
+                .any(|profile| profile.id == persisted.id),
+            "focused provider detail cannot omit a persisted bystander profile"
+        );
+    }
+    for profile in &request.topology.relay_profiles {
+        ensure!(
+            profile.id == focused_id
+                || persisted_settings
+                    .relay_profiles
+                    .iter()
+                    .any(|persisted| persisted.id == profile.id),
+            "focused provider detail cannot add a bystander profile"
+        );
+    }
     if request.action == ProviderCommitAction::SetCurrent {
         ensure!(
             request.topology.active_relay_id == focused_id,
@@ -519,12 +787,9 @@ pub fn validate_provider_detail_request(
         .iter()
         .filter(|draft| draft.profile_id == focused_id)
         .count();
-    let expected = usize::from(model_catalog::managed_catalog_capable(&RelayProfile::from(
-        focused_profile,
-    )));
     ensure!(
-        supplied == expected,
-        "focused provider profile must carry exactly the catalog drafts its capability supports"
+        supplied == 1 && request.catalog_drafts.len() == 1,
+        "focused provider profile must carry exactly one complete catalog draft"
     );
     Ok(())
 }
@@ -570,74 +835,12 @@ fn validate_common_request(
             profile.auth_contents.is_empty(),
             "incoming authContents is prohibited"
         );
+        validate_responses_only_profile(&RelayProfile::from(profile))?;
     }
-    let aggregate_profile_ids = request
-        .topology
-        .relay_profiles
-        .iter()
-        .filter(|profile| profile.relay_mode == RelayMode::Aggregate)
-        .map(|profile| profile.id.clone())
-        .collect::<BTreeSet<_>>();
-    let mut aggregate_ids = BTreeSet::new();
-    for aggregate in &request.topology.aggregate_relay_profiles {
-        ensure!(
-            !aggregate.id.trim().is_empty(),
-            "aggregate profile id is empty"
-        );
-        ensure!(
-            aggregate_ids.insert(aggregate.id.clone()),
-            "duplicate aggregate profile id"
-        );
-        ensure!(
-            aggregate_profile_ids.contains(&aggregate.id),
-            "aggregate profile metadata has no matching relay profile"
-        );
-        ensure!(
-            !aggregate.members.is_empty(),
-            "aggregate profile members are empty"
-        );
-        let mut member_ids = BTreeSet::new();
-        for member in &aggregate.members {
-            ensure!(
-                member.weight > 0,
-                "aggregate member weight must be positive"
-            );
-            ensure!(
-                member_ids.insert(member.relay_id.clone()),
-                "duplicate aggregate member"
-            );
-            let member_profile = request
-                .topology
-                .relay_profiles
-                .iter()
-                .find(|profile| profile.id == member.relay_id)
-                .context("aggregate member references a missing provider profile")?;
-            ensure!(
-                member_profile.relay_mode != RelayMode::Aggregate,
-                "aggregate member must reference an ordinary provider profile"
-            );
-        }
-    }
-    ensure!(
-        aggregate_ids == aggregate_profile_ids,
-        "aggregate relay profiles and aggregate metadata must be one-to-one"
-    );
-    ensure!(
-        request.topology.active_aggregate_relay_id.trim().is_empty()
-            || aggregate_ids.contains(&request.topology.active_aggregate_relay_id),
-        "active aggregate profile is missing from the topology draft"
-    );
     ensure!(
         request.topology.active_relay_id.trim().is_empty()
             || profile_ids.contains(&request.topology.active_relay_id),
         "active provider profile is missing from the topology draft"
-    );
-    let active_is_aggregate = aggregate_profile_ids.contains(&request.topology.active_relay_id);
-    ensure!(
-        (active_is_aggregate
-            && request.topology.active_aggregate_relay_id == request.topology.active_relay_id)
-            || (!active_is_aggregate && request.topology.active_aggregate_relay_id.is_empty()),
-        "active provider and active aggregate ids are inconsistent"
     );
 
     let profiles = request
@@ -696,8 +899,6 @@ fn validate_common_request(
             .relay_profiles
             .iter()
             .any(|persisted| persisted.id == profile.id)
-            || profile.relay_mode == RelayMode::Aggregate
-            || !model_catalog::managed_catalog_capable(&RelayProfile::from(profile))
         {
             continue;
         }
@@ -718,10 +919,6 @@ fn validate_catalog_draft(
     profile: &RelayProfile,
     draft: &ProfileCatalogDraft,
 ) -> anyhow::Result<()> {
-    ensure!(
-        model_catalog::managed_catalog_capable(profile),
-        "catalog-incapable provider profiles cannot carry catalog drafts"
-    );
     model_catalog::validate_overlay(&draft.overlay)?;
     model_catalog::validate_upstream_topology(profile, draft.upstream_topology)?;
     match draft.mode {
@@ -1017,7 +1214,18 @@ mod tests {
             relay_mode: RelayMode::Official,
             official_mix_api_key: true,
             test_model: format!("{model}-test"),
-            config_contents: format!("model = \"{model}\"\n"),
+            config_contents: format!(
+                r#"model = "{model}"
+model_provider = "{id}"
+
+[model_providers.{id}]
+name = "OpenAI"
+base_url = "https://{id}.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = "secret-{id}"
+"#
+            ),
             auth_contents: String::new(),
             model_list: model.to_string(),
             model_windows: "{}".to_string(),
@@ -1046,6 +1254,150 @@ mod tests {
             relay_context_config_contents: "# context\n".to_string(),
             relay_test_model: "global-test".to_string(),
             ..BackendSettings::default()
+        }
+    }
+
+    #[test]
+    fn responses_only_settings_reject_removed_provider_shapes() {
+        let valid = settings_with(vec![mixed_profile("relay-a", "OpenAI")], "relay-a");
+        assert!(validate_responses_only_settings(&valid).is_ok());
+
+        let mut chat = valid.clone();
+        chat.relay_profiles[0].protocol = RelayProtocol::ChatCompletions;
+        assert!(matches!(
+            validate_responses_only_settings(&chat),
+            Err(ResponsesOnlyProviderError::UnsupportedProtocol)
+        ));
+
+        let mut aggregate = valid.clone();
+        aggregate.relay_profiles[0].relay_mode = RelayMode::Aggregate;
+        assert!(matches!(
+            validate_responses_only_settings(&aggregate),
+            Err(ResponsesOnlyProviderError::LocalAggregate)
+        ));
+
+        let mut metadata = valid.clone();
+        metadata.active_aggregate_relay_id = "aggregate-a".to_string();
+        assert!(matches!(
+            validate_responses_only_settings(&metadata),
+            Err(ResponsesOnlyProviderError::LocalAggregate)
+        ));
+
+        let mut proxy = valid.clone();
+        proxy.relay_profiles[0].base_url = "http://127.0.0.1:57321/v1".to_string();
+        assert!(matches!(
+            validate_responses_only_settings(&proxy),
+            Err(ResponsesOnlyProviderError::RemovedProxy)
+        ));
+
+        for padded in [
+            " http://127.0.0.1:57321/v1 ",
+            "\thttp://127.0.0.1:57321/v1\n",
+            "  http://127.0.0.1:57321/v1/  ",
+        ] {
+            let mut padded_proxy = valid.clone();
+            padded_proxy.relay_profiles[0].base_url = padded.to_string();
+            assert!(
+                matches!(
+                    validate_responses_only_settings(&padded_proxy),
+                    Err(ResponsesOnlyProviderError::RemovedProxy)
+                ),
+                "whitespace-padded removed proxy base URL {padded:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn responses_only_profile_rejects_legacy_raw_toml_before_structured_reconstruction() {
+        let canonical = r#"model = "gpt-5.6-sol"
+model_provider = "RelayOne"
+
+[model_providers.RelayOne]
+name = "OpenAI"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = "provider-key"
+"#;
+        let mut profile = mixed_profile("relay-a", "gpt-5.6-sol");
+        profile.base_url = "https://relay.example/v1".to_string();
+        profile.upstream_base_url = profile.base_url.clone();
+        profile.config_contents = canonical.to_string();
+        assert!(validate_responses_only_profile(&profile).is_ok());
+
+        let invalid = [
+            (
+                "missing selected provider",
+                "model = \"gpt-5.6-sol\"\n".to_string(),
+            ),
+            (
+                "chat wire API",
+                canonical.replace("wire_api = \"responses\"", "wire_api = \"chat\""),
+            ),
+            (
+                "non-string wire API",
+                canonical.replace("wire_api = \"responses\"", "wire_api = 1"),
+            ),
+            (
+                "missing wire API",
+                canonical.replace("wire_api = \"responses\"\n", ""),
+            ),
+            (
+                "retired chat marker",
+                format!("codex_plus_chat_base_url = \"https://relay.example/v1\"\n{canonical}"),
+            ),
+            (
+                "retired selected-provider chat marker",
+                canonical.replace(
+                    "wire_api = \"responses\"",
+                    "wire_api = \"responses\"\ncodex_plus_chat_base_url = \"https://relay.example/v1\"",
+                ),
+            ),
+            (
+                "removed proxy effective URL",
+                canonical.replace(
+                    "base_url = \"https://relay.example/v1\"",
+                    "base_url = \"http://127.0.0.1:57321/v1\"",
+                ),
+            ),
+            (
+                "removed root proxy effective URL",
+                format!("base_url = \"http://127.0.0.1:57321/v1\"\n{canonical}"),
+            ),
+            (
+                "unselected Chat Completions provider table",
+                format!(
+                    "{canonical}\n[model_providers.LegacyChat]\nname = \"legacy\"\nbase_url = \"https://legacy.example/v1\"\nwire_api = \"chat\"\n"
+                ),
+            ),
+            (
+                "unselected provider table with no wire API",
+                format!(
+                    "{canonical}\n[model_providers.LegacyMissingWire]\nname = \"legacy\"\nbase_url = \"https://legacy.example/v1\"\n"
+                ),
+            ),
+        ];
+        for (case, config_contents) in invalid {
+            let mut invalid = profile.clone();
+            invalid.config_contents = config_contents;
+            assert!(
+                validate_responses_only_profile(&invalid).is_err(),
+                "legacy raw TOML must be rejected for {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn settings_wire_rejects_retired_top_level_fields_even_when_empty() {
+        assert!(deserialize_responses_only_settings(br#"{}"#).is_ok());
+        for bytes in [
+            br#"{"aggregateRelayProfiles":[]}"#.as_slice(),
+            br#"{"activeAggregateRelayId":""}"#.as_slice(),
+        ] {
+            assert!(
+                deserialize_responses_only_settings(bytes).is_err(),
+                "presence of a retired top-level field must fail closed"
+            );
         }
     }
 
@@ -1121,9 +1473,7 @@ mod tests {
                     "name": "New",
                     "model": "official-a",
                     "baseUrl": "https://relay.example/v1",
-                    "upstreamBaseUrl": "https://relay.example/v1",
                     "apiKey": "secret-provider-key",
-                    "protocol": "responses",
                     "relayMode": "official",
                     "officialMixApiKey": true,
                     "testModel": "official-a-mini",
@@ -1139,9 +1489,7 @@ mod tests {
                     "modelWindows": "{}",
                     "userAgent": "contract-test"
                 }],
-                "aggregateRelayProfiles": [],
                 "activeRelayId": "relay-new",
-                "activeAggregateRelayId": "",
                 "relayBaseUrl": "https://relay.example/v1",
                 "relayApiKey": "secret-provider-key",
                 "relayCommonConfigContents": "# common\n",
@@ -1525,7 +1873,9 @@ mod tests {
         let persisted = settings_with(vec![profile.clone()], "relay-a");
         let mut requested_profile = profile;
         requested_profile.model = "draft-model".to_string();
-        requested_profile.config_contents = "model = \"draft-model\"\n".to_string();
+        requested_profile.config_contents = requested_profile
+            .config_contents
+            .replace("model = \"persisted-model\"", "model = \"draft-model\"");
         let requested = settings_with(vec![requested_profile], "relay-a");
         let mut persisted_state = state_with_official();
         persisted_state.profiles.insert(
@@ -1622,8 +1972,57 @@ mod tests {
     }
 
     #[test]
-    fn topology_projection_keeps_ordered_lists_and_legacy_fields_only() {
-        let settings = settings_with(
+    fn focused_detail_validation_requires_every_persisted_bystander() {
+        let a = mixed_profile("relay-a", "official-a");
+        let b = mixed_profile("relay-b", "official-a");
+        let persisted = settings_with(vec![a.clone(), b.clone()], "relay-a");
+        let omitted = settings_with(vec![a.clone()], "relay-a");
+        let request = request_for(
+            &persisted,
+            &omitted,
+            Some("relay-a"),
+            vec![catalog_draft(
+                "relay-a",
+                CatalogMode::OfficialPlusCustom,
+                CatalogOverlay::default(),
+            )],
+            ProviderCommitAction::Save,
+        );
+
+        assert!(
+            validate_provider_detail_request(&persisted, &state_with_official(), &request).is_err(),
+            "a focused detail save cannot delete an omitted bystander profile"
+        );
+
+        let complete = settings_with(vec![a, b], "relay-a");
+        let extra_catalog = request_for(
+            &persisted,
+            &complete,
+            Some("relay-a"),
+            vec![
+                catalog_draft(
+                    "relay-a",
+                    CatalogMode::OfficialPlusCustom,
+                    CatalogOverlay::default(),
+                ),
+                catalog_draft(
+                    "relay-b",
+                    CatalogMode::OfficialPlusCustom,
+                    CatalogOverlay::default(),
+                ),
+            ],
+            ProviderCommitAction::Save,
+        );
+        assert!(
+            validate_provider_detail_request(&persisted, &state_with_official(), &extra_catalog)
+                .is_err(),
+            "a focused detail save cannot mutate a bystander catalog"
+        );
+    }
+
+    #[test]
+    fn topology_projection_keeps_ordered_ordinary_fields_and_clears_upstream_aggregate_state() {
+        let mut settings = settings_with(
             vec![
                 mixed_profile("relay-b", "official-a"),
                 mixed_profile("relay-a", "official-a"),
@@ -1636,8 +2035,23 @@ mod tests {
         assert_eq!(value["relayProfiles"][1]["id"], "relay-a");
         assert_eq!(value["relayBaseUrl"], settings.relay_base_url);
         assert_eq!(value["relayApiKey"], settings.relay_api_key);
+        assert!(value.get("aggregateRelayProfiles").is_none());
+        assert!(value.get("activeAggregateRelayId").is_none());
         assert!(value.get("enhancementsEnabled").is_none());
         assert!(value.get("codexAppPath").is_none());
+
+        settings
+            .aggregate_relay_profiles
+            .push(codex_plus_core::settings::AggregateRelayProfile {
+                id: "removed-aggregate".to_string(),
+                name: "Removed aggregate".to_string(),
+                strategy: Default::default(),
+                members: Vec::new(),
+            });
+        settings.active_aggregate_relay_id = "removed-aggregate".to_string();
+        let applied = projection.apply_to(&settings);
+        assert!(applied.aggregate_relay_profiles.is_empty());
+        assert!(applied.active_aggregate_relay_id.is_empty());
     }
 
     #[test]
@@ -1658,7 +2072,7 @@ mod tests {
     }
 
     #[test]
-    fn topology_validation_rejects_zero_revision_and_missing_active_aggregate() {
+    fn topology_validation_rejects_zero_revision() {
         let persisted = settings_with(vec![mixed_profile("relay-a", "official-a")], "relay-a");
 
         let mut zero_revision = request_for(
@@ -1673,19 +2087,39 @@ mod tests {
             plan_provider_topology_commit(&persisted, &state_with_official(), &zero_revision)
                 .is_err()
         );
+    }
 
-        let mut missing_aggregate = request_for(
-            &persisted,
-            &persisted,
-            None,
-            vec![],
+    #[test]
+    fn provider_topology_schema_rejects_removed_aggregate_fields() {
+        let settings = settings_with(vec![mixed_profile("relay-a", "official-a")], "relay-a");
+        let request = request_for(
+            &settings,
+            &settings,
+            Some("relay-a"),
+            vec![catalog_draft(
+                "relay-a",
+                CatalogMode::OfficialPlusCustom,
+                CatalogOverlay::default(),
+            )],
             ProviderCommitAction::Save,
         );
-        missing_aggregate.topology.active_aggregate_relay_id = "missing-aggregate".to_string();
-        assert!(
-            plan_provider_topology_commit(&persisted, &state_with_official(), &missing_aggregate)
-                .is_err()
-        );
+        let mut value = serde_json::to_value(request).unwrap();
+        let topology = value["topology"].as_object_mut().unwrap();
+        topology.remove("aggregateRelayProfiles");
+        topology.remove("activeAggregateRelayId");
+        assert!(serde_json::from_value::<ProviderCommitRequest>(value.clone()).is_ok());
+
+        for (field, removed_value) in [
+            ("aggregateRelayProfiles", json!([])),
+            ("activeAggregateRelayId", json!("")),
+        ] {
+            let mut forged = value.clone();
+            forged["topology"][field] = removed_value;
+            assert!(
+                serde_json::from_value::<ProviderCommitRequest>(forged).is_err(),
+                "removed topology field {field} must be rejected"
+            );
+        }
     }
 
     #[test]
@@ -1761,6 +2195,29 @@ mod tests {
             json!({ "state": "ready" });
         assert!(serde_json::from_value::<ProviderCommitRequest>(value).is_err());
 
+        for (field, forged_value) in [
+            ("protocol", json!("chatCompletions")),
+            ("upstreamBaseUrl", json!("https://forged.example/v1")),
+        ] {
+            let mut value = serde_json::to_value(request_for(
+                &settings,
+                &settings,
+                Some("relay-a"),
+                vec![catalog_draft(
+                    "relay-a",
+                    CatalogMode::OfficialPlusCustom,
+                    CatalogOverlay::default(),
+                )],
+                ProviderCommitAction::Save,
+            ))
+            .unwrap();
+            value["topology"]["relayProfiles"][0][field] = forged_value;
+            assert!(
+                serde_json::from_value::<ProviderCommitRequest>(value).is_err(),
+                "removed provider field {field} must be rejected"
+            );
+        }
+
         let base = serde_json::to_value(request_for(
             &settings,
             &settings,
@@ -1791,32 +2248,6 @@ mod tests {
         let mut value = base.clone();
         value["topology"]["relayProfiles"][0]["contextSelection"]["inspection"] =
             json!("response-only");
-        assert!(serde_json::from_value::<ProviderCommitRequest>(value).is_err());
-
-        let aggregate_member = mixed_profile("relay-a", "official-a");
-        let mut aggregate_stub = mixed_profile("aggregate-a", "");
-        aggregate_stub.relay_mode = RelayMode::Aggregate;
-        let mut aggregate_settings =
-            settings_with(vec![aggregate_member, aggregate_stub], "aggregate-a");
-        aggregate_settings.active_aggregate_relay_id = "aggregate-a".to_string();
-        aggregate_settings.aggregate_relay_profiles = vec![AggregateRelayProfile {
-            id: "aggregate-a".to_string(),
-            name: "Aggregate A".to_string(),
-            strategy: Default::default(),
-            members: vec![codex_plus_core::settings::AggregateRelayMember {
-                relay_id: "relay-a".to_string(),
-                weight: 1,
-            }],
-        }];
-        let mut value = serde_json::to_value(request_for(
-            &aggregate_settings,
-            &aggregate_settings,
-            None,
-            vec![],
-            ProviderCommitAction::Save,
-        ))
-        .unwrap();
-        value["topology"]["aggregateRelayProfiles"][0]["inspection"] = json!("response-only");
         assert!(serde_json::from_value::<ProviderCommitRequest>(value).is_err());
     }
 
@@ -1920,17 +2351,9 @@ mod tests {
     }
 
     #[test]
-    fn catalog_incapable_profiles_require_zero_catalog_drafts() {
-        let active = mixed_profile("relay-a", "official-a");
-        let persisted = settings_with(vec![active.clone()], "relay-a");
+    fn responses_only_request_validation_rejects_persisted_chat_completion_profiles() {
         let mut chat = mixed_profile("relay-chat", "chat-model");
         chat.protocol = RelayProtocol::ChatCompletions;
-        let next = settings_with(vec![active, chat.clone()], "relay-a");
-        let topology = request_for(&persisted, &next, None, vec![], ProviderCommitAction::Save);
-        assert!(
-            plan_provider_topology_commit(&persisted, &state_with_official(), &topology).is_ok()
-        );
-
         let persisted_chat = settings_with(vec![chat], "relay-chat");
         let detail = request_for(
             &persisted_chat,
@@ -1940,74 +2363,7 @@ mod tests {
             ProviderCommitAction::Save,
         );
         assert!(
-            plan_provider_detail_commit(&persisted_chat, &CatalogState::default(), &detail).is_ok()
-        );
-    }
-
-    #[test]
-    fn aggregate_projection_requires_one_to_one_nonempty_unique_eligible_members_and_active_linkage()
-     {
-        let member = mixed_profile("relay-a", "official-a");
-        let mut aggregate_stub = mixed_profile("aggregate-a", "");
-        aggregate_stub.relay_mode = RelayMode::Aggregate;
-        let persisted = settings_with(vec![member.clone()], "relay-a");
-        let mut next = settings_with(vec![member, aggregate_stub], "aggregate-a");
-        next.aggregate_relay_profiles = vec![AggregateRelayProfile {
-            id: "aggregate-a".to_string(),
-            name: "Aggregate A".to_string(),
-            strategy: Default::default(),
-            members: vec![codex_plus_core::settings::AggregateRelayMember {
-                relay_id: "relay-a".to_string(),
-                weight: 1,
-            }],
-        }];
-        next.active_aggregate_relay_id = "aggregate-a".to_string();
-        let valid = request_for(&persisted, &next, None, vec![], ProviderCommitAction::Save);
-        assert!(
-            validate_common_request(&persisted, &state_with_official(), &valid).is_err(),
-            "topology Save must not switch active"
-        );
-
-        let persisted_aggregate = next.clone();
-        let valid = request_for(
-            &persisted_aggregate,
-            &persisted_aggregate,
-            None,
-            vec![],
-            ProviderCommitAction::Save,
-        );
-        assert!(
-            validate_common_request(&persisted_aggregate, &state_with_official(), &valid).is_ok()
-        );
-
-        let mut invalid = valid.clone();
-        invalid.topology.aggregate_relay_profiles[0].members.clear();
-        assert!(
-            validate_common_request(&persisted_aggregate, &state_with_official(), &invalid)
-                .is_err()
-        );
-
-        let mut invalid = valid.clone();
-        let duplicate_member = invalid.topology.aggregate_relay_profiles[0].members[0].clone();
-        invalid.topology.aggregate_relay_profiles[0]
-            .members
-            .push(duplicate_member);
-        assert!(
-            validate_common_request(&persisted_aggregate, &state_with_official(), &invalid)
-                .is_err()
-        );
-
-        let mut invalid = valid.clone();
-        invalid.topology.aggregate_relay_profiles[0].members[0].weight = 0;
-        assert!(
-            validate_common_request(&persisted_aggregate, &state_with_official(), &invalid)
-                .is_err()
-        );
-
-        let mut invalid = valid.clone();
-        invalid.topology.active_aggregate_relay_id.clear();
-        assert!(
-            validate_common_request(&persisted_aggregate, &state_with_official(), &invalid)
+            plan_provider_detail_commit(&persisted_chat, &CatalogState::default(), &detail)
                 .is_err()
         );
     }
@@ -2015,7 +2371,10 @@ mod tests {
     #[test]
     fn external_identity_is_preserved_and_new_external_pointer_must_come_from_profile_toml() {
         let mut profile = mixed_profile("relay-a", "official-a");
-        profile.config_contents = "model_catalog_json = \"models/user-owned.json\"\n".to_string();
+        profile.config_contents = format!(
+            "model_catalog_json = \"models/user-owned.json\"\n{}",
+            profile.config_contents
+        );
         let persisted = settings_with(vec![profile.clone()], "relay-a");
         let mut state = state_with_official();
         let external_overlay = CatalogOverlay {
@@ -2078,7 +2437,10 @@ mod tests {
     #[test]
     fn draftless_topology_save_preserves_every_external_profile_pointer() {
         let mut external = mixed_profile("relay-external", "owned-model");
-        external.config_contents = "model_catalog_json = \"models/user-owned.json\"\n".to_string();
+        external.config_contents = format!(
+            "model_catalog_json = \"models/user-owned.json\"\n{}",
+            external.config_contents
+        );
         let ordinary = mixed_profile("relay-b", "official-a");
         let persisted = settings_with(vec![external.clone(), ordinary.clone()], "relay-external");
         let mut state = state_with_official();
@@ -2104,12 +2466,15 @@ mod tests {
         assert!(validate_common_request(&persisted, &state, &valid).is_ok());
 
         let mut changed = reordered.clone();
-        changed
+        let changed_profile = changed
             .relay_profiles
             .iter_mut()
             .find(|profile| profile.id == "relay-external")
-            .unwrap()
-            .config_contents = "model_catalog_json = \"models/replaced.json\"\n".to_string();
+            .unwrap();
+        changed_profile.config_contents = changed_profile.config_contents.replace(
+            "model_catalog_json = \"models/user-owned.json\"",
+            "model_catalog_json = \"models/replaced.json\"",
+        );
         let changed = request_for(
             &persisted,
             &changed,
@@ -2120,12 +2485,14 @@ mod tests {
         assert!(validate_common_request(&persisted, &state, &changed).is_err());
 
         let mut removed = reordered;
-        removed
+        let removed_profile = removed
             .relay_profiles
             .iter_mut()
             .find(|profile| profile.id == "relay-external")
-            .unwrap()
-            .config_contents = "model = \"owned-model\"\n".to_string();
+            .unwrap();
+        removed_profile.config_contents = removed_profile
+            .config_contents
+            .replace("model_catalog_json = \"models/user-owned.json\"\n", "");
         let removed = request_for(
             &persisted,
             &removed,
@@ -2139,7 +2506,10 @@ mod tests {
     #[test]
     fn external_pointer_identity_rejects_whitespace_wrapped_replacement() {
         let mut external = mixed_profile("relay-external", "owned-model");
-        external.config_contents = "model_catalog_json = \"models/user-owned.json\"\n".to_string();
+        external.config_contents = format!(
+            "model_catalog_json = \"models/user-owned.json\"\n{}",
+            external.config_contents
+        );
         let persisted = settings_with(vec![external], "relay-external");
         let mut state = state_with_official();
         state.profiles.insert(
@@ -2153,7 +2523,10 @@ mod tests {
         );
         let mut replacement = persisted.clone();
         replacement.relay_profiles[0].config_contents =
-            "model_catalog_json = \" models/user-owned.json \"\n".to_string();
+            replacement.relay_profiles[0].config_contents.replace(
+                "model_catalog_json = \"models/user-owned.json\"",
+                "model_catalog_json = \" models/user-owned.json \"",
+            );
         let request = request_for(
             &persisted,
             &replacement,
@@ -2169,7 +2542,10 @@ mod tests {
     fn external_pointer_identity_accepts_unchanged_pointer_with_spaces() {
         let pointer = " models/user-owned.json ";
         let mut external = mixed_profile("relay-external", "owned-model");
-        external.config_contents = format!("model_catalog_json = \"{pointer}\"\n");
+        external.config_contents = format!(
+            "model_catalog_json = \"{pointer}\"\n{}",
+            external.config_contents
+        );
         let persisted = settings_with(vec![external], "relay-external");
         let mut state = state_with_official();
         state.profiles.insert(

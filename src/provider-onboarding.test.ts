@@ -32,12 +32,12 @@ describe("provider onboarding", () => {
     assert.equal(draft.id, "relay-new");
     assert.equal(draft.name, "");
     assert.equal(draft.baseUrl, "");
-    assert.equal(draft.upstreamBaseUrl, "");
+    assert.equal(Object.hasOwn(draft, "upstreamBaseUrl"), false);
     assert.equal(draft.apiKey, "");
     assert.equal(draft.model, PRO_MODEL_SLUGS[0]);
     assert.equal(draft.relayMode, "official");
     assert.equal(draft.officialMixApiKey, true);
-    assert.equal(draft.protocol, "responses");
+    assert.equal(Object.hasOwn(draft, "protocol"), false);
     assert.equal(draft.transientTarget, "nativePriority");
     assert.strictEqual(draft.contextSelection, contextSelection);
     assert.equal(draft.authContents, "");
@@ -56,7 +56,6 @@ describe("provider onboarding", () => {
       ...empty,
       model: "gpt-5.5",
       baseUrl: "https://relay.example/v1",
-      upstreamBaseUrl: "https://relay.example/v1",
       apiKey: "provider-key",
     };
 
@@ -66,6 +65,8 @@ describe("provider onboarding", () => {
       missingFields: ["apiKey"],
       configContents: "",
     });
+    assert.equal(Object.hasOwn(complete, "protocol"), false);
+    assert.equal(materializeNewProviderConfig(complete).configContents.match(/^wire_api = "responses"$/gm)?.length, 1);
     assert.deepEqual(materializeNewProviderConfig(complete), {
       target: "nativePriority",
       status: "materialized",
@@ -203,7 +204,7 @@ describe("built-in Pro model list", () => {
     assert.equal(draft?.transientTarget, "nativePriority");
     assert.equal(draft?.relayMode, "official");
     assert.equal(draft?.officialMixApiKey, true);
-    assert.equal(draft?.protocol, "responses");
+    assert.equal(Object.hasOwn(draft, "protocol"), false);
   });
 });
 

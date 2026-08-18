@@ -16,9 +16,20 @@ Object.defineProperty(globalThis, "window", {
   value: { localStorage: { getItem: () => "en" } },
 });
 
-const { tf } = await import(`./i18n.ts?template-lookup-test=${Date.now()}`);
+const { t, tf } = await import(`./i18n.ts?template-lookup-test=${Date.now()}`);
 
 describe("English interpolation", () => {
+  it("translates both official Responses access-mode hints", () => {
+    assert.equal(
+      t("官方登录＋混入 API Key＋Responses API"),
+      "Official login + mixed-in API Key + Responses API",
+    );
+    assert.equal(
+      t("官方登录＋不写 API Key＋Responses API"),
+      "Official login + no API Key written + Responses API",
+    );
+  });
+
   it("looks up the dormant native-catalog warning from the template dictionary", () => {
     assert.equal(
       tf("原生目录模式下有 {0} 个自定义模型暂不生效。", [7]),

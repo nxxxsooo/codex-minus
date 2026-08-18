@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Explicit provider catalog modes
-The system SHALL assign every catalog-capable relay profile one catalog mode: `native-official`, `official-plus-custom`, `custom-only`, or `external`. A server-side composite relay SHALL be classified separately from local member aggregation, SHALL present one Responses-compatible upstream to Codex, and SHALL participate in managed catalogs independently of inference credentials. Local member aggregation and Chat Completions proxying SHALL remain unavailable.
+The system SHALL assign every supported relay profile one catalog mode: `native-official`, `official-plus-custom`, `custom-only`, or `external`. Every supported provider presents one ordinary Responses upstream to Codex. A service that composes providers behind one Responses Base URL and one provider key remains one ordinary upstream; optional server-side-composite catalog metadata does not create a separate provider kind, client-side member aggregation, or protocol-conversion path. Raw Chat Completions, local aggregate, and removed-proxy shapes are unsupported.
 
 #### Scenario: Unmodified official profile
 - **WHEN** an official profile has no managed overlays or external catalog pointer
@@ -15,25 +15,25 @@ The system SHALL assign every catalog-capable relay profile one catalog mode: `n
 - **WHEN** a direct pure API profile has no external catalog pointer or prior managed mode
 - **THEN** it defaults to `custom-only` and can be changed explicitly to `official-plus-custom`
 
-#### Scenario: Server-side composite profile
-- **WHEN** a `PureApi` profile or an `Official` profile with `officialMixApiKey = true` is explicitly classified as a server-side composite relay with one Base URL, one provider key, and the Responses protocol
-- **THEN** it is applied as one custom-provider upstream without local aggregation, defaults to `official-plus-custom` unless its mode was explicitly chosen, and has managed catalog controls available
+#### Scenario: Server-side composite service is one ordinary upstream
+- **WHEN** a `PureApi` profile or an `Official` profile with `officialMixApiKey = true` points to a service that internally composes providers but exposes one Base URL, one provider key, and the Responses protocol
+- **THEN** it is applied as one ordinary custom-provider upstream without local aggregation; optional server-side-composite catalog metadata may select its established implicit catalog default and managed controls without changing the provider representation
 
 #### Scenario: Compatible API or official-mixed profile is reclassified
-- **WHEN** the user explicitly reclassifies an existing Responses-compatible pure API or official-mixed profile as server-side composite
-- **THEN** the system preserves its relay representation, Base URL, provider key, default model, OAuth ownership, and explicit catalog mode while changing only Manager-owned classification and any implicit catalog-mode default
+- **WHEN** the user explicitly changes only the optional server-side-composite catalog metadata of an existing ordinary Responses pure-API or official-mixed profile
+- **THEN** the system preserves its ordinary provider representation, Base URL, provider key, default model, OAuth ownership, and explicit catalog mode while changing only Manager-owned catalog classification and any implicit catalog-mode default
 
 #### Scenario: External catalog is detected
 - **WHEN** a profile points to a catalog path not owned by Codex--
 - **THEN** the system marks that profile `external`, does not modify its pointer or file, and requires explicit adoption before managed behavior begins
 
-#### Scenario: Aggregate profile is encountered
-- **WHEN** a profile contains local aggregate members or depends on the removed local aggregation proxy
-- **THEN** managed catalog controls and live application remain unavailable and the system does not materialize or apply a catalog for that profile
+#### Scenario: Removed provider shape reaches a catalog boundary
+- **WHEN** raw provider or settings state contains Chat Completions, local aggregate members, the removed local proxy, or retired compatibility fields
+- **THEN** validation rejects the state before catalog-mode derivation, status presentation, materialization, adoption, or live mutation and provides no read-only compatibility or conversion path
 
-#### Scenario: Chat Completions profile is encountered
-- **WHEN** a profile depends on the removed Chat Completions conversion proxy
-- **THEN** managed catalog controls and live application remain unavailable even if the upstream provider performs server-side aggregation
+#### Scenario: Unsupported topology claims server-side composition
+- **WHEN** a pure-OAuth or missing-credential profile is marked `server-side-composite`, or the classification does not resolve to exactly one usable Responses endpoint and provider key
+- **THEN** validation fails before catalog materialization or live mutation and the prior provider/catalog generation remains unchanged
 
 ### Requirement: Deterministic official and custom composition
 The system SHALL compose each managed catalog deterministically from the latest validated official baseline and that profile's overlay. Official entries SHALL retain their full target-emitted metadata except for explicitly allowed display-name, visibility, ordering, context, reasoning, and tool-capability overlay fields, and hidden official entries SHALL remain present in `official-plus-custom` catalogs.

@@ -10,7 +10,7 @@ The system SHALL represent native-capability priority as a derived provider stat
 #### Scenario: New ordinary provider is created
 
 - **WHEN** the user creates an ordinary provider after provider-onboarding defaults are available
-- **THEN** its empty draft selects official OAuth plus a provider-scoped API key, the Responses protocol, an implicit `official-plus-custom` catalog draft, and native-capability priority as its transient target without persisting a separate feature flag
+- **THEN** its empty draft selects official OAuth plus a provider-scoped API key, the Responses protocol, `requires_openai_auth = true`, an implicit `official-plus-custom` catalog draft, and native-capability priority as its transient target without persisting a separate feature flag
 
 #### Scenario: New provider inputs are incomplete
 
@@ -52,14 +52,24 @@ The system SHALL represent native-capability priority as a derived provider stat
 - **WHEN** a pure OAuth profile has an unadopted external catalog pointer
 - **THEN** it remains `external` until explicit catalog adoption or removal and is not silently reclassified as `native-official`
 
-#### Scenario: Advanced compatibility profile is loaded
+#### Scenario: Pure API Responses profile is loaded
 
-- **WHEN** a profile uses pure API, Chat Completions, a client-side aggregate provider, or another incompatible relay mode
-- **THEN** the system keeps that mode available as an advanced path and does not classify or silently convert it as native-capability priority
+- **WHEN** a profile uses one ordinary pure-API Responses upstream
+- **THEN** the system keeps pure API available without classifying or silently converting it as native-capability priority
+
+#### Scenario: Removed provider shape is received
+
+- **WHEN** raw provider state contains Chat Completions, client-side aggregate members, or the removed local proxy
+- **THEN** the system rejects it before classification, exposure, normalization, migration, or persistence and offers no compatibility transition
 
 ### Requirement: Canonical actor-authorized provider contract
 
-The system MUST materialize each native-capability-priority profile as one coherent custom provider contract. The selected provider identifier MUST remain a non-built-in profile-scoped identifier; its provider entry MUST use the exact friendly name `name = "OpenAI"`, use `wire_api = "responses"`, set `requires_openai_auth = false`, project the provider-scoped key through the provider bearer field, and include the manager-owned non-empty `x-openai-actor-authorization = "local-image-extension"` header. The system MUST NOT route the profile through Codex's reserved built-in `openai` provider identifier.
+The system MUST materialize each native-capability-priority profile as one coherent custom provider contract. The selected provider identifier MUST remain a non-built-in profile-scoped identifier; its provider entry MUST use the exact friendly name `name = "OpenAI"`, use `wire_api = "responses"`, project the provider-scoped key through the provider bearer field, and include the manager-owned non-empty `x-openai-actor-authorization = "local-image-extension"` header. A new mixed-auth profile MUST default to `requires_openai_auth = true`. Existing mixed profiles with either `true` or `false` are valid, and ordinary saves MUST preserve the persisted value. The system MUST write `requires_openai_auth = false` only for an explicit exit to pure API. The system MUST NOT route the profile through Codex's reserved built-in `openai` provider identifier.
+
+#### Scenario: Existing mixed authentication requirement is preserved
+
+- **WHEN** an existing actor-authorized Responses provider has either `requires_openai_auth = true` or `requires_openai_auth = false` and the user performs an ordinary edit or save
+- **THEN** the system preserves that exact persisted value and does not treat either boolean as a compatibility mode
 
 #### Scenario: Native-capability profile is materialized
 
@@ -118,7 +128,7 @@ The system MUST preserve the native-capability-priority contract across subseque
 #### Scenario: Base URL is edited
 
 - **WHEN** the user changes the Base URL of a native-capability-priority draft
-- **THEN** the draft retains `wire_api = "responses"`, `requires_openai_auth = false`, the actor-authorization header, the provider identifier, and all unrelated provider fields
+- **THEN** the draft retains `wire_api = "responses"`, the existing `requires_openai_auth` value unchanged, the actor-authorization header, the provider identifier, and all unrelated provider fields
 
 #### Scenario: Provider key is edited
 
@@ -130,10 +140,10 @@ The system MUST preserve the native-capability-priority contract across subseque
 - **WHEN** the user changes the default model of a native-capability-priority draft
 - **THEN** the provider contract and unrelated root and provider fields remain intact
 
-#### Scenario: Protocol changes to Chat Completions
+#### Scenario: Non-Responses provider TOML is submitted
 
-- **WHEN** the user changes a native-capability-priority draft from Responses to Chat Completions
-- **THEN** the system treats the change as an explicit exit to compatibility mode, previews the native-capability loss, and does not preserve a false native-priority classification
+- **WHEN** raw provider TOML omits the selected provider's `wire_api = "responses"` contract or supplies another wire API
+- **THEN** the system rejects the input before normalization or persistence and exposes no protocol choice or compatibility transition
 
 #### Scenario: Global live fields differ from profile content
 
@@ -152,7 +162,7 @@ The system MUST preserve the native-capability-priority contract across subseque
 
 #### Scenario: Provider topology is changed outside the detail editor
 
-- **WHEN** the user enables or disables provider routing, reorders, copies, or deletes a provider, changes provider test-model state, or performs aggregate-reference cleanup
+- **WHEN** the user enables or disables provider routing, reorders, copies, or deletes a provider, or changes provider test-model state
 - **THEN** the operation uses the same provider-owned validation, catalog planning, compare-and-swap, Context protection, OAuth observation, and transaction engine as provider-detail Save rather than generic settings persistence
 
 #### Scenario: Generic settings save carries provider changes
@@ -434,24 +444,24 @@ The system MUST leave ChatGPT OAuth exclusively under the official client's owne
 - **WHEN** provider-key evidence conflicts, the legacy payload is malformed, or a provider-key profile has no usable key source
 - **THEN** migration fails without changing persisted settings or exposing credential material
 
-### Requirement: Explicit exit and compatibility behavior
+### Requirement: Explicit authentication-mode exit behavior
 
 The system SHALL allow the user to leave native-capability priority deliberately. When the target mode retains a custom provider table, it SHALL remove or replace only manager-owned contract fields that the target does not use and preserve unrelated headers and provider fields. True pure OAuth is an explicit destructive exception: it removes the custom provider configuration after preview and stores no dormant provider copy.
 
 #### Scenario: User selects pure API
 
 - **WHEN** the user explicitly changes a native-capability-priority draft to pure API
-- **THEN** the draft adopts the pure-API contract, preserves unrelated provider fields, and explains that OAuth-derived native capability behavior is no longer claimed
+- **THEN** the draft adopts the pure-API contract, writes `requires_openai_auth = false`, preserves unrelated provider fields, and explains that OAuth-derived native capability behavior is no longer claimed
 
 #### Scenario: User selects pure OAuth
 
 - **WHEN** the user explicitly changes a mixed profile to true pure OAuth
 - **THEN** the preview identifies that the custom provider table, bearer, and unrelated custom-provider fields will be removed; after commit the profile stores no dormant custom-provider copy, returns to `native-official` only when no external pointer exists, and leaves official OAuth under the official client's ownership
 
-#### Scenario: User selects legacy compatibility behavior
+#### Scenario: Existing mixed authentication choice is not an exit
 
-- **WHEN** the user explicitly chooses a supported compatibility path that requires `requires_openai_auth = true` or lacks actor authorization
-- **THEN** the system previews the incompatible fields and capability consequences and changes them only after the normal Save or Set-as-current action
+- **WHEN** an existing mixed Responses provider carries `requires_openai_auth = true` or `requires_openai_auth = false`
+- **THEN** an ordinary Save preserves that value and changes it only through an explicit authentication-mode transition
 
 #### Scenario: Manager-owned actor header is removed
 
@@ -467,16 +477,16 @@ The system SHALL allow the user to leave native-capability priority deliberately
 
 A provider contract is completed by editing several fields, so the system SHALL refuse a commit only for gaps that make the draft unusable or ambiguous, and SHALL accept a draft that is merely not yet upgraded. Refusing an incomplete-but-interpretable draft would strand the profile, because the fields that complete the contract can only be persisted by a commit.
 
-The system SHALL refuse unparseable provider TOML, a missing or malformed selected provider table, a reserved or legacy provider identifier, a missing endpoint or default model, a malformed contract value, and conflicting or duplicated actor-authorization headers. The system SHALL accept a provider name mismatch, an unsatisfied official-auth requirement, a missing provider bearer, a missing actor-authorization header, a wire-API mismatch, and a catalog-mode mismatch.
+The system SHALL refuse unparseable provider TOML, a missing or malformed selected provider table, any selected provider wire API other than exact `responses`, a reserved or legacy provider identifier, a missing endpoint or default model, a malformed contract value, and conflicting or duplicated actor-authorization headers. Either persisted `requires_openai_auth` boolean is valid and is not a repair gap. The system SHALL accept a provider name mismatch, a missing provider bearer, a missing actor-authorization header, and a catalog-mode mismatch.
 
 #### Scenario: A legacy provider is repaired one field at a time
 
-- **WHEN** a profile still carrying the legacy provider contract is saved with only some of the target fields corrected
+- **WHEN** a profile still carrying a legacy Responses provider contract is saved with only some of the target fields corrected
 - **THEN** the commit succeeds, the corrected fields persist, and the remaining gaps are reported without claiming the native-capability contract is active
 
 #### Scenario: An uninterpretable draft is still refused
 
-- **WHEN** a draft has unparseable TOML, no usable provider table, a reserved or legacy identifier, no endpoint, no default model, a malformed value, or two conflicting actor-authorization headers
+- **WHEN** a draft has unparseable TOML, no usable provider table, a non-Responses wire API, a reserved or legacy identifier, no endpoint, no default model, a malformed value, or two conflicting actor-authorization headers
 - **THEN** the commit is refused, settings and live configuration are unchanged, and the failure names the specific rejecting rule
 
 #### Scenario: A degraded contract never claims native-capability priority

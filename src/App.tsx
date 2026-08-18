@@ -93,8 +93,8 @@ import {
 import {
   buildProviderMutationInvocation,
   catalogDraftAvailability,
-  managedCatalogCapable,
-  modelCatalogResponseCanAdopt, providerDeleteAvailable,
+  modelCatalogResponseCanAdopt,
+  providerDeleteAvailable,
   providerCommitFailureNotice,
   providerCommitFailureShouldReconcileForm,
   providerCommitResponseRequiresAuthoritativeRefresh, registerProviderCommit,
@@ -140,12 +140,12 @@ import {
 } from "./provider-detail-draft-state";
 import {
   deriveProviderNativeCapabilityView,
+  providerAccessModeHint,
   providerTransitionDecisionForStructuredPatch,
 } from "./provider-native-capability-view";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 import type {
   AdoptionPreviewResult,
-  AggregateRelayProfile,
   ArchiveMaintenanceResult,
   ArchivePreviewResult,
   BackendSettings,
@@ -170,15 +170,12 @@ import type {
   ProviderDoctorResult,
   ProviderNativeCapabilityInspectionResult,
   ReasoningLevel,
-  RelayAggregateConfig,
-  RelayAggregateStrategy,
   RelayContextSelection,
   RelayFilesResult,
   RelayMode,
   RelayProfile,
   RelayProfileModelsResult,
   RelayProfileTestResult,
-  RelayProtocol,
   RelayResult,
   RemoveEnvConflictsResult,
   Route,
@@ -199,18 +196,10 @@ import {
   syncLegacyRelayFields,
   updateRelayProfile,
   createRelayProfile,
-  createAggregateRelayProfile,
   addRelayProfile,
   duplicateRelayProfile,
   reorderRelayProfiles,
   removeRelayProfile,
-  isAggregateRelayProfile,
-  normalizeAggregateRelayProfile,
-  normalizeAggregateConfig,
-  aggregateMemberCandidates,
-  clampAggregateWeight,
-  aggregateRelayProfileValidation,
-  AGGREGATE_STRATEGIES,
   defaultSettings,
 } from "./relay-settings";
 import {
@@ -225,7 +214,6 @@ import {
   normalizeDuplicateTomlTables,
   tomlKey,
   ensureTrailingNewline,
-  rootTomlStringValue,
   codexModelFromConfig,
   codexBaseUrlFromConfig,
   codexExperimentalBearerTokenFromConfig,
@@ -936,13 +924,8 @@ export function App() {
     });
     setRelaySwitching(true);
     try {
-      const selectedCatalogDraft = isAggregateRelayProfile(selectedAfterSave)
-        || selectedAfterSave.protocol === "chatCompletions"
-        ? null
-        : catalogDraftOverride ?? catalogDraftForProfile(selectedAfterSave);
-      if (!isAggregateRelayProfile(selectedAfterSave)
-        && selectedAfterSave.protocol !== "chatCompletions"
-        && !selectedCatalogDraft) {
+      const selectedCatalogDraft = catalogDraftOverride ?? catalogDraftForProfile(selectedAfterSave);
+      if (!selectedCatalogDraft) {
         showNotice(t("模型目录不可用"), t("当前供应商的完整模型目录状态尚未加载，请刷新后重试。"), "failed");
         return;
       }
@@ -1377,18 +1360,6 @@ function RelayScreen({
   ) => {
     return actions.commitProviderTopology(next, kind, copySourceProfileId);
   };
-  const createNewAggregateProfile = () => {
-    const draft = createAggregateRelayProfile(normalized);
-    setDetailProfileId(null);
-    setNewProfileDraft(draft);
-    if (!normalizeAggregateConfig(draft.aggregate, aggregateMemberCandidates(normalized, draft.id)).members.length) {
-      void actions.showMessage(
-        t("添加聚合供应商"),
-        t("已打开聚合供应商详情；请先添加或完善至少 1 个普通 API 供应商的 Base URL / Key，再勾选为成员。"),
-        "failed",
-      );
-    }
-  };
   const editRelayProfile = async (profileId: string) => {
     setNewProfileDraft(null);
     setDetailProfileId(
@@ -1459,13 +1430,6 @@ function RelayScreen({
             >
               <Plus className="h-4 w-4" />
               {t("添加供应商")}
-            </Button>
-            <Button
-              variant="secondary"
-              onClick={createNewAggregateProfile}
-            >
-              <Plus className="h-4 w-4" />
-              {t("添加聚合供应商")}
             </Button>
           </div>
           <RelayProfileList
@@ -2062,7 +2026,7 @@ function RelayProfileList({
   actions,
 }: {
   form: BackendSettings;
-  onFormChange: (value: BackendSettings, kind: "reorder" | "copy" | "delete" | "aggregateCleanup", copySourceProfileId?: string) => void;
+  onFormChange: (value: BackendSettings, kind: "reorder" | "copy" | "delete", copySourceProfileId?: string) => void;
   onEdit: (id: string) => void;
   disabled?: boolean;
   actions: Actions;
@@ -2115,7 +2079,7 @@ function SortableRelayProfileCard({
   form: BackendSettings;
   profile: RelayProfile;
   index: number;
-  onFormChange: (value: BackendSettings, kind: "reorder" | "copy" | "delete" | "aggregateCleanup", copySourceProfileId?: string) => void;
+  onFormChange: (value: BackendSettings, kind: "reorder" | "copy" | "delete", copySourceProfileId?: string) => void;
   onEdit: (id: string) => void;
   disabled?: boolean;
   actions: Actions;
@@ -2155,7 +2119,7 @@ function SortableRelayProfileCard({
       </span>
       <span className="relay-summary">
         <strong>{profile.name || t("未命名供应商")}</strong>
-        <small>{relayModeLabel(profile.relayMode)} · {relayProtocolLabel(profile.protocol)} · {relayProfileConfigBrief(profile)}</small>
+        <small>{relayModeLabel(profile.relayMode)} · {relayProfileConfigBrief(profile)}</small>
       </span>
       <span className="relay-card-actions">
         <Button
@@ -2177,14 +2141,12 @@ function SortableRelayProfileCard({
         </Button>
         <span className="relay-card-extra">
           <Button
-            disabled={isAggregateRelayProfile(profile)}
             onClick={(event) => {
               event.stopPropagation();
-              if (isAggregateRelayProfile(profile)) return;
               void actions.testRelayProfile(profile);
             }}
             size="icon"
-            title={isAggregateRelayProfile(profile) ? t("聚合供应商会在真实对话中轮转成员，请测试成员供应商") : t("发送 hi 测试")}
+            title={t("发送 hi 测试")}
             variant="ghost"
           >
             <TestTube className="h-4 w-4" />
@@ -2268,13 +2230,11 @@ function RelayProfileDetail({
     createProviderDetailDraftState({ profile, catalogDraft: initialCatalogDraft }),
   );
   const detailStateRef = useRef(detailState);
-  const authoritativeCapabilityProfile = isAggregateRelayProfile(profile)
-    ? normalizeAggregateRelayProfile(profile, form)
-    : deriveRelayProfileFromFiles({
-        ...profile,
-        configContents: profile.configContents,
-        authContents: "",
-      });
+  const authoritativeCapabilityProfile = deriveRelayProfileFromFiles({
+    ...profile,
+    configContents: profile.configContents,
+    authContents: "",
+  });
   const authoritativeCapabilityProfileRevision = JSON.stringify(
     authoritativeCapabilityProfile,
   );
@@ -2316,13 +2276,11 @@ function RelayProfileDetail({
     },
   });
   useEffect(() => {
-    const nextDraft = isAggregateRelayProfile(profile)
-      ? normalizeAggregateRelayProfile(profile, form)
-      : deriveRelayProfileFromFiles({
-          ...profile,
-          configContents: profile.configContents,
-          authContents: "",
-        });
+    const nextDraft = deriveRelayProfileFromFiles({
+      ...profile,
+      configContents: profile.configContents,
+      authContents: "",
+    });
     const nextCatalogDraft = isNew || catalogProfile
       ? catalogProfileDraft({
           profileId: profile.id,
@@ -2337,7 +2295,7 @@ function RelayProfileDetail({
     updateDetailState(nextState);
     setLegacyReplacementProviderId("");
     let cancelled = false;
-    if (!isNew && !isAggregateRelayProfile(nextDraft)) {
+    if (!isNew) {
       const inspectionCorrelation = beginProviderDetailInspection(nextState);
       void actions.inspectProviderNativeCapabilities(profile.id).then((inspection) => {
         if (cancelled || !inspection) return;
@@ -2373,20 +2331,17 @@ function RelayProfileDetail({
       const refreshed = refreshProviderDetailCatalogDraftState(
         detailStateRef.current,
         nextCatalogDraft,
-        isAggregateRelayProfile(profile)
-          ? normalizeAggregateRelayProfile(profile, form)
-          : deriveRelayProfileFromFiles({
-              ...profile,
-              configContents: profile.configContents,
-              authContents: "",
-            }),
+        deriveRelayProfileFromFiles({
+          ...profile,
+          configContents: profile.configContents,
+          authContents: "",
+        }),
       );
       updateDetailState(refreshed.state);
       const inspectionCorrelation = refreshed.inspectionCorrelation;
       if (
         inspectionCorrelation
         && !isNew
-        && !isAggregateRelayProfile(refreshed.state.profile)
       ) {
         void actions.inspectProviderNativeCapabilities(profile.id).then((inspection) => {
           if (cancelled || !inspection) return;
@@ -2465,8 +2420,7 @@ function RelayProfileDetail({
     let step;
     try {
       const hasTransitionFields = "relayMode" in patch
-        || "officialMixApiKey" in patch
-        || "protocol" in patch;
+        || "officialMixApiKey" in patch;
       const decision = target.source === "existing" && hasTransitionFields
         ? providerTransitionDecisionForStructuredPatch(current.profile, patch)
         : null;
@@ -2484,7 +2438,6 @@ function RelayProfileDetail({
         const {
           relayMode,
           officialMixApiKey,
-          protocol,
           ...ordinaryPatch
         } = patch;
         if (Object.keys(ordinaryPatch).length) {
@@ -2498,7 +2451,6 @@ function RelayProfileDetail({
           ? {
               ...(relayMode === undefined ? {} : { relayMode }),
               ...(officialMixApiKey === undefined ? {} : { officialMixApiKey }),
-              ...(protocol === undefined ? {} : { protocol }),
             }
           : ordinaryPatch;
         if (!Object.keys(routedPatch).length) return;
@@ -2532,22 +2484,18 @@ function RelayProfileDetail({
     );
     setLegacyReplacementProviderId("");
   };
-  const newProviderFieldErrors = isNew && !isAggregateRelayProfile(draft)
-    ? validateNewProviderDraft(draft)
-    : {};
-  const validationError = isAggregateRelayProfile(draft)
-    ? aggregateRelayProfileValidation(draft)
-    : Object.keys(newProviderFieldErrors).length
-      ? t("请填写所有必填字段。")
-      : detailState.pendingTransformRevision !== null
-        ? t("供应商配置转换中。")
-        : detailState.pendingConfirmation !== null
-          ? t("请先确认或取消供应商兼容模式转换。")
-          : detailState.pendingLegacyProviderIdResolution !== null
-            ? t("请先完成或取消旧供应商 ID 重命名。")
-            : detailState.blockers.length
-              ? t("供应商草稿被后端验证阻止，请处理提示后重试。")
-              : null;
+  const newProviderFieldErrors = isNew ? validateNewProviderDraft(draft) : {};
+  const validationError = Object.keys(newProviderFieldErrors).length
+    ? t("请填写所有必填字段。")
+    : detailState.pendingTransformRevision !== null
+      ? t("供应商配置转换中。")
+      : detailState.pendingConfirmation !== null
+        ? t("请先确认或取消供应商兼容模式转换。")
+        : detailState.pendingLegacyProviderIdResolution !== null
+          ? t("请先完成或取消旧供应商 ID 重命名。")
+          : detailState.blockers.length
+            ? t("供应商草稿被后端验证阻止，请处理提示后重试。")
+            : null;
   const saveDraft = async () => {
     if (validationError || savingRef.current) return;
     savingRef.current = true;
@@ -2571,14 +2519,12 @@ function RelayProfileDetail({
       // Deriving the draft inside the guard keeps the `finally` reset reachable: a throw before it
       // would leave the button pending forever, and its click handler discards the rejection.
       const current = detailStateRef.current.profile;
-      const normalizedDraft = isAggregateRelayProfile(current) ? normalizeAggregateRelayProfile(current, form) : deriveRelayProfileFromFiles(current);
+      const normalizedDraft = deriveRelayProfileFromFiles(current);
       const next = isNew
         ? addRelayProfile(form, normalizedDraft)
         : updateRelayProfile(form, profile.id, normalizedDraft);
-      const catalogCapable = !isAggregateRelayProfile(normalizedDraft)
-        && normalizedDraft.protocol !== "chatCompletions";
-      const catalogAvailability = catalogDraftAvailability(!isNew, catalogCapable, !!catalogProfile);
-      if (catalogAvailability === "unavailable" || (catalogCapable && !catalogDraft)) {
+      const catalogAvailability = catalogDraftAvailability(!isNew, !!catalogProfile);
+      if (catalogAvailability === "unavailable" || !catalogDraft) {
         await actions.showMessage(
           t("模型目录不可用"),
           t("当前供应商的完整模型目录状态尚未加载，请刷新后重试。"),
@@ -2586,9 +2532,7 @@ function RelayProfileDetail({
         );
         return;
       }
-      const managedCatalog = !isAggregateRelayProfile(normalizedDraft)
-        && normalizedDraft.protocol !== "chatCompletions"
-        && !!catalogDraft
+      const managedCatalog = !!catalogDraft
         && managedCatalogMode(catalogDraft.mode);
       const contextConflicts = managedCatalog
         ? providerManagedContextConflictKeys(
@@ -2603,9 +2547,7 @@ function RelayProfileDetail({
       const saved = await actions.commitProviderDetail(
         next,
         normalizedDraft.id,
-        isAggregateRelayProfile(normalizedDraft) || normalizedDraft.protocol === "chatCompletions"
-          ? null
-          : catalogDraft,
+        catalogDraft,
         !isNew,
         "detailSave",
         confirmContextCleanup,
@@ -2631,7 +2573,7 @@ function RelayProfileDetail({
       || detailState.pendingLegacyProviderIdResolution !== null
       || detailState.blockers.length > 0
     ) return;
-    const normalizedDraft = isAggregateRelayProfile(draft) ? normalizeAggregateRelayProfile(draft, form) : deriveRelayProfileFromFiles(draft);
+    const normalizedDraft = deriveRelayProfileFromFiles(draft);
     const previousActiveRelayId = form.activeRelayId;
     const next = syncLegacyRelayFields({
       ...form,
@@ -2641,9 +2583,7 @@ function RelayProfileDetail({
     void actions.switchRelayProfile(
       next,
       previousActiveRelayId,
-      isAggregateRelayProfile(normalizedDraft) || normalizedDraft.protocol === "chatCompletions" || !catalogDraft
-        ? undefined
-        : catalogDraft,
+      catalogDraft ?? undefined,
     );
   };
   const navigateBack = () => {
@@ -2707,7 +2647,7 @@ function RelayProfileDetail({
         </section>
       )}
         <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={replaceDraft} onProfileEdit={editDraft} onSwitch={switchDraft} actions={actions} catalogProfile={catalogProfile} draftCommitBlocked={detailState.pendingTransformRevision !== null || detailState.pendingConfirmation !== null || detailState.pendingLegacyProviderIdResolution !== null || detailState.blockers.length > 0} />
-      {!managedCatalogCapable(draft) ? null : catalogDraft ? (
+      {catalogDraft ? (
         <CatalogProfileEditor
           catalog={modelCatalog}
           draft={catalogDraft}
@@ -2729,13 +2669,11 @@ function RelayProfileDetail({
           </div>
         </section>
       )}
-      {isAggregateRelayProfile(draft) ? null : (
       <RelayLiveFilePanels
         authStatus={relayFiles?.authStatus ?? null}
         liveConfigContents={relayFiles?.configContents ?? ""}
         onRefreshAuth={() => actions.refreshRelayFiles()}
       />
-      )}
     </div>
   );
 }
@@ -2777,17 +2715,6 @@ function RelayProfileEditor({
       doctorRequestSequenceRef.current += 1;
     };
   }, [doctorSourceRevision]);
-  if (isAggregateRelayProfile(profile)) {
-    return (
-      <AggregateRelayProfileEditor
-        profile={profile}
-        form={form}
-        isNew={isNew}
-        onProfileChange={onProfileChange}
-      />
-    );
-  }
-
   const newProviderFieldErrors = isNew ? validateNewProviderDraft(profile) : {};
   // Every profile shows its endpoint and key, including one that has none yet: supplying them is
   // how a profile that predates this contract upgrades itself.
@@ -2856,7 +2783,7 @@ function RelayProfileEditor({
         </Field>
         {profile.relayMode === "official" ? (
           <Field className="relay-field-mode" label={t("接入模式")}>
-            <p className="field-hint">{t("官方登录＋混入 API Key＋Responses API")}</p>
+            <p className="field-hint">{t(providerAccessModeHint(profile))}</p>
           </Field>
         ) : null}
         {showApiFields ? (
@@ -2900,13 +2827,7 @@ function RelayProfileEditor({
           </div>
         ) : null}
       </div>
-      {showApiFields && profile.protocol === "chatCompletions" ? (
-        <div className="hint-line relay-protocol-hint">
-          <MessageCircle className="h-4 w-4" />
-          <span>{t("此上游依赖本地 127.0.0.1:57321 协议代理转成 Responses API；Codex Minus 不提供该代理，选择此协议后 Codex 将无法请求，请慎用。")}</span>
-        </div>
-      ) : null}
-      <div className="hint-line relay-protocol-hint">
+      <div className="hint-line relay-mode-hint">
         <ShieldCheck className="h-4 w-4" />
         <span>{relayProfileModeHelp(profile)}</span>
       </div>
@@ -2923,146 +2844,6 @@ function RelayProfileEditor({
   );
 }
 
-
-function AggregateRelayProfileEditor({
-  profile,
-  form,
-  isNew = false,
-  onProfileChange,
-}: {
-  profile: RelayProfile;
-  form: BackendSettings;
-  isNew?: boolean;
-  onProfileChange: (value: RelayProfile) => void;
-}) {
-  const candidates = aggregateMemberCandidates(form, profile.id);
-  const aggregate = normalizeAggregateConfig(profile.aggregate, candidates);
-  const memberIds = new Set(aggregate.members.map((member) => member.profileId));
-  const updateAggregate = (nextAggregate: RelayAggregateConfig) => {
-    onProfileChange(normalizeAggregateRelayProfile({ ...profile, aggregate: nextAggregate }, form));
-  };
-  const toggleMember = (profileId: string, checked: boolean) => {
-    const members = checked
-      ? [...aggregate.members, { profileId, weight: 1 }]
-      : aggregate.members.filter((member) => member.profileId !== profileId);
-    updateAggregate({ ...aggregate, members });
-  };
-  const updateWeight = (profileId: string, weight: number) => {
-    updateAggregate({
-      ...aggregate,
-      members: aggregate.members.map((member) =>
-        member.profileId === profileId ? { ...member, weight: clampAggregateWeight(weight) } : member,
-      ),
-    });
-  };
-  const totalWeight = aggregate.members.reduce((total, member) => total + clampAggregateWeight(member.weight), 0);
-
-  return (
-    <div className="relay-profile-editor aggregate-editor">
-      <div className="relay-editor-head">
-        <div>
-          <strong>{profile.name || t("未命名聚合供应商")}</strong>
-          <span>{t("本地成员轮转依赖已移除的 127.0.0.1:57321 代理，不能应用。")}</span>
-        </div>
-        <UiBadge variant="outline">{t("高级兼容路径")} · {t("本地聚合（不可用）")}</UiBadge>
-      </div>
-      <div className="relay-fields aggregate-fields">
-        <Field className="relay-field-name" label={t("名称")}>
-          <Input
-            value={profile.name}
-            onChange={(event) => onProfileChange({ ...profile, name: event.currentTarget.value })}
-            placeholder={t("例如 主力聚合池")}
-          />
-        </Field>
-        <Field className="relay-field-test-model" label={t("测试模型")}>
-          <Input
-            value={profile.testModel}
-            onChange={(event) => onProfileChange({ ...profile, testModel: event.currentTarget.value })}
-            placeholder={t("留空使用该聚合成员自己的模型")}
-          />
-        </Field>
-        <Field className="aggregate-strategy-field" label={t("聚合策略")}>
-          <select
-            className="field-select"
-            value={aggregate.strategy}
-            onChange={(event) => updateAggregate({ ...aggregate, strategy: event.currentTarget.value as RelayAggregateStrategy })}
-          >
-            {aggregateStrategyOptions.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </Field>
-      </div>
-      <div className="aggregate-strategy-grid">
-        {aggregateStrategyOptions.map((option) => (
-          <button
-            className={`mode-option aggregate-strategy-option ${aggregate.strategy === option.value ? "active" : ""}`}
-            key={option.value}
-            onClick={() => updateAggregate({ ...aggregate, strategy: option.value })}
-            type="button"
-          >
-            <strong>{option.label}</strong>
-            <span>{option.description}</span>
-          </button>
-        ))}
-      </div>
-      <div className="aggregate-members">
-        <div className="aggregate-members-head">
-          <div>
-            <strong>{t("成员供应商")}</strong>
-            <span>{t("只能勾选已填写 Base URL / Key 的 API 供应商，聚合供应商不会作为成员。")}</span>
-          </div>
-          <UiBadge variant="outline">{aggregate.members.length} / {candidates.length}</UiBadge>
-        </div>
-        {candidates.length ? (
-          <div className="aggregate-member-list">
-            {candidates.map((candidate) => {
-              const member = aggregate.members.find((item) => item.profileId === candidate.id);
-              const checked = memberIds.has(candidate.id);
-              return (
-                <label className={`aggregate-member-row ${checked ? "selected" : ""}`} key={candidate.id}>
-                  <input
-                    checked={checked}
-                    onChange={(event) => toggleMember(candidate.id, event.currentTarget.checked)}
-                    type="checkbox"
-                  />
-                  <span className="aggregate-member-summary">
-                    <strong>{candidate.name || t("未命名供应商")}</strong>
-                    <small>{relayModeLabel(candidate.relayMode)} · {relayProtocolLabel(candidate.protocol)} · {relayProfileConfigBrief(candidate)}</small>
-                  </span>
-                  <span className="aggregate-weight-box">
-                    <span>{t("权重")}</span>
-                    <Input
-                      disabled={!checked}
-                      min={1}
-                      onChange={(event) => updateWeight(candidate.id, Number.parseInt(event.currentTarget.value, 10))}
-                      type="number"
-                      value={String(member?.weight ?? 1)}
-                    />
-                  </span>
-                </label>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="empty">{t("先添加至少 1 个已填写 Base URL / Key 的 API 供应商，再创建聚合供应商。")}</div>
-        )}
-      </div>
-      <div className="relay-grid compact aggregate-preview">
-        <Metric label={t("策略")} value={aggregateStrategyLabel(aggregate.strategy)} />
-        <Metric label={t("成员数量")} value={tf("{0} 个", [aggregate.members.length])} />
-        <Metric label={t("总权重")} value={`${totalWeight}`} />
-        <Metric label={t("序列化字段")} value="aggregate.strategy / aggregate.members" />
-      </div>
-      <div className="hint-line relay-protocol-hint">
-        <ShieldCheck className="h-4 w-4" />
-        <span>{aggregateStrategyHelp(aggregate.strategy)}</span>
-      </div>
-    </div>
-  );
-}
 
 function RelayLiveFilePanels({
   authStatus,
@@ -3305,7 +3086,7 @@ function routeTitle(route: Route) {
 
 function routeSubtitle(route: Route) {
   const subtitles: Record<Route, string> = {
-    relay: t("管理 API 供应商、协议、Key 与配置文件"),
+    relay: t("管理 API 供应商、Key 与配置文件"),
     sessions: t("查看、删除和修复 Codex 本地会话"),
   };
   return subtitles[route];
@@ -3337,29 +3118,17 @@ function truncateSessionDeletePreview(value: string) {
   return normalized.length > 20 ? `${normalized.slice(0, 20)}...` : normalized;
 }
 
-function relayProtocolLabel(protocol: RelayProtocol): string {
-  return protocol === "chatCompletions" ? t("Chat Completions 转 Responses") : "Responses API";
-}
-
 function relayModeLabel(mode: RelayMode): string {
-  if (mode === "aggregate") return t("聚合供应商");
   if (mode === "pureApi") return t("纯 API");
   return t("官方登录");
 }
 
 function relayProfileConfigBrief(profile: RelayProfile): string {
-  if (isAggregateRelayProfile(profile)) {
-    const aggregate = normalizeAggregateConfig(profile.aggregate, []);
-    return tf("{0} · {1} 个成员", [aggregateStrategyLabel(aggregate.strategy), aggregate.members.length]);
-  }
   if (profile.relayMode === "official") return profile.officialMixApiKey ? t("混入 API Key") : t("不写 API 文件");
   return profile.baseUrl || t("未填写 URL");
 }
 
 function relayProfileModeHelp(profile: RelayProfile): string {
-  if (isAggregateRelayProfile(profile)) {
-    return t("聚合供应商只保存成员和策略配置，成员来自已有 API 供应商；切为当前后会通过本地协议代理轮转请求。");
-  }
   if (profile.relayMode === "official") {
     if (profile.officialMixApiKey) {
       return t("此供应商会保留官方登录模式，并把请求混入当前 API Key。");
@@ -3370,44 +3139,6 @@ function relayProfileModeHelp(profile: RelayProfile): string {
     return t("此供应商只把 API Key 写入 owner-only 的 provider bearer 配置，并明确不要求 ChatGPT 认证。");
   }
   return t("此供应商会保留官方登录模式，并把请求混入当前 API Key。");
-}
-
-// Labels are the shell's; the set of valid values comes from the module that stores them.
-const aggregateStrategyLabels: Array<{ value: RelayAggregateStrategy; label: string; description: string }> = [
-  {
-    value: "failover",
-    label: t("失败切换"),
-    description: t("按成员顺序请求，失败后切到下一个供应商。"),
-  },
-  {
-    value: "conversationRoundRobin",
-    label: t("按对话轮转"),
-    description: t("同一对话保持一个成员，不同对话依次分配。"),
-  },
-  {
-    value: "requestRoundRobin",
-    label: t("按请求轮转"),
-    description: t("每次请求按成员顺序切换，适合均匀摊请求量。"),
-  },
-  {
-    value: "weightedRoundRobin",
-    label: t("权重轮转"),
-    description: t("按成员权重分配请求，权重越高承担越多。"),
-  },
-];
-const aggregateStrategyOptions = AGGREGATE_STRATEGIES.map(
-  (value) => aggregateStrategyLabels.find((option) => option.value === value)!,
-);
-
-function aggregateStrategyLabel(strategy: RelayAggregateStrategy): string {
-  return aggregateStrategyOptions.find((option) => option.value === strategy)?.label ?? t("失败切换");
-}
-
-function aggregateStrategyHelp(strategy: RelayAggregateStrategy): string {
-  if (strategy === "failover") return t("失败切换会保留成员顺序，优先使用第一个可用供应商。");
-  if (strategy === "conversationRoundRobin") return t("按对话轮转会让同一对话尽量保持固定成员，降低上下文漂移。");
-  if (strategy === "requestRoundRobin") return t("按请求轮转会逐请求切换成员，适合供应商能力接近的场景。");
-  return t("权重轮转会读取每个成员的权重值，权重越高的成员获得更多请求。");
 }
 
 function formatTime(value: number) {

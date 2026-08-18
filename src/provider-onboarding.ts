@@ -62,9 +62,7 @@ export function createNewRelayProfileDraft<TContext>({
     name: "" as const,
     model: PRO_MODEL_SLUGS[0] as string,
     baseUrl: "" as const,
-    upstreamBaseUrl: "" as const,
     apiKey: "" as const,
-    protocol: "responses" as const,
     relayMode: "official" as const,
     officialMixApiKey: true as const,
     transientTarget: "nativePriority" as const,
@@ -79,7 +77,6 @@ export function createNewRelayProfileDraft<TContext>({
     modelList: PRO_MODEL_SLUGS.join("\n"),
     modelWindows: "" as const,
     userAgent: "" as const,
-    aggregate: null,
   };
 }
 

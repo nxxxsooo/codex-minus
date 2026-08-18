@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import {
   deriveProviderNativeCapabilityView,
   deriveProviderModePresentation,
+  providerAccessModeHint,
   providerTransitionDecisionForStructuredPatch,
 } from "./provider-native-capability-view.ts";
 
@@ -45,11 +46,9 @@ describe("provider native-capability view", () => {
     }
   });
 
-  it("keeps pure API, Chat, aggregate, and legacy paths visibly advanced", () => {
+  it("keeps pure API and legacy paths visibly advanced", () => {
     const reasons = [
       ["compatibility", "pureApi"],
-      ["compatibility", "chatCompletions"],
-      ["notApplicable", "aggregate"],
       ["upgradeAvailable", "legacyProviderIdRequiresRename"],
     ] as const;
     for (const [state, reason] of reasons) {
@@ -131,23 +130,6 @@ describe("provider native-capability view", () => {
     assert.equal(view.localPlanBlocksActivation, false);
   });
 
-  it("offers one explicit upgrade preview for Chat compatibility without classifying it ready", () => {
-    const view = deriveProviderNativeCapabilityView({
-      inspection: {
-        profileId: "chat-one",
-        state: "compatibility",
-        fields: [
-          { field: "protocol", outcome: "mismatch", reason: "chatCompletions" },
-        ],
-      },
-      officialAuth: { authenticated: true, localPlan: "free" },
-    });
-
-    assert.equal(view.state, "compatibility");
-    assert.equal(view.upgradeAvailability, "available");
-    assert.equal(view.providerRoutableCapabilityProof, "unverified");
-  });
-
   it("does not advertise a one-click upgrade when a legacy provider ID needs an explicit rename", () => {
     const view = deriveProviderNativeCapabilityView({
       inspection: {
@@ -222,38 +204,24 @@ describe("provider native-capability view", () => {
   });
 });
 
-describe("ordinary provider protocol controls", () => {
+describe("ordinary provider mode controls", () => {
   const nativeProfile = {
     relayMode: "official",
     officialMixApiKey: true,
-    protocol: "responses",
   };
 
-  it("keeps an already-selected Responses value a no-op instead of synthesizing an upgrade", () => {
-    assert.deepEqual(
-      providerTransitionDecisionForStructuredPatch(nativeProfile, { protocol: "responses" }),
-      { kind: "noChange" },
+  it("distinguishes mixed-key and pure-OAuth access copy", () => {
+    assert.equal(
+      providerAccessModeHint(nativeProfile),
+      "官方登录＋混入 API Key＋Responses API",
+    );
+    assert.equal(
+      providerAccessModeHint({ ...nativeProfile, officialMixApiKey: false }),
+      "官方登录＋不写 API Key＋Responses API",
     );
   });
 
-  it("requires the explicit Upgrade action when returning from Chat Completions to Responses", () => {
-    assert.deepEqual(
-      providerTransitionDecisionForStructuredPatch(
-        { ...nativeProfile, protocol: "chatCompletions" },
-        { protocol: "responses" },
-      ),
-      { kind: "requiresExplicitUpgrade" },
-    );
-  });
-
-  it("retains explicit compatibility exits without using an implicit upgrade action", () => {
-    assert.deepEqual(
-      providerTransitionDecisionForStructuredPatch(nativeProfile, { protocol: "chatCompletions" }),
-      {
-        kind: "transition",
-        transition: { action: "exitChatCompletions", confirmations: [] },
-      },
-    );
+  it("routes supported mode exits without using an implicit upgrade action", () => {
     assert.deepEqual(
       providerTransitionDecisionForStructuredPatch(nativeProfile, {
         relayMode: "official",
@@ -269,26 +237,6 @@ describe("ordinary provider protocol controls", () => {
       {
         kind: "transition",
         transition: { action: "exitPureApi", confirmations: [] },
-      },
-    );
-    assert.deepEqual(
-      providerTransitionDecisionForStructuredPatch(
-        { ...nativeProfile, protocol: "chatCompletions" },
-        { relayMode: "pureApi" },
-      ),
-      {
-        kind: "transition",
-        transition: { action: "exitPureApi", confirmations: [] },
-      },
-    );
-    assert.deepEqual(
-      providerTransitionDecisionForStructuredPatch(
-        { ...nativeProfile, protocol: "chatCompletions" },
-        { relayMode: "official", officialMixApiKey: false },
-      ),
-      {
-        kind: "transition",
-        transition: { action: "exitPureOAuth", confirmations: [] },
       },
     );
   });

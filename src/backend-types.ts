@@ -68,8 +68,6 @@ export type BackendSettings = {
   relayBaseUrl: string;
   relayApiKey: string;
   relayProfiles: RelayProfile[];
-  aggregateRelayProfiles: AggregateRelayProfile[];
-  activeAggregateRelayId: string;
   relayCommonConfigContents: string;
   relayContextConfigContents: string;
   activeRelayId: string;
@@ -87,9 +85,7 @@ export type RelayProfile = {
   name: string;
   model: string;
   baseUrl: string;
-  upstreamBaseUrl: string;
   apiKey: string;
-  protocol: RelayProtocol;
   relayMode: RelayMode;
   officialMixApiKey: boolean;
   testModel: string;
@@ -104,31 +100,6 @@ export type RelayProfile = {
   modelWindows: string;
   userAgent: string;
   transientTarget?: NewProviderTransientTarget;
-  aggregate?: RelayAggregateConfig | null;
-};
-
-export type RelayAggregateStrategy = "failover" | "conversationRoundRobin" | "requestRoundRobin" | "weightedRoundRobin";
-
-type RelayAggregateMember = {
-  profileId: string;
-  weight: number;
-};
-
-export type RelayAggregateConfig = {
-  strategy: RelayAggregateStrategy;
-  members: RelayAggregateMember[];
-};
-
-type AggregateRelayMember = {
-  relayId: string;
-  weight: number;
-};
-
-export type AggregateRelayProfile = {
-  id: string;
-  name: string;
-  strategy: RelayAggregateStrategy;
-  members: AggregateRelayMember[];
 };
 
 export type RelayContextSelection = {
@@ -154,9 +125,7 @@ export type CodexContextEntries = {
   plugins: CodexContextEntry[];
 };
 
-export type RelayProtocol = "responses" | "chatCompletions";
-
-export type RelayMode = "official" | "mixedApi" | "pureApi" | "aggregate";
+export type RelayMode = "official" | "mixedApi" | "pureApi";
 
 type UserScriptInventory = {
   enabled?: boolean;

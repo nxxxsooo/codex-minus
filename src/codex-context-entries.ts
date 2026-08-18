@@ -16,7 +16,7 @@ import type {
   ContextKind,
   RelayContextSelection,
   RelayProfile,
-} from "./backend-types";
+} from "./backend-types.ts";
 import {
   CONTEXT_KIND_TABLES,
   contextHeaderFromLine,
@@ -24,7 +24,7 @@ import {
   normalizeDuplicateTomlTables,
   tomlKey,
   tomlTablePathFromLine,
-} from "./codex-toml";
+} from "./codex-toml.ts";
 
 function contextEntriesFromSettings(settings: BackendSettings): CodexContextEntries {
   const commonConfig = normalizeDuplicateTomlTables(settings.relayContextConfigContents || "");

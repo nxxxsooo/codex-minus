@@ -52,11 +52,13 @@ This protection follows a real failure where a stale managed context copy overwr
 
 ### Provider switching
 
+- Codex Minus supports Responses providers only. A server-side composite must expose one Responses Base URL and Key to Codex and connect as an ordinary provider.
 - ChatGPT OAuth remains owned by the official Codex/ChatGPT client. Provider profiles never persist, restore, or apply `authContents`.
 - Pure API and mixed-provider keys live only in owner-only settings and the provider bearer configuration in `config.toml`. Provider operations never write live `auth.json`.
 - Settings, provider configuration, model catalogs, and the live pointer commit through one recoverable transaction that restores the complete previous generation on failure.
 - Read the effective `model_provider` after switching and skip session scans when it did not change.
 - Detect `OPENAI_*` environment variables that may override provider configuration.
+- When the provider quick test or Provider Doctor sees an allowlisted Responses HTTP 400 field-compatibility error, Manager retries once without the optional `max_output_tokens` parameter and marks the retry. It does not retry authentication, model, rate-limit, or ordinary upstream errors.
 
 ### Native capability priority
 
@@ -70,7 +72,7 @@ This protection follows a real failure where a stale managed context copy overwr
 - Without a static `model_catalog_json`, either OAuth or API providers may update the shared `models_cache.json` through their own `/models` path. Mixed mode routes that request through the active custom provider, so the live cache is provider-ambiguous and cannot be the official baseline.
 - Refresh the official list only through the platform-verified Codex CLI embedded in the configured target application. A `codex` found on `PATH` and a provider `/v1/models` response are not official sources.
 - Run refresh in a private temporary `CODEX_HOME` with only the current access and ID tokens projected. The refresh token is empty, and temporary auth is never written back to live state.
-- Each non-aggregate provider can use native official, official plus custom, custom only, or external mode. External files remain read-only until explicit preview and adoption.
+- Each supported provider can use native official, official plus custom, custom only, or external mode. External files remain read-only until explicit preview and adoption.
 - Preserve every target-emitted official field and hidden model. Overlays manage only visibility, ordering, context windows, and custom models.
 - Treat provider `/v1/models` output as timestamped reported/not-reported evidence and custom candidates. An omission never hides an official model.
 - Renumber every model's `priority` sequentially over the final list, so the Codex picker order always matches the manager's list order and custom models never interleave between officials. A custom model that declares no reasoning levels materializes `supported_reasoning_levels: []`, so Codex offers no Effort menu and sends no `effort` parameter.
@@ -104,7 +106,7 @@ User settings live under `~/.codex-session-delete/` and survive app replacement.
 - Windows builds are produced by CI and have not been manually tested on a real Windows machine.
 - Credential-bearing official refresh currently requires an embedded `codex-cli` at or above `0.147.0-alpha.1`. macOS verification covers OpenAI Team ID `2DC432GLL2`; keyring-only or otherwise unreadable credential stores are unsupported.
 - Windows has an Authenticode/OpenAI publisher gate, but its live OAuth refresh path has not yet been verified on a physical Windows machine.
-- Chat Completions and aggregator profiles depend on the upstream launcher's proxy at `127.0.0.1:57321`. Codex Minus does not ship that proxy, so these profiles should not be used. A server-side composite that exposes one Responses Base URL and Key to Codex is an ordinary pure API upstream and is not affected.
+- Codex Minus supports Responses providers only. A server-side composite must expose one Responses Base URL and Key to Codex and connect as an ordinary provider.
 - Archiving organizes sessions but does not compress data or free disk space.
 
 ## Architecture

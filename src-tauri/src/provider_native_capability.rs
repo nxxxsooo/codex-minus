@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _, ser::Error as _};
 use toml_edit::{DocumentMut, InlineTable, Item, TableLike, Value, value};
 
 use crate::commands::CommandResult;
@@ -31,7 +31,6 @@ pub enum NativeCapabilityState {
 #[serde(rename_all = "camelCase")]
 pub enum NativeCapabilityField {
     RelayMode,
-    Protocol,
     Catalog,
     Configuration,
     ProviderSelection,
@@ -62,9 +61,7 @@ pub enum NativeCapabilityReason {
     ExternalCatalog,
     PureOAuth,
     PureApi,
-    Aggregate,
     UnsupportedRelayMode,
-    ChatCompletions,
     CatalogModeMismatch,
     CatalogOwnershipUnavailable,
     MalformedToml,
@@ -113,7 +110,6 @@ pub enum NativeCapabilityDraftAction {
     ExitPureApi,
     ExitLegacyCompatibility,
     ExitPureOAuth,
-    ExitChatCompletions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -138,6 +134,7 @@ pub enum NativeCapabilityDraftStatus {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderNativeCapabilityDraftRequest {
     pub draft_revision: u64,
+    #[serde(deserialize_with = "deserialize_non_aggregate_profile")]
     pub profile: RelayProfile,
     pub catalog_mode: CatalogMode,
     pub action: NativeCapabilityDraftAction,
@@ -147,6 +144,16 @@ pub struct ProviderNativeCapabilityDraftRequest {
     pub confirmations: Vec<NativeCapabilityDraftConfirmation>,
     #[serde(default)]
     pub replacement_provider_id: Option<String>,
+}
+
+fn deserialize_non_aggregate_profile<'de, D>(deserializer: D) -> Result<RelayProfile, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let profile = crate::provider_commit::ProviderRelayProfileInput::deserialize(deserializer)?;
+    let profile = RelayProfile::from(profile);
+    crate::provider_commit::validate_responses_only_profile(&profile).map_err(D::Error::custom)?;
+    Ok(profile)
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -163,9 +170,22 @@ pub struct ProviderNativeCapabilityDraftPreview {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderNativeCapabilityDraft {
+    #[serde(serialize_with = "serialize_profile_for_frontend")]
     pub profile: RelayProfile,
     pub structured_api_key: String,
     pub catalog_mode: CatalogMode,
+}
+
+fn serialize_profile_for_frontend<S>(
+    profile: &RelayProfile,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    crate::commands::frontend_relay_profile_value(profile)
+        .map_err(S::Error::custom)?
+        .serialize(serializer)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -258,6 +278,10 @@ pub fn inspect_profile(
     profile: &RelayProfile,
     catalog_mode: CatalogMode,
 ) -> ProviderNativeCapabilityInspection {
+    match profile.relay_mode {
+        RelayMode::Official | RelayMode::MixedApi | RelayMode::PureApi => {}
+        _ => unreachable!("unsupported provider modes are rejected before inspection"),
+    }
     if catalog_mode == CatalogMode::External {
         return inspection(
             profile,
@@ -271,17 +295,6 @@ pub fn inspect_profile(
     }
 
     match profile.relay_mode {
-        RelayMode::Aggregate => {
-            return inspection(
-                profile,
-                NativeCapabilityState::NotApplicable,
-                vec![field(
-                    NativeCapabilityField::RelayMode,
-                    NativeCapabilityOutcome::NotApplicable,
-                    NativeCapabilityReason::Aggregate,
-                )],
-            );
-        }
         RelayMode::PureApi => {
             return inspection(
                 profile,
@@ -316,20 +329,10 @@ pub fn inspect_profile(
                 )],
             );
         }
+        _ => unreachable!("unsupported provider modes are rejected before inspection"),
     }
 
-    let mut fields = vec![
-        canonical(NativeCapabilityField::RelayMode),
-        if profile.protocol == RelayProtocol::Responses {
-            canonical(NativeCapabilityField::Protocol)
-        } else {
-            field(
-                NativeCapabilityField::Protocol,
-                NativeCapabilityOutcome::Mismatch,
-                NativeCapabilityReason::ChatCompletions,
-            )
-        },
-    ];
+    let mut fields = vec![canonical(NativeCapabilityField::RelayMode)];
     if catalog_mode != CatalogMode::OfficialPlusCustom {
         fields.push(field(
             NativeCapabilityField::Catalog,
@@ -508,14 +511,8 @@ fn evaluate_document(
     let all_canonical = fields
         .iter()
         .all(|entry| entry.outcome == NativeCapabilityOutcome::Satisfied);
-    let chat_compatible = fields.iter().all(|entry| {
-        entry.outcome == NativeCapabilityOutcome::Satisfied
-            || entry.reason == NativeCapabilityReason::ChatCompletions
-    });
     let state = if all_canonical {
         NativeCapabilityState::NativePriority
-    } else if chat_compatible {
-        NativeCapabilityState::Compatibility
     } else if alias_requires_rename && only_alias_mismatch(&fields)
         || legacy_compatible
         || fields.iter().all(|entry| {
@@ -716,6 +713,8 @@ pub fn inspect_profiles(
     catalog_modes: &BTreeMap<String, CatalogMode>,
     profile_id: Option<&str>,
 ) -> Result<Vec<ProviderNativeCapabilityInspection>, ProviderNativeCapabilityInspectionError> {
+    crate::provider_commit::validate_responses_only_settings(settings)
+        .map_err(|_| ProviderNativeCapabilityInspectionError::InputUnavailable)?;
     let profiles = match profile_id {
         Some(profile_id) => vec![
             settings
@@ -726,16 +725,17 @@ pub fn inspect_profiles(
         ],
         None => settings.relay_profiles.iter().collect(),
     };
-    Ok(profiles
+    profiles
         .into_iter()
         .map(|profile| {
-            let mode = catalog_modes
-                .get(&profile.id)
-                .copied()
-                .unwrap_or_else(|| crate::model_catalog::default_catalog_mode_for_profile(profile));
-            inspect_profile(profile, mode)
+            let mode = match catalog_modes.get(&profile.id).copied() {
+                Some(mode) => mode,
+                None => crate::model_catalog::default_catalog_mode_for_profile(profile)
+                    .map_err(|_| ProviderNativeCapabilityInspectionError::InputUnavailable)?,
+            };
+            Ok(inspect_profile(profile, mode))
         })
-        .collect())
+        .collect()
 }
 
 pub fn draft_provider_native_capability(
@@ -770,8 +770,7 @@ pub fn draft_provider_native_capability_with_boundary(
             enable_native_priority_draft(request, boundary)
         }
         NativeCapabilityDraftAction::ExitPureApi
-        | NativeCapabilityDraftAction::ExitLegacyCompatibility
-        | NativeCapabilityDraftAction::ExitChatCompletions => {
+        | NativeCapabilityDraftAction::ExitLegacyCompatibility => {
             compatibility_exit_draft(request, boundary)
         }
         NativeCapabilityDraftAction::ExitPureOAuth => pure_oauth_exit_draft(request, boundary),
@@ -799,7 +798,6 @@ fn action_requires_persisted_catalog_ownership(action: NativeCapabilityDraftActi
         NativeCapabilityDraftAction::EnableNativePriority
             | NativeCapabilityDraftAction::ExitPureApi
             | NativeCapabilityDraftAction::ExitLegacyCompatibility
-            | NativeCapabilityDraftAction::ExitChatCompletions
             | NativeCapabilityDraftAction::ExitPureOAuth
     )
 }
@@ -815,7 +813,7 @@ pub fn transform_provider_native_capability_draft_from_paths(
 
     let trusted_mode = std::fs::read(settings_path)
         .ok()
-        .and_then(|bytes| serde_json::from_slice::<BackendSettings>(&bytes).ok())
+        .and_then(|bytes| crate::provider_commit::deserialize_responses_only_settings(&bytes).ok())
         .and_then(|settings| {
             crate::model_catalog::persisted_catalog_mode_from_path(
                 &settings,
@@ -1183,9 +1181,11 @@ fn enable_native_priority_draft(
         .expect("provider shape was validated before mutation");
     set_string_preserving_decor(provider, "name", MANAGED_PROVIDER_NAME);
     set_string_preserving_decor(provider, "wire_api", MANAGED_WIRE_API);
-    // Mixed auth keeps the official ChatGPT login attached (`true`): plugins and account
-    // surfaces stay available while the provider bearer authenticates the actual requests.
-    set_bool_preserving_decor(provider, "requires_openai_auth", true);
+    // A new/missing mixed-auth choice defaults to `true`; an existing valid choice is owned by
+    // this profile and survives an unrelated native-priority repair unchanged.
+    if provider.get("requires_openai_auth").is_none() {
+        set_bool_preserving_decor(provider, "requires_openai_auth", true);
+    }
     if let Some(bearer) = bearer_to_write {
         set_string_preserving_decor(provider, "experimental_bearer_token", &bearer);
     }
@@ -1336,9 +1336,6 @@ fn compatibility_exit_draft(
             set_string_preserving_decor(provider, "wire_api", MANAGED_WIRE_API);
             set_bool_preserving_decor(provider, "requires_openai_auth", true);
         }
-        NativeCapabilityDraftAction::ExitChatCompletions => {
-            profile.protocol = RelayProtocol::ChatCompletions;
-        }
         _ => unreachable!("only compatibility exit actions reach this helper"),
     }
     profile.config_contents = document.to_string();
@@ -1437,6 +1434,8 @@ fn pure_oauth_exit_draft(
     }
     document.remove("model_provider");
     profile.api_key.clear();
+    profile.base_url.clear();
+    profile.upstream_base_url.clear();
     profile.relay_mode = RelayMode::Official;
     profile.official_mix_api_key = false;
     profile.protocol = RelayProtocol::Responses;
@@ -1783,7 +1782,7 @@ pub fn inspect_provider_native_capabilities_from_paths(
 ) -> Result<ProviderNativeCapabilityInspectionPayload, ProviderNativeCapabilityInspectionError> {
     let settings_bytes = std::fs::read(settings_path)
         .map_err(|_| ProviderNativeCapabilityInspectionError::InputUnavailable)?;
-    let mut settings = serde_json::from_slice::<BackendSettings>(&settings_bytes)
+    let mut settings = crate::provider_commit::deserialize_responses_only_settings(&settings_bytes)
         .map_err(|_| ProviderNativeCapabilityInspectionError::InputUnavailable)?;
     for profile in &mut settings.relay_profiles {
         profile.auth_contents.clear();

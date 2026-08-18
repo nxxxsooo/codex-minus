@@ -68,7 +68,6 @@
 - Modify `src/provider-detail-draft-wiring.test.ts`.
 - Modify `src/provider-native-capability-view.test.ts`.
 - Modify `src/provider-onboarding.test.ts`: assert protocol and aggregate sentinel state are absent while generated TOML remains Responses.
-- Add `src/responses-only-wiring.test.ts`: one static product-surface guard for removed identifiers and copy.
 
 ### Documentation
 
@@ -90,7 +89,7 @@
 **Interfaces:**
 
 - Consumes: `codex_plus_core::settings::{BackendSettings, RelayMode, RelayProtocol}`.
-- Produces: `validate_responses_only_settings(settings: &BackendSettings) -> anyhow::Result<()>`, `validate_responses_only_profile(profile: &RelayProfile) -> anyhow::Result<()>`, and a read-only `validate_persisted_responses_only_settings_at(path: &Path) -> anyhow::Result<()>` command boundary.
+- Produces: `ResponsesOnlyProviderError`, `validate_responses_only_settings(settings: &BackendSettings) -> Result<(), ResponsesOnlyProviderError>`, `validate_responses_only_profile(profile: &RelayProfile) -> Result<(), ResponsesOnlyProviderError>`, and a read-only `validate_persisted_responses_only_settings_at(path: &Path) -> anyhow::Result<()>` command boundary.
 - Invariant: success means no aggregate metadata, no active aggregate pointer, no aggregate profile, no Chat Completions profile, and no deleted proxy Base URL.
 
 - [ ] **Step 1: Write failing unit tests for unsupported settings and profiles**
@@ -105,17 +104,17 @@ fn responses_only_settings_reject_removed_provider_shapes() {
 
     let mut chat = valid.clone();
     chat.relay_profiles[0].protocol = RelayProtocol::ChatCompletions;
-    assert_eq!(
-        validate_responses_only_settings(&chat).unwrap_err().to_string(),
-        "Codex Minus supports Responses providers only"
-    );
+    assert!(matches!(
+        validate_responses_only_settings(&chat),
+        Err(ResponsesOnlyProviderError::UnsupportedProtocol)
+    ));
 
     let mut aggregate = valid.clone();
     aggregate.relay_profiles[0].relay_mode = RelayMode::Aggregate;
-    assert_eq!(
-        validate_responses_only_settings(&aggregate).unwrap_err().to_string(),
-        "Codex Minus does not support local aggregate providers"
-    );
+    assert!(matches!(
+        validate_responses_only_settings(&aggregate),
+        Err(ResponsesOnlyProviderError::LocalAggregate)
+    ));
 
     let mut metadata = valid.clone();
     metadata.active_aggregate_relay_id = "aggregate-a".to_string();
@@ -123,10 +122,10 @@ fn responses_only_settings_reject_removed_provider_shapes() {
 
     let mut proxy = valid;
     proxy.relay_profiles[0].base_url = "http://127.0.0.1:57321/v1".to_string();
-    assert_eq!(
-        validate_responses_only_settings(&proxy).unwrap_err().to_string(),
-        "Codex Minus local provider proxy has been removed"
-    );
+    assert!(matches!(
+        validate_responses_only_settings(&proxy),
+        Err(ResponsesOnlyProviderError::RemovedProxy)
+    ));
 }
 ```
 
@@ -147,34 +146,43 @@ Expected: compilation fails because the two validator functions do not exist.
 
 - [ ] **Step 3: Implement the invariant in `provider_commit.rs`**
 
-Add one constant and two validators near the commit request validation helpers:
+Add one constant, one typed error enum, and two validators near the commit request validation helpers. Implement `Display` with the user-facing messages and `std::error::Error`; tests assert variants rather than exact copy:
 
 ```rust
 pub(crate) const REMOVED_PROTOCOL_PROXY_BASE_URL: &str = "http://127.0.0.1:57321/v1";
 
-pub(crate) fn validate_responses_only_profile(profile: &RelayProfile) -> anyhow::Result<()> {
-    ensure!(
-        profile.relay_mode != RelayMode::Aggregate,
-        "Codex Minus does not support local aggregate providers"
-    );
-    ensure!(
-        profile.protocol == RelayProtocol::Responses,
-        "Codex Minus supports Responses providers only"
-    );
-    ensure!(
-        profile.base_url.trim_end_matches('/')
-            != REMOVED_PROTOCOL_PROXY_BASE_URL.trim_end_matches('/'),
-        "Codex Minus local provider proxy has been removed"
-    );
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResponsesOnlyProviderError {
+    UnsupportedProtocol,
+    LocalAggregate,
+    RemovedProxy,
+}
+
+pub(crate) fn validate_responses_only_profile(
+    profile: &RelayProfile,
+) -> Result<(), ResponsesOnlyProviderError> {
+    if profile.relay_mode == RelayMode::Aggregate {
+        return Err(ResponsesOnlyProviderError::LocalAggregate);
+    }
+    if profile.protocol != RelayProtocol::Responses {
+        return Err(ResponsesOnlyProviderError::UnsupportedProtocol);
+    }
+    if profile.base_url.trim_end_matches('/')
+        == REMOVED_PROTOCOL_PROXY_BASE_URL.trim_end_matches('/')
+    {
+        return Err(ResponsesOnlyProviderError::RemovedProxy);
+    }
     Ok(())
 }
 
-pub(crate) fn validate_responses_only_settings(settings: &BackendSettings) -> anyhow::Result<()> {
-    ensure!(
-        settings.aggregate_relay_profiles.is_empty()
-            && settings.active_aggregate_relay_id.trim().is_empty(),
-        "Codex Minus does not support local aggregate providers"
-    );
+pub(crate) fn validate_responses_only_settings(
+    settings: &BackendSettings,
+) -> Result<(), ResponsesOnlyProviderError> {
+    if !settings.aggregate_relay_profiles.is_empty()
+        || !settings.active_aggregate_relay_id.trim().is_empty()
+    {
+        return Err(ResponsesOnlyProviderError::LocalAggregate);
+    }
     for profile in &settings.relay_profiles {
         validate_responses_only_profile(profile)?;
     }
@@ -245,15 +253,7 @@ git commit -m "fix: reject unsupported provider topologies"
 
 - [ ] **Step 1: Replace aggregate-positive tests with absence and ordinary-provider tests**
 
-In `src/provider-mode-presentation-wiring.test.ts`, replace the aggregate editor assertion with:
-
-```ts
-it("exposes no local aggregate provider product", () => {
-  assert.doesNotMatch(appSource, /function AggregateRelayProfileEditor/);
-  assert.doesNotMatch(appSource, /添加聚合供应商/);
-  assert.doesNotMatch(appSource, /createNewAggregateProfile/);
-});
-```
+In `src/provider-mode-presentation-wiring.test.ts`, delete the aggregate-editor source assertion. Do not replace it with another source grep; the Rust rejection tests, ordinary relay behavior tests, compile／knip checks, and final manual UI check cover the change at observable boundaries.
 
 In `src/provider-commit.test.ts`:
 
@@ -593,7 +593,7 @@ In `src/App.tsx`:
 - delete `relayProtocolLabel` and remove it from the shell-budget allowlist;
 - keep `MessageCircle` because the sessions navigation still uses it.
 
-Update `provider-detail-draft-wiring.test.ts` to assert the source contains no protocol patch or Chat transition action, rather than checking only one forbidden call shape.
+Delete the obsolete Chat-specific assertion from `provider-detail-draft-wiring.test.ts`. Do not replace it with a source grep; supported transition behavior remains covered in `provider-detail-draft-state.test.ts`.
 
 - [ ] **Step 5: Remove protocol choice from the Rust provider commit DTO**
 
@@ -751,7 +751,6 @@ git commit -m "refactor: simplify responses provider catalogs"
 
 **Files:**
 
-- Create: `src/responses-only-wiring.test.ts`
 - Modify: `src/i18n-en.ts`
 - Modify: `src/styles.css`
 - Modify: `README.md`
@@ -761,56 +760,10 @@ git commit -m "refactor: simplify responses provider catalogs"
 **Interfaces:**
 
 - Consumes: final product source after Tasks 1–4.
-- Produces: a static guard that prevents dead proxy／Chat／aggregate product paths from returning.
-- Allows: references inside the approved design／plan history and Rust boundary rejection tests; these are not product paths.
+- Produces: current product copy and repository instructions that describe only Responses support.
+- Verification: use behavior tests plus one final `rg` audit; do not commit source-string tests.
 
-- [ ] **Step 1: Add a failing static product-surface guard**
-
-Create `src/responses-only-wiring.test.ts`:
-
-```ts
-import assert from "node:assert";
-import { readFileSync } from "node:fs";
-import { describe, it } from "node:test";
-
-const productSources = [
-  "./App.tsx",
-  "./backend-types.ts",
-  "./relay-settings.ts",
-  "./provider-commit.ts",
-  "./provider-config-transform-router.ts",
-  "./provider-native-capability-view.ts",
-  "./provider-detail-draft-state.ts",
-].map((path) => readFileSync(new URL(path, import.meta.url), "utf8")).join("\n");
-
-describe("Responses-only provider surface", () => {
-  it("contains no removed local provider product", () => {
-    for (const removed of [
-      "127.0.0.1:57321",
-      "chatCompletions",
-      "exitChatCompletions",
-      "aggregateRelayProfiles",
-      "activeAggregateRelayId",
-      "添加聚合供应商",
-      "AggregateRelayProfileEditor",
-    ]) {
-      assert.equal(productSources.includes(removed), false, removed);
-    }
-  });
-});
-```
-
-- [ ] **Step 2: Run the static test and verify failure**
-
-Run:
-
-```bash
-node --test --experimental-strip-types src/responses-only-wiring.test.ts
-```
-
-Expected: any residual product-path identifier makes the test fail with its exact string.
-
-- [ ] **Step 3: Remove dead translations and CSS**
+- [ ] **Step 1: Remove dead translations and CSS**
 
 Delete every `i18n-en.ts` entry reachable only from:
 
@@ -820,7 +773,7 @@ Delete every `i18n-en.ts` entry reachable only from:
 
 Delete remaining aggregate-only CSS selectors. Run `rg` to ensure no source references remain before deleting each translation key; do not delete generic uses of「聚合」that describe server-side composite behavior in model catalog copy.
 
-- [ ] **Step 4: Update current documentation and repository instructions**
+- [ ] **Step 2: Update current documentation and repository instructions**
 
 Replace the README dead-path warning with a direct supported contract:
 
@@ -838,22 +791,22 @@ Replace the `AGENTS.md` hard constraint that says to keep dead options with:
 
 Do not edit prior dated specs or plans to rewrite history. Current README, AGENTS.md, code, and tests define the live behavior.
 
-- [ ] **Step 5: Run static, TypeScript, and unused-code checks**
+- [ ] **Step 3: Run TypeScript, test, and unused-code checks**
 
 Run:
 
 ```bash
-node --test --experimental-strip-types src/responses-only-wiring.test.ts
 npm run check
+npm test
 npm run knip
 ```
 
-Expected: the static guard passes, TypeScript compiles, and no deleted helper／translation import is left unused.
+Expected: behavior tests pass, TypeScript compiles, and no deleted helper／translation import is left unused.
 
-- [ ] **Step 6: Commit product-surface cleanup**
+- [ ] **Step 4: Commit product-surface cleanup**
 
 ```bash
-git add src/responses-only-wiring.test.ts src/i18n-en.ts src/styles.css \
+git add src/i18n-en.ts src/styles.css \
   README.md AGENTS.md src/app-shell-budget.test.ts
 git commit -m "docs: declare responses-only provider support"
 ```

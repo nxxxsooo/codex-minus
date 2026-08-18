@@ -71,6 +71,5 @@ describe("provider detail draft wiring", () => {
     assert.match(source, /window\.confirm\(providerTransitionConfirmationMessage\(settled\.state\)\)/);
     assert.match(source, /confirmProviderDetailTransition\(settled\.state\)/);
     assert.match(source, /cancelProviderDetailTransition\(settled\.state\)/);
-    assert.doesNotMatch(source, /applyRelayProfilePatchToFiles\([^)]*protocol:\s*"chatCompletions"/s);
   });
 });
