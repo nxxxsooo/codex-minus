@@ -13,6 +13,16 @@
   - verified: the artifact and its context now live at `Vault/Notes/tech/codex/assets/native-imagegen-probe-cyber-dog.png` and `Vault/Notes/tech/codex/native-imagegen-shadow-codex-home.md`; a scratch file under `output/` confirmed the new ignore rule takes effect; PR #40 passed macOS arm64, Windows x64, and Windows arm64 CI and merged as `7485ae1`
   - refs: `.gitignore`, PR #40, BOARD 2026-08-18 `research/host`
 
+- **fix/catalog**: recovering a manager-owned catalog for a Pure API profile no longer downgrades an explicitly adopted `official-plus-custom` to `custom-only` when the official baseline grows
+  - why: recovery required the current official baseline to be a subset of the materialized artifact, but the artifact embeds the baseline of the day it was written; the first official refresh that added a model made that test fail permanently, and the resulting downgrade dropped every official row the user had adopted. Classification now rests on positive evidence: an artifact sharing no slug with the baseline is custom-only, otherwise the official rows it carries establish official-plus-custom
+  - verified: RED→GREEN on `pure_api_adoption_survives_a_grown_official_baseline_after_state_loss` (was `CustomOnly`, now `OfficialPlusCustom` with the adopted custom row retained), plus a boundary pin that an artifact with no official rows still recovers as `custom-only`; `cargo test` 300 library + 19 + 22 integration, `npm run verify` 231 frontend tests with TypeScript and knip, `npm run vite:build`, `cargo fmt --check`, and `git diff --check` all passed
+  - refs: `src-tauri/src/model_catalog.rs` `recover_manager_owned_catalog`
+
+- **fix/providers**: removed a `PI_DEBUG_SCOPE`-gated stderr dump of every baseline and request provider profile from `validate_provider_topology_mutation_scope`
+  - why: it was throwaway local debugging scaffolding that reached `master` through the PR #39 merge; it printed provider config contents and bearer material from a shipped command path
+  - verified: no `PI_DEBUG` reference remains under `src-tauri/src/` or `src/`; the surrounding three-baseline validation is unchanged and its regressions still pass
+  - refs: `src-tauri/src/commands.rs`
+
 - **merge/providers**: brought the Responses-only branch up to `master` (0.4.14 auth repair, 0.4.15 legacy model reset, 24 commits) and reconciled the two designs where they met
   - why: the branch had sat unpushed while the same files gained the legacy-model-reset work; both sides had independently rewritten the missing-profile catalog bootstrap, the provider commit CAS, and the persisted-settings decoder, so the conflicts were semantic rather than textual
   - resolved: kept the branch's manager-pointer catalog recovery for General loading and master's artifact-free ownership derivation for reset planning; ran the Responses-only settings validation inside the shared policy loader so both policies fail closed; made `provider_generation_fingerprint` propagate the now-fallible default-mode lookup instead of defaulting a removed shape; restored the shown projection (`sanitize_settings_for_output`) on the commit baseline after strict decoding; dropped the dead Chat Completions/aggregate branch that strict validation had made unreachable; routed master's fixture helpers through the Responses-only persisted shape
