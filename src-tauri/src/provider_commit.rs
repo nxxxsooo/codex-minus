@@ -493,6 +493,13 @@ impl std::fmt::Display for ResponsesOnlyProviderError {
 
 impl std::error::Error for ResponsesOnlyProviderError {}
 
+/// Codex trims surrounding whitespace before it resolves an effective base URL, so a padded
+/// value still reaches the removed local protocol proxy. Compare every candidate the same way.
+pub(crate) fn is_removed_protocol_proxy_base_url(value: &str) -> bool {
+    value.trim().trim_end_matches('/')
+        == REMOVED_PROTOCOL_PROXY_BASE_URL.trim().trim_end_matches('/')
+}
+
 pub(crate) fn validate_responses_only_profile(
     profile: &RelayProfile,
 ) -> Result<(), ResponsesOnlyProviderError> {
@@ -502,9 +509,7 @@ pub(crate) fn validate_responses_only_profile(
     if profile.protocol != RelayProtocol::Responses {
         return Err(ResponsesOnlyProviderError::UnsupportedProtocol);
     }
-    if profile.base_url.trim_end_matches('/')
-        == REMOVED_PROTOCOL_PROXY_BASE_URL.trim_end_matches('/')
-    {
+    if is_removed_protocol_proxy_base_url(&profile.base_url) {
         return Err(ResponsesOnlyProviderError::RemovedProxy);
     }
     validate_responses_only_provider_toml(profile)?;
@@ -536,9 +541,7 @@ fn validate_responses_only_provider_toml(
         let base_url = base_url
             .as_str()
             .ok_or(ResponsesOnlyProviderError::InvalidProviderConfig)?;
-        if base_url.trim().trim_end_matches('/')
-            == REMOVED_PROTOCOL_PROXY_BASE_URL.trim_end_matches('/')
-        {
+        if is_removed_protocol_proxy_base_url(base_url) {
             return Err(ResponsesOnlyProviderError::RemovedProxy);
         }
     }
@@ -560,9 +563,7 @@ fn validate_responses_only_provider_toml(
                 let base_url = base_url
                     .as_str()
                     .ok_or(ResponsesOnlyProviderError::InvalidProviderConfig)?;
-                if base_url.trim().trim_end_matches('/')
-                    == REMOVED_PROTOCOL_PROXY_BASE_URL.trim_end_matches('/')
-                {
+                if is_removed_protocol_proxy_base_url(base_url) {
                     return Err(ResponsesOnlyProviderError::RemovedProxy);
                 }
             }
@@ -604,9 +605,7 @@ fn validate_responses_only_provider_toml(
         let base_url = base_url
             .as_str()
             .ok_or(ResponsesOnlyProviderError::InvalidProviderConfig)?;
-        if base_url.trim().trim_end_matches('/')
-            == REMOVED_PROTOCOL_PROXY_BASE_URL.trim_end_matches('/')
-        {
+        if is_removed_protocol_proxy_base_url(base_url) {
             return Err(ResponsesOnlyProviderError::RemovedProxy);
         }
     }
@@ -1216,12 +1215,28 @@ experimental_bearer_token = "secret-{id}"
             Err(ResponsesOnlyProviderError::LocalAggregate)
         ));
 
-        let mut proxy = valid;
+        let mut proxy = valid.clone();
         proxy.relay_profiles[0].base_url = "http://127.0.0.1:57321/v1".to_string();
         assert!(matches!(
             validate_responses_only_settings(&proxy),
             Err(ResponsesOnlyProviderError::RemovedProxy)
         ));
+
+        for padded in [
+            " http://127.0.0.1:57321/v1 ",
+            "\thttp://127.0.0.1:57321/v1\n",
+            "  http://127.0.0.1:57321/v1/  ",
+        ] {
+            let mut padded_proxy = valid.clone();
+            padded_proxy.relay_profiles[0].base_url = padded.to_string();
+            assert!(
+                matches!(
+                    validate_responses_only_settings(&padded_proxy),
+                    Err(ResponsesOnlyProviderError::RemovedProxy)
+                ),
+                "whitespace-padded removed proxy base URL {padded:?} must be rejected"
+            );
+        }
     }
 
     #[test]
