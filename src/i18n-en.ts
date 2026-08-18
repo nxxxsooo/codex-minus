@@ -5,6 +5,11 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "模型目录已恢复": "Model catalog restored",
+  "已丢弃旧版自动生成的模型列表，并恢复官方模型；至少一个启动模型已设为 5.6 Terra。请重启 Codex 后新建任务。":
+    "The legacy automatically generated model list was discarded and official models were restored; at least one startup model was set to 5.6 Terra. Restart Codex and start a new task.",
+  "已丢弃旧版自动生成的模型列表，并恢复官方模型；现有启动模型已保留。请重启 Codex 后新建任务。":
+    "The legacy automatically generated model list was discarded and official models were restored; existing startup models were preserved. Restart Codex and start a new task.",
   "完整退出并重新启动 Codex / Desktop / IDE 宿主；本工具不会替你结束或重启这些进程。":
     "Fully quit and relaunch the Codex / Desktop / IDE host; this tool never ends or restarts those processes for you.",
   "重启后新建一个任务，本地扩展注册表才会按新的供应商与目录重建。":
@@ -883,6 +888,10 @@ export const EN_BACKEND: Record<string, string> = {
   "概览已加载。": "Overview loaded.",
   "启动任务已在后台开始，可稍后查看概览状态。": "Launch task started in the background. Check overview status later.",
   "设置已加载。": "Settings loaded.",
+  "已丢弃旧版自动生成的模型列表并恢复官方模型；本次供应商更改尚未保存。请重启 Codex 后新建任务，再检查更新后的设置并重新保存。":
+    "The legacy automatically generated model list was discarded and official models were restored; this provider change was not saved. Restart Codex and start a new task, then review the updated settings and save again.",
+  "已丢弃旧版自动生成的模型列表并恢复官方模型；本次供应商更改尚未保存。页面已更新，请检查后重新保存。":
+    "The legacy automatically generated model list was discarded and official models were restored; this provider change was not saved. The page was updated; review it and save again.",
   "设置读取失败": "Failed to read settings",
   "设置保存后重新读取失败": "Failed to reload settings after save",
   "没有新的 cc-switch 供应商配置需要导入。": "No new cc-switch provider configs to import.",

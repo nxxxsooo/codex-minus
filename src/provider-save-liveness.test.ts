@@ -120,12 +120,22 @@ describe("a provider save always settles", () => {
       /const refreshSettings = async[\s\S]*?\n  \};/,
     )?.[0] ?? "";
     assert.ok(refresh.length > 0, "the settings read was located");
+    assert.match(
+      refresh,
+      /const registered = settingsBaseline\.registerSettingsRead\(settingsBaselineEpoch\.current\);[\s\S]*?settingsBaselineEpoch\.current = registered\.state;/,
+      "each settings read registers its request and starting baseline epoch before invoking the backend",
+    );
+    assert.match(
+      refresh,
+      /settingsBaseline\.settingsReadResponseCanAdopt\(registered\.request, settingsBaselineEpoch\.current\)/,
+      "a settings response must still be latest and match its starting baseline epoch",
+    );
     // A failed read answers with default settings and no fingerprint; adopting it would replace
     // the profiles on screen and postpone the reason until the next save.
     assert.match(refresh, /if \(!result\.provider_fingerprint\) \{[\s\S]*?return null;/);
     const adopt = refresh.slice(refresh.indexOf("provider_fingerprint"));
     assert.ok(
-      adopt.indexOf("return null;") < adopt.indexOf("setSettingsForm"),
+      adopt.indexOf("return null;") < adopt.indexOf("installSettingsBaseline"),
       "the form is only replaced once the read carried a fingerprint",
     );
     for (const command of ["load_settings", "save_settings"]) {
@@ -140,6 +150,170 @@ describe("a provider save always settles", () => {
       );
       assert.match(rust, /settle_blocking\(/);
     }
+  });
+
+  it("shows and deduplicates a legacy reset notice before deciding whether settings are obsolete", () => {
+    const refresh = appSource.match(
+      /const refreshSettings = async[\s\S]*?\n  \};/,
+    )?.[0] ?? "";
+    assert.ok(refresh.length > 0, "the settings read was located");
+    assert.match(
+      refresh,
+      /consumeLegacyModelResetNotice\([\s\S]*?eventId: result\.provider_fingerprint[\s\S]*?message: result\.legacy_model_reset_notice[\s\S]*?if \(notice\.notice\) showNotice\([\s\S]*?if \(!settingsBaseline\.settingsReadResponseCanAdopt\([\s\S]*?return null;/,
+      "a stale response can report its one-time reset notice without adopting stale settings",
+    );
+    assert.match(refresh, /installSettingsBaseline\(baseline\)/);
+  });
+
+  it("consumes a direct reset notice before every obsolete-response exit and never shows it twice", () => {
+    const submit = appSource.match(
+      /const submitProviderCommit = async[\s\S]*?\n  \};/,
+    )?.[0] ?? "";
+    assert.ok(submit.length > 0, "the provider commit response handler was located");
+    assert.match(
+      submit,
+      /consumeLegacyModelResetNotice\([\s\S]*?eventId: result\.providerFingerprint[\s\S]*?message: result\.message/,
+      "the direct response and settings reload share the committed generation identity",
+    );
+    const consumeAt = submit.indexOf("consumeLegacyModelResetNotice");
+    const refreshAt = submit.indexOf("providerCommitResponseRequiresAuthoritativeRefresh");
+    const ignoreAt = submit.indexOf('if (settled.disposition === "ignore") return false;');
+    assert.ok(
+      consumeAt >= 0 && consumeAt < refreshAt && refreshAt < ignoreAt,
+      "a committed reset is shown before either obsolete-response return",
+    );
+    const currentResetBranch = submit.match(
+      /if \(resetApplied && nextBaseline && selectedSettings\) \{[\s\S]*?return false;\n      \}/,
+    )?.[0] ?? "";
+    assert.ok(currentResetBranch.length > 0, "the current direct-reset branch was located");
+    assert.doesNotMatch(
+      currentResetBranch,
+      /showNotice\(/,
+      "the current branch must not show the already-consumed reset event again",
+    );
+  });
+
+  it("makes every authoritative reconciliation replace the form from durable settings", () => {
+    const refresh = appSource.match(
+      /const refreshSettings = async[\s\S]*?\n  \};/,
+    )?.[0] ?? "";
+    assert.match(refresh, /const refreshSettings = async \(silent = false\) =>/);
+    assert.doesNotMatch(refresh, /replaceForm/);
+    assert.match(refresh, /installSettingsBaseline\(baseline\)/);
+
+    const authoritative = appSource.match(
+      /const refreshAuthoritativeProviderState = async[\s\S]*?\n  \};/,
+    )?.[0] ?? "";
+    assert.match(
+      authoritative,
+      /const refreshAuthoritativeProviderState = async \(\) =>[\s\S]*?modelCatalogRequestRevision\.current \+= 1;[\s\S]*?setModelCatalog\(null\)[\s\S]*?await refreshSettings\(true\)[\s\S]*?refreshModelCatalog\(true, true\)/,
+    );
+    assert.doesNotMatch(authoritative, /replaceForm/);
+    const submit = appSource.match(
+      /const submitProviderCommit = async[\s\S]*?\n  \};/,
+    )?.[0] ?? "";
+    const topologyFailure = submit.match(
+      /const reconcileTopologyFailure = async[\s\S]*?\n    \};/,
+    )?.[0] ?? "";
+    assert.match(topologyFailure, /await refreshAuthoritativeProviderState\(\)/);
+    assert.doesNotMatch(topologyFailure, /installSettingsBaseline|const baseline/);
+    assert.match(
+      submit,
+      /providerCommitResponseRequiresAuthoritativeRefresh\(succeeded, resetApplied, settled\.disposition\)[\s\S]*?void refreshAuthoritativeProviderState\(\)/,
+      "every ignored success reloads both baseline and form from the durable generation",
+    );
+    assert.doesNotMatch(appSource, /replaceForm/);
+  });
+
+  it("invalidates older settings reads at every real baseline or form installer", () => {
+    const installer = appSource.match(
+      /const installSettingsBaseline = \([\s\S]*?\n  \};/,
+    )?.[0] ?? "";
+    assert.ok(installer.length > 0, "the shared baseline installer was located");
+    assert.match(installer, /settingsBaseline\.advanceSettingsBaselineEpoch/);
+    assert.match(installer, /providerCommitState\.current = \{ \.\.\.providerCommitState\.current, baseline \}/);
+    assert.match(installer, /setSettings\(baseline\)/);
+    assert.match(installer, /const installSettingsBaseline = \(baseline: SettingsResult\) =>/);
+    assert.doesNotMatch(installer, /form:/);
+    assert.match(installer, /setSettingsForm\(baseline\.settings\)/);
+    assert.equal(
+      [...appSource.matchAll(/\bsetSettings\(/g)].length,
+      1,
+      "all baseline writes go through the epoch-owning installer",
+    );
+
+    const refresh = appSource.match(
+      /const refreshSettings = async[\s\S]*?\n  \};/,
+    )?.[0] ?? "";
+    assert.match(refresh, /installSettingsBaseline\(baseline\)/);
+
+    for (const savePath of ["saveSettings", "saveSettingsValue"]) {
+      const body = appSource.match(
+        new RegExp(`const ${savePath} = async[\\s\\S]*?\\n  \\};`),
+      )?.[0] ?? "";
+      assert.ok(body.length > 0, `${savePath} was located`);
+      assert.match(
+        body,
+        /if \(result\) \{[\s\S]*?installSettingsBaseline\(baseline\)/,
+        `${savePath} advances the epoch when its authoritative baseline lands`,
+      );
+      const saveEpochAt = body.indexOf("settingsBaseline.advanceSettingsBaselineEpoch");
+      const saveCallAt = body.indexOf('call<SettingsResult>("save_settings"');
+      assert.ok(
+        saveEpochAt >= 0 && saveEpochAt < saveCallAt,
+        `${savePath} invalidates older reads before its save can settle`,
+      );
+    }
+
+    const saveValue = appSource.match(
+      /const saveSettingsValue = async[\s\S]*?\n  \};/,
+    )?.[0] ?? "";
+    const formEpochAt = saveValue.indexOf("settingsBaseline.advanceSettingsBaselineEpoch");
+    const formInstallAt = saveValue.indexOf("setSettingsForm(normalized)");
+    const saveCallAt = saveValue.indexOf('call<SettingsResult>("save_settings"');
+    assert.ok(
+      formEpochAt >= 0 && formEpochAt < formInstallAt && formInstallAt < saveCallAt,
+      "saveSettingsValue invalidates older reads before installing its optimistic form",
+    );
+
+    const submit = appSource.match(
+      /const submitProviderCommit = async[\s\S]*?\n  \};/,
+    )?.[0] ?? "";
+    assert.doesNotMatch(
+      submit,
+      /providerCommitState\.current = settled\.state/,
+      "provider settlement cannot write a baseline before the epoch-owning installer",
+    );
+    const delayedResetAt = submit.indexOf("providerCommitResponseRequiresAuthoritativeRefresh");
+    const ignoredResponseAt = submit.indexOf('if (settled.disposition === "ignore") return false;');
+    const providerInstallAt = submit.indexOf("installSettingsBaseline(", ignoredResponseAt);
+    assert.ok(
+      delayedResetAt >= 0
+        && delayedResetAt < ignoredResponseAt
+        && ignoredResponseAt < providerInstallAt,
+      "delayed and ignored provider responses exit before any baseline installation",
+    );
+    assert.match(
+      submit,
+      /if \(nextBaseline && selectedSettings\) \{[\s\S]*?installSettingsBaseline\(nextBaseline\);/,
+      "current provider success and current reset adoption share the epoch installer",
+    );
+    assert.doesNotMatch(submit, /adopt-baseline/);
+    assert.match(
+      submit,
+      /providerCommitResponseRequiresAuthoritativeRefresh\(succeeded, resetApplied, settled\.disposition\)[\s\S]*?void refreshAuthoritativeProviderState\(\)/,
+      "every non-current success authoritatively replaces both baseline and form",
+    );
+    assert.match(
+      submit,
+      /const reconcileTopologyFailure = async[\s\S]*?await refreshAuthoritativeProviderState\(\)/,
+      "topology-failure form restoration also uses the epoch-owning authoritative read",
+    );
+    assert.doesNotMatch(
+      appSource,
+      /onFormChange=\{setSettingsForm\}/,
+      "the raw form setter is not exposed as an epoch-bypassing screen prop",
+    );
   });
 
   it("answers the caller when the blocking body panics and keeps the coordinator usable", () => {

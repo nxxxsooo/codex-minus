@@ -67,7 +67,7 @@ pub(crate) fn top_level_model(config: &str) -> Option<String>;
 pub(crate) fn set_top_level_model(config: &str, model: &str) -> anyhow::Result<String>;
 ```
 
-- [ ] **Step 1: Add the Eva failing regression before the planner exists**
+- [x] **Step 1: Add the Eva failing regression before the planner exists**
 
 Add a test fixture with an official-mixed Responses profile whose TOML default and legacy list contain `gpt-5`, whose state is implicit, and whose custom row has exact legacy provenance:
 
@@ -196,7 +196,7 @@ fn eva_legacy_fixture() -> (BackendSettings, CatalogState, std::collections::BTr
 }
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run:
 
@@ -208,7 +208,7 @@ CARGO_TARGET_DIR=/Users/mingjian/Documents/sync/GitHub/codex-minus/src-tauri/tar
 
 Expected: compilation/test failure because `legacy_model_reset`, `plan_legacy_model_reset`, and the state marker do not exist.
 
-- [ ] **Step 3: Add the catalog-state marker and pure planner**
+- [x] **Step 3: Add the catalog-state marker and pure planner**
 
 Register the module in `lib.rs`:
 
@@ -275,7 +275,7 @@ Clear `model_list`/`model_windows`. Read the selected model from top-level TOML 
 
 Return `None` when no state/settings byte would change; otherwise increment `state.operation_generation` once and return the cloned next generation plus summaries.
 
-- [ ] **Step 4: Run the Eva test and verify GREEN**
+- [x] **Step 4: Run the Eva test and verify GREEN**
 
 Run:
 
@@ -287,7 +287,7 @@ CARGO_TARGET_DIR=/Users/mingjian/Documents/sync/GitHub/codex-minus/src-tauri/tar
 
 Expected: `1 passed; 0 failed`.
 
-- [ ] **Step 5: Commit the planner slice**
+- [x] **Step 5: Commit the planner slice**
 
 ```bash
 git add src-tauri/src/lib.rs src-tauri/src/model_catalog.rs src-tauri/src/legacy_model_reset.rs
@@ -326,7 +326,7 @@ pub(crate) fn plan_active_profile_with_state(
 
 The latter two functions already exist privately; this task raises them only to `pub(crate)` for the shared migration orchestrator.
 
-- [ ] **Step 1: Add failing ownership and idempotency tests**
+- [x] **Step 1: Add failing ownership and idempotency tests**
 
 Add one table-driven test whose cases assert exact preservation/reset behavior:
 
@@ -455,7 +455,7 @@ fn profile_without_legacy_signals_is_a_byte_identical_noop() {
 
 Implement these tests with complete fixtures and concrete assertions: no empty test bodies or mock-only assertions.
 
-- [ ] **Step 2: Run the matrix and verify RED where Task 1 is incomplete**
+- [x] **Step 2: Run the matrix and verify RED where Task 1 is incomplete**
 
 Run:
 
@@ -467,7 +467,7 @@ CARGO_TARGET_DIR=/Users/mingjian/Documents/sync/GitHub/codex-minus/src-tauri/tar
 
 Expected: at least the coexistence/idempotency cases fail until the planner distinguishes marker-only preservation from a real reset and retains nonlegacy rows/defaults exactly.
 
-- [ ] **Step 3: Refine the planner and expose catalog helpers**
+- [x] **Step 3: Refine the planner and expose catalog helpers**
 
 Use two outcome concepts internally:
 
@@ -494,7 +494,7 @@ pub(crate) fn visible_official_slugs(state: &CatalogState) -> anyhow::Result<BTr
 }
 ```
 
-- [ ] **Step 4: Add the effective catalog regression**
+- [x] **Step 4: Add the effective catalog regression**
 
 After planning Eva's reset, compose the resulting profile catalog and assert:
 
@@ -519,7 +519,7 @@ fn eva_reset_catalog_contains_terra_and_not_gpt5() {
 
 Also assert provider TOML excluding only the root `model` line is byte/semantically equivalent before and after.
 
-- [ ] **Step 5: Run planner/catalog tests and verify GREEN**
+- [x] **Step 5: Run planner/catalog tests and verify GREEN**
 
 Run:
 
@@ -533,7 +533,7 @@ CARGO_TARGET_DIR=/Users/mingjian/Documents/sync/GitHub/codex-minus/src-tauri/tar
 
 Expected: all focused tests pass with no failed assertions.
 
-- [ ] **Step 6: Commit the ownership/catalog slice**
+- [x] **Step 6: Commit the ownership/catalog slice**
 
 ```bash
 git add src-tauri/src/legacy_model_reset.rs src-tauri/src/model_catalog.rs
@@ -576,7 +576,7 @@ fn migrate_legacy_model_state_locked_at(
 ) -> anyhow::Result<LegacyModelResetOutcome>;
 ```
 
-- [ ] **Step 1: Write the real Eva transaction test and observe RED**
+- [x] **Step 1: Write the real Eva transaction test and observe RED**
 
 Create a fixture with:
 
@@ -607,7 +607,7 @@ CARGO_TARGET_DIR=/Users/mingjian/Documents/sync/GitHub/codex-minus/src-tauri/tar
 
 Expected: FAIL because no migration entry point or transaction mutations exist.
 
-- [ ] **Step 2: Implement the locked orchestrator**
+- [x] **Step 2: Implement the locked orchestrator**
 
 The caller already owns the coordinator. Implement this order:
 
@@ -685,7 +685,7 @@ Snapshot live auth bytes and expected raw generations before staging. Commit via
 
 If active live config no longer selects the persisted active provider ID or its current generation changed after planning, return an error before mutation.
 
-- [ ] **Step 3: Wire both safe entry points**
+- [x] **Step 3: Wire both safe entry points**
 
 In `load_settings_blocking`, after auth scrub and under the same coordinator lock:
 
@@ -697,13 +697,13 @@ In `commit_provider_detail_from_paths_observed`, run the same migration after au
 
 Map malformed input to existing static `InputUnavailable` reasons and transaction/storage failure to static `TransactionFailed`. Do not expose TOML, model catalog JSON, bearer, or auth contents.
 
-- [ ] **Step 4: Add injected rollback and no-op tests**
+- [x] **Step 4: Add injected rollback and no-op tests**
 
 For every `LegacyModelResetCheckpoint` after planning, inject one failure and assert byte identity for settings, catalog state, generated catalog, live config, auth, and transaction artifacts after recovery.
 
 Add an ordinary profile fixture with empty legacy fields and a user-created overlay; run both load and direct commit entry points and assert no file mtime/content/generation changes and no new failure code.
 
-- [ ] **Step 5: Run transaction and existing auth/context suites**
+- [x] **Step 5: Run transaction and existing auth/context suites**
 
 Run:
 
@@ -719,7 +719,7 @@ CARGO_TARGET_DIR=/Users/mingjian/Documents/sync/GitHub/codex-minus/src-tauri/tar
 
 Expected: all focused and existing security regressions pass.
 
-- [ ] **Step 6: Commit the transaction slice**
+- [x] **Step 6: Commit the transaction slice**
 
 ```bash
 git add src-tauri/src/commands.rs src-tauri/src/model_catalog.rs src-tauri/src/provider_commit_transaction_tests.rs
@@ -752,7 +752,7 @@ mirrored as:
 legacy_model_reset_notice?: string | null;
 ```
 
-- [ ] **Step 1: Add failing backend/frontend notice tests**
+- [x] **Step 1: Add failing backend/frontend notice tests**
 
 Add a Rust assertion that a reset outcome produces exactly:
 
@@ -773,7 +773,7 @@ CARGO_TARGET_DIR=/Users/mingjian/Documents/sync/GitHub/codex-minus/src-tauri/tar
 
 Expected: tests fail because the payload field and wiring do not exist.
 
-- [ ] **Step 2: Add the payload field and show the one-time notice**
+- [x] **Step 2: Add the payload field and show the one-time notice**
 
 Initialize `legacy_model_reset_notice: None` in every fallback/settings payload constructor. In `load_settings_blocking`, attach the notice only when `reset.reset_profiles` is non-empty. The persisted migration marker ensures later loads return `None`.
 
@@ -789,7 +789,7 @@ if (result.legacy_model_reset_notice) {
 
 Add the English title and notice translation without making a capability, plan, quota, or authentication claim.
 
-- [ ] **Step 3: Pin the frontend/backend/default-catalog contract**
+- [x] **Step 3: Pin the frontend/backend/default-catalog contract**
 
 Extend `provider-onboarding.test.ts` to read the real Rust module and bundled asset:
 
@@ -801,7 +801,7 @@ assert.match(rust, /CANONICAL_MIXED_DEFAULT_MODEL:\s*&str\s*=\s*"gpt-5\.6-terra"
 assert.equal(catalog.models.find((model: { slug: string }) => model.slug === "gpt-5.6-terra")?.visibility, "list");
 ```
 
-- [ ] **Step 4: Run frontend/backend notice tests and verify GREEN**
+- [x] **Step 4: Run frontend/backend notice tests and verify GREEN**
 
 Run:
 
@@ -815,7 +815,7 @@ CARGO_TARGET_DIR=/Users/mingjian/Documents/sync/GitHub/codex-minus/src-tauri/tar
 
 Expected: TypeScript and all frontend/focused Rust tests pass.
 
-- [ ] **Step 5: Commit the UI contract**
+- [x] **Step 5: Commit the UI contract**
 
 ```bash
 git add src-tauri/src/commands.rs src/backend-types.ts src/App.tsx src/i18n-en.ts src/provider-onboarding.test.ts src/provider-save-liveness.test.ts
@@ -837,7 +837,7 @@ git commit -m "feat: report official model reset"
 - Consumes: completed behavior and exact test evidence from Tasks 1-4.
 - Produces: authoritative specification/constraint text and a completed-work record.
 
-- [ ] **Step 1: Add the normative OpenSpec scenarios**
+- [x] **Step 1: Add the normative OpenSpec scenarios**
 
 Add these scenario families with exact ownership language:
 
@@ -865,7 +865,7 @@ Add these scenario families with exact ownership language:
 
 Update the provider-native-capability no-startup-rewrite rule with one narrow exception for exact unowned legacy model-list reset; preserve the prohibition on core normalization and explicit/user-owned rewrites.
 
-- [ ] **Step 2: Update the AGENTS hot-path constraint**
+- [x] **Step 2: Update the AGENTS hot-path constraint**
 
 Under model-catalog/native-capability ownership, add one concise rule:
 
@@ -873,7 +873,7 @@ Under model-catalog/native-capability ownership, add one concise rule:
 Startup may reset only exact unowned `legacy-model-list` catalog state through the coordinator: remove only those rows, repair a removed default to `gpt-5.6-terra`, and preserve every explicit, external, preset, user-created, or unknown-provenance model state. This narrow migration is not permission to run the core normalizer or rewrite any other profile contract.
 ```
 
-- [ ] **Step 3: Run focused validators and complete repository gates**
+- [x] **Step 3: Run focused validators and complete repository gates**
 
 Run:
 
@@ -891,7 +891,7 @@ npm run vite:build
 
 Expected: every command exits `0`; capture the exact Rust/frontend counts from output.
 
-- [ ] **Step 4: Append BOARD only after all gates pass**
+- [x] **Step 4: Append BOARD only after all gates pass**
 
 Under `### 2026-08-17`, add:
 
@@ -904,14 +904,14 @@ Under `### 2026-08-17`, add:
 
 Replace no text with estimated counts; add exact counts only when command output states them.
 
-- [ ] **Step 5: Commit the authoritative docs and plan completion**
+- [x] **Step 5: Commit the authoritative docs and plan completion**
 
 ```bash
 git add AGENTS.md BOARD.md openspec/specs/model-catalog-management/spec.md openspec/specs/provider-native-capability-mode/spec.md docs/superpowers/plans/2026-08-17-reset-legacy-model-overlay.md
 git commit -m "docs: record official legacy model reset"
 ```
 
-- [ ] **Step 6: Confirm the final branch is review-ready**
+- [x] **Step 6: Confirm the final branch is review-ready**
 
 Run:
 

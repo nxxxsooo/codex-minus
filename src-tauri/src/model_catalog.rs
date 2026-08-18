@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use crate::commands::{CommandResult, discover_target_codex_cli};
 use crate::live_state::{self, FileMutation};
 
-const STATE_VERSION: u32 = 3;
+const STATE_VERSION: u32 = 5;
 const STATE_FILE: &str = "model-catalog-state.json";
 const GENERATED_DIR: &str = "model-catalogs";
 const GENERATED_PREFIX: &str = "codex-minus-";
@@ -87,6 +87,9 @@ pub struct CatalogState {
     pub official: Option<OfficialSnapshot>,
     pub target: Option<VerifiedTargetIdentity>,
     pub profiles: BTreeMap<String, ProfileCatalogState>,
+    /// One-time reset evaluation for profiles that intentionally have no persisted catalog state.
+    /// Keeping this separate prevents bookkeeping from becoming false catalog ownership.
+    pub legacy_model_reset_evaluated_profiles: BTreeMap<String, u32>,
     pub last_diff: CatalogDiff,
     pub operation_generation: u64,
 }
@@ -99,6 +102,7 @@ impl Default for CatalogState {
             official: None,
             target: None,
             profiles: BTreeMap::new(),
+            legacy_model_reset_evaluated_profiles: BTreeMap::new(),
             last_diff: CatalogDiff::default(),
             operation_generation: 0,
         }
@@ -177,6 +181,7 @@ pub enum UpstreamTopology {
 pub struct ProfileCatalogState {
     pub mode: CatalogMode,
     pub mode_explicit: bool,
+    pub legacy_model_reset_version: u32,
     pub upstream_topology: UpstreamTopology,
     pub overlay: CatalogOverlay,
     pub external_pointer: Option<String>,
@@ -194,6 +199,7 @@ impl Default for ProfileCatalogState {
         Self {
             mode: CatalogMode::NativeOfficial,
             mode_explicit: false,
+            legacy_model_reset_version: 0,
             upstream_topology: UpstreamTopology::Direct,
             overlay: CatalogOverlay::default(),
             external_pointer: None,
@@ -305,6 +311,7 @@ pub struct CatalogDiff {
 #[serde(rename_all = "camelCase")]
 pub struct CatalogStatusPayload {
     pub state_path: String,
+    pub provider_fingerprint: String,
     pub source: String,
     pub target_client_version: Option<String>,
     pub target_cli_path: Option<String>,
@@ -898,7 +905,7 @@ pub(crate) fn plan_active_profile_at(
     Ok(plan)
 }
 
-fn plan_active_profile_with_state(
+pub(crate) fn plan_active_profile_with_state(
     home: &Path,
     settings: &BackendSettings,
     provider_config: &str,
@@ -1045,10 +1052,33 @@ fn load_and_migrate_state(settings: &BackendSettings, home: &Path) -> anyhow::Re
     load_and_migrate_state_from_path(settings, home, &state_path())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StateLoadPolicy {
+    General,
+    LegacyReset,
+}
+
 pub(crate) fn load_and_migrate_state_from_path(
     settings: &BackendSettings,
     home: &Path,
     path: &Path,
+) -> anyhow::Result<CatalogState> {
+    load_and_migrate_state_with_policy(settings, home, path, StateLoadPolicy::General)
+}
+
+pub(crate) fn load_and_migrate_state_for_legacy_reset_from_path(
+    settings: &BackendSettings,
+    home: &Path,
+    path: &Path,
+) -> anyhow::Result<CatalogState> {
+    load_and_migrate_state_with_policy(settings, home, path, StateLoadPolicy::LegacyReset)
+}
+
+fn load_and_migrate_state_with_policy(
+    settings: &BackendSettings,
+    home: &Path,
+    path: &Path,
+    policy: StateLoadPolicy,
 ) -> anyhow::Result<CatalogState> {
     crate::provider_commit::validate_responses_only_settings(settings)?;
     let mut state = match fs::read(&path) {
@@ -1083,6 +1113,9 @@ pub(crate) fn load_and_migrate_state_from_path(
         .map(|profile| profile.id.clone())
         .collect::<BTreeSet<_>>();
     state.profiles.retain(|id, _| profile_ids.contains(id));
+    state
+        .legacy_model_reset_evaluated_profiles
+        .retain(|id, _| profile_ids.contains(id));
     for profile in &settings.relay_profiles {
         let existing_pointer = root_catalog_pointer(&profile.config_contents);
         let generated_pointer = generated_relative_path(&profile.id);
@@ -1093,6 +1126,16 @@ pub(crate) fn load_and_migrate_state_from_path(
             recover_manager_owned_catalog(home, pointer, profile, state.official.as_ref()).ok()
         });
         let state_has_profile = state.profiles.contains_key(&profile.id);
+        let defer_implicit_mode = policy == StateLoadPolicy::LegacyReset
+            && crate::legacy_model_reset::legacy_model_reset_needs_evaluation(profile, &state);
+        if !state_has_profile && policy == StateLoadPolicy::LegacyReset {
+            // Missing profiles must remain missing here: a catalog-state object created only to
+            // carry reset bookkeeping suppresses the General loader's permissive bootstrap and can
+            // turn a deterministic manager pointer into apparent external ownership. The planner
+            // derives a temporary classification, then persists real state only for an eligible
+            // reset; ineligible IDs receive a separate top-level marker.
+            continue;
+        }
         let entry = state.profiles.entry(profile.id.clone()).or_default();
         if !state_has_profile {
             // A pointer at the exact path this manager generates for this exact profile is our own
@@ -1122,11 +1165,7 @@ pub(crate) fn load_and_migrate_state_from_path(
                     entry.action_required = Some("catalog-readiness-unavailable".to_string());
                 }
             } else {
-                let user_owned_pointer = existing_pointer.as_deref();
-                entry.mode = default_mode(profile, user_owned_pointer, entry.upstream_topology);
-                if entry.mode == CatalogMode::External {
-                    entry.external_pointer = user_owned_pointer.map(ToString::to_string);
-                }
+                *entry = derive_missing_profile_state_without_legacy_overlay(profile);
                 entry.overlay = migrate_legacy_overlay(profile, &official_slugs)?;
             }
         } else if !entry.mode_explicit {
@@ -1136,10 +1175,13 @@ pub(crate) fn load_and_migrate_state_from_path(
                     entry.external_pointer = Some(pointer.to_string());
                 }
                 Some(_) => {}
-                // An implicit mode is a derived value, not a user choice. Leaving a stale one in
-                // place deadlocks the profile: the provider contract rejects every commit while
-                // the mode disagrees, and correcting the mode requires a commit.
-                None => entry.mode = default_mode(profile, None, entry.upstream_topology),
+                // General loading continues to re-derive an implicit mode. Reset loading delays
+                // that compatibility rewrite only while dormant legacy state still needs its
+                // preservation marker, so native/custom-only ownership reaches the planner intact.
+                None if policy == StateLoadPolicy::General || !defer_implicit_mode => {
+                    entry.mode = default_mode(profile, None, entry.upstream_topology)
+                }
+                None => {}
             }
         }
     }
@@ -1196,12 +1238,69 @@ fn recover_manager_owned_catalog(
     })
 }
 
-fn migrate_legacy_overlay(
+/// Derives missing-profile ownership without consulting deprecated model-list/window contents.
+/// Reset planning uses this value only as an eligibility decision; General loading remains the
+/// owner of permissive overlay bootstrap.
+pub(crate) fn derive_missing_profile_state_without_legacy_overlay(
+    profile: &RelayProfile,
+) -> ProfileCatalogState {
+    let existing_pointer = root_catalog_pointer(&profile.config_contents);
+    let user_owned_pointer = existing_pointer.as_deref().filter(|pointer| {
+        classify_manager_pointer_ownership(&profile.id, Some(pointer), None)
+            == ManagerPointerOwnership::External
+    });
+    let mut entry = ProfileCatalogState::default();
+    entry.mode = default_mode(profile, user_owned_pointer, entry.upstream_topology);
+    if entry.mode == CatalogMode::External {
+        entry.external_pointer = user_owned_pointer.map(ToString::to_string);
+    }
+    entry
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InvalidLegacyModelWindows;
+
+impl std::fmt::Display for InvalidLegacyModelWindows {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("legacy model windows are invalid")
+    }
+}
+
+impl std::error::Error for InvalidLegacyModelWindows {}
+
+fn invalid_legacy_model_windows() -> anyhow::Error {
+    anyhow::Error::new(InvalidLegacyModelWindows)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InvalidLegacyModelList;
+
+impl std::fmt::Display for InvalidLegacyModelList {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("legacy model list is invalid")
+    }
+}
+
+impl std::error::Error for InvalidLegacyModelList {}
+
+fn invalid_legacy_model_list() -> anyhow::Error {
+    anyhow::Error::new(InvalidLegacyModelList)
+}
+
+pub(crate) fn migrate_legacy_overlay(
     profile: &RelayProfile,
     official_slugs: &BTreeSet<String>,
 ) -> anyhow::Result<CatalogOverlay> {
     let windows = serde_json::from_str::<BTreeMap<String, String>>(&profile.model_windows)
         .unwrap_or_default();
+    migrate_legacy_overlay_with_windows(profile, official_slugs, &windows)
+}
+
+fn migrate_legacy_overlay_with_windows(
+    profile: &RelayProfile,
+    official_slugs: &BTreeSet<String>,
+    windows: &BTreeMap<String, String>,
+) -> anyhow::Result<CatalogOverlay> {
     let mut overlay = CatalogOverlay::default();
     for (order, slug) in split_model_list(&profile.model_list)
         .into_iter()
@@ -1237,6 +1336,46 @@ fn migrate_legacy_overlay(
     }
     validate_overlay(&overlay)?;
     Ok(overlay)
+}
+
+/// Reconstructs deletion evidence only after the reset planner has established destructive
+/// eligibility. Bootstrap migration deliberately remains permissive for compatibility.
+pub(crate) fn legacy_overlay_for_current_official(
+    state: &CatalogState,
+    profile: &RelayProfile,
+) -> anyhow::Result<CatalogOverlay> {
+    let official_slugs = state
+        .official
+        .as_ref()
+        .map(|snapshot| catalog_slugs(&snapshot.raw_catalog))
+        .transpose()?
+        .unwrap_or_default();
+    legacy_overlay_for_official_slugs(profile, &official_slugs)
+}
+
+fn legacy_overlay_for_official_slugs(
+    profile: &RelayProfile,
+    official_slugs: &BTreeSet<String>,
+) -> anyhow::Result<CatalogOverlay> {
+    let raw_windows = profile.model_windows.trim();
+    let windows = if raw_windows.is_empty() {
+        BTreeMap::new()
+    } else {
+        serde_json::from_str::<BTreeMap<String, String>>(raw_windows)
+            .map_err(|_| invalid_legacy_model_windows())?
+    };
+    for window in windows.values() {
+        if !window
+            .trim()
+            .parse::<u64>()
+            .ok()
+            .is_some_and(|value| value > 0)
+        {
+            return Err(invalid_legacy_model_windows());
+        }
+    }
+    migrate_legacy_overlay_with_windows(profile, official_slugs, &windows)
+        .map_err(|_| invalid_legacy_model_list())
 }
 
 fn default_mode(
@@ -1592,6 +1731,10 @@ fn status_payload(
         .unwrap_or_default();
     Ok(CatalogStatusPayload {
         state_path: state_path().to_string_lossy().to_string(),
+        provider_fingerprint: crate::provider_commit::provider_generation_fingerprint(
+            &crate::provider_commit::ProviderOwnedTopologyDraft::from_settings(settings),
+            state,
+        )?,
         source: official
             .map(|item| item.source.clone())
             .unwrap_or_else(|| "none".to_string()),
@@ -2009,6 +2152,28 @@ fn catalog_slugs(value: &Value) -> anyhow::Result<BTreeSet<String>> {
         .collect())
 }
 
+pub(crate) fn visible_official_slugs(state: &CatalogState) -> anyhow::Result<BTreeSet<String>> {
+    Ok(state
+        .official
+        .as_ref()
+        .map(|snapshot| {
+            catalog_models(&snapshot.raw_catalog).map(|models| {
+                models
+                    .iter()
+                    .filter(|model| model.get("visibility").and_then(Value::as_str) != Some("hide"))
+                    .filter_map(|model| {
+                        model
+                            .get("slug")
+                            .and_then(Value::as_str)
+                            .map(ToString::to_string)
+                    })
+                    .collect()
+            })
+        })
+        .transpose()?
+        .unwrap_or_default())
+}
+
 fn catalog_compatibility_projection(
     value: &Value,
 ) -> anyhow::Result<BTreeMap<String, (String, String, Option<u64>, Option<u64>)>> {
@@ -2400,7 +2565,7 @@ fn validate_slug(slug: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn materialize_profile(
+pub(crate) fn materialize_profile(
     state: &mut CatalogState,
     profile: &RelayProfile,
     home: &Path,
@@ -2483,7 +2648,11 @@ fn sanitize_profile_id(profile_id: &str) -> String {
     }
 }
 
-fn manager_owned_pointer(state: &CatalogState, profile_id: &str, pointer: Option<&str>) -> bool {
+pub(crate) fn manager_owned_pointer(
+    state: &CatalogState,
+    profile_id: &str,
+    pointer: Option<&str>,
+) -> bool {
     let Some(pointer) = pointer else {
         return false;
     };
@@ -2498,12 +2667,39 @@ fn manager_owned_pointer_path(
     pointer: &str,
     profile: &ProfileCatalogState,
 ) -> bool {
-    pointer == generated_relative_path(profile_id)
-        && profile.generated_path.as_deref() == Some(pointer)
-        && profile.generated_hash.is_some()
+    classify_manager_pointer_ownership(profile_id, Some(pointer), Some(profile))
+        == ManagerPointerOwnership::Managed
 }
 
-fn root_catalog_pointer(config: &str) -> Option<String> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManagerPointerOwnership {
+    Absent,
+    Managed,
+    UntrackedGenerated,
+    External,
+}
+
+pub(crate) fn classify_manager_pointer_ownership(
+    profile_id: &str,
+    pointer: Option<&str>,
+    profile: Option<&ProfileCatalogState>,
+) -> ManagerPointerOwnership {
+    let Some(pointer) = pointer else {
+        return ManagerPointerOwnership::Absent;
+    };
+    if pointer != generated_relative_path(profile_id) {
+        return ManagerPointerOwnership::External;
+    }
+    if profile.is_some_and(|profile| {
+        profile.generated_path.as_deref() == Some(pointer) && profile.generated_hash.is_some()
+    }) {
+        ManagerPointerOwnership::Managed
+    } else {
+        ManagerPointerOwnership::UntrackedGenerated
+    }
+}
+
+pub(crate) fn root_catalog_pointer(config: &str) -> Option<String> {
     let doc: toml_edit::DocumentMut = config.parse().ok()?;
     doc.get("model_catalog_json")
         .and_then(toml_edit::Item::as_str)
@@ -2753,6 +2949,7 @@ impl Default for CatalogStatusPayload {
     fn default() -> Self {
         Self {
             state_path: state_path().to_string_lossy().to_string(),
+            provider_fingerprint: String::new(),
             source: "none".to_string(),
             target_client_version: None,
             target_cli_path: None,
@@ -2844,6 +3041,20 @@ mod tests {
                 }
             ]
         })
+    }
+
+    #[test]
+    fn visible_official_slugs_excludes_hidden_models() {
+        let mut state = CatalogState::default();
+        state.official = Some(OfficialSnapshot {
+            raw_catalog: official_catalog(),
+            ..OfficialSnapshot::default()
+        });
+
+        assert_eq!(
+            visible_official_slugs(&state).unwrap(),
+            BTreeSet::from(["official-a".to_string()])
+        );
     }
 
     #[test]
@@ -3515,6 +3726,30 @@ experimental_bearer_token = "provider-key"
             ),
             CatalogMode::CustomOnly
         );
+    }
+
+    #[test]
+    fn bootstrap_legacy_migration_keeps_permissive_model_windows_compatibility() {
+        let official = BTreeSet::from(["official-a".to_string()]);
+        for model_windows in [
+            "{not-json",
+            "[]",
+            r#"{"custom-x":272000}"#,
+            r#"{"custom-x":"not-a-window"}"#,
+        ] {
+            let profile = RelayProfile {
+                model_list: "official-a\ncustom-x".to_string(),
+                model_windows: model_windows.to_string(),
+                ..RelayProfile::default()
+            };
+
+            let overlay = migrate_legacy_overlay(&profile, &official).unwrap();
+
+            assert!(overlay.official.is_empty(), "{model_windows}");
+            assert_eq!(overlay.custom.len(), 1, "{model_windows}");
+            assert_eq!(overlay.custom[0].slug, "custom-x", "{model_windows}");
+            assert_eq!(overlay.custom[0].context_window, 272_000, "{model_windows}");
+        }
     }
 
     #[test]
@@ -5327,6 +5562,32 @@ experimental_bearer_token = "key-{id}"
         assert_eq!(
             migrated.profiles["default"].mode,
             CatalogMode::NativeOfficial
+        );
+    }
+
+    #[test]
+    fn generic_missing_profile_bootstrap_keeps_permissive_legacy_compatibility() {
+        let mut profile = mixed_profile("legacy");
+        profile.model_list = "custom-x".to_string();
+        profile.model_windows = "{not-json".to_string();
+        let settings = BackendSettings {
+            relay_profiles: vec![profile],
+            active_relay_id: "legacy".to_string(),
+            ..BackendSettings::default()
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let state = load_and_migrate_state_from_path(
+            &settings,
+            temp.path(),
+            &temp.path().join("missing-state.json"),
+        )
+        .unwrap();
+
+        assert_eq!(state.profiles["legacy"].overlay.custom.len(), 1);
+        assert_eq!(state.profiles["legacy"].overlay.custom[0].slug, "custom-x");
+        assert_eq!(
+            state.profiles["legacy"].overlay.custom[0].context_window,
+            272_000
         );
     }
 }

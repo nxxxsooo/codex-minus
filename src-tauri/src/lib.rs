@@ -1,4 +1,5 @@
 pub mod commands;
+mod legacy_model_reset;
 mod live_state;
 mod model_catalog;
 mod platform_command;

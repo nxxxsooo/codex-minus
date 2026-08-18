@@ -458,6 +458,68 @@ pub fn provider_owned_fingerprint(topology: &ProviderOwnedTopologyDraft) -> anyh
     Ok(format!("sha256:{:x}", Sha256::digest(canonical)))
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderGenerationFingerprintMaterial<'a> {
+    version: &'static str,
+    topology: &'a ProviderOwnedTopologyDraft,
+    catalogs: BTreeMap<String, EditableCatalogFingerprintMaterial>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EditableCatalogFingerprintMaterial {
+    mode: CatalogMode,
+    mode_explicit: bool,
+    upstream_topology: UpstreamTopology,
+    overlay: CatalogOverlay,
+    external_pointer: Option<String>,
+}
+
+pub fn provider_generation_fingerprint(
+    topology: &ProviderOwnedTopologyDraft,
+    state: &CatalogState,
+) -> anyhow::Result<String> {
+    let catalogs = topology
+        .relay_profiles
+        .iter()
+        .map(|profile| -> anyhow::Result<_> {
+            let stored = match state.profiles.get(&profile.id).cloned() {
+                Some(stored) => stored,
+                None => {
+                    // A profile the state has never seen still has to be fingerprinted, and the
+                    // default mode is only defined for a Responses-only profile. Refuse rather
+                    // than fingerprint a removed provider shape as if it were ordinary.
+                    let relay_profile = RelayProfile::from(profile);
+                    ProfileCatalogState {
+                        mode: model_catalog::default_catalog_mode_for_profile(&relay_profile)?,
+                        ..ProfileCatalogState::default()
+                    }
+                }
+            };
+            Ok((
+                profile.id.clone(),
+                EditableCatalogFingerprintMaterial {
+                    mode: stored.mode,
+                    mode_explicit: stored.mode_explicit,
+                    upstream_topology: stored.upstream_topology,
+                    overlay: stored.overlay,
+                    external_pointer: stored.external_pointer,
+                },
+            ))
+        })
+        .collect::<anyhow::Result<_>>()?;
+    let material = ProviderGenerationFingerprintMaterial {
+        version: "provider-generation-v1",
+        topology,
+        catalogs,
+    };
+    Ok(format!(
+        "sha256:{:x}",
+        Sha256::digest(serde_json::to_vec(&material)?)
+    ))
+}
+
 pub fn provider_fingerprint_status(
     settings: &BackendSettings,
 ) -> anyhow::Result<ProviderFingerprintStatus> {
@@ -993,12 +1055,18 @@ fn plan_validated_request(
         .retain(|profile_id, _| profile_ids.contains(profile_id));
 
     for draft in &drafts {
+        let prior = persisted_state.profiles.get(&draft.profile_id);
+        let overlay_was_explicitly_edited = prior
+            .map(|prior| prior.overlay != draft.overlay)
+            .unwrap_or_else(|| draft.overlay != CatalogOverlay::default());
         let state = catalog_state
             .profiles
             .entry(draft.profile_id.clone())
             .or_default();
         state.mode = draft.mode;
-        state.mode_explicit = draft.mode_explicit;
+        state.mode_explicit = draft.mode_explicit
+            || prior.is_some_and(|prior| prior.mode_explicit)
+            || overlay_was_explicitly_edited;
         state.upstream_topology = draft.upstream_topology;
         state.overlay = draft.overlay.clone();
         state.external_pointer = draft.external_pointer.clone();
@@ -1502,6 +1570,69 @@ experimental_bearer_token = "provider-key"
     }
 
     #[test]
+    fn generation_fingerprint_includes_editable_catalog_semantics_only() {
+        let settings = settings_with(vec![mixed_profile("relay-a", "official-a")], "relay-a");
+        let topology = ProviderOwnedTopologyDraft::from_settings(&settings);
+        let mut state = CatalogState::default();
+        state.profiles.insert(
+            "relay-a".to_string(),
+            ProfileCatalogState {
+                mode: CatalogMode::OfficialPlusCustom,
+                ..ProfileCatalogState::default()
+            },
+        );
+        let baseline = provider_generation_fingerprint(&topology, &state).unwrap();
+
+        let mut editable = state.clone();
+        editable
+            .profiles
+            .get_mut("relay-a")
+            .unwrap()
+            .overlay
+            .custom
+            .push(CustomModel {
+                slug: "custom-a".to_string(),
+                display_name: "Custom A".to_string(),
+                ..CustomModel::default()
+            });
+        assert_ne!(
+            provider_generation_fingerprint(&topology, &editable).unwrap(),
+            baseline
+        );
+        let mut editable = state.clone();
+        let profile = editable.profiles.get_mut("relay-a").unwrap();
+        profile.mode = CatalogMode::External;
+        profile.mode_explicit = true;
+        profile.external_pointer = Some("/private/catalog.json".to_string());
+        profile.upstream_topology = UpstreamTopology::ServerSideComposite;
+        assert_ne!(
+            provider_generation_fingerprint(&topology, &editable).unwrap(),
+            baseline
+        );
+
+        let mut bookkeeping = state.clone();
+        bookkeeping.operation_generation = 99;
+        let profile = bookkeeping.profiles.get_mut("relay-a").unwrap();
+        profile.legacy_model_reset_version = 42;
+        profile.generated_path = Some("model-catalogs/generated.json".to_string());
+        profile.generated_hash = Some("generated-hash".to_string());
+        profile.generation = 17;
+        profile.restart_required = true;
+        profile.action_required = Some("catalog-readiness-unavailable".to_string());
+        profile.provider_evidence = Some(crate::model_catalog::ProviderEvidence {
+            fetched_at_ms: 1,
+            endpoint: "sha256:evidence".to_string(),
+            reported_slugs: vec!["reported".to_string()],
+            candidate_slugs: vec!["candidate".to_string()],
+        });
+        profile.applied_runtime_fingerprint = Some("runtime".to_string());
+        assert_eq!(
+            provider_generation_fingerprint(&topology, &bookkeeping).unwrap(),
+            baseline
+        );
+    }
+
+    #[test]
     fn detail_validation_rejects_missing_ambiguous_invalid_stale_auth_and_external_transitions() {
         let persisted = settings_with(vec![mixed_profile("relay-a", "official-a")], "relay-a");
         let state = state_with_official();
@@ -1664,6 +1795,43 @@ experimental_bearer_token = "provider-key"
         assert!(plan.generated_catalogs.contains_key("new"));
         assert!(plan.active_catalog.is_none());
         assert_eq!(plan.draft_revision, 11);
+    }
+
+    #[test]
+    fn explicit_overlay_edit_promotes_implicit_catalog_ownership() {
+        let persisted = settings_with(vec![mixed_profile("relay-a", "official-a")], "relay-a");
+        let mut state = state_with_official();
+        state.profiles.insert(
+            "relay-a".to_string(),
+            ProfileCatalogState {
+                mode: CatalogMode::OfficialPlusCustom,
+                mode_explicit: false,
+                ..ProfileCatalogState::default()
+            },
+        );
+        let overlay = CatalogOverlay {
+            official: BTreeMap::from([(
+                "official-a".to_string(),
+                crate::model_catalog::OfficialOverride {
+                    context_window: Some(300_000),
+                    ..crate::model_catalog::OfficialOverride::default()
+                },
+            )]),
+            ..CatalogOverlay::default()
+        };
+        let mut draft = catalog_draft("relay-a", CatalogMode::OfficialPlusCustom, overlay);
+        draft.mode_explicit = false;
+        let request = request_for(
+            &persisted,
+            &persisted,
+            Some("relay-a"),
+            vec![draft],
+            ProviderCommitAction::Save,
+        );
+
+        let plan = plan_provider_detail_commit(&persisted, &state, &request).unwrap();
+
+        assert!(plan.catalog_state.profiles["relay-a"].mode_explicit);
     }
 
     #[test]
