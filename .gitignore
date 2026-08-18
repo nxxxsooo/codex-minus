@@ -1,5 +1,9 @@
 node_modules/
 dist/
+
+# Ad-hoc probe artifacts (image generation, capability checks). Evidence worth keeping is
+# archived under Vault/Notes/tech/codex/ instead of accumulating in the repository root.
+output/
 src-tauri/target/
 .DS_Store
 
