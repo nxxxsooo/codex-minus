@@ -1213,10 +1213,16 @@ fn recover_manager_owned_catalog(
             if let Some(official) = official {
                 let official_slugs = catalog_slugs(&official.raw_catalog)?;
                 let recovered_slugs = catalog_slugs(&raw)?;
-                if official_slugs.is_subset(&recovered_slugs) {
-                    CatalogMode::OfficialPlusCustom
-                } else {
+                // The artifact embeds the baseline of the day it was materialized. Once the
+                // official baseline gains a model, that artifact can never contain the whole
+                // current baseline again, so demanding a superset turns every official refresh
+                // into a silent downgrade — and a downgrade drops every official row the user
+                // explicitly adopted. Embedded official slugs are the positive evidence that
+                // separates the two modes; a catalog that shares none of them is custom-only.
+                if !official_slugs.is_empty() && official_slugs.is_disjoint(&recovered_slugs) {
                     CatalogMode::CustomOnly
+                } else {
+                    CatalogMode::OfficialPlusCustom
                 }
             } else {
                 CatalogMode::CustomOnly
@@ -4645,6 +4651,169 @@ enabled = true
             reconstructed.profiles["external"].mode,
             CatalogMode::External,
             "the persisted manager pointer must remain manager-owned without state"
+        );
+    }
+
+    /// A Pure API profile adopts an external catalog as `official-plus-custom`, then the official
+    /// baseline grows. The materialized artifact predates that model, so it can no longer contain
+    /// every current official slug. Recovery after state loss must not read that gap as "the user
+    /// chose custom-only": that silently discards an explicit adoption and every official row.
+    #[test]
+    fn pure_api_adoption_survives_a_grown_official_baseline_after_state_loss() {
+        let mut fixture = ExternalAdoptionFixture::new(true, false, "");
+        let mut settings = sanitized_existing_settings_at(&fixture.paths.settings_path).unwrap();
+        let profile = settings
+            .relay_profiles
+            .iter_mut()
+            .find(|profile| profile.id == "external")
+            .unwrap();
+        profile.relay_mode = RelayMode::PureApi;
+        profile.official_mix_api_key = false;
+        fs::write(
+            &fixture.paths.settings_path,
+            crate::commands::serialize_settings_without_profile_auth(&settings).unwrap(),
+        )
+        .unwrap();
+
+        let mut external: Value = serde_json::from_slice(&fixture.external_bytes).unwrap();
+        let generated = codex_plus_core::model_suffix::build_model_catalog_json(
+            &[codex_plus_core::model_suffix::ModelCatalogEntry {
+                slug: "adopted-custom".to_string(),
+                display_name: "Adopted Custom".to_string(),
+                suffix_window: Some(123_000),
+            }],
+            None,
+        );
+        let generated: Value = serde_json::from_str(&generated).unwrap();
+        external["models"]
+            .as_array_mut()
+            .unwrap()
+            .push(generated["models"][0].clone());
+        fixture.external_bytes = serde_json::to_vec_pretty(&external).unwrap();
+        fs::write(
+            fixture.paths.codex_home.join("external.json"),
+            &fixture.external_bytes,
+        )
+        .unwrap();
+
+        let preview = fixture.preview();
+        assert_eq!(preview.status, "ok", "{}", preview.message);
+        let committed = fixture.commit(&preview);
+        assert_eq!(committed.status, "ok", "{}", committed.message);
+
+        let saved = sanitized_existing_settings_at(&fixture.paths.settings_path).unwrap();
+        let manager_path = root_catalog_pointer(
+            &saved
+                .relay_profiles
+                .iter()
+                .find(|profile| profile.id == "external")
+                .unwrap()
+                .config_contents,
+        )
+        .unwrap();
+        let mut artifact: Value = serde_json::from_slice(
+            &fs::read(fixture.paths.codex_home.join(&manager_path)).unwrap(),
+        )
+        .unwrap();
+        // The official baseline gained a model after this artifact was written.
+        let stale = artifact["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|model| model["slug"] != "adopted-custom")
+            .unwrap();
+        artifact["models"].as_array_mut().unwrap().remove(stale);
+        fs::write(
+            fixture.paths.codex_home.join(&manager_path),
+            serde_json::to_vec_pretty(&artifact).unwrap(),
+        )
+        .unwrap();
+        fs::remove_file(&fixture.paths.catalog_state_path).unwrap();
+
+        let reconstructed = load_and_migrate_state_from_path(
+            &saved,
+            &fixture.paths.codex_home,
+            &fixture.paths.catalog_state_path,
+        )
+        .unwrap();
+
+        let profile_state = &reconstructed.profiles["external"];
+        assert_eq!(
+            profile_state.mode,
+            CatalogMode::OfficialPlusCustom,
+            "a grown official baseline downgraded an explicitly adopted Pure API catalog"
+        );
+        assert!(profile_state.mode_explicit);
+        assert!(
+            profile_state
+                .overlay
+                .custom
+                .iter()
+                .any(|model| model.slug == "adopted-custom"),
+            "the adopted custom row was lost"
+        );
+    }
+
+    /// The permissive half of the rule above must stay bounded: an artifact that shares no slug
+    /// with the official baseline is genuine custom-only ownership and still recovers as such.
+    #[test]
+    fn pure_api_recovery_still_reports_custom_only_without_official_rows() {
+        let mut fixture = ExternalAdoptionFixture::new(true, false, "");
+        let mut settings = sanitized_existing_settings_at(&fixture.paths.settings_path).unwrap();
+        let profile = settings
+            .relay_profiles
+            .iter_mut()
+            .find(|profile| profile.id == "external")
+            .unwrap();
+        profile.relay_mode = RelayMode::PureApi;
+        profile.official_mix_api_key = false;
+        fs::write(
+            &fixture.paths.settings_path,
+            crate::commands::serialize_settings_without_profile_auth(&settings).unwrap(),
+        )
+        .unwrap();
+
+        let preview = fixture.preview();
+        assert_eq!(preview.status, "ok", "{}", preview.message);
+        let committed = fixture.commit(&preview);
+        assert_eq!(committed.status, "ok", "{}", committed.message);
+
+        let saved = sanitized_existing_settings_at(&fixture.paths.settings_path).unwrap();
+        let manager_path = root_catalog_pointer(
+            &saved
+                .relay_profiles
+                .iter()
+                .find(|profile| profile.id == "external")
+                .unwrap()
+                .config_contents,
+        )
+        .unwrap();
+        // A custom-only materialization carries none of the official baseline.
+        let custom_only = codex_plus_core::model_suffix::build_model_catalog_json(
+            &[codex_plus_core::model_suffix::ModelCatalogEntry {
+                slug: "only-custom".to_string(),
+                display_name: "Only Custom".to_string(),
+                suffix_window: Some(123_000),
+            }],
+            None,
+        );
+        fs::write(
+            fixture.paths.codex_home.join(&manager_path),
+            custom_only.as_bytes(),
+        )
+        .unwrap();
+        fs::remove_file(&fixture.paths.catalog_state_path).unwrap();
+        let reconstructed = load_and_migrate_state_from_path(
+            &saved,
+            &fixture.paths.codex_home,
+            &fixture.paths.catalog_state_path,
+        )
+        .unwrap();
+
+        assert_eq!(
+            reconstructed.profiles["external"].mode,
+            CatalogMode::CustomOnly,
+            "an artifact with no official rows must stay custom-only"
         );
     }
 
