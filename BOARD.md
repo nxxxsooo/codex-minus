@@ -8,6 +8,11 @@
 
 ### 2026-08-18
 
+- **chore/repository**: moved the native `image_gen` probe evidence out of the repository and taught Git to ignore future probe output
+  - why: `output/` had been sitting untracked in the repository root holding the 2026-08-17 probe artifact that the `research/host` finding rests on, so it could neither be deleted without losing the evidence nor left where generated files do not belong
+  - verified: the artifact and its context now live at `Vault/Notes/tech/codex/assets/native-imagegen-probe-cyber-dog.png` and `Vault/Notes/tech/codex/native-imagegen-shadow-codex-home.md`; a scratch file under `output/` confirmed the new ignore rule takes effect; PR #40 passed macOS arm64, Windows x64, and Windows arm64 CI and merged as `7485ae1`
+  - refs: `.gitignore`, PR #40, BOARD 2026-08-18 `research/host`
+
 - **merge/providers**: brought the Responses-only branch up to `master` (0.4.14 auth repair, 0.4.15 legacy model reset, 24 commits) and reconciled the two designs where they met
   - why: the branch had sat unpushed while the same files gained the legacy-model-reset work; both sides had independently rewritten the missing-profile catalog bootstrap, the provider commit CAS, and the persisted-settings decoder, so the conflicts were semantic rather than textual
   - resolved: kept the branch's manager-pointer catalog recovery for General loading and master's artifact-free ownership derivation for reset planning; ran the Responses-only settings validation inside the shared policy loader so both policies fail closed; made `provider_generation_fingerprint` propagate the now-fallible default-mode lookup instead of defaulting a removed shape; restored the shown projection (`sanitize_settings_for_output`) on the commit baseline after strict decoding; dropped the dead Chat Completions/aggregate branch that strict validation had made unreachable; routed master's fixture helpers through the Responses-only persisted shape
