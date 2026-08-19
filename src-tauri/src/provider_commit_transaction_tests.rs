@@ -8517,3 +8517,214 @@ fn a_bundled_update_that_retires_the_active_default_model_names_the_repair() {
         "the catalog Codex is running on stays in place for continuity"
     );
 }
+
+fn pure_api_profile(id: &str, model: &str, base_url: &str, key: &str) -> RelayProfile {
+    RelayProfile {
+        id: id.to_string(),
+        name: format!("Pure API {id}"),
+        model: model.to_string(),
+        base_url: base_url.to_string(),
+        upstream_base_url: base_url.to_string(),
+        api_key: key.to_string(),
+        protocol: RelayProtocol::Responses,
+        relay_mode: RelayMode::PureApi,
+        official_mix_api_key: false,
+        config_contents: format!(
+            r#"model = "{model}"
+model_provider = "OpenAI"
+
+[model_providers.OpenAI]
+name = "OpenAI"
+base_url = "{base_url}"
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = "{key}"
+"#
+        ),
+        ..RelayProfile::default()
+    }
+}
+
+fn pure_api_catalog_draft(profile_id: &str, model: &str) -> ProfileCatalogDraft {
+    ProfileCatalogDraft {
+        profile_id: profile_id.to_string(),
+        mode: CatalogMode::CustomOnly,
+        mode_explicit: false,
+        upstream_topology: UpstreamTopology::Direct,
+        external_pointer: None,
+        overlay: CatalogOverlay {
+            custom: vec![CustomModel {
+                slug: model.to_string(),
+                display_name: model.to_string(),
+                context_window: 200_000,
+                visible: true,
+                ..CustomModel::default()
+            }],
+            ..CatalogOverlay::default()
+        },
+    }
+}
+
+#[test]
+fn first_save_of_a_new_pure_api_profile_completes_without_official_oauth() {
+    let persisted = settings_with(vec![pure_oauth_profile("official")], "official");
+    let fixture = Fixture::new(&persisted, &state_with_official());
+    fs::remove_file(fixture.paths.codex_home.join("auth.json")).unwrap();
+    let persisted = fixture.read_settings();
+    let live_before = fs::read(fixture.paths.codex_home.join("config.toml")).unwrap();
+
+    let mut next = persisted.clone();
+    next.relay_profiles.push(pure_api_profile(
+        "pureapi",
+        "gpt-5.6-sol",
+        "https://relay.example/v1",
+        "provider-key",
+    ));
+    let mut save = request(&persisted, &next, "pureapi", ProviderCommitAction::Save, 11);
+    save.catalog_drafts = vec![pure_api_catalog_draft("pureapi", "gpt-5.6-sol")];
+
+    let payload = commit_provider_detail_from_paths(&fixture.paths, save).unwrap();
+
+    assert!(payload.error_code.is_none());
+    let state = fixture.read_state();
+    let catalog = &state.profiles["pureapi"];
+    assert_eq!(catalog.mode, CatalogMode::CustomOnly);
+    assert!(
+        catalog.action_required.is_none(),
+        "a signed-out pure-API first save must not be action-required: {:?}",
+        catalog.action_required
+    );
+    assert_eq!(catalog.overlay.custom.len(), 1);
+    assert_eq!(catalog.overlay.custom[0].slug, "gpt-5.6-sol");
+    let generated_path = fixture.paths.codex_home.join(
+        catalog
+            .generated_path
+            .as_ref()
+            .expect("materialized catalog"),
+    );
+    assert!(generated_path.is_file());
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join("config.toml")).unwrap(),
+        live_before
+    );
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join("auth.json")).ok(),
+        None,
+        "no auth write may occur"
+    );
+}
+
+#[test]
+fn set_current_pure_api_profile_succeeds_without_official_oauth() {
+    let persisted = settings_with(
+        vec![
+            pure_oauth_profile("official"),
+            pure_api_profile(
+                "pureapi",
+                "gpt-5.6-sol",
+                "https://relay.example/v1",
+                "provider-key",
+            ),
+        ],
+        "official",
+    );
+    let fixture = Fixture::new(&persisted, &state_with_official());
+    fs::remove_file(fixture.paths.codex_home.join("auth.json")).unwrap();
+    // The authoritative load settles the persisted pure-API profile's one-time legacy-reset
+    // marker and returns the exact generation token the editor would hold.
+    let status = load_settings_blocking_at(&fixture.paths);
+    assert_eq!(status.status, "ok");
+    let persisted = status.payload.settings;
+
+    let mut seed = request(
+        &persisted,
+        &persisted,
+        "pureapi",
+        ProviderCommitAction::Save,
+        12,
+    );
+    seed.catalog_drafts = vec![pure_api_catalog_draft("pureapi", "gpt-5.6-sol")];
+    seed.expected_provider_fingerprint = status.payload.provider_fingerprint.clone();
+    commit_provider_detail_from_paths_raw(&fixture.paths, seed)
+        .expect("inactive pure-API save persists");
+
+    let status = load_settings_blocking_at(&fixture.paths);
+    assert_eq!(status.status, "ok");
+    let persisted = status.payload.settings;
+    let mut next = persisted.clone();
+    next.active_relay_id = "pureapi".to_string();
+    let mut activate = request(
+        &persisted,
+        &next,
+        "pureapi",
+        ProviderCommitAction::SetCurrent,
+        13,
+    );
+    activate.catalog_drafts = vec![pure_api_catalog_draft("pureapi", "gpt-5.6-sol")];
+    activate.expected_provider_fingerprint = status.payload.provider_fingerprint.clone();
+
+    let payload = commit_provider_detail_from_paths_raw(&fixture.paths, activate).unwrap();
+
+    assert!(
+        payload.error_code.is_none(),
+        "activation without OAuth must not be gated: {:?} {:?}",
+        payload.error_code,
+        payload.reason
+    );
+    assert_eq!(fixture.read_settings().active_relay_id, "pureapi");
+    let live = fs::read_to_string(fixture.paths.codex_home.join("config.toml")).unwrap();
+    assert!(live.contains("requires_openai_auth = false"), "{live}");
+    assert!(live.contains("experimental_bearer_token = \"provider-key\""));
+    assert!(!live.contains("x-openai-actor-authorization"), "{live}");
+    assert!(live.contains("model_catalog_json"), "{live}");
+    assert_eq!(
+        fs::read(fixture.paths.codex_home.join("auth.json")).ok(),
+        None,
+        "no auth write may occur"
+    );
+}
+
+#[test]
+fn commit_focused_elsewhere_leaves_a_pure_api_bystander_byte_identical() {
+    let bystander = pure_api_profile(
+        "pure-bystander",
+        "gpt-5.6-sol",
+        "https://bystander.example/v1",
+        "bystander-key",
+    );
+    let bystander_config = bystander.config_contents.clone();
+    let persisted = settings_with(
+        vec![
+            canonical_profile(
+                "sub2api",
+                "gpt-5.6-sol",
+                "https://relay.example/v1",
+                "provider-key",
+            ),
+            bystander,
+        ],
+        "sub2api",
+    );
+    let fixture = Fixture::new(&persisted, &state_with_official());
+    let status = load_settings_blocking_at(&fixture.paths);
+    assert_eq!(status.status, "ok");
+    let persisted = status.payload.settings;
+
+    let mut next = persisted.clone();
+    next.relay_profiles[0] = canonical_profile(
+        "sub2api",
+        "gpt-5.6-sol",
+        "https://relay-updated.example/v1",
+        "provider-key",
+    );
+    let mut save = request(&persisted, &next, "sub2api", ProviderCommitAction::Save, 14);
+    save.expected_provider_fingerprint = status.payload.provider_fingerprint.clone();
+    commit_provider_detail_from_paths_raw(&fixture.paths, save)
+        .expect("the focused profile commits");
+
+    assert_eq!(
+        raw_stored_profile_config(&fixture.paths.settings_path, "pure-bystander"),
+        bystander_config,
+        "a commit rewrote a pure-API profile the user never opened"
+    );
+}

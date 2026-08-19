@@ -36,12 +36,12 @@ describe("provider config draft wiring", () => {
     assert.doesNotMatch(source + shell, /ensureCodexProviderDefaults/);
   });
 
-  it("decides the contract by provenance alone", () => {
+  it("decides the contract by provenance plus the explicit transient target", () => {
     const target = functionSource("providerConfigTargetContract");
     assert.match(target, /if \(!brandNew\) return \{ target: "preserveExisting", source: "existing" \}/);
-    assert.match(target, /target: "nativePriority", source: "brand-new-empty"/);
-    // The retired four-target picker branched on profile fields; provenance must be the only
-    // condition left.
-    assert.doesNotMatch(target, /profile\.(relayMode|officialMixApiKey|protocol|transientTarget)/);
+    assert.match(target, /target: profile\.transientTarget \?\? "nativePriority", source: "brand-new-empty"/);
+    // The retired four-target picker branched on live mode fields; the only extra input allowed
+    // beyond provenance is the explicit one-time creation target the user chose.
+    assert.doesNotMatch(target, /profile\.(relayMode|officialMixApiKey|protocol)/);
   });
 });

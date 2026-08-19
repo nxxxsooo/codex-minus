@@ -10,13 +10,12 @@ import {
   type NewProviderTransientTarget,
 } from "./provider-onboarding.ts";
 
-/// The two provenances a provider config edit can have. A brand-new empty draft materializes the
-/// canonical native-priority contract through `materializeNewProviderConfig` — the one generator —
-/// and an existing config is only ever patched in place, never reconstructed. The retired
-/// four-target picker chose between alternate generators here; every alternate became unreachable
-/// once the editor stopped offering 接入模式, so the choice collapsed into provenance alone.
+/// The two provenances a provider config edit can have. A brand-new empty draft materializes its
+/// contract through `materializeNewProviderConfig` — the one generator, carrying the draft's
+/// explicit transient target (native-priority by default, pure API for the no-login path) — and
+/// an existing config is only ever patched in place, never reconstructed.
 export type ProviderConfigTargetContract =
-  | { target: "nativePriority"; source: "brand-new-empty" }
+  | { target: NewProviderTransientTarget; source: "brand-new-empty" }
   | { target: "preserveExisting"; source: "existing" };
 
 export type ProviderConfigProfile = {
@@ -31,7 +30,7 @@ export type ProviderConfigProfile = {
 
 function brandNewProviderConfig(profile: ProviderConfigProfile): string {
   return materializeNewProviderConfig({
-    transientTarget: "nativePriority",
+    transientTarget: profile.transientTarget ?? "nativePriority",
     model: profile.model,
     baseUrl: profile.baseUrl,
     apiKey: profile.apiKey,
@@ -45,11 +44,27 @@ export function applyProviderConfigPatch<T extends ProviderConfigProfile>(
   contract: ProviderConfigTargetContract,
 ): T {
   let next = { ...profile, ...patch } as T;
-  if (!next.configContents.trim() && contract.source === "brand-new-empty") {
-    next = { ...next, configContents: brandNewProviderConfig(next) };
+  // A brand-new draft's whole config is generated from its structured fields, so switching the
+  // access target regenerates it losslessly under the new contract; per-key patching below then
+  // re-applies the root context keys the generator does not carry.
+  const retarget = contract.source === "brand-new-empty" && "transientTarget" in patch;
+  if (retarget || (!next.configContents.trim() && contract.source === "brand-new-empty")) {
+    next = { ...next, configContents: brandNewProviderConfig({ ...next, configContents: "" }) };
     if (!next.configContents.trim()) return next;
   }
   if (!next.configContents.trim()) return next;
+  if (retarget) {
+    next.configContents = setRootTomlIntKey(
+      next.configContents,
+      "model_context_window",
+      next.contextWindow ?? "",
+    );
+    next.configContents = setRootTomlIntKey(
+      next.configContents,
+      "model_auto_compact_token_limit",
+      next.autoCompactLimit ?? "",
+    );
+  }
 
   if ("model" in patch) {
     next.configContents = setRootTomlStringKey(
