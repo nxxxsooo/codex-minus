@@ -6,6 +6,18 @@
 
 ## Changelog
 
+### 2026-08-19
+
+- **release/providers**: delivered the two responses-only follow-up fixes to `master` through PR #41 and retired the last review blockers on that work
+  - why: the Pure API catalog downgrade and the leaked debug dump were recorded as completed on an unmerged branch, so neither was actually reachable; the branch had also fallen three commits behind `master` after PR #40
+  - verified: rebased onto `master` `95ffdce` with only a same-day `BOARD.md` append to resolve, then re-ran `cargo test` (300 library + 19 + 22 integration), `npm run verify` (231 frontend tests, TypeScript, knip), `npm run vite:build`, `cargo fmt --check`, and `git diff --check`; CI run `32150859148` passed macOS arm64, Windows x64, and Windows arm64; PR #41 merged fast-forward as `e82f963` and its branch was deleted
+  - refs: PR #41, `e82f963`, `src-tauri/src/model_catalog.rs`, `src-tauri/src/commands.rs`
+
+- **chore/openspec**: `openspec validate --all` returns 10/10 again after removing two empty change directories that only ever held an ignored `.openspec.yaml`
+  - why: the failures looked like real spec debt but were untracked local debris — `prioritize-native-capabilities-for-mixed-providers` had already been archived to `archive/2026-08-12-…` and the archive move left the ignored stub behind, while `exclude-subagents-from-managed-session-inventory` never had any tracked content, spec, or implementation. The global ignore rule `.*` in `~/.config/git/ignore` is what keeps every `.openspec.yaml` untracked, so this debris is invisible to Git and to CI
+  - verified: `git ls-files` reported zero tracked files under both directories before deletion and `git status` stayed clean after it; validation moved from `10 passed, 2 failed` to `10 passed, 0 failed`
+  - refs: `openspec/changes/archive/2026-08-12-prioritize-native-capabilities-for-mixed-providers`
+
 ### 2026-08-18
 
 - **chore/repository**: moved the native `image_gen` probe evidence out of the repository and taught Git to ignore future probe output
