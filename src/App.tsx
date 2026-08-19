@@ -108,9 +108,14 @@ import * as settingsBaseline from "./settings-baseline";
 import { LiveConfigPanel } from "./relay-config-panels";
 import { providerDoctorSteps } from "./provider-doctor-steps";
 import { isSuccessStatus, statusClass, statusLabel } from "./status-presentation";
-import { providerTransitionConfirmationMessage } from "./provider-transition-confirmation";
+import {
+  providerPureOAuthEnablementConfirmationMessage,
+  providerTransitionConfirmationMessage,
+} from "./provider-transition-confirmation";
 import {
   createNewRelayProfileDraft,
+  NEW_PROVIDER_TARGET_OPTIONS,
+  newProviderTargetPatch,
   PRO_MODEL_SLUGS,
   validateNewProviderDraft,
   type NewProviderTransientTarget,
@@ -121,6 +126,7 @@ import {
   beginProviderDetailInspection,
   beginProviderDetailLegacyIdUpgrade,
   beginProviderDetailNativePriorityUpgrade,
+  beginProviderDetailPureOAuthEnablement,
   cancelProviderDetailLegacyProviderIdResolution,
   cancelProviderDetailTransition,
   confirmProviderDetailTransition,
@@ -141,8 +147,32 @@ import {
 import {
   deriveProviderNativeCapabilityView,
   providerAccessModeHint,
+  providerPureApiExitAvailable,
+  providerPureOAuthKeyEnablementPending,
   providerTransitionDecisionForStructuredPatch,
 } from "./provider-native-capability-view";
+import {
+  boundedPercentOrDefault,
+  boundedPercentOrNull,
+  catalogDraftErrorLabel,
+  envConflictSourceLabel,
+  formatTime,
+  integerOrDefault,
+  integerOrNull,
+  managedCatalogMode,
+  parseCommaListOrNull,
+  parseReasoningLevels,
+  positiveNumberOrDefault,
+  positiveNumberOrNull,
+  providerInitial,
+  reasoningEffortsText,
+  relayModeLabel,
+  relayProfileConfigBrief,
+  relayProfileEditorStatus,
+  relayProfileModeHelp,
+  stringifyError,
+  truncateSessionDeletePreview,
+} from "./app-shell-rules";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 import type {
   AdoptionPreviewResult,
@@ -1722,12 +1752,6 @@ function EnvConflictNotice({
   );
 }
 
-function envConflictSourceLabel(source: string): string {
-  if (source === "process") return t("当前进程");
-  if (source === "user") return t("用户环境");
-  return source || t("环境变量");
-}
-
 const SESSION_LIST_PAGE_SIZE = 100;
 
 function SessionsScreen({
@@ -2460,6 +2484,29 @@ function RelayProfileDetail({
         target,
         transition,
       });
+      // A brand-new draft's implicit catalog plan follows its access target: switching the radio
+      // to pure API plans custom-only, switching back plans official-plus-custom. An explicit
+      // user-chosen catalog mode is never overridden.
+      if (
+        target.source === "brand-new-empty"
+        && "relayMode" in patch
+        && step.state.catalogDraft
+        && !step.state.catalogDraft.modeExplicit
+      ) {
+        const impliedMode = defaultCatalogMode(
+          step.state.profile.relayMode,
+          step.state.profile.officialMixApiKey,
+        ) as CatalogMode;
+        if (step.state.catalogDraft.mode !== impliedMode) {
+          step = {
+            ...step,
+            state: replaceProviderDetailCatalogDraft(
+              step.state,
+              updateCatalogProfileDraft(step.state.catalogDraft, { mode: impliedMode }),
+            ),
+          };
+        }
+      }
     } catch (error) {
       void actions.showMessage(t("供应商配置转换"), t("调用后端失败，请重试一次；原始错误在详情里。"), "failed", stringifyError(error));
       return;
@@ -2501,6 +2548,21 @@ function RelayProfileDetail({
     savingRef.current = true;
     setSaving(true);
     try {
+      // A pure-OAuth profile holding a newly entered key persists only through the explicit
+      // enablement confirmation; declining keeps pure OAuth and drops the draft key.
+      if (!isNew && providerPureOAuthKeyEnablementPending(detailStateRef.current.profile)) {
+        if (!window.confirm(providerPureOAuthEnablementConfirmationMessage())) {
+          await dispatchProviderDetailStep(beginProviderDetailEdit(detailStateRef.current, {
+            patch: { apiKey: "" },
+            target: providerConfigTargetContract(detailStateRef.current.profile, false),
+          }));
+          return;
+        }
+        const enabled = await dispatchProviderDetailStep(
+          beginProviderDetailPureOAuthEnablement(detailStateRef.current),
+        );
+        if (!enabled) return;
+      }
       // Opening a profile that predates this contract and pressing save upgrades it in place: the
       // save is the explicit action, so there is no separate upgrade control to find. A legacy
       // alias still needs a name from the user, so that one only opens its prompt.
@@ -2573,6 +2635,14 @@ function RelayProfileDetail({
       || detailState.pendingLegacyProviderIdResolution !== null
       || detailState.blockers.length > 0
     ) return;
+    if (providerPureOAuthKeyEnablementPending(draft)) {
+      void actions.showMessage(
+        t("设为当前"),
+        t("此官方登录供应商已填入 Key：请先点击保存，完成显式升级确认。"),
+        "failed",
+      );
+      return;
+    }
     const normalizedDraft = deriveRelayProfileFromFiles(draft);
     const previousActiveRelayId = form.activeRelayId;
     const next = syncLegacyRelayFields({
@@ -2646,7 +2716,7 @@ function RelayProfileDetail({
           ) : null}
         </section>
       )}
-        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={replaceDraft} onProfileEdit={editDraft} onSwitch={switchDraft} actions={actions} catalogProfile={catalogProfile} draftCommitBlocked={detailState.pendingTransformRevision !== null || detailState.pendingConfirmation !== null || detailState.pendingLegacyProviderIdResolution !== null || detailState.blockers.length > 0} />
+        <RelayProfileEditor profile={draft} form={form} isNew={isNew} onProfileChange={replaceDraft} onProfileEdit={editDraft} onSwitch={switchDraft} actions={actions} catalogProfile={catalogProfile} draftCommitBlocked={detailState.pendingTransformRevision !== null || detailState.pendingConfirmation !== null || detailState.pendingLegacyProviderIdResolution !== null || detailState.blockers.length > 0} pureApiExitAvailable={!isNew && providerPureApiExitAvailable(draft, nativeCapabilityView)} onPureApiExit={() => editDraft({ relayMode: "pureApi", officialMixApiKey: false })} />
       {catalogDraft ? (
         <CatalogProfileEditor
           catalog={modelCatalog}
@@ -2688,6 +2758,8 @@ function RelayProfileEditor({
   actions,
   catalogProfile,
   draftCommitBlocked = false,
+  pureApiExitAvailable = false,
+  onPureApiExit,
 }: {
   profile: RelayProfile;
   form: BackendSettings;
@@ -2698,6 +2770,8 @@ function RelayProfileEditor({
   actions: Actions;
   catalogProfile: ProfileCatalogSummary | null;
   draftCommitBlocked?: boolean;
+  pureApiExitAvailable?: boolean;
+  onPureApiExit?: () => void;
 }) {
   const [doctorResult, setDoctorResult] = useState<ProviderDoctorResult | null>(null);
   const [doctorOpen, setDoctorOpen] = useState(false);
@@ -2720,21 +2794,15 @@ function RelayProfileEditor({
   // how a profile that predates this contract upgrades itself.
   const showApiFields = true;
   const updateDraft = (patch: Partial<RelayProfile>) => {
-    // Holding a provider key is what makes an official profile mixed; there is no separate
-    // switch. Clearing the key never flips it back, because leaving the mixed contract deletes a
-    // provider table and stays an explicit, previewed action.
-    const merged = { ...profile, ...patch };
-    const resolved = merged.relayMode === "official"
-      && !merged.officialMixApiKey
-      && merged.apiKey.trim()
-      ? { ...patch, officialMixApiKey: true }
-      : patch;
+    // Entering a key on a pure-OAuth profile no longer flips the mixed contract implicitly: the
+    // key lands in the draft as an ordinary edit, and the explicit enablement confirmation at
+    // Save owns the transition.
     if (onProfileEdit) {
-      onProfileEdit(resolved);
+      onProfileEdit(patch);
       return;
     }
-    const target = providerConfigTargetContract({ ...profile, ...resolved }, isNew);
-    onProfileChange(applyRelayProfilePatchToFiles(profile, resolved, {
+    const target = providerConfigTargetContract({ ...profile, ...patch }, isNew);
+    onProfileChange(applyRelayProfilePatchToFiles(profile, patch, {
       allowGenerateFiles: isNew,
       target,
     }));
@@ -2781,9 +2849,40 @@ function RelayProfileEditor({
             onChange={(event) => updateDraft({ name: event.currentTarget.value })}
           />
         </Field>
-        {profile.relayMode === "official" ? (
+        {isNew ? (
+          <Field className="relay-field-mode" label={t("接入方式")}>
+            <div className="relay-target-options" role="radiogroup">
+              {NEW_PROVIDER_TARGET_OPTIONS.map((option) => (
+                <label className="relay-target-option" key={option.value}>
+                  <input
+                    checked={(profile.transientTarget ?? "nativePriority") === option.value}
+                    name="new-provider-target"
+                    onChange={() => updateDraft(newProviderTargetPatch(option.value))}
+                    type="radio"
+                  />
+                  <span>{t(option.label)}</span>
+                  <small className="field-hint">{t(option.hint)}</small>
+                </label>
+              ))}
+            </div>
+          </Field>
+        ) : profile.relayMode === "official" ? (
           <Field className="relay-field-mode" label={t("接入模式")}>
             <p className="field-hint">{t(providerAccessModeHint(profile))}</p>
+            {pureApiExitAvailable && onPureApiExit ? (
+              <Button
+                onClick={onPureApiExit}
+                size="sm"
+                type="button"
+                variant="secondary"
+              >
+                {t("切换到纯 API（无需官方登录）")}
+              </Button>
+            ) : null}
+          </Field>
+        ) : profile.relayMode === "pureApi" ? (
+          <Field className="relay-field-mode" label={t("接入模式")}>
+            <p className="field-hint">{t("纯 API＋不需要官方登录＋Responses API")}</p>
           </Field>
         ) : null}
         {showApiFields ? (
@@ -3099,116 +3198,8 @@ const contextKindOptions = CONTEXT_KIND_TABLES.map((option) => ({
   label: contextKindLabels[option.kind],
 }));
 
-function relayProfileEditorStatus(profile: RelayProfile, form: BackendSettings, isNew: boolean) {
-  if (isNew) return t("新建供应商需要先保存到列表");
-  if (!form.relayProfilesEnabled) return t("供应商配置总开关已关闭；当前只保存配置，不写入 Codex live 文件");
-  return profile.id === form.activeRelayId ? t("当前正在使用") : t("编辑后保存列表，再切换模式时会使用新配置");
-}
-
-function providerInitial(name: string) {
-  const trimmed = (name || t("供应商")).trim();
-  return Array.from(trimmed)[0]?.toUpperCase() || t("供");
-}
 
 
-
-
-function truncateSessionDeletePreview(value: string) {
-  const normalized = value.trim();
-  return normalized.length > 20 ? `${normalized.slice(0, 20)}...` : normalized;
-}
-
-function relayModeLabel(mode: RelayMode): string {
-  if (mode === "pureApi") return t("纯 API");
-  return t("官方登录");
-}
-
-function relayProfileConfigBrief(profile: RelayProfile): string {
-  if (profile.relayMode === "official") return profile.officialMixApiKey ? t("混入 API Key") : t("不写 API 文件");
-  return profile.baseUrl || t("未填写 URL");
-}
-
-function relayProfileModeHelp(profile: RelayProfile): string {
-  if (profile.relayMode === "official") {
-    if (profile.officialMixApiKey) {
-      return t("此供应商会保留官方登录模式，并把请求混入当前 API Key。");
-    }
-    return t("此供应商会切回官方登录模式，使用 ChatGPT 官方账号，不写入 API Key。");
-  }
-  if (profile.relayMode === "pureApi") {
-    return t("此供应商只把 API Key 写入 owner-only 的 provider bearer 配置，并明确不要求 ChatGPT 认证。");
-  }
-  return t("此供应商会保留官方登录模式，并把请求混入当前 API Key。");
-}
-
-function formatTime(value: number) {
-  if (!value) return "-";
-  return new Date(value).toLocaleString("zh-CN");
-}
-
-function positiveNumberOrNull(value: string): number | null {
-  const parsed = Number.parseInt(value.replace(/[^\d]/g, ""), 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-}
-
-function boundedPercentOrNull(value: string): number | null {
-  const parsed = positiveNumberOrNull(value);
-  return parsed !== null && parsed <= 100 ? parsed : null;
-}
-
-function boundedPercentOrDefault(value: string, fallback: number): number {
-  return boundedPercentOrNull(value) ?? fallback;
-}
-
-function parseCommaListOrNull(value: string): string[] | null {
-  const items = [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))];
-  return items.length ? items : null;
-}
-
-function parseReasoningLevels(value: string): ReasoningLevel[] | null {
-  const efforts = parseCommaListOrNull(value);
-  return efforts?.map((effort) => ({ effort, description: effort })) ?? null;
-}
-
-function reasoningEffortsText(levels: ReasoningLevel[]): string {
-  return levels.map((level) => level.effort).join(",");
-}
-
-function managedCatalogMode(mode: CatalogMode): boolean {
-  return mode === "official-plus-custom" || mode === "custom-only";
-}
-
-function integerOrNull(value: string): number | null {
-  if (!value.trim()) return null;
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function positiveNumberOrDefault(value: string, fallback: number): number {
-  return positiveNumberOrNull(value) ?? fallback;
-}
-
-function integerOrDefault(value: string, fallback: number): number {
-  return integerOrNull(value) ?? fallback;
-}
-
-function catalogDraftErrorLabel(error: string | null): string {
-  if (error === "empty-custom-slug") return t("自定义模型 slug 不能为空。");
-  if (error === "empty-display-name") return t("自定义模型显示名不能为空。");
-  if (error === "duplicate-custom-slug") return t("自定义模型 slug 不能重复。");
-  if (error === "invalid-context-window") return t("上下文窗口必须是正整数。");
-  if (error === "invalid-effective-percent") return t("有效上下文百分比必须为 1 到 100。");
-  if (error === "invalid-reasoning-levels") return t("推理级别不能为空或重复。");
-  if (error === "invalid-reasoning-default") return t("默认推理级别必须包含在支持列表中。");
-  if (error === "invalid-default-model") return t("当前默认模型不在有效目录中，请先调整目录或默认模型。");
-  if (error === "empty-catalog") return t("模型列表不能为空，至少保留一个模型。");
-  return "";
-}
-
-function stringifyError(error: unknown) {
-  if (error instanceof Error) return error.message;
-  return String(error);
-}
 
 function loadInitialTheme(): Theme {
   if (typeof window === "undefined") return "dark";

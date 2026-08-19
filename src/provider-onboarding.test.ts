@@ -4,11 +4,13 @@ import { describe, it } from "node:test";
 
 import {
   NEW_PROVIDER_ID,
+  NEW_PROVIDER_TARGET_OPTIONS,
   OFFICIAL_AUTH_GUIDE_URL,
   PRO_MODEL_SLUGS,
   RETIRED_MODEL_SLUGS,
   createNewRelayProfileDraft,
   materializeNewProviderConfig,
+  newProviderTargetPatch,
   officialLoginGuide,
   validateNewProviderDraft,
 } from "./provider-onboarding.ts";
@@ -83,6 +85,52 @@ experimental_bearer_token = "provider-key"
 http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
 `,
     });
+  });
+
+  it("materializes the exact pure-API TOML for the explicit no-login target", () => {
+    const empty = createNewRelayProfileDraft({ id: "relay-new", contextSelection: {} });
+    const pureApi = {
+      ...empty,
+      ...newProviderTargetPatch("pureApi"),
+      model: "gpt-5.5",
+      baseUrl: "https://relay.example/v1",
+      apiKey: "provider-key",
+    };
+
+    assert.deepEqual(materializeNewProviderConfig(pureApi), {
+      target: "pureApi",
+      status: "materialized",
+      missingFields: [],
+      configContents: `model = "gpt-5.5"
+model_provider = "OpenAI"
+
+[model_providers.OpenAI]
+name = "OpenAI"
+base_url = "https://relay.example/v1"
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = "provider-key"
+`,
+    });
+  });
+
+  it("offers the mixed default first and patches mode fields with the target choice", () => {
+    assert.equal(NEW_PROVIDER_TARGET_OPTIONS[0].value, "nativePriority");
+    assert.equal(NEW_PROVIDER_TARGET_OPTIONS.length, 2);
+    assert.deepEqual(newProviderTargetPatch("nativePriority"), {
+      transientTarget: "nativePriority",
+      relayMode: "official",
+      officialMixApiKey: true,
+    });
+    assert.deepEqual(newProviderTargetPatch("pureApi"), {
+      transientTarget: "pureApi",
+      relayMode: "pureApi",
+      officialMixApiKey: false,
+    });
+    for (const option of NEW_PROVIDER_TARGET_OPTIONS) {
+      assert.equal(typeof EN_PLAIN[option.label], "string", option.label);
+      assert.equal(typeof EN_PLAIN[option.hint], "string", option.hint);
+    }
   });
 
   it("names the new provider table without impersonating the built-in entry", () => {

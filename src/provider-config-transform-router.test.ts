@@ -72,6 +72,72 @@ describe("provider config transform router", () => {
     );
   });
 
+  it("synchronously materializes the pure-API contract for a brand-new pure-API draft", () => {
+    const blank = {
+      ...createNewRelayProfileDraft({ id: "new", contextSelection: {} }),
+      transientTarget: "pureApi" as const,
+      relayMode: "pureApi" as const,
+      officialMixApiKey: false,
+    };
+    const routed = routeProviderConfigDraftEdit({
+      profile: blank,
+      patch: {
+        model: "gpt-5.5",
+        baseUrl: "https://relay.example/v1",
+        apiKey: "provider-key",
+      },
+      target: { target: "pureApi", source: "brand-new-empty" },
+    });
+
+    assert.equal(routed.kind, "synchronous");
+    if (routed.kind !== "synchronous") return;
+    assert.match(routed.profile.configContents, /name = "OpenAI"/);
+    assert.match(routed.profile.configContents, /wire_api = "responses"/);
+    assert.match(routed.profile.configContents, /requires_openai_auth = false/);
+    assert.match(
+      routed.profile.configContents,
+      /experimental_bearer_token = "provider-key"/,
+    );
+    assert.doesNotMatch(routed.profile.configContents, /http_headers/);
+    assert.doesNotMatch(routed.profile.configContents, /x-openai-actor-authorization/);
+  });
+
+  it("regenerates a materialized brand-new draft when the access target switches", () => {
+    const filled = {
+      ...createNewRelayProfileDraft({ id: "new", contextSelection: {} }),
+      model: "gpt-5.5",
+      baseUrl: "https://relay.example/v1",
+      apiKey: "provider-key",
+      contextWindow: "272000",
+    };
+    const materialized = applyProviderConfigPatch(filled, { contextWindow: "272000" }, {
+      target: "nativePriority",
+      source: "brand-new-empty",
+    });
+    assert.match(materialized.configContents, /requires_openai_auth = true/);
+    assert.match(materialized.configContents, /model_context_window = 272000/);
+
+    const retargeted = applyProviderConfigPatch(
+      materialized,
+      { transientTarget: "pureApi" },
+      { target: "pureApi", source: "brand-new-empty" },
+    );
+    assert.match(retargeted.configContents, /requires_openai_auth = false/);
+    assert.doesNotMatch(retargeted.configContents, /x-openai-actor-authorization/);
+    assert.match(retargeted.configContents, /model_context_window = 272000/);
+
+    const restored = applyProviderConfigPatch(
+      retargeted,
+      { transientTarget: "nativePriority" },
+      { target: "nativePriority", source: "brand-new-empty" },
+    );
+    assert.match(restored.configContents, /requires_openai_auth = true/);
+    assert.match(
+      restored.configContents,
+      /http_headers = \{ "x-openai-actor-authorization" = "local-image-extension" \}/,
+    );
+  });
+
   it("routes every existing actor or mode transition to one revisioned backend request", () => {
     const cases = [
       {

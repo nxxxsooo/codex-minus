@@ -4,7 +4,7 @@ export type NewProviderFieldErrors = Partial<
   Record<"baseUrl" | "apiKey" | "model", "required">
 >;
 
-export type NewProviderTransientTarget = "nativePriority";
+export type NewProviderTransientTarget = "nativePriority" | "pureApi";
 export type NewProviderRequiredField = "baseUrl" | "apiKey" | "model";
 export type NewProviderMaterializationStatus =
   | "incomplete"
@@ -104,6 +104,17 @@ export function materializeNewProviderConfig(
   const model = tomlString(profile.model.trim());
   const baseUrl = tomlString(profile.baseUrl.trim());
   const apiKey = tomlString(profile.apiKey.trim());
+  // The pure-API target is the explicit no-login contract: `requires_openai_auth = false`, no
+  // actor-authorization header, provider bearer only. It never claims native-capability priority;
+  // the target CLI runs on the bearer alone.
+  const contract = profile.transientTarget === "pureApi"
+    ? `requires_openai_auth = false
+experimental_bearer_token = "${apiKey}"
+`
+    : `requires_openai_auth = true
+experimental_bearer_token = "${apiKey}"
+http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
+`;
   return {
     target: profile.transientTarget,
     status: "materialized",
@@ -115,11 +126,39 @@ model_provider = "${NEW_PROVIDER_ID}"
 name = "OpenAI"
 base_url = "${baseUrl}"
 wire_api = "responses"
-requires_openai_auth = true
-experimental_bearer_token = "${apiKey}"
-http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
-`,
+${contract}`,
   };
+}
+
+/// The one-time target choice on the new-provider page. The mixed native-priority target stays
+/// the default; pure API is the explicit path for a user who cannot sign in to ChatGPT. Selecting
+/// a target patches the draft's structured mode fields together with the transient target so the
+/// brand-new materializer emits the matching contract.
+export const NEW_PROVIDER_TARGET_OPTIONS: ReadonlyArray<{
+  value: NewProviderTransientTarget;
+  label: string;
+  hint: string;
+}> = [
+  {
+    value: "nativePriority",
+    label: "官方登录＋混入 API Key（默认）",
+    hint: "需要已登录的 ChatGPT 客户端；保留官方登录体验。",
+  },
+  {
+    value: "pureApi",
+    label: "纯 API（无需官方登录）",
+    hint: "无法登录 ChatGPT 时选这个；只用中转 Key 请求，不声明官方登录派生的原生能力。",
+  },
+];
+
+export function newProviderTargetPatch(target: NewProviderTransientTarget): {
+  transientTarget: NewProviderTransientTarget;
+  relayMode: "official" | "pureApi";
+  officialMixApiKey: boolean;
+} {
+  return target === "pureApi"
+    ? { transientTarget: "pureApi", relayMode: "pureApi", officialMixApiKey: false }
+    : { transientTarget: "nativePriority", relayMode: "official", officialMixApiKey: true };
 }
 
 function requiredNewProviderFields(profile: {

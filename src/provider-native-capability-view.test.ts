@@ -5,6 +5,8 @@ import {
   deriveProviderNativeCapabilityView,
   deriveProviderModePresentation,
   providerAccessModeHint,
+  providerPureApiExitAvailable,
+  providerPureOAuthKeyEnablementPending,
   providerTransitionDecisionForStructuredPatch,
 } from "./provider-native-capability-view.ts";
 
@@ -238,6 +240,86 @@ describe("ordinary provider mode controls", () => {
         kind: "transition",
         transition: { action: "exitPureApi", confirmations: [] },
       },
+    );
+  });
+
+  it("routes entering the mixed contract as the explicit enablement transition", () => {
+    // Pure OAuth profile receives a key: officialMixApiKey flips through the gated save path.
+    assert.deepEqual(
+      providerTransitionDecisionForStructuredPatch(
+        { relayMode: "official", officialMixApiKey: false },
+        { officialMixApiKey: true },
+      ),
+      {
+        kind: "transition",
+        transition: { action: "enableNativePriority", confirmations: [] },
+      },
+    );
+    // A pure-API profile explicitly re-entering the mixed contract is the same enablement.
+    assert.deepEqual(
+      providerTransitionDecisionForStructuredPatch(
+        { relayMode: "pureApi", officialMixApiKey: false },
+        { relayMode: "official", officialMixApiKey: true },
+      ),
+      {
+        kind: "transition",
+        transition: { action: "enableNativePriority", confirmations: [] },
+      },
+    );
+  });
+
+  it("offers the pure-API exit only for a non-external mixed contract", () => {
+    const mixed = { relayMode: "official", officialMixApiKey: true };
+    assert.equal(providerPureApiExitAvailable(mixed, { externalOwnership: false }), true);
+    assert.equal(providerPureApiExitAvailable(mixed, { externalOwnership: true }), false);
+    assert.equal(
+      providerPureApiExitAvailable(
+        { relayMode: "official", officialMixApiKey: false },
+        { externalOwnership: false },
+      ),
+      false,
+    );
+    assert.equal(
+      providerPureApiExitAvailable(
+        { relayMode: "pureApi", officialMixApiKey: false },
+        { externalOwnership: false },
+      ),
+      false,
+    );
+  });
+
+  it("flags only a pure-OAuth draft holding a nonblank key as enablement-pending", () => {
+    assert.equal(
+      providerPureOAuthKeyEnablementPending({
+        relayMode: "official",
+        officialMixApiKey: false,
+        apiKey: " sk-new ",
+      }),
+      true,
+    );
+    assert.equal(
+      providerPureOAuthKeyEnablementPending({
+        relayMode: "official",
+        officialMixApiKey: false,
+        apiKey: "  ",
+      }),
+      false,
+    );
+    assert.equal(
+      providerPureOAuthKeyEnablementPending({
+        relayMode: "official",
+        officialMixApiKey: true,
+        apiKey: "sk-new",
+      }),
+      false,
+    );
+    assert.equal(
+      providerPureOAuthKeyEnablementPending({
+        relayMode: "pureApi",
+        officialMixApiKey: false,
+        apiKey: "sk-new",
+      }),
+      false,
     );
   });
 });

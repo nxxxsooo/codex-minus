@@ -53,15 +53,24 @@ describe("the provider editor offers one contract and no switches", () => {
     assert.match(editor, /const showApiFields = true;/);
   });
 
-  it("treats a supplied key as the mixed contract without a switch", () => {
+  it("accepts a supplied key as a draft edit and gates the mixed flip behind the save confirmation", () => {
     const update = editor.match(/const updateDraft = \(patch: Partial<RelayProfile>\) => \{[\s\S]*?\n  \};/)?.[0] ?? "";
     assert.ok(update.length > 0, "updateDraft was located");
-    assert.match(update, /officialMixApiKey: true/);
-    assert.doesNotMatch(
-      update,
-      /officialMixApiKey: false/,
-      "clearing a key must not silently delete the provider table",
-    );
+    // Typing a key must not flip the contract implicitly in either direction: entering the mixed
+    // contract is the explicit enablement at Save, and clearing a key must not silently delete
+    // the provider table.
+    assert.doesNotMatch(update, /officialMixApiKey/);
+    const detail = appSource.match(
+      /function RelayProfileDetail[\s\S]*?(?=\nfunction RelayProfileEditor)/,
+    )?.[0] ?? "";
+    const save = detail.match(/const saveDraft = async \(\) => \{[\s\S]*?\n  \};/)?.[0] ?? "";
+    assert.ok(save.length > 0, "saveDraft was located");
+    assert.match(save, /providerPureOAuthKeyEnablementPending\(detailStateRef\.current\.profile\)/);
+    assert.match(save, /providerPureOAuthEnablementConfirmationMessage\(\)/);
+    assert.match(save, /beginProviderDetailPureOAuthEnablement\(detailStateRef\.current\)/);
+    const switchSource = detail.match(/const switchDraft = \(\) => \{[\s\S]*?\n  \};/)?.[0] ?? "";
+    assert.ok(switchSource.length > 0, "switchDraft was located");
+    assert.match(switchSource, /providerPureOAuthKeyEnablementPending\(draft\)/);
   });
 
   it("upgrades an old profile through the save itself, with no separate control", () => {

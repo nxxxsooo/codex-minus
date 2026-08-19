@@ -20,30 +20,10 @@ const shell = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
 /// and small input parsers used by one form. They are the least valuable to move and the least
 /// costly to leave, which is why they are last.
 const LOGIC_STILL_IN_THE_SHELL = [
-  "boundedPercentOrDefault",
-  "boundedPercentOrNull",
-  "catalogDraftErrorLabel",
-  "envConflictSourceLabel",
-  "formatTime",
-  "integerOrDefault",
-  "integerOrNull",
   "loadInitialRoute",
   "loadInitialTheme",
-  "managedCatalogMode",
-  "parseCommaListOrNull",
-  "parseReasoningLevels",
-  "positiveNumberOrDefault",
-  "positiveNumberOrNull",
-  "providerInitial",
-  "reasoningEffortsText",
-  "relayModeLabel",
-  "relayProfileConfigBrief",
-  "relayProfileEditorStatus",
-  "relayProfileModeHelp",
   "routeSubtitle",
   "routeTitle",
-  "stringifyError",
-  "truncateSessionDeletePreview",
 ];
 
 /// A React component. Distinguished from a rule by its capital letter, which is the convention JSX
@@ -76,8 +56,8 @@ describe("the application shell holds wiring, not rules", () => {
     // A ceiling, not a target. Lower it when work makes it true; never raise it to make a change fit.
     const lines = shell.split("\n").length;
     assert.ok(
-      lines <= 3221,
-      `App.tsx is ${lines} lines, over the 3221 ceiling — move something out rather than raising it`,
+      lines <= 3212,
+      `App.tsx is ${lines} lines, over the 3212 ceiling — move something out rather than raising it`,
     );
   });
 });

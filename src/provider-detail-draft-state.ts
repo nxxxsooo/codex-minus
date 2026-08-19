@@ -229,6 +229,35 @@ export function beginProviderDetailNativePriorityUpgrade<
   });
 }
 
+/// Explicit enablement for a pure-OAuth profile that received a provider key: the profile has no
+/// mixed contract yet (inspection reports `notApplicable`), so the ordinary upgrade helper's
+/// `upgradeAvailable` gate cannot admit it. Eligibility here is the pure-OAuth shape itself; the
+/// revisioned backend transform materializes or repairs the provider table and reports missing
+/// inputs as named blockers.
+export function beginProviderDetailPureOAuthEnablement<
+  P extends ProviderDetailProfile,
+>(state: ProviderDetailDraftState<P>): ProviderDetailStep<P> {
+  assertActive(state);
+  const externalOwnership = state.inspection?.fields.some(
+    (entry) => entry.reason === "externalCatalog",
+  ) ?? false;
+  if (
+    state.profile.relayMode !== "official"
+    || state.profile.officialMixApiKey
+    || externalOwnership
+  ) {
+    throw new Error("Only a non-external pure-OAuth profile can start the key enablement.");
+  }
+  return beginProviderDetailEdit(state, {
+    patch: {
+      relayMode: "official",
+      officialMixApiKey: true,
+    },
+    target: { target: "preserveExisting", source: "existing" },
+    transition: { action: "enableNativePriority", confirmations: [] },
+  });
+}
+
 export function beginProviderDetailLegacyIdUpgrade<
   P extends ProviderDetailProfile,
 >(state: ProviderDetailDraftState<P>): ProviderDetailStep<P> {

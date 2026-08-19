@@ -8,6 +8,7 @@ import {
   beginProviderDetailInspection,
   beginProviderDetailEdit,
   beginProviderDetailNativePriorityUpgrade,
+  beginProviderDetailPureOAuthEnablement,
   buildProviderDetailCommitEffect,
   cancelProviderDetailTransition,
   confirmProviderDetailTransition,
@@ -138,6 +139,26 @@ describe("provider detail draft state", () => {
     const closed = endProviderDetailSession(upgrade.state, "cancel");
     assert.deepEqual(closed.effects, []);
     assert.equal(closed.state.lifecycle, "closed");
+
+    // The pure-OAuth key enablement is the same revisioned transform, admitted by the pure-OAuth
+    // shape instead of the upgrade-available inspection gate.
+    const pureOAuth = draftState({
+      ...profile(),
+      relayMode: "official",
+      officialMixApiKey: false,
+      apiKey: "sk-new",
+      configContents: "",
+    });
+    const enablement = beginProviderDetailPureOAuthEnablement(pureOAuth);
+    assert.equal(enablement.effects.length, 1);
+    assert.equal(enablement.effects[0].kind, "transform");
+    if (enablement.effects[0].kind !== "transform") return;
+    assert.equal(enablement.effects[0].invocation.request.action, "enableNativePriority");
+    assert.throws(
+      () => beginProviderDetailPureOAuthEnablement(draftState()),
+      /pure-OAuth/,
+      "a mixed profile must not enter the pure-OAuth enablement",
+    );
 
     const legacyState = draftState();
     const legacyObserved = applyProviderDetailInspection(

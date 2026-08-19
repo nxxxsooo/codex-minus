@@ -160,6 +160,31 @@ export function providerAccessModeHint(profile: { officialMixApiKey: boolean }):
     : "官方登录＋不写 API Key＋Responses API";
 }
 
+/// Whether the provider detail editor offers the explicit "切换到纯 API" exit for this profile.
+/// Only an existing mixed Responses contract can exit: pure OAuth has no provider table to keep,
+/// an already-pure-API profile has nothing to exit, and external catalog ownership keeps every
+/// transform blocked until explicit adoption.
+export function providerPureApiExitAvailable(
+  profile: { relayMode: string; officialMixApiKey: boolean },
+  view: { externalOwnership: boolean },
+): boolean {
+  return profile.relayMode === "official"
+    && profile.officialMixApiKey
+    && !view.externalOwnership;
+}
+
+/// Whether a draft is a pure-OAuth profile holding a nonblank structured key — the state that
+/// must pass through the explicit native-priority enablement confirmation before it can persist.
+export function providerPureOAuthKeyEnablementPending(profile: {
+  relayMode: string;
+  officialMixApiKey: boolean;
+  apiKey: string;
+}): boolean {
+  return profile.relayMode === "official"
+    && !profile.officialMixApiKey
+    && profile.apiKey.trim().length > 0;
+}
+
 export type ProviderStructuredTransitionDecision =
   | { kind: "noChange" }
   | { kind: "requiresExplicitUpgrade" }
@@ -189,7 +214,13 @@ export function providerTransitionDecisionForStructuredPatch(
         transition: { action: "exitPureOAuth", confirmations: [] },
       };
     }
-    return { kind: "requiresExplicitUpgrade" };
+    // Entering the mixed contract (pure OAuth or pure API → official + key) is the explicit
+    // native-priority enablement; the revisioned backend transform owns the table edit and the
+    // enablement confirmation gates it before any persist.
+    return {
+      kind: "transition",
+      transition: { action: "enableNativePriority", confirmations: [] },
+    };
   }
   return { kind: "requiresExplicitUpgrade" };
 }

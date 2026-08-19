@@ -72,6 +72,18 @@ export const EN_PLAIN: Record<string, string> = {
   "全部供应商字段": "all provider fields",
   "切换到兼容模式将失去原生能力优先配置。确认后只更新草稿，仍需点击保存或设为当前才会生效。是否继续？":
     "Switching to compatibility mode removes the native-capability-priority contract. Confirmation updates only the draft; click Save or Set as current to apply it. Continue?",
+  "切换到纯 API 后不再需要官方登录：只用中转 Key 请求，移除本管理器的 Actor 标记，模型目录切为仅自定义，不再声明官方登录派生的原生能力。确认后只更新草稿，仍需点击保存或设为当前才会生效。是否继续？":
+    "After switching to pure API, no official login is needed: requests use only the relay key, the manager-owned actor marker is removed, the model catalog becomes custom-only, and no OAuth-derived native capability is claimed. Confirmation updates only the draft; click Save or Set as current to apply it. Continue?",
+  "此供应商当前是官方登录模式。保存这个 Key 会把它升级为「官方登录＋混入 API Key」的混合契约，使用时需要已登录的 ChatGPT 客户端；取消则保持官方登录模式并丢弃这个 Key。确认升级并继续保存吗？":
+    "This provider is currently in official-login mode. Saving this key upgrades it to the official-login + mixed-in API Key contract, which requires a signed-in ChatGPT client to use; cancelling keeps official-login mode and discards the key. Confirm the upgrade and continue saving?",
+  "官方登录＋混入 API Key（默认）": "Official login + mixed-in API Key (default)",
+  "需要已登录的 ChatGPT 客户端；保留官方登录体验。": "Requires a signed-in ChatGPT client; keeps the official-login experience.",
+  "纯 API（无需官方登录）": "Pure API (no official login required)",
+  "无法登录 ChatGPT 时选这个；只用中转 Key 请求，不声明官方登录派生的原生能力。": "Choose this when you cannot sign in to ChatGPT; requests use only the relay key and no OAuth-derived native capability is claimed.",
+  "切换到纯 API（无需官方登录）": "Switch to pure API (no official login required)",
+  "此官方登录供应商已填入 Key：请先点击保存，完成显式升级确认。": "This official-login provider now holds a key: click Save first to complete the explicit upgrade confirmation.",
+  "接入方式": "Access target",
+  "纯 API＋不需要官方登录＋Responses API": "Pure API + no official login required + Responses API",
   "切换到原生目录模式将停止管理外部目录。当前目录会在保存成功前继续生效。是否继续？":
     "Switching to native catalog mode stops managing the external catalog. The current catalog remains active until Save succeeds. Continue?",
   "切换到原生目录模式将不再使用自定义模型。当前目录会在保存成功前继续生效。是否继续？":

@@ -265,11 +265,9 @@ export function providerConfigTargetContract(
   brandNew: boolean,
 ): ProviderConfigTargetContract {
   if (!brandNew) return { target: "preserveExisting", source: "existing" };
-  // Every brand-new draft is native-priority by construction: `createNewRelayProfileDraft` fixes
-  // mode and key mixing, so provenance is the whole decision left to make. The profile
-  // parameter stays because a contract is decided per profile, and callers should keep saying
-  // which one they mean.
-  return { target: "nativePriority", source: "brand-new-empty" };
+  // A brand-new draft carries its explicit transient target: native-priority by default, pure
+  // API when the user chose the no-login path on the new-provider page.
+  return { target: profile.transientTarget ?? "nativePriority", source: "brand-new-empty" };
 }
 
 export function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {

@@ -1020,6 +1020,25 @@ fn enable_native_priority_draft(
     };
     let provider_id = match selected_provider_id(&document) {
         Ok(provider_id) => provider_id,
+        // A pure-OAuth profile has no provider selection at all — the core default profile ships
+        // with empty config contents — so the explicit enablement transition materializes the
+        // canonical skeleton from the structured draft instead of stranding the profile behind a
+        // blocker no editor control can repair. Every remaining gap (base URL, model, bearer) is
+        // still reported by the same inspection that gates every other enablement.
+        Err(NativeCapabilityReason::MissingProviderSelection) => {
+            match materialize_missing_provider_selection(&mut document, &profile) {
+                Ok(provider_id) => provider_id,
+                Err(reason) => {
+                    return unchanged_draft_payload(
+                        request,
+                        boundary,
+                        NativeCapabilityDraftStatus::Blocked,
+                        vec![reason],
+                        ProviderNativeCapabilityDraftPreview::default(),
+                    );
+                }
+            }
+        }
         Err(reason) => {
             return unchanged_draft_payload(
                 request,
@@ -1493,6 +1512,54 @@ fn provider_key_resolution(
             NativeCapabilityReason::StructuredKeyBearerConflict,
         )),
     }
+}
+
+/// Builds the canonical provider selection for a config that has none: selects the managed
+/// identifier, reuses an existing table under that identifier verbatim when one is already
+/// authored (the enablement flow's own confirmation gates then resolve any conflicts), and
+/// otherwise creates the table carrying only the structured Base URL the draft supplies. Root
+/// keys the config already has are preserved; only `model_provider` and a missing root `model`
+/// are written.
+fn materialize_missing_provider_selection(
+    document: &mut DocumentMut,
+    profile: &RelayProfile,
+) -> Result<String, NativeCapabilityReason> {
+    match document.get("model_providers") {
+        None => {
+            let mut providers = toml_edit::Table::new();
+            providers.set_implicit(true);
+            document.insert("model_providers", Item::Table(providers));
+        }
+        Some(item) if item.as_table_like().is_none() => {
+            return Err(NativeCapabilityReason::MalformedProviderTable);
+        }
+        Some(_) => {}
+    }
+    let providers = document
+        .get_mut("model_providers")
+        .and_then(Item::as_table_like_mut)
+        .expect("provider container shape was validated above");
+    match providers.get(MANAGED_PROVIDER_NAME) {
+        None => {
+            let mut provider = toml_edit::Table::new();
+            let base_url = profile.base_url.trim();
+            if !base_url.is_empty() {
+                provider.insert("base_url", value(base_url));
+            }
+            providers.insert(MANAGED_PROVIDER_NAME, Item::Table(provider));
+        }
+        Some(item) if item.as_table_like().is_none() => {
+            return Err(NativeCapabilityReason::MalformedProviderTable);
+        }
+        Some(_) => {}
+    }
+    let root = document.as_table_mut();
+    let model = profile.model.trim();
+    if root.get("model").is_none() && !model.is_empty() {
+        set_string_preserving_decor(root, "model", model);
+    }
+    set_string_preserving_decor(root, "model_provider", MANAGED_PROVIDER_NAME);
+    Ok(MANAGED_PROVIDER_NAME.to_string())
 }
 
 fn selected_provider_id(document: &DocumentMut) -> Result<String, NativeCapabilityReason> {

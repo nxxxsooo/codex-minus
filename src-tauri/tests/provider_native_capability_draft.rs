@@ -1268,3 +1268,137 @@ fn complete_response_keeps_provider_secret_only_in_declared_local_draft_fields()
     );
     assert!(serialized.get("error").is_none());
 }
+
+fn pure_oauth_profile(id: &str, model: &str, base_url: &str, api_key: &str) -> RelayProfile {
+    RelayProfile {
+        id: id.to_string(),
+        name: id.to_string(),
+        model: model.to_string(),
+        base_url: base_url.to_string(),
+        api_key: api_key.to_string(),
+        protocol: RelayProtocol::Responses,
+        relay_mode: RelayMode::Official,
+        official_mix_api_key: false,
+        config_contents: String::new(),
+        ..RelayProfile::default()
+    }
+}
+
+#[test]
+fn enabling_a_selectionless_pure_oauth_profile_materializes_the_canonical_contract() {
+    let profile = pure_oauth_profile(
+        "default",
+        "gpt-5.6-terra",
+        "https://relay.example/v1",
+        "sk-new",
+    );
+
+    let payload = draft_provider_native_capability(&request(
+        profile,
+        CatalogMode::NativeOfficial,
+        NativeCapabilityDraftAction::EnableNativePriority,
+    ));
+
+    assert_eq!(payload.status, NativeCapabilityDraftStatus::Ready);
+    assert_eq!(payload.draft.catalog_mode, CatalogMode::OfficialPlusCustom);
+    assert_eq!(payload.draft.profile.relay_mode, RelayMode::Official);
+    assert!(payload.draft.profile.official_mix_api_key);
+    let document = parsed(&payload);
+    assert_eq!(document["model"].as_str(), Some("gpt-5.6-terra"));
+    assert_eq!(document["model_provider"].as_str(), Some("OpenAI"));
+    let selected = provider(&document, "OpenAI");
+    assert_eq!(selected.get("name").and_then(Item::as_str), Some("OpenAI"));
+    assert_eq!(
+        selected.get("base_url").and_then(Item::as_str),
+        Some("https://relay.example/v1")
+    );
+    assert_eq!(
+        selected.get("wire_api").and_then(Item::as_str),
+        Some("responses")
+    );
+    assert_eq!(
+        selected.get("requires_openai_auth").and_then(Item::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        selected
+            .get("experimental_bearer_token")
+            .and_then(Item::as_str),
+        Some("sk-new")
+    );
+    let headers = selected
+        .get("http_headers")
+        .unwrap()
+        .as_table_like()
+        .unwrap();
+    assert_eq!(
+        headers
+            .get("x-openai-actor-authorization")
+            .and_then(Item::as_str),
+        Some("local-image-extension")
+    );
+}
+
+#[test]
+fn enablement_materialization_preserves_existing_root_keys_and_root_model() {
+    let mut profile = pure_oauth_profile(
+        "default",
+        "gpt-5.6-terra",
+        "https://relay.example/v1",
+        "sk-new",
+    );
+    profile.config_contents =
+        "# root-comment\ndisable_response_storage = true\nmodel = \"gpt-5.5\"\n".to_string();
+
+    let payload = draft_provider_native_capability(&request(
+        profile,
+        CatalogMode::NativeOfficial,
+        NativeCapabilityDraftAction::EnableNativePriority,
+    ));
+
+    assert_eq!(payload.status, NativeCapabilityDraftStatus::Ready);
+    let document = parsed(&payload);
+    assert_eq!(document["model"].as_str(), Some("gpt-5.5"));
+    assert_eq!(document["disable_response_storage"].as_bool(), Some(true));
+    assert_eq!(document["model_provider"].as_str(), Some("OpenAI"));
+    assert!(
+        payload
+            .draft
+            .profile
+            .config_contents
+            .contains("# root-comment")
+    );
+}
+
+#[test]
+fn enablement_materialization_reports_missing_inputs_as_named_blockers() {
+    let missing_base_url = pure_oauth_profile("default", "gpt-5.6-terra", "  ", "sk-new");
+    let payload = draft_provider_native_capability(&request(
+        missing_base_url,
+        CatalogMode::NativeOfficial,
+        NativeCapabilityDraftAction::EnableNativePriority,
+    ));
+    assert_eq!(payload.status, NativeCapabilityDraftStatus::Blocked);
+    assert!(
+        payload
+            .blockers
+            .contains(&NativeCapabilityReason::MissingBaseUrl),
+        "{:?}",
+        payload.blockers
+    );
+    assert_eq!(payload.draft.profile.config_contents, "");
+
+    let missing_key =
+        pure_oauth_profile("default", "gpt-5.6-terra", "https://relay.example/v1", "");
+    let payload = draft_provider_native_capability(&request(
+        missing_key,
+        CatalogMode::NativeOfficial,
+        NativeCapabilityDraftAction::EnableNativePriority,
+    ));
+    assert_eq!(payload.status, NativeCapabilityDraftStatus::Blocked);
+    assert_eq!(
+        payload.blockers,
+        vec![NativeCapabilityReason::MissingProviderBearer]
+    );
+    assert_eq!(payload.draft.profile.config_contents, "");
+}
