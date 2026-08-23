@@ -8,6 +8,12 @@
 
 ### 2026-08-23
 
+- **fix/catalog**: preserve catalog and user-owned model display names in the Manager model table
+  - what: the visible name now remains exactly the catalog's `display_name` (for example `GPT-5.6-Terra`) while the request slug remains a separate field (`gpt-5.6-terra`); custom display names are also no longer rewritten
+  - why: stripping `GPT-` and converting hyphens to spaces made the refreshed model directory appear inconsistent with its own display names and changed user-provided labels
+  - verified: focused model-catalog regression test plus `npm run verify`, `npm run vite:build`, and `cargo test`
+  - refs: `src/model-catalog-ui.ts`, `src/model-catalog-ui.test.ts`
+
 - **release/providers**: 0.4.16 — retain the no-account Pure API path and present its image-generation use case clearly
   - what: renamed the explicit Pure API choice to「纯 API＋开启生图（无需账号）」in both new-provider and existing mixed-provider exit flows; the supporting copy states that it uses the user’s API Key and that image generation is available in Codex when the upstream supports it; Pure API status now names the Responses API and preserves the upstream capability boundary
   - why: Pure API remains necessary for people without a ChatGPT account, while an image-capable upstream needs an understandable path that does not imply unsupported client-side entitlement

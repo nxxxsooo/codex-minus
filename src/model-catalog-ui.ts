@@ -302,12 +302,12 @@ export function catalogRefreshGate(status: {
   return { disabled: false, reason: null };
 }
 
-/// Renders a model the way the Codex model picker does.
+/// Renders the display name owned by the catalog or the user.
 ///
-/// The official catalog stores `GPT-5.6-Sol` while the picker shows `5.6 Sol`. Showing the stored
-/// form here makes the same model look like two different models across the two windows.
+/// The model slug is shown separately. Reformatting the display name would make a refreshed
+/// catalog or a user-defined name look unlike the source that owns it.
 export function appModelLabel(displayName: string): string {
-  return displayName.replace(/^GPT-/i, "").replace(/-/g, " ").trim() || displayName;
+  return displayName;
 }
 
 export function providerEvidenceState(slug: string, reportedSlugs: readonly string[]): "reported" | "not-reported" {
