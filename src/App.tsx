@@ -2876,13 +2876,13 @@ function RelayProfileEditor({
                 type="button"
                 variant="secondary"
               >
-                {t("切换到纯 API（无需官方登录）")}
+                {t("切换到纯 API＋生图（无需账号）")}
               </Button>
             ) : null}
           </Field>
         ) : profile.relayMode === "pureApi" ? (
           <Field className="relay-field-mode" label={t("接入模式")}>
-            <p className="field-hint">{t("纯 API＋不需要官方登录＋Responses API")}</p>
+            <p className="field-hint">{t("纯 API＋开启生图（无需账号）＋Responses API；图片能力由上游提供")}</p>
           </Field>
         ) : null}
         {showApiFields ? (

@@ -131,9 +131,9 @@ ${contract}`,
 }
 
 /// The one-time target choice on the new-provider page. The mixed native-priority target stays
-/// the default; pure API is the explicit path for a user who cannot sign in to ChatGPT. Selecting
-/// a target patches the draft's structured mode fields together with the transient target so the
-/// brand-new materializer emits the matching contract.
+/// the default; pure API is the explicit no-account path for an upstream that exposes image
+/// generation. Selecting a target patches the draft's structured mode fields together with the
+/// transient target so the brand-new materializer emits the matching contract.
 export const NEW_PROVIDER_TARGET_OPTIONS: ReadonlyArray<{
   value: NewProviderTransientTarget;
   label: string;
@@ -146,8 +146,8 @@ export const NEW_PROVIDER_TARGET_OPTIONS: ReadonlyArray<{
   },
   {
     value: "pureApi",
-    label: "纯 API（无需官方登录）",
-    hint: "无法登录 ChatGPT 时选这个；只用中转 Key 请求，不声明官方登录派生的原生能力。",
+    label: "纯 API＋开启生图（无需账号）",
+    hint: "无需登录 ChatGPT；使用你的 API Key 请求。上游支持图片生成时，可在 Codex 中使用生图。",
   },
 ];
 

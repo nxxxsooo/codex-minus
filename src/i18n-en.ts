@@ -78,12 +78,12 @@ export const EN_PLAIN: Record<string, string> = {
     "This provider is currently in official-login mode. Saving this key upgrades it to the official-login + mixed-in API Key contract, which requires a signed-in ChatGPT client to use; cancelling keeps official-login mode and discards the key. Confirm the upgrade and continue saving?",
   "官方登录＋混入 API Key（默认）": "Official login + mixed-in API Key (default)",
   "需要已登录的 ChatGPT 客户端；保留官方登录体验。": "Requires a signed-in ChatGPT client; keeps the official-login experience.",
-  "纯 API（无需官方登录）": "Pure API (no official login required)",
-  "无法登录 ChatGPT 时选这个；只用中转 Key 请求，不声明官方登录派生的原生能力。": "Choose this when you cannot sign in to ChatGPT; requests use only the relay key and no OAuth-derived native capability is claimed.",
-  "切换到纯 API（无需官方登录）": "Switch to pure API (no official login required)",
+  "纯 API＋开启生图（无需账号）": "Pure API + image generation (no account required)",
+  "无需登录 ChatGPT；使用你的 API Key 请求。上游支持图片生成时，可在 Codex 中使用生图。": "No ChatGPT sign-in is needed; requests use your API key. When the upstream supports image generation, you can use it in Codex.",
+  "切换到纯 API＋生图（无需账号）": "Switch to pure API + image generation (no account required)",
   "此官方登录供应商已填入 Key：请先点击保存，完成显式升级确认。": "This official-login provider now holds a key: click Save first to complete the explicit upgrade confirmation.",
   "接入方式": "Access target",
-  "纯 API＋不需要官方登录＋Responses API": "Pure API + no official login required + Responses API",
+  "纯 API＋开启生图（无需账号）＋Responses API；图片能力由上游提供": "Pure API + image generation (no account required) + Responses API; image capability is provided by the upstream",
   "切换到原生目录模式将停止管理外部目录。当前目录会在保存成功前继续生效。是否继续？":
     "Switching to native catalog mode stops managing the external catalog. The current catalog remains active until Save succeeds. Continue?",
   "切换到原生目录模式将不再使用自定义模型。当前目录会在保存成功前继续生效。是否继续？":
