@@ -6,6 +6,14 @@
 
 ## Changelog
 
+### 2026-08-23
+
+- **release/providers**: 0.4.16 — retain the no-account Pure API path and present its image-generation use case clearly
+  - what: renamed the explicit Pure API choice to「纯 API＋开启生图（无需账号）」in both new-provider and existing mixed-provider exit flows; the supporting copy states that it uses the user’s API Key and that image generation is available in Codex when the upstream supports it; Pure API status now names the Responses API and preserves the upstream capability boundary
+  - why: Pure API remains necessary for people without a ChatGPT account, while an image-capable upstream needs an understandable path that does not imply unsupported client-side entitlement
+  - verified: `npm run verify`, `npm run vite:build`, `cargo test`, and the release macOS bundle report version 0.4.16; GitHub Actions validates macOS arm64, Windows x64, and Windows arm64 before merge
+  - refs: `src/provider-onboarding.ts`, `src/provider-onboarding.test.ts`, `src/App.tsx`, `src/i18n-en.ts`
+
 ### 2026-08-19
 
 - **release/providers**: merged PR #42 (no-login pure-API path) to `master` and cleaned up its branch

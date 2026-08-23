@@ -117,6 +117,11 @@ experimental_bearer_token = "provider-key"
   it("offers the mixed default first and patches mode fields with the target choice", () => {
     assert.equal(NEW_PROVIDER_TARGET_OPTIONS[0].value, "nativePriority");
     assert.equal(NEW_PROVIDER_TARGET_OPTIONS.length, 2);
+    assert.deepEqual(NEW_PROVIDER_TARGET_OPTIONS[1], {
+      value: "pureApi",
+      label: "纯 API＋开启生图（无需账号）",
+      hint: "无需登录 ChatGPT；使用你的 API Key 请求。上游支持图片生成时，可在 Codex 中使用生图。",
+    });
     assert.deepEqual(newProviderTargetPatch("nativePriority"), {
       transientTarget: "nativePriority",
       relayMode: "official",
