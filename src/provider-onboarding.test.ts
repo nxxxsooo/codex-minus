@@ -247,6 +247,7 @@ describe("built-in Pro model list", () => {
     assert.equal(new Set(list).size, list.length);
     assert.equal(draft.modelList, list.join("\n"));
     assert.equal(draft.model, list[0]);
+    assert.ok(list.includes("gpt-6-astra"), "the Astra release is missing from the Pro list");
     // The default must be a slug the official bundled catalog carries, or the first save of a
     // brand-new provider fails catalog planning with an unrepresentable default model.
     assert.ok(bundledBaselineVisibility.get(list[0]) === true, `${list[0]} is not a listed baseline model`);

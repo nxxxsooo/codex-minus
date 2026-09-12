@@ -26,7 +26,7 @@ const MAX_COMMAND_OUTPUT_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Distinguishes concurrent target-CLI captures inside one process.
 static COMMAND_CAPTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-const MIN_SUPPORTED_CLI: &str = "0.147.0-alpha.1";
+const MIN_SUPPORTED_CLI: &str = "0.153.0";
 pub(crate) const CATALOG_READINESS_ACTION: &str = "catalog-readiness-unavailable";
 
 /// The official model baseline, authored from verified official client output at release time.
@@ -1781,10 +1781,7 @@ fn verify_target_cli_with_cache(
             false,
         )?;
         let version = parse_cli_version(&version_output.stdout)?;
-        let supported = semver::Version::parse(&version)
-            .ok()
-            .zip(semver::Version::parse(MIN_SUPPORTED_CLI).ok())
-            .is_some_and(|(current, minimum)| current >= minimum);
+        let supported = target_cli_version_is_supported(&version);
 
         let capability = run_bounded_command(
             &canonical_cli,
@@ -1817,6 +1814,13 @@ fn verify_target_cli_with_cache(
     })();
     remember_target_verification(cache_key, &result);
     result
+}
+
+fn target_cli_version_is_supported(version: &str) -> bool {
+    semver::Version::parse(version)
+        .ok()
+        .zip(semver::Version::parse(MIN_SUPPORTED_CLI).ok())
+        .is_some_and(|(current, minimum)| current >= minimum)
 }
 
 fn target_verification_cache_key(cli: &Path) -> anyhow::Result<TargetVerificationCacheKey> {
@@ -3589,6 +3593,36 @@ experimental_bearer_token = "provider-key"
             );
         }
         validate_effective_catalog_structure_for_test(&snapshot.raw_catalog);
+    }
+
+    #[test]
+    fn astra_baseline_and_cli_floor_match_the_official_release_contract() {
+        let snapshot = bundled_official_snapshot().unwrap();
+        assert_eq!(snapshot.client_version, "0.153.4");
+        let astra = catalog_models(&snapshot.raw_catalog)
+            .unwrap()
+            .iter()
+            .find(|model| model["slug"] == "gpt-6-astra")
+            .expect("the Astra release must ship its official catalog row");
+        assert_eq!(astra["display_name"], "GPT-6-Astra");
+        assert_eq!(astra["visibility"], "list");
+        assert_eq!(astra["context_window"], 272_000);
+        assert_eq!(astra["max_context_window"], 872_000);
+        assert_eq!(astra["default_reasoning_level"], "low");
+        assert_eq!(astra["supported_reasoning_levels"][5]["effort"], "ultra");
+        assert_eq!(
+            astra["service_tiers"][0]["description"],
+            "2x speed, increased usage"
+        );
+        assert!(!target_cli_version_is_supported("0.152.9"));
+        assert!(target_cli_version_is_supported("0.153.0"));
+        assert!(target_cli_version_is_supported("0.153.4"));
+        assert!(
+            !catalog_slugs(&snapshot.raw_catalog)
+                .unwrap()
+                .contains("gpt-5.2"),
+            "the deprecated 5.2 row must stay retired even while the CLI bundles it"
+        );
     }
 
     fn validate_effective_catalog_structure_for_test(catalog: &Value) {

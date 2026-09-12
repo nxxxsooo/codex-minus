@@ -6,6 +6,14 @@
 
 ## Changelog
 
+### 2026-09-12
+
+- **fix/catalog**: refresh the bundled official catalog for GPT-6 Astra and keep the maintained Pro preset current
+  - what: replaced the 0.147.0 baseline with the verified official Codex CLI 0.153.4 bundled output, added `gpt-6-astra` to the Pro restore list, retained the server-only `gpt-5.3-codex-spark` row, kept deprecated `gpt-5.2` retired, and raised the target CLI capability floor to Astra's required 0.153.0; Terra remains the new-provider and legacy-repair default
+  - why: 0.4.17 predated Astra, so a managed official catalog and the one-click Pro repair could not represent the newly released model; the bundled CLI still exposes deprecated 5.2, so copying it mechanically would undo an existing catalog-continuity contract
+  - verified: the shipped rows other than the documented Spark addition and 5.2 omission match `codex debug models --bundled` from official CLI 0.153.4; `npm run verify`, `npm run vite:build`, `cargo test` (304 library + 19 + 25 integration), `cargo fmt --all --check`, and `git diff --check` passed; no Sub2API account or OAuth credential was read, exported, refreshed, or changed
+  - refs: `src-tauri/assets/official-model-catalog.json`, `src-tauri/src/model_catalog.rs`, `src/provider-onboarding.ts`, `src/model-catalog-ui.test.ts`
+
 ### 2026-08-23
 
 - **fix/catalog**: preserve catalog and user-owned model display names in the Manager model table
