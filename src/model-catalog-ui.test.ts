@@ -300,6 +300,7 @@ describe("the model table shows the list Codex will show", () => {
   });
   // Mirrors the bundled baseline: the retired 5.4 pair is carried but hidden.
   const officialModels = [
+    { slug: "gpt-6-astra", visible: true },
     { slug: "gpt-5.6-sol", visible: true },
     { slug: "gpt-5.6-terra", visible: true },
     { slug: "gpt-5.6-luna", visible: true },
@@ -308,7 +309,14 @@ describe("the model table shows the list Codex will show", () => {
     { slug: "gpt-5.4-mini", visible: false },
     { slug: "gpt-5.3-codex-spark", visible: true },
   ];
-  const pro = ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.5", "gpt-5.3-codex-spark"];
+  const pro = [
+    "gpt-5.6-terra",
+    "gpt-6-astra",
+    "gpt-5.6-luna",
+    "gpt-5.6-sol",
+    "gpt-5.5",
+    "gpt-5.3-codex-spark",
+  ];
   const visibleList = (overlay: CatalogOverlayDraft) => [
     ...officialModels.filter((model) => officialModelIsVisible(overlay, model)).map((model) => model.slug),
     ...overlay.custom.map((model) => model.slug),
@@ -495,6 +503,7 @@ describe("restart guidance", () => {
 describe("model labels preserve catalog ownership", () => {
   it("renders the stored catalog display name verbatim beside the model slug", () => {
     for (const displayName of [
+      "GPT-6-Astra",
       "GPT-5.6-Sol",
       "GPT-5.6-Terra",
       "GPT-5.6-Luna",
