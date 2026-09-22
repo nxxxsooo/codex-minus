@@ -110,6 +110,9 @@ base_url = "https://relay.example/v1"
 wire_api = "responses"
 requires_openai_auth = false
 experimental_bearer_token = "provider-key"
+
+[features]
+image_generation = true
 `,
     });
   });
@@ -263,6 +266,10 @@ describe("built-in Pro model list", () => {
 });
 
 describe("Pro model list maintenance", () => {
+  it("recommends only the four current models and keeps retired rows out of the default picker", () => {
+    assert.deepEqual([...PRO_MODEL_SLUGS].sort(), ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].sort());
+    for (const slug of ["gpt-5.3-codex-spark", "gpt-5.5"]) assert.equal(bundledBaselineVisibility.get(slug), false);
+  });
   it("ships no slug the official bundled catalog hides", () => {
     const retired = new Set<string>(RETIRED_MODEL_SLUGS);
     const shipped = PRO_MODEL_SLUGS.filter((slug) => retired.has(slug));

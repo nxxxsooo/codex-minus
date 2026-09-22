@@ -106,7 +106,9 @@ import {
 } from "./provider-commit";
 import * as settingsBaseline from "./settings-baseline";
 import { LiveConfigPanel } from "./relay-config-panels";
-import { providerDoctorSteps } from "./provider-doctor-steps";
+import { ProviderDoctorModal } from "./provider-doctor-modal";
+import { CatalogLongContextControl } from "./catalog-long-context-control";
+import { ProviderImageGenerationControl } from "./provider-image-generation-control";
 import { isSuccessStatus, statusClass, statusLabel } from "./status-presentation";
 import {
   providerPureOAuthEnablementConfirmationMessage,
@@ -123,6 +125,7 @@ import {
 import {
   applyProviderDetailInspection,
   beginProviderDetailEdit,
+  beginProviderDetailImageGeneration,
   beginProviderDetailInspection,
   beginProviderDetailLegacyIdUpgrade,
   beginProviderDetailNativePriorityUpgrade,
@@ -1605,7 +1608,7 @@ function CatalogProfileEditor({
   const restoreProList = () => {
     const losses = catalogRestoreLosses({ overlay, officialModels, wanted: proSlugs });
     if (losses.length && !window.confirm(tf("还原为 Pro 列表会移除这些模型：\n\n{0}", [losses.join("\n")]))) return;
-    applyOverlay(restoreCatalogList({ overlay, officialModels, wanted: proSlugs }));
+    applyOverlay(restoreCatalogList({ overlay, officialModels, wanted: proSlugs, mode }));
     if (!proSlugs.includes(selectedModel)) onProfileEdit({ model: proSlugs[0] });
   };
   const candidates = catalogCandidateSlugs({
@@ -1626,7 +1629,7 @@ function CatalogProfileEditor({
               <RotateCcw className="h-4 w-4" />{t("需重启 Codex · 点此重启")}
             </Button>
           ) : null}
-          <Button disabled={!editingAvailability.editable} onClick={restoreProList} size="sm" variant="outline">
+          <Button disabled={!editingAvailability.editable || !officialModels.length} onClick={restoreProList} size="sm" variant="outline">
             <RotateCcw className="h-4 w-4" />{t("还原 Pro 列表")}
           </Button>
         </div>
@@ -1639,6 +1642,7 @@ function CatalogProfileEditor({
         </div>
       ) : null}
       <fieldset className="catalog-editor-readonly" disabled={!editingAvailability.editable}>
+        <CatalogLongContextControl overlay={overlay} officialModels={officialModels} mode={mode} disabled={!editingAvailability.editable} onChange={applyOverlay} />
         <div className="catalog-model-list">
           <div className="catalog-model-row catalog-model-row-head">
             <span>{t("启动")}</span><span>{t("模型")}</span><span>{t("上下文")}</span><span />
@@ -2739,6 +2743,14 @@ function RelayProfileDetail({
           </div>
         </section>
       )}
+      <ProviderImageGenerationControl
+        profile={draft}
+        isNew={isNew}
+        disabled={saving || !catalogDraft || !catalogProfile?.managedAvailable
+          || detailState.pendingTransformRevision !== null || detailState.pendingConfirmation !== null
+          || detailState.pendingLegacyProviderIdResolution !== null || catalogDraft.mode === "external"}
+        onChange={(enabled) => void dispatchProviderDetailStep(beginProviderDetailImageGeneration(detailStateRef.current, enabled))}
+      />
       <RelayLiveFilePanels
         authStatus={relayFiles?.authStatus ?? null}
         liveConfigContents={relayFiles?.configContents ?? ""}
@@ -2995,68 +3007,6 @@ function RelayLiveFilePanels({
     </div>
   );
 }
-
-function ProviderDoctorModal({
-  result,
-  running,
-  onClose,
-}: {
-  result: ProviderDoctorResult | null;
-  running: boolean;
-  onClose: () => void;
-}) {
-  const steps = providerDoctorSteps(result, running);
-  const doneCount = steps.filter((step) => step.state === "ok" || step.state === "warning" || step.state === "failed").length;
-  const progress = Math.round((doneCount / steps.length) * 100);
-  return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="modal-card provider-doctor-modal">
-        <div className="modal-head">
-          <div>
-            <h2>Provider Doctor</h2>
-            <p>{running ? t("正在诊断供应商，请稍候。") : result?.summary ?? t("诊断已完成。")}</p>
-          </div>
-          <UiBadge variant={result && !isSuccessStatus(result.status) ? "outline" : "secondary"}>
-            {running ? t("诊断中") : result && !isSuccessStatus(result.status) ? t("异常") : t("完成")}
-          </UiBadge>
-        </div>
-        <div className="provider-doctor-progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} role="progressbar">
-          <div style={{ width: `${progress}%` }} />
-        </div>
-        <div className="provider-doctor-step-list">
-          {steps.map((step) => (
-            <div className={`provider-doctor-step ${step.state}`} key={step.id}>
-              <span className="provider-doctor-step-icon">
-                {step.state === "running" ? (
-                  <RefreshCw className="h-4 w-4" />
-                ) : step.state === "ok" ? (
-                  <CheckCircle2 className="h-4 w-4" />
-                ) : step.state === "warning" ? (
-                  <ShieldAlert className="h-4 w-4" />
-                ) : step.state === "failed" ? (
-                  <Info className="h-4 w-4" />
-                ) : (
-                  <span />
-                )}
-              </span>
-              <div>
-                <strong>{step.title}</strong>
-                <small>{step.detail}</small>
-              </div>
-            </div>
-          ))}
-        </div>
-        {result?.recommendation ? <p className="provider-doctor-recommendation">{result.recommendation}</p> : null}
-        <div className="modal-actions">
-          <Button disabled={running} onClick={onClose} variant="secondary">
-            {running ? t("诊断中") : t("关闭")}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 
 function ToggleVisual() {
   return (

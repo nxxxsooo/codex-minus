@@ -3270,6 +3270,110 @@ fn successful_active_commit_preserves_context_semantics_and_auth_bytes() {
 }
 
 #[test]
+fn image_tool_switch_survives_the_real_commit_and_protects_context_auth_and_other_features() {
+    use crate::provider_native_capability::{
+        NativeCapabilityDraftAction, NativeCapabilityDraftConfirmation,
+        NativeCapabilityDraftStatus, ProviderNativeCapabilityDraftRequest,
+        draft_provider_native_capability,
+    };
+    let active = canonical_profile(
+        "images",
+        "gpt-5.6-sol",
+        "https://relay.example/v1",
+        "provider-key",
+    );
+    let initial = settings_with(vec![active], "images");
+    let fixture = Fixture::new(&initial, &state_with_official());
+    fs::write(
+        fixture.paths.codex_home.join("config.toml"),
+        rich_live_config(),
+    )
+    .unwrap();
+    let auth_before = fs::read(fixture.paths.codex_home.join("auth.json")).unwrap();
+    for enabled in [true, false] {
+        let status = load_settings_blocking_at(&fixture.paths);
+        assert_eq!(status.status, "ok");
+        let persisted = status.payload.settings;
+        let transformed = draft_provider_native_capability(&ProviderNativeCapabilityDraftRequest {
+            draft_revision: 51,
+            profile: persisted.relay_profiles[0].clone(),
+            catalog_mode: CatalogMode::OfficialPlusCustom,
+            action: if enabled {
+                NativeCapabilityDraftAction::EnableImageGeneration
+            } else {
+                NativeCapabilityDraftAction::DisableImageGeneration
+            },
+            source_config_contents: None,
+            confirmations: vec![NativeCapabilityDraftConfirmation::ConfirmCapabilityLoss],
+            replacement_provider_id: None,
+        });
+        assert_eq!(transformed.status, NativeCapabilityDraftStatus::Ready);
+        let mut next = persisted.clone();
+        next.relay_profiles[0] = transformed.draft.profile;
+        let mut change = request(&persisted, &next, "images", ProviderCommitAction::Save, 51);
+        change.catalog_drafts[0].mode = transformed.draft.catalog_mode;
+        change.expected_provider_fingerprint = status.payload.provider_fingerprint;
+        let before = fixture.file_generation();
+        let error = commit_provider_detail_from_paths_observed_raw(
+            &fixture.paths,
+            change.clone(),
+            |checkpoint| {
+                if checkpoint == ProviderCommitCheckpoint::PostCommitVerification {
+                    anyhow::bail!("image-tool-verification-fault");
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), ProviderCommitErrorCode::TransactionFailed);
+        assert_eq!(
+            fixture.file_generation(),
+            before,
+            "an image-tool failure rolls back the entire generation"
+        );
+        let committed = commit_provider_detail_from_paths_raw(&fixture.paths, change).unwrap();
+        assert!(committed.restart_required);
+        let live = fs::read_to_string(fixture.paths.codex_home.join("config.toml")).unwrap();
+        let doc = live.parse::<toml_edit::DocumentMut>().unwrap();
+        assert_eq!(doc["features"]["image_generation"].as_bool(), Some(enabled));
+        assert_eq!(doc["features"]["goals"].as_bool(), Some(false));
+        assert_eq!(doc["features"]["shell_snapshot"].as_bool(), Some(true));
+        let provider = doc["model_provider"].as_str().unwrap();
+        assert_eq!(
+            doc["model_providers"][provider]["requires_openai_auth"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            semantic_context_tables(&live),
+            semantic_context_tables(rich_live_config())
+        );
+        assert_eq!(
+            fs::read(fixture.paths.codex_home.join("auth.json")).unwrap(),
+            auth_before
+        );
+        let stored = raw_stored_profile_config(&fixture.paths.settings_path, "images")
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        assert_eq!(
+            stored["features"]["image_generation"].as_bool(),
+            Some(enabled)
+        );
+        assert_eq!(stored["features"].as_table_like().unwrap().len(), 1);
+        let mut acknowledged = fixture.read_state();
+        acknowledged
+            .profiles
+            .get_mut("images")
+            .unwrap()
+            .restart_required = false;
+        fs::write(
+            &fixture.paths.catalog_state_path,
+            serde_json::to_vec_pretty(&acknowledged).unwrap(),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
 fn responses_only_load_rejection_precedes_auth_migration() {
     let mut unsupported = canonical_profile(
         "sub2api",

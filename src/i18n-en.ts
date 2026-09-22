@@ -5,6 +5,13 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "解锁 1,050,000 上下文": "Unlock 1,050,000-token context",
+  "（部分已启用）": " (partially enabled)",
+  "仅应用于列表中的 Astra、Sol、Terra、Luna；关闭恢复默认窗口。保存后生效，实际容量由上游决定。": "Applies to listed Astra, Sol, Terra and Luna models. Turn off to restore default windows. Takes effect after saving; actual capacity depends on the upstream.",
+  "图像工具（无需登录）": "Image tool (no login required)",
+  "新建时选择纯 API 接入即开启；保存供应商后可独立开关图像工具。": "The pure-API target enables this for new providers. Save the provider to toggle the image tool independently.",
+  "开启：requires_openai_auth = false、image_generation = true。关闭只禁用图像工具；保存后生效，需上游支持。": "On: requires_openai_auth = false and image_generation = true. Off disables only the image tool. Save to apply; upstream support is required.",
+  "启用图像工具将切换为纯 API：不再要求官方登录，移除本管理器的 Actor 标记，并开启 image_generation。保留模型目录，保存后生效。是否继续？": "Enable image generation using pure API: no official login, remove the manager's Actor marker, and enable image_generation. Keeps the model catalog and takes effect after saving. Continue?",
   "模型目录已恢复": "Model catalog restored",
   "已丢弃旧版自动生成的模型列表，并恢复官方模型；至少一个启动模型已设为 5.6 Terra。请重启 Codex 后新建任务。":
     "The legacy automatically generated model list was discarded and official models were restored; at least one startup model was set to 5.6 Terra. Restart Codex and start a new task.",

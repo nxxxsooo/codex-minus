@@ -106,7 +106,10 @@ export function restoreCatalogList(input: {
   overlay: CatalogOverlayDraft;
   officialModels: readonly { slug: string; visible: boolean }[];
   wanted: readonly string[];
+  mode?: CatalogModeValue;
 }): CatalogOverlayDraft {
+  // A missing baseline is unavailable metadata, not evidence that every official slug is custom.
+  if (!input.officialModels.length) return input.overlay;
   const wanted = input.wanted.map((slug) => slug.trim()).filter(Boolean);
   const wantedSlugs = new Set(wanted);
   const official = Object.fromEntries(
@@ -123,7 +126,13 @@ export function restoreCatalogList(input: {
   const officialSlugs = new Set(input.officialModels.map((model) => model.slug));
   let restored: CatalogOverlayDraft = {
     official,
-    custom: input.overlay.custom.filter((item) => wantedSlugs.has(item.slug.trim())),
+    custom: input.overlay.custom.filter((item) => wantedSlugs.has(item.slug.trim()) && !(
+      input.mode !== "custom-only" && officialSlugs.has(item.slug) && item.templateProvenance === "provider-candidate"
+      && item.displayName === item.slug && !item.description && item.contextWindow === 272000
+      && item.effectiveContextWindowPercent === 100 && item.visible
+      && !item.supportedReasoningLevels.length && item.defaultReasoningLevel === null
+      && !item.supportedTools.length && item.toolCapabilities === null
+    )),
   };
   for (const slug of wanted) {
     if (officialSlugs.has(slug)) continue;

@@ -216,7 +216,9 @@ export type ProviderDraftTransformAction =
   | "enableNativePriority"
   | "exitPureApi"
   | "exitLegacyCompatibility"
-  | "exitPureOAuth";
+  | "exitPureOAuth"
+  | "enableImageGeneration"
+  | "disableImageGeneration";
 
 export type ProviderDraftTransformConfirmation =
   | "replaceActorHeader"
