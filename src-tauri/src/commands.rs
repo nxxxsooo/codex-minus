@@ -5,7 +5,6 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
-use codex_plus_core::models::{DeleteResult, SessionRef};
 use codex_plus_core::settings::{
     BackendSettings, RelayContextSelection, RelayProfile, SettingsStore,
 };
@@ -236,16 +235,6 @@ pub struct ZedRemoteProjectsPayload {
 pub struct ZedRemoteOpenPayload {
     pub url: String,
     pub strategy: ZedOpenStrategy,
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DeleteLocalSessionRequest {
-    pub session_id: String,
-    #[serde(default)]
-    pub title: String,
-    #[serde(default)]
-    pub db_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1682,104 +1671,25 @@ fn run_session_archive_maintenance_blocking(
 }
 
 #[tauri::command]
-pub async fn delete_local_session(
-    request: DeleteLocalSessionRequest,
-) -> CommandResult<DeleteResult> {
-    tauri::async_runtime::spawn_blocking(move || delete_local_session_blocking(request))
-        .await
-        .expect("blocking command panicked")
-}
-
-fn delete_local_session_blocking(
-    request: DeleteLocalSessionRequest,
-) -> CommandResult<DeleteResult> {
-    let session_id = request.session_id.trim();
-    if session_id.is_empty() {
-        return failed(
-            "会话 ID 不能为空。",
-            DeleteResult {
-                status: codex_plus_core::models::DeleteStatus::Failed,
-                session_id: String::new(),
-                message: "会话 ID 不能为空。".to_string(),
-                undo_token: None,
-                backup_path: None,
-            },
-        );
-    }
-    let Ok(_guard) = session_operation_mutex().lock() else {
-        return failed(
-            "会话操作锁已损坏，请重启管理器后再试。",
-            DeleteResult {
-                status: codex_plus_core::models::DeleteStatus::Failed,
-                session_id: session_id.to_string(),
-                message: "会话操作锁已损坏。".to_string(),
-                undo_token: None,
-                backup_path: None,
-            },
-        );
-    };
-    let session = SessionRef {
-        session_id: session_id.to_string(),
-        title: request.title,
-    };
-    let mut candidate_paths = Vec::new();
-    if let Some(path) = request.db_path.as_deref() {
-        let path = PathBuf::from(path);
-        if !candidate_paths.iter().any(|candidate| candidate == &path) {
-            candidate_paths.push(path);
+pub async fn permanently_delete_local_sessions(
+    request: crate::session_cleanup::CleanupRequest,
+) -> CommandResult<crate::session_cleanup::CleanupOutcome> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let Ok(_guard) = session_operation_mutex().lock() else {
+            return failed("会话操作锁已损坏，请重启管理器后再试。", Default::default());
+        };
+        let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+        let paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
+        match crate::session_cleanup::permanently_delete(&home, &paths, &request) {
+            Ok(outcome) if outcome.failures.is_empty() => {
+                ok("会话已永久删除，未创建备份。", outcome)
+            }
+            Ok(outcome) => failed("部分会话未能完成清理，请查看详情。", outcome),
+            Err(error) => failed(&format!("会话清理失败：{error:#}"), Default::default()),
         }
-    }
-    for path in codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(
-        &codex_plus_core::codex_sqlite::default_codex_home_dir(),
-    ) {
-        if !candidate_paths.iter().any(|candidate| candidate == &path) {
-            candidate_paths.push(path);
-        }
-    }
-    log_manager_event(
-        "manager.delete_local_session.start",
-        json!({
-            "session_id": session_id,
-            "title": session.title,
-            "requested_db_path": request.db_path,
-            "candidate_paths": candidate_paths
-                .iter()
-                .map(|path| path.to_string_lossy().to_string())
-                .collect::<Vec<_>>(),
-        }),
-    );
-    let result = codex_plus_data::delete_local_from_paths(
-        candidate_paths.clone(),
-        codex_plus_data::BackupStore::new(
-            codex_plus_core::paths::default_app_state_dir().join("backups"),
-        ),
-        &session,
-    );
-    log_manager_event(
-        "manager.delete_local_session.finish",
-        json!({
-            "session_id": session_id,
-            "final_status": format!("{:?}", result.status),
-            "final_message": result.message,
-            "candidate_paths": candidate_paths
-                .iter()
-                .map(|path| path.to_string_lossy().to_string())
-                .collect::<Vec<_>>(),
-        }),
-    );
-    let status = if matches!(
-        result.status,
-        codex_plus_core::models::DeleteStatus::LocalDeleted
-    ) {
-        "ok"
-    } else {
-        "failed"
-    };
-    CommandResult {
-        status: status.to_string(),
-        message: result.message.clone(),
-        payload: result,
-    }
+    })
+    .await
+    .expect("blocking command panicked")
 }
 
 fn local_session_adapter(db_path: &Path) -> codex_plus_data::SQLiteStorageAdapter {

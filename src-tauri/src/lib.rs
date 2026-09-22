@@ -6,6 +6,7 @@ mod platform_command;
 pub mod provider_commit;
 pub mod provider_native_capability;
 mod session_adaptation;
+pub mod session_cleanup;
 
 #[cfg(test)]
 mod provider_commit_transaction_tests;
@@ -58,7 +59,7 @@ pub fn run() {
             commands::load_settings,
             commands::save_settings,
             commands::list_local_sessions,
-            commands::delete_local_session,
+            commands::permanently_delete_local_sessions,
             commands::load_session_lifecycle_settings,
             commands::save_session_lifecycle_settings,
             commands::preview_session_archive,

@@ -6,6 +6,14 @@
 
 ## Changelog
 
+### 2026-09-22
+
+- **feat/sessions**: implemented permanent single/selected-session deletion without backups and “clear all archives” across pagination in `codex/session-cleanup`.
+  - why: the existing delete path retained backup copies; cleanup now removes the selected rollout files and related database rows, rechecks archived-only eligibility, and reports incomplete items for retry.
+  - verified: `npm run verify` (256 tests), `npm run vite:build`, `cargo test` (312 library + 44 integration), Rust formatting and diff checks; isolated SQLite/file fixtures cover related rows, duplicate databases, active-session preservation, invalid paths, SQL failures and unlink failures. Browser smoke with mocked IPC covered cancellation, 201 archives across pages, busy controls, refresh and selected active deletion.
+  - boundary: source implementation only; native packaged-app click-through, release and installation are not part of this verification. Permanent deletion creates no recovery copy; partial file removal cannot be rolled back.
+  - refs: `src/session-cleanup.ts`, `src/session-cleanup.test.ts`, `src-tauri/src/session_cleanup.rs`
+
 ### 2026-09-12
 
 - **fix/catalog**: refresh the bundled official catalog for GPT-6 Astra and keep the maintained Pro preset current
