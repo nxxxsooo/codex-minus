@@ -21,7 +21,8 @@ const packed = JSON.parse(extractFile(archive, "package.json").toString());
 const expected = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 assert.equal(packed.version, expected.version);
 assert.equal(packed.main, "desktop/main.mjs");
-const files = listPackage(archive);
+// ASAR's listing uses the host path separator even though these logical member names are shared.
+const files = listPackage(archive).map(path => path.replaceAll("\\", "/"));
 for (const required of ["/dist/index.html", "/desktop/main.mjs", "/desktop/preload.cjs", "/desktop/update-helper.mjs", "/desktop/update-fs.mjs"]) assert(files.includes(required), required);
 assert(!files.some(path => path.endsWith(".test.mjs") || path.startsWith("/node_modules/")));
 const bytes = await readFile(core);

@@ -114,11 +114,11 @@ jobs:
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }}
       - name: Native stdio ownership in the disposable Windows profile
         if: matrix.native
-        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --test stdio_runtime windows_ci_profile_roundtrip -- --ignored
+        run: ./scripts/with-windows-profile.ps1 -Program cargo -CommandArguments @("test", "--locked", "--manifest-path", "src-tauri/Cargo.toml", "--target", "${{ matrix.target }}", "--test", "stdio_runtime", "windows_ci_profile_roundtrip", "--", "--ignored")
       - name: Package Electron and matching Rust core
         run: node scripts/desktop-package.mjs win32 ${{ matrix.arch }}
       - name: Verify package architecture and native entry points where available
-        run: node scripts/verify-package.mjs "dist-desktop/${{ matrix.unpacked }}" win32 ${{ matrix.arch }}
+        run: ./scripts/with-windows-profile.ps1 -Program node -CommandArguments @("scripts/verify-package.mjs", "dist-desktop/${{ matrix.unpacked }}", "win32", "${{ matrix.arch }}")
       - name: Verify copied Windows helper and real signature rejection
         if: matrix.native
         run: node scripts/update-windows-smoke.mjs dist-desktop/win-unpacked
@@ -127,7 +127,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: ./scripts/legacy-upgrade-windows.ps1
+        run: ./scripts/with-windows-profile.ps1 -Program pwsh -CommandArguments @("-NoProfile", "-File", "./scripts/legacy-upgrade-windows.ps1")
       - name: Sign installer with the existing minisign trust key
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh

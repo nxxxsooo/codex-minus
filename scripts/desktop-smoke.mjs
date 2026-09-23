@@ -413,6 +413,8 @@ try {
   await cdp.until("!!document.querySelector('#provider-name')");
   for (const [width, height, theme, language] of [[1180,820,"light","zh"],[960,720,"light","zh"],[960,720,"dark","en"]]) {
     await cdp.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+    await cdp.until(`innerWidth===${width} && innerHeight===${height}`);
+    await cdp.evaluate("document.fonts.ready.then(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))))");
     await cdp.evaluate(`localStorage.setItem('codex-plus-theme',${JSON.stringify(theme)});localStorage.setItem('codex-plus-lang',${JSON.stringify(language)})`);
     // Theme changes through the visible toggle; language reload also exercises backend reuse.
     if (theme === "dark") {
@@ -421,7 +423,8 @@ try {
       await cdp.click("[...document.querySelectorAll('.relay-profile-card')].find(e=>e.textContent.includes('Electron 日常开发')).querySelectorAll('.relay-card-extra button')[1]");
       await cdp.until("!!document.querySelector('#provider-name')");
     }
-    assert(await cdp.evaluate("document.documentElement.scrollWidth <= innerWidth"), "No viewport horizontal overflow");
+    const viewport = await cdp.evaluate(`({innerWidth,scrollWidth:document.documentElement.scrollWidth,bodyWidth:document.body.getBoundingClientRect().width,shellWidth:document.querySelector('.shell').getBoundingClientRect().width})`);
+    assert(viewport.scrollWidth <= viewport.innerWidth, `No viewport horizontal overflow at ${width}×${height}: ${JSON.stringify(viewport)}`);
     assert(await cdp.evaluate(`(()=>{const r=(${save}).getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight&&r.right<=innerWidth})()`), "Save stays reachable");
     await cdp.screenshot(`provider-${width}-${theme}-${language}`);
   }
