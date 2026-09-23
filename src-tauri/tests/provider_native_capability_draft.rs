@@ -713,6 +713,167 @@ http_headers = { "x-openai-actor-authorization" = "local-image-extension", extra
 }
 
 #[test]
+fn image_tool_enablement_uses_pure_api_and_keeps_the_catalog_and_unowned_features() {
+    let source = format!(
+        "{}\n[features]\nshell_snapshot = true\nimage_generation = false # user comment\n\n[mcp_servers.memory]\ncommand = 'memory'\n",
+        enabled_exit_source().replace(
+            "requires_openai_auth = false",
+            "requires_openai_auth = true"
+        )
+    );
+    let original = mixed_profile("images", "same-secret", &source);
+    let mut enable = request(
+        original.clone(),
+        CatalogMode::OfficialPlusCustom,
+        NativeCapabilityDraftAction::EnableImageGeneration,
+    );
+    let preview = draft_provider_native_capability(&enable);
+    assert_eq!(
+        preview.status,
+        NativeCapabilityDraftStatus::ConfirmationRequired
+    );
+    assert_eq!(preview.draft.profile, original);
+    enable
+        .confirmations
+        .push(NativeCapabilityDraftConfirmation::ConfirmCapabilityLoss);
+    let enabled = draft_provider_native_capability(&enable);
+    assert_eq!(enabled.status, NativeCapabilityDraftStatus::Ready);
+    assert_eq!(enabled.draft_revision, enable.draft_revision);
+    assert_eq!(enabled.draft.catalog_mode, CatalogMode::OfficialPlusCustom);
+    assert_eq!(enabled.draft.profile.relay_mode, RelayMode::PureApi);
+    assert!(!enabled.draft.profile.official_mix_api_key);
+    let document = parsed(&enabled);
+    assert_eq!(
+        document["model_providers"]["RelayOne"]["requires_openai_auth"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        document["features"]["image_generation"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(document["features"]["shell_snapshot"].as_bool(), Some(true));
+    assert_eq!(
+        document["mcp_servers"]["memory"]["command"].as_str(),
+        Some("memory")
+    );
+    assert!(
+        enabled
+            .draft
+            .profile
+            .config_contents
+            .contains("# user comment")
+    );
+    assert!(
+        !enabled
+            .draft
+            .profile
+            .config_contents
+            .contains("x-openai-actor-authorization")
+    );
+
+    let disabled = draft_provider_native_capability(&request(
+        enabled.draft.profile.clone(),
+        enabled.draft.catalog_mode,
+        NativeCapabilityDraftAction::DisableImageGeneration,
+    ));
+    assert_eq!(disabled.status, NativeCapabilityDraftStatus::Ready);
+    let document = parsed(&disabled);
+    assert_eq!(
+        document["features"]["image_generation"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        document["model_providers"]["RelayOne"]["requires_openai_auth"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(disabled.draft.profile.relay_mode, RelayMode::PureApi);
+    let reenabled = draft_provider_native_capability(&request(
+        disabled.draft.profile,
+        disabled.draft.catalog_mode,
+        NativeCapabilityDraftAction::EnableImageGeneration,
+    ));
+    assert_eq!(reenabled.status, NativeCapabilityDraftStatus::Ready);
+}
+
+#[test]
+fn image_tool_rejects_external_ownership_and_malformed_features_without_changing_the_draft() {
+    for action in [
+        NativeCapabilityDraftAction::EnableImageGeneration,
+        NativeCapabilityDraftAction::DisableImageGeneration,
+    ] {
+        let profile = mixed_profile("images", "same-secret", enabled_exit_source());
+        let input = request(profile.clone(), CatalogMode::External, action);
+        let result = draft_provider_native_capability(&input);
+        assert_eq!(result.status, NativeCapabilityDraftStatus::Blocked);
+        assert_eq!(result.draft.profile, profile);
+    }
+    let profile = mixed_profile(
+        "images",
+        "same-secret",
+        &format!("features = false\n{}", enabled_exit_source()),
+    );
+    let mut input = request(
+        profile.clone(),
+        CatalogMode::OfficialPlusCustom,
+        NativeCapabilityDraftAction::EnableImageGeneration,
+    );
+    input
+        .confirmations
+        .push(NativeCapabilityDraftConfirmation::ConfirmCapabilityLoss);
+    let result = draft_provider_native_capability(&input);
+    assert_eq!(result.status, NativeCapabilityDraftStatus::Blocked);
+    assert_eq!(result.draft.profile, profile);
+}
+
+#[test]
+fn image_tool_command_resolves_ownership_before_applying_an_unsaved_catalog_draft() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings_path = temp.path().join("settings.json");
+    let state_path = temp.path().join("model-catalog-state.json");
+    let profile = mixed_profile("images", "same-secret", enabled_exit_source());
+    write_persisted_settings(
+        &settings_path,
+        &BackendSettings {
+            relay_profiles: vec![profile.clone()],
+            ..BackendSettings::default()
+        },
+    );
+    for action in [
+        NativeCapabilityDraftAction::EnableImageGeneration,
+        NativeCapabilityDraftAction::DisableImageGeneration,
+    ] {
+        let mut input = request(profile.clone(), CatalogMode::OfficialPlusCustom, action);
+        input
+            .confirmations
+            .push(NativeCapabilityDraftConfirmation::ConfirmCapabilityLoss);
+        std::fs::write(&state_path, serde_json::to_vec(&serde_json::json!({"version": 5, "profiles": {"images": {"mode": "external", "modeExplicit": true, "externalPointer": "user.json"}}})).unwrap()).unwrap();
+        let original_settings = std::fs::read(&settings_path).unwrap();
+        let original_state = std::fs::read(&state_path).unwrap();
+        let refused = transform_provider_native_capability_draft_from_paths(
+            &settings_path,
+            &state_path,
+            input.clone(),
+        );
+        assert_eq!(refused.status, NativeCapabilityDraftStatus::Blocked);
+        assert!(
+            refused
+                .blockers
+                .contains(&NativeCapabilityReason::ExternalCatalog)
+        );
+        assert_eq!(std::fs::read(&settings_path).unwrap(), original_settings);
+        assert_eq!(std::fs::read(&state_path).unwrap(), original_state);
+        std::fs::write(&state_path, serde_json::to_vec(&serde_json::json!({"version": 5, "profiles": {"images": {"mode": "native-official", "modeExplicit": true}}})).unwrap()).unwrap();
+        let allowed = transform_provider_native_capability_draft_from_paths(
+            &settings_path,
+            &state_path,
+            input,
+        );
+        assert_eq!(allowed.status, NativeCapabilityDraftStatus::Ready);
+        assert_eq!(allowed.draft.catalog_mode, CatalogMode::OfficialPlusCustom);
+    }
+}
+
+#[test]
 fn pure_api_and_legacy_exits_preserve_unowned_provider_content() {
     for (action, expected_mode, expected_auth, expected_name) in [
         (

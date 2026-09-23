@@ -456,6 +456,7 @@ struct AppliedRuntimeFingerprintMaterial {
     protocol: String,
     requires_openai_auth: bool,
     manager_actor_authorized: bool,
+    image_generation_enabled: bool,
     catalog_runtime_identity: String,
 }
 
@@ -558,6 +559,12 @@ pub(crate) fn applied_runtime_fingerprint(
         protocol,
         requires_openai_auth,
         manager_actor_authorized,
+        image_generation_enabled: document
+            .get("features")
+            .and_then(toml_edit::Item::as_table_like)
+            .and_then(|features| features.get("image_generation"))
+            .and_then(toml_edit::Item::as_bool)
+            .unwrap_or(true),
         catalog_runtime_identity,
     };
     Ok(format!(
@@ -3639,6 +3646,58 @@ experimental_bearer_token = "provider-key"
             slugs.contains("gpt-5.6-terra") || slugs.contains("gpt-5.6-sol"),
             "the baseline carries a slug the new-provider prefill can default to: {slugs:?}"
         );
+    }
+
+    #[test]
+    fn long_context_overrides_materialize_both_limits_and_can_restore_the_baseline() {
+        let state = CatalogState {
+            official: Some(bundled_official_snapshot().unwrap()),
+            ..CatalogState::default()
+        };
+        let profile = RelayProfile {
+            id: "long-context".to_string(),
+            config_contents: "model = \"gpt-6-astra\"\n".to_string(),
+            ..RelayProfile::default()
+        };
+        let mut draft = ProfileCatalogState {
+            mode: CatalogMode::OfficialPlusCustom,
+            ..ProfileCatalogState::default()
+        };
+        for slug in [
+            "gpt-6-astra",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+        ] {
+            draft.overlay.official.insert(
+                slug.to_string(),
+                OfficialOverride {
+                    context_window: Some(1_050_000),
+                    ..OfficialOverride::default()
+                },
+            );
+        }
+        let enabled = compose_profile_catalog(&state, &profile, &draft).unwrap();
+        for model in catalog_models(&enabled).unwrap() {
+            if draft
+                .overlay
+                .official
+                .contains_key(model["slug"].as_str().unwrap())
+            {
+                assert_eq!(model["context_window"], 1_050_000);
+                assert_eq!(model["max_context_window"], 1_050_000);
+                assert_eq!(model["effective_context_window_percent"], 95);
+            }
+        }
+        draft.overlay.official.clear();
+        let restored = compose_profile_catalog(&state, &profile, &draft).unwrap();
+        let astra = catalog_models(&restored)
+            .unwrap()
+            .iter()
+            .find(|m| m["slug"] == "gpt-6-astra")
+            .unwrap();
+        assert_eq!(astra["context_window"], 272_000);
+        assert_eq!(astra["max_context_window"], 872_000);
     }
 
     #[test]

@@ -185,7 +185,7 @@ describe("one model table answers every model question", () => {
     assert.ok(restore.length > 0, "the Pro restore was located");
     assert.match(restore, /catalogRestoreLosses\(\{ overlay, officialModels, wanted: proSlugs \}\)/);
     assert.match(restore, /window\.confirm\(/, "a restore that removes rows says which ones");
-    assert.match(restore, /restoreCatalogList\(\{ overlay, officialModels, wanted: proSlugs \}\)/);
+    assert.match(restore, /restoreCatalogList\(\{ overlay, officialModels, wanted: proSlugs, mode \}\)/);
     assert.match(restore, /if \(!proSlugs\.includes\(selectedModel\)\) onProfileEdit\(\{ model: proSlugs\[0\] \}\)/);
     assert.match(catalogEditor, /onClick=\{restoreProList\}/);
   });

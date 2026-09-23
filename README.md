@@ -71,9 +71,12 @@ shasum -a 256 -c SHA256SUMS
 
 ### 模型目录
 
+- 默认／「还原 Pro 列表」提供 Astra、Sol、Terra、Luna，启动默认仍是 Terra。Spark 已退出默认列表；GPT-5.5 提前移出推荐列表，其 ChatGPT／Codex 退役日期为 **2026-10-14**，API 不受影响（[官方说明](https://developers.openai.com/codex/models)）。已有自定义行和显式可见性选择由供应商档案继续持有。
+- 「解锁 1,050,000 上下文」只修改当前供应商列表中的这四个模型，关闭清除这一预设窗口并恢复默认值；其他模型及另行输入的窗口值不受关闭操作影响。修改随供应商保存生效，实际可用容量仍由上游决定。
+- 「图像工具（无需登录）」开启时通过纯 API 草稿转换写入 `requires_openai_auth = false` 和 `[features] image_generation = true`，保留模型目录。关闭只写入 `image_generation = false`；保存后按提示重启 Codex。新建时选择「纯 API＋开启生图」会直接生成开启配置，保存后可独立开关图工具。上游需支持图像生成。
+
 - Codex 在未配置静态 `model_catalog_json` 时，OAuth 或 API provider 都可能通过各自的 `/models` 路径更新共享 `models_cache.json`；混合模式会走当前 custom provider，因此该 live cache 具有 provider 歧义，不能作为官方基线。
-- 官方清单只通过配置目标应用内、经过平台签名验证的 Codex CLI 刷新，不使用 `PATH` 中的任意 `codex`，也不把供应商 `/v1/models` 当作官方来源。
-- 刷新在 owner-only 临时 `CODEX_HOME` 中运行，只投影当前 access/ID token；refresh token 为空，临时认证不会回写 live 状态。
+- 官方清单随应用发布，来源与人工维护差异记录在内置目录资产中。运行时不使用 OAuth 刷新目录，也不把供应商 `/v1/models` 当作官方来源。
 - 每个可用供应商可选择「官方原生」「官方 + 自定义」「仅自定义」或「外部目录」。服务端复合供应商仍以一个纯 API Responses Base URL 和 Key 接入，模型聚合由上游完成，默认使用「官方 + 自定义」。
 - 官方条目保留目标 CLI 返回的全部字段与隐藏模型；overlay 可管理显示名、可见性、顺序、上下文与有效百分比、推理级别以及显式工具能力。自定义模型默认不声明官方后端专属能力。
 - 托管多模型目录以每个模型的上下文元数据为准；已有 `model_context_window` 和 `model_auto_compact_token_limit` 会先显示冲突，只有确认后才在可恢复事务中移除。

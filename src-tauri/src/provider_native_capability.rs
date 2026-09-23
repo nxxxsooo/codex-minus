@@ -110,6 +110,8 @@ pub enum NativeCapabilityDraftAction {
     ExitPureApi,
     ExitLegacyCompatibility,
     ExitPureOAuth,
+    EnableImageGeneration,
+    DisableImageGeneration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -774,6 +776,10 @@ pub fn draft_provider_native_capability_with_boundary(
             compatibility_exit_draft(request, boundary)
         }
         NativeCapabilityDraftAction::ExitPureOAuth => pure_oauth_exit_draft(request, boundary),
+        NativeCapabilityDraftAction::EnableImageGeneration
+        | NativeCapabilityDraftAction::DisableImageGeneration => {
+            image_generation_draft(request, boundary)
+        }
     }
 }
 
@@ -799,6 +805,8 @@ fn action_requires_persisted_catalog_ownership(action: NativeCapabilityDraftActi
             | NativeCapabilityDraftAction::ExitPureApi
             | NativeCapabilityDraftAction::ExitLegacyCompatibility
             | NativeCapabilityDraftAction::ExitPureOAuth
+            | NativeCapabilityDraftAction::EnableImageGeneration
+            | NativeCapabilityDraftAction::DisableImageGeneration
     )
 }
 
@@ -833,7 +841,15 @@ pub fn transform_provider_native_capability_draft_from_paths(
         );
     };
     let mut trusted_request = request;
-    trusted_request.catalog_mode = trusted_mode;
+    // Tool edits retain the current catalog draft, including an unsaved context override that
+    // promoted native mode. Persisted external ownership still vetoes every such edit below.
+    if !matches!(
+        trusted_request.action,
+        NativeCapabilityDraftAction::EnableImageGeneration
+            | NativeCapabilityDraftAction::DisableImageGeneration
+    ) {
+        trusted_request.catalog_mode = trusted_mode;
+    }
     if trusted_mode == CatalogMode::External {
         return unchanged_draft_payload(
             &trusted_request,
@@ -1236,6 +1252,84 @@ fn enable_native_priority_draft(
         profile,
         CatalogMode::OfficialPlusCustom,
         preview,
+    )
+}
+
+/// An explicit pure-API entry for the image-tool switch. Reuse the reviewed auth/key transition,
+/// while retaining the provider's model catalog: changing tools must not discard its model rows.
+fn image_generation_draft(
+    request: &ProviderNativeCapabilityDraftRequest,
+    boundary: &dyn ProviderNativeCapabilityDraftReadOnlyBoundary,
+) -> ProviderNativeCapabilityDraftPayload {
+    if request.catalog_mode == CatalogMode::External {
+        return unchanged_draft_payload(
+            request,
+            boundary,
+            NativeCapabilityDraftStatus::Blocked,
+            vec![NativeCapabilityReason::ExternalCatalog],
+            ProviderNativeCapabilityDraftPreview::default(),
+        );
+    }
+    let enabled = request.action == NativeCapabilityDraftAction::EnableImageGeneration;
+    let mut payload = if enabled {
+        let mut exit = request.clone();
+        exit.action = NativeCapabilityDraftAction::ExitPureApi;
+        // Already-pure API has no native contract to lose, but still validate/synchronize its key.
+        if request.profile.relay_mode == RelayMode::PureApi && !request.profile.official_mix_api_key
+        {
+            exit.confirmations
+                .push(NativeCapabilityDraftConfirmation::ConfirmCapabilityLoss);
+        }
+        compatibility_exit_draft(&exit, boundary)
+    } else {
+        ready_draft_payload(
+            request,
+            boundary,
+            request.profile.clone(),
+            request.catalog_mode,
+            ProviderNativeCapabilityDraftPreview::default(),
+        )
+    };
+    if payload.status != NativeCapabilityDraftStatus::Ready {
+        return payload;
+    }
+    let Ok(mut document) = payload.draft.profile.config_contents.parse::<DocumentMut>() else {
+        return unchanged_draft_payload(
+            request,
+            boundary,
+            NativeCapabilityDraftStatus::Blocked,
+            vec![NativeCapabilityReason::MalformedToml],
+            ProviderNativeCapabilityDraftPreview::default(),
+        );
+    };
+    if !document.contains_key("features") {
+        document["features"] = Item::Table(toml_edit::Table::new());
+    }
+    let Some(features) = document
+        .get_mut("features")
+        .and_then(Item::as_table_like_mut)
+    else {
+        return unchanged_draft_payload(
+            request,
+            boundary,
+            NativeCapabilityDraftStatus::Blocked,
+            vec![NativeCapabilityReason::MalformedToml],
+            ProviderNativeCapabilityDraftPreview::default(),
+        );
+    };
+    set_bool_preserving_decor(features, "image_generation", enabled);
+    payload.draft.profile.config_contents = document.to_string();
+    let mode = if enabled && request.catalog_mode == CatalogMode::NativeOfficial {
+        CatalogMode::OfficialPlusCustom
+    } else {
+        request.catalog_mode
+    };
+    ready_draft_payload(
+        request,
+        boundary,
+        payload.draft.profile,
+        mode,
+        payload.preview,
     )
 }
 

@@ -6099,6 +6099,14 @@ pub(crate) fn context_protected_config(
     let live_doc: toml_edit::DocumentMut = live_contents.parse()?;
     let snapshot = snapshot_context_tables(home)?;
     let mut candidate_doc: toml_edit::DocumentMut = candidate.parse()?;
+    let image_generation = candidate_doc
+        .get("features")
+        .and_then(toml_edit::Item::as_table_like)
+        .and_then(|table| table.get("image_generation"))
+        .cloned();
+    if let Some(item) = &image_generation {
+        anyhow::ensure!(item.as_bool().is_some(), "image_generation must be boolean");
+    }
 
     let live_keys = live_doc
         .as_table()
@@ -6129,6 +6137,19 @@ pub(crate) fn context_protected_config(
         }
     }
 
+    // The image-tool control owns one leaf, not the features table. Graft that leaf only after
+    // restoring all live global configuration so unrelated features retain their exact values.
+    if let Some(item) = &image_generation {
+        if candidate_doc.get("features").is_none() {
+            candidate_doc["features"] = toml_edit::Item::Table(toml_edit::Table::new());
+        }
+        candidate_doc
+            .get_mut("features")
+            .and_then(toml_edit::Item::as_table_like_mut)
+            .ok_or_else(|| anyhow::anyhow!("live features must be a table"))?
+            .insert("image_generation", item.clone());
+    }
+
     let rendered = candidate_doc.to_string();
     let parsed_back: toml_edit::DocumentMut = rendered.parse()?;
     for (name, item) in &snapshot.tables {
@@ -6142,8 +6163,18 @@ pub(crate) fn context_protected_config(
         if is_provider_owned_root_item(name) {
             continue;
         }
+        let mut expected = item.clone();
+        if name == "features" {
+            if let Some(image_generation) = &image_generation {
+                expected
+                    .as_table_like_mut()
+                    .context("live features must be a table")?
+                    .insert("image_generation", image_generation.clone());
+            }
+        }
         anyhow::ensure!(
-            render_toml_item(name, parsed_back.get(name)) == render_toml_item(name, Some(item)),
+            render_toml_item(name, parsed_back.get(name))
+                == render_toml_item(name, Some(&expected)),
             "无关根配置 {name} 未能保持原样"
         );
     }
@@ -6180,7 +6211,33 @@ fn retain_provider_owned_profile_config(
         .map(|(name, _)| name.to_string())
         .collect::<Vec<_>>();
     for name in keys {
-        if !is_provider_owned_root_item(&name) {
+        if name == "features" {
+            let feature = doc
+                .get("features")
+                .and_then(toml_edit::Item::as_table_like)
+                .and_then(|table| table.get("image_generation"))
+                .cloned();
+            if let Some(feature) = feature {
+                if feature.as_bool().is_none() {
+                    return Err(PersistedProviderConfigError::Invalid);
+                }
+                let table = doc
+                    .get_mut("features")
+                    .and_then(toml_edit::Item::as_table_like_mut)
+                    .ok_or(PersistedProviderConfigError::Invalid)?;
+                let keys = table
+                    .iter()
+                    .map(|(key, _)| key.to_string())
+                    .collect::<Vec<_>>();
+                for key in keys {
+                    if key != "image_generation" {
+                        table.remove(&key);
+                    }
+                }
+            } else {
+                doc.as_table_mut().remove("features");
+            }
+        } else if !is_provider_owned_root_item(&name) {
             doc.as_table_mut().remove(&name);
         }
     }
@@ -7352,6 +7409,60 @@ max_threads = 1000
         assert!(!config.contains("approval_policy"));
         assert!(!config.contains("[agents]"));
         assert!(!config.contains("max_threads"));
+    }
+
+    #[test]
+    fn image_generation_is_the_only_provider_owned_feature_leaf() {
+        use std::fs;
+        for features in [
+            "[features]\nimage_generation = true\nshell_snapshot = false\n[features.context_management]\nexperimental_mode = false\n",
+            "features = { image_generation = true, shell_snapshot = false }\n",
+        ] {
+            let candidate = retain_provider_owned_profile_config(features).unwrap();
+            let stored = candidate.parse::<toml_edit::DocumentMut>().unwrap();
+            assert_eq!(stored["features"]["image_generation"].as_bool(), Some(true));
+            assert_eq!(stored["features"].as_table_like().unwrap().len(), 1);
+            for live in [
+                "# no features\n[mcp_servers.memory]\ncommand = 'memory'\n",
+                "[features]\nshell_snapshot = true\n[features.context_management]\nexperimental_mode = true\n[mcp_servers.memory]\ncommand = 'memory'\n",
+                "features = { image_generation = false, shell_snapshot = true }\n",
+            ] {
+                let home = tempfile::tempdir().unwrap();
+                fs::write(home.path().join("config.toml"), live).unwrap();
+                let (protected, _) = context_protected_config(home.path(), &candidate).unwrap();
+                let rendered = protected.parse::<toml_edit::DocumentMut>().unwrap();
+                assert_eq!(
+                    rendered["features"]["image_generation"].as_bool(),
+                    Some(true)
+                );
+                let original = live.parse::<toml_edit::DocumentMut>().unwrap();
+                if let Some(features) = original
+                    .get("features")
+                    .and_then(toml_edit::Item::as_table_like)
+                {
+                    for (name, item) in features
+                        .iter()
+                        .filter(|(name, _)| *name != "image_generation")
+                    {
+                        assert_eq!(
+                            render_toml_item(name, Some(item)),
+                            render_toml_item(
+                                name,
+                                rendered["features"].as_table_like().unwrap().get(name)
+                            )
+                        );
+                    }
+                }
+                assert_eq!(
+                    fs::read_to_string(home.path().join("config.toml")).unwrap(),
+                    live,
+                    "planning remains read-only"
+                );
+            }
+        }
+        assert!(
+            retain_provider_owned_profile_config("[features]\nimage_generation = 'bad'\n").is_err()
+        );
     }
 
     #[test]
