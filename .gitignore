@@ -1,10 +1,12 @@
 node_modules/
 dist/
+dist-desktop/
 
 # Ad-hoc probe artifacts (image generation, capability checks). Evidence worth keeping is
 # archived under Vault/Notes/tech/codex/ instead of accumulating in the repository root.
 output/
 src-tauri/target/
+scripts/legacy-updater/target/
 .DS_Store
 
 # Serena's project definition is shared tooling, like .github/ — it says which language servers to

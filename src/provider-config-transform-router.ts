@@ -216,7 +216,9 @@ export type ProviderDraftTransformAction =
   | "enableNativePriority"
   | "exitPureApi"
   | "exitLegacyCompatibility"
-  | "exitPureOAuth";
+  | "exitPureOAuth"
+  | "enableImageGeneration"
+  | "disableImageGeneration";
 
 export type ProviderDraftTransformConfirmation =
   | "replaceActorHeader"
@@ -291,7 +293,9 @@ export function routeProviderConfigDraftEdit<P extends ProviderConfigRoutablePro
     throw new Error("Raw provider TOML changes require a dedicated backend transform.");
   }
   if (input.target.source === "brand-new-empty") {
-    if (input.profile.configContents.trim()) {
+    // A genuinely new draft can already have TOML produced by the structured-field builder.
+    // Persisted profiles have no transient target; never re-run the builder over their authored TOML.
+    if (input.profile.configContents.trim() && !input.profile.transientTarget) {
       throw new Error("The brand-new empty target cannot be used for existing provider TOML.");
     }
     if (input.transition) {

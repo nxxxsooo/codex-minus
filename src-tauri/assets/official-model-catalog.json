@@ -1,6 +1,6 @@
 {
   "sourceClientVersion": "0.153.4",
-  "authoredFrom": "codex debug models --bundled, from the verified official client 0.153.4; deprecated gpt-5.2 omitted per official Codex model guidance; gpt-5.3-codex-spark retained from the verified server catalog captured on 2026-08-13 because no bundled list carries it",
+  "authoredFrom": "codex debug models --bundled, from the verified official client 0.153.4; deprecated gpt-5.2 omitted; server-only gpt-5.3-codex-spark (2026-08-13 capture) hidden following its September retirement announcement; gpt-5.5 hidden from the maintained preset ahead of its 2026-10-14 ChatGPT/Codex retirement (API unaffected). Guidance checked 2026-09-22: https://developers.openai.com/codex/models",
   "models": [
     {
       "slug": "gpt-6-astra",
@@ -611,7 +611,7 @@
         }
       ],
       "shell_type": "unified_exec",
-      "visibility": "list",
+      "visibility": "hide",
       "supported_in_api": true,
       "priority": 12,
       "additional_speed_tiers": [
@@ -851,7 +851,7 @@
         }
       ],
       "shell_type": "shell_command",
-      "visibility": "list",
+      "visibility": "hide",
       "supported_in_api": false,
       "priority": 26,
       "additional_speed_tiers": [],

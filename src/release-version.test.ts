@@ -2,7 +2,7 @@ import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
-/// The version lives in four places that no tool keeps in sync.
+/// Keep Electron's package/lock, the Rust core and the retained legacy identity reference in sync.
 ///
 /// `package.json` names the npm package, `tauri.conf.json` names the installer and the app bundle,
 /// `Cargo.toml` names the crate, and `Cargo.lock` records what was actually built. Bumping three of
@@ -13,6 +13,8 @@ const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf
 
 const sources = {
   "package.json": JSON.parse(read("../package.json")).version as string,
+  "package-lock.json": JSON.parse(read("../package-lock.json")).version as string,
+  "package-lock.json root": JSON.parse(read("../package-lock.json")).packages[""].version as string,
   "src-tauri/tauri.conf.json": JSON.parse(read("../src-tauri/tauri.conf.json")).version as string,
   "src-tauri/Cargo.toml":
     read("../src-tauri/Cargo.toml").match(/^version = "([^"]+)"/m)?.[1] ?? "",
@@ -29,7 +31,7 @@ describe("every file that carries the version agrees", () => {
     }
   });
 
-  it("carries one version, not four", () => {
+  it("carries one version across runtime and release metadata", () => {
     const [reference] = Object.values(sources);
     for (const [file, version] of Object.entries(sources)) {
       assert.equal(

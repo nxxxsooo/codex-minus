@@ -1,0 +1,16 @@
+{
+  "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
+  "appId": "fun.mjshao.codex-minus",
+  "productName": "Codex Minus",
+  "executableName": "codex-minus",
+  "directories": { "output": "dist-desktop" },
+  "files": ["dist/**/*", "desktop/**/*.mjs", "desktop/preload.cjs", "!desktop/**/*.test.mjs", "!node_modules/**/*", "package.json", "LICENSE"],
+  "extraResources": [
+    { "from": "src-tauri/target/release", "to": "core", "filter": ["codex-minus-core", "codex-minus-core.exe"] },
+    { "from": "src-tauri/icons/icon.png", "to": "icon.png" }
+  ],
+  "npmRebuild": false,
+  "mac": { "target": ["dir"], "executableName": "Codex Minus", "extendInfo": { "CFBundleExecutable": "codex-minus" }, "icon": "src-tauri/icons/icon.icns", "identity": "-", "hardenedRuntime": false, "category": "public.app-category.developer-tools" },
+  "win": { "target": ["nsis"], "icon": "src-tauri/icons/icon.ico" },
+  "nsis": { "artifactName": "CodexMinus_${version}_${arch}-setup.exe", "oneClick": false, "perMachine": false, "deleteAppDataOnUninstall": false, "runAfterFinish": false, "installerLanguages": ["en_US", "zh_CN"], "include": "desktop/legacy-upgrade.nsh" }
+}

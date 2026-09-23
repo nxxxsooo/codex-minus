@@ -59,10 +59,13 @@ describe("the update download phase reducer", () => {
 });
 
 describe("the update banner", () => {
+  it("gives a writable-location next step for a failed Electron preflight", () => {
+    assert.match(appUpdateInstallFailureGuidance("UpdateLocationNotWritable") ?? "", /应用程序/);
+  });
   it("offers the install action while the update is only available", () => {
     assert.deepEqual(appUpdateBanner({ kind: "available", version: "0.4.9" }), {
       text: { key: "发现新版本 {0}，可以直接更新到这一版。", args: ["v0.4.9"] },
-      action: "更新并重启",
+      action: "安装更新",
     });
   });
 
@@ -82,7 +85,7 @@ describe("the update banner", () => {
 
   it("offers no action while installing", () => {
     assert.deepEqual(appUpdateBanner({ kind: "installing", version: "0.4.9" }), {
-      text: { key: "正在安装 {0}，装好后会自动重启。", args: ["v0.4.9"] },
+      text: { key: "正在准备安装 {0}，管理器随后退出并交给安装程序。", args: ["v0.4.9"] },
       action: null,
     });
   });

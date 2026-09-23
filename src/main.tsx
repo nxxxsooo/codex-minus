@@ -6,6 +6,8 @@ import "./styles.css";
      Fontsource packages ship woff2 files that Vite bundles into dist/.
      CSS @font-face declarations are injected at build time.              */
 import "@fontsource/jetbrains-mono";
+import "@fontsource/inter";
+import "@fontsource/space-grotesk";
 
 const app = document.getElementById("app");
 

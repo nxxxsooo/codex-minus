@@ -7,6 +7,7 @@ import {
   applyProviderDetailInspection,
   beginProviderDetailInspection,
   beginProviderDetailEdit,
+  beginProviderDetailImageGeneration,
   beginProviderDetailNativePriorityUpgrade,
   beginProviderDetailPureOAuthEnablement,
   buildProviderDetailCommitEffect,
@@ -119,6 +120,27 @@ const preview = {
 };
 
 describe("provider detail draft state", () => {
+  it("keeps image-tool edits revisioned, cancelable and stale-safe", () => {
+    const initial = draftState();
+    const step = beginProviderDetailImageGeneration(initial, true);
+    const correlation = transformCorrelation(step);
+    assert.strictEqual(step.state.profile, initial.profile);
+    assert.equal(step.effects[0].kind, "transform");
+    if (step.effects[0].kind !== "transform") return;
+    assert.equal(step.effects[0].invocation.request.action, "enableImageGeneration");
+    const response = {
+      draftRevision: correlation.revision,
+      status: "confirmationRequired" as const,
+      draft: { profile: initial.profile, structuredApiKey: initial.profile.apiKey, catalogMode: catalogDraft.mode },
+      inspection, preview, blockers: ["capabilityLossConfirmationRequired"],
+    };
+    const pending = settleProviderDetailTransform(step.state, correlation, response);
+    assert.equal(pending.state.pendingConfirmation?.requiredConfirmation, "confirmCapabilityLoss");
+    const cancelled = cancelProviderDetailTransition(pending.state);
+    assert.strictEqual(cancelled.state.profile, initial.profile);
+    const off = beginProviderDetailImageGeneration(cancelled.state, false);
+    assert.equal(settleProviderDetailTransform(off.state, correlation, response).disposition, "stale");
+  });
   it("starts an explicit upgrade as a revisioned draft transform and never as a commit", () => {
     const initial = draftState();
     const correlation = beginProviderDetailInspection(initial);

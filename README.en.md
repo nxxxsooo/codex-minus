@@ -84,7 +84,7 @@ This protection follows a real failure where a stale managed context copy overwr
 - Use the target Codex CLI for native `archive` and `unarchive` operations.
 - Default to a 30-day retention threshold, with candidate preview and consent before enablement.
 - Run maintenance after the interface is usable and no more than once every 24 hours.
-- Create a local backup before session deletion.
+- Permanently delete a single session or selected sessions, or clear archived sessions across all pages. Deletion rechecks archived eligibility and removes local database rows and rollout files **without creating a backup**. Archive is separate: it is reversible and does not free disk space.
 - Adapt to current provider rewrites active sessions only: per-session rollout header rewrites plus per-id sqlite updates keep archived history unreachable by construction, locked files are skipped whole, and provider switches can run it automatically (default on).
 
 ### Context protection
@@ -96,7 +96,11 @@ This protection follows a real failure where a stale managed context copy overwr
 
 ## Update and uninstall
 
-The app checks GitHub Releases once at startup. When a new version exists, a banner appears at the sidebar foot; Update and Restart downloads, verifies the signature, installs, and relaunches. The sidebar foot always shows the installed version with a manual Check for updates action that also reports "up to date" explicitly. A failed startup check (for example offline) stays silent. Windows machines that installed an older `.msi` should uninstall it once before installing `-setup.exe` to avoid a duplicate Apps entry.
+The app checks GitHub Releases at startup. A new version appears in the sidebar; downloading and installing require an explicit **Install update** click. Both the Electron manifest and the artifact are verified against the existing minisign key. On macOS an external helper atomically replaces and restarts the manager, rolling back a failed replacement. Windows hands off to the verified NSIS installer. Updating the manager never restarts the official Codex client.
+
+v0.5.0 migrates Tauri to Electron. The old version discovers the signed upgrade through `latest.json`; subsequent Electron updates use the separate `electron-latest.json` channel. The Windows legacy NSIS handoff reuses the existing install path and retires the old uninstaller registration after success. Earlier `.msi` installations still require uninstalling once before installing `-setup.exe`.
+
+The sidebar and Preferences show the installed version and a manual **Check for updates** action. Startup failures stay silent; manual checks give explicit feedback. Development and isolated review instances cannot install updates.
 
 User settings live under `~/.codex-session-delete/` and survive app replacement. You can decide separately whether to retain that directory when uninstalling.
 
@@ -112,7 +116,7 @@ User settings live under `~/.codex-session-delete/` and survive app replacement.
 ## Architecture
 
 - Frontend: React 19, Vite, and TypeScript.
-- Desktop and backend: Tauri 2 and Rust.
+- Desktop and backend: Electron, a restricted preload bridge, and a managed Rust core connected over private stdio.
 - Upstream logic: `codex-plus-core` and `codex-plus-data`, pinned to an explicit git revision instead of vendored locally.
 - Bundle identifier: `fun.mjshao.codex-minus`.
 - State directory: `~/.codex-session-delete/`.
@@ -121,16 +125,17 @@ User settings live under `~/.codex-session-delete/` and survive app replacement.
 
 ```bash
 npm install
-npm run check
-npm run vite:build
-cd src-tauri && cargo test
+npm run verify
+cargo test --manifest-path src-tauri/Cargo.toml
 npm run build
 ```
 
-The full Tauri build generates:
+Build on the target operating system (Windows can cross-build ARM64 with `node scripts/desktop-package.mjs win32 arm64`). Outputs:
 
-- macOS: `src-tauri/target/release/bundle/macos/Codex Minus.app`
-- Windows: `src-tauri/target/release/bundle/nsis/*.exe`
+- macOS: `dist-desktop/mac-arm64/Codex Minus.app`, `.app.zip`, and an updater `.app.tar.gz`.
+- Windows: `dist-desktop/CodexMinus_<version>_<arch>-setup.exe`.
+
+`scripts/verify-package.mjs` checks packaged resources, core architecture, and headless native startup. `npm run update:smoke:mac` exercises replacement, rollback and manager restart in disposable application trees. The separate `scripts/legacy-updater/` acceptance project uses the pinned old updater; its Tauri dependencies never ship in the application. Signing/publication run only in tag CI; local builds do not publish or replace the installed app.
 
 ## License
 

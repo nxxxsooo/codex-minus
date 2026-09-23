@@ -456,6 +456,7 @@ struct AppliedRuntimeFingerprintMaterial {
     protocol: String,
     requires_openai_auth: bool,
     manager_actor_authorized: bool,
+    image_generation_enabled: bool,
     catalog_runtime_identity: String,
 }
 
@@ -558,6 +559,12 @@ pub(crate) fn applied_runtime_fingerprint(
         protocol,
         requires_openai_auth,
         manager_actor_authorized,
+        image_generation_enabled: document
+            .get("features")
+            .and_then(toml_edit::Item::as_table_like)
+            .and_then(|features| features.get("image_generation"))
+            .and_then(toml_edit::Item::as_bool)
+            .unwrap_or(true),
         catalog_runtime_identity,
     };
     Ok(format!(
@@ -604,18 +611,16 @@ pub(crate) fn current_activation_scope_hash_at(
     )))
 }
 
-#[tauri::command]
 pub async fn model_catalog_status() -> CommandResult<CatalogStatusPayload> {
-    tauri::async_runtime::spawn_blocking(model_catalog_status_blocking)
+    crate::runtime::spawn_blocking(model_catalog_status_blocking)
         .await
         .expect("blocking command panicked")
 }
 
-#[tauri::command]
 pub async fn adopt_external_model_catalog(
     request: AdoptCatalogRequest,
 ) -> CommandResult<AdoptionPreviewPayload> {
-    tauri::async_runtime::spawn_blocking(move || adopt_external_model_catalog_blocking(request))
+    crate::runtime::spawn_blocking(move || adopt_external_model_catalog_blocking(request))
         .await
         .expect("blocking command panicked")
 }
@@ -651,7 +656,12 @@ fn model_catalog_status_blocking_at(
         let _guard = live_state::lock()?;
         live_state::prepare_secret_paths_at(&paths.app_state, &paths.settings_path, home)?;
         live_state::recover_locked_at(&paths.app_state)?;
-        let settings = sanitized_settings_at(&paths.settings_path)?;
+        // Settings serialization omits structured credentials already represented by TOML.
+        // Match load_settings' output projection before computing the generation token, or a
+        // freshly saved pure-API profile can never adopt its catalog response in the renderer.
+        let settings = crate::commands::sanitize_settings_for_output(sanitized_settings_at(
+            &paths.settings_path,
+        )?);
         let state = load_and_migrate_state_from_path(&settings, home, &paths.catalog_state_path)?;
         status_payload(&state, &settings, home)
     })();
@@ -3642,6 +3652,58 @@ experimental_bearer_token = "provider-key"
     }
 
     #[test]
+    fn long_context_overrides_materialize_both_limits_and_can_restore_the_baseline() {
+        let state = CatalogState {
+            official: Some(bundled_official_snapshot().unwrap()),
+            ..CatalogState::default()
+        };
+        let profile = RelayProfile {
+            id: "long-context".to_string(),
+            config_contents: "model = \"gpt-6-astra\"\n".to_string(),
+            ..RelayProfile::default()
+        };
+        let mut draft = ProfileCatalogState {
+            mode: CatalogMode::OfficialPlusCustom,
+            ..ProfileCatalogState::default()
+        };
+        for slug in [
+            "gpt-6-astra",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+        ] {
+            draft.overlay.official.insert(
+                slug.to_string(),
+                OfficialOverride {
+                    context_window: Some(1_050_000),
+                    ..OfficialOverride::default()
+                },
+            );
+        }
+        let enabled = compose_profile_catalog(&state, &profile, &draft).unwrap();
+        for model in catalog_models(&enabled).unwrap() {
+            if draft
+                .overlay
+                .official
+                .contains_key(model["slug"].as_str().unwrap())
+            {
+                assert_eq!(model["context_window"], 1_050_000);
+                assert_eq!(model["max_context_window"], 1_050_000);
+                assert_eq!(model["effective_context_window_percent"], 95);
+            }
+        }
+        draft.overlay.official.clear();
+        let restored = compose_profile_catalog(&state, &profile, &draft).unwrap();
+        let astra = catalog_models(&restored)
+            .unwrap()
+            .iter()
+            .find(|m| m["slug"] == "gpt-6-astra")
+            .unwrap();
+        assert_eq!(astra["context_window"], 272_000);
+        assert_eq!(astra["max_context_window"], 872_000);
+    }
+
+    #[test]
     fn composite_plan_stages_one_provider_pointer_and_no_auth_mutation() {
         let profile = RelayProfile {
             id: "composite".to_string(),
@@ -5018,6 +5080,41 @@ enabled = true
             vec!["provider-model"]
         );
         assert!(!paths.settings_path.exists());
+    }
+
+    #[test]
+    fn pure_api_settings_and_catalog_reads_share_one_generation() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = CatalogCommandPaths {
+            app_state: temp.path().join("state"),
+            codex_home: temp.path().join("home"),
+            settings_path: temp.path().join("settings.json"),
+            catalog_state_path: temp.path().join("catalog.json"),
+        };
+        fs::create_dir_all(&paths.app_state).unwrap();
+        fs::create_dir_all(&paths.codex_home).unwrap();
+        fs::write(&paths.settings_path, serde_json::to_vec(&json!({
+            "relayProfilesEnabled": true, "activeRelayId": "default",
+            "relayProfiles": [{"id":"default","name":"Official","relayMode":"official"}, {
+                "id":"test-api", "name":"Test API", "relayMode":"pureApi", "officialMixApiKey":false,
+                "configContents":"model = \"gpt-5.6-terra\"\nmodel_provider = \"OpenAI\"\n\n[model_providers.OpenAI]\nname = \"OpenAI\"\nbase_url = \"https://example.test/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = false\nexperimental_bearer_token = \"test-key\"\n"
+            }]
+        })).unwrap()).unwrap();
+        let settings_paths = crate::commands::ProviderCommitPaths {
+            app_state: paths.app_state.clone(),
+            codex_home: paths.codex_home.clone(),
+            settings_path: paths.settings_path.clone(),
+            catalog_state_path: paths.catalog_state_path.clone(),
+            current_target: None,
+        };
+        let loaded = crate::commands::load_settings_blocking_at(&settings_paths);
+        let status = model_catalog_status_blocking_at(&paths);
+        assert_eq!(loaded.status, "ok");
+        assert_eq!(status.status, "ok");
+        assert_eq!(
+            loaded.payload.provider_fingerprint,
+            status.payload.provider_fingerprint
+        );
     }
 
     #[test]

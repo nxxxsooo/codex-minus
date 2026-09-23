@@ -1,17 +1,18 @@
 [package]
 name = "codex-minus"
-version = "0.4.18"
+version = "0.5.0"
 edition = "2024"
+autobins = false
 license = "AGPL-3.0-only"
 repository = "https://github.com/nxxxsooo/codex-minus"
 description = "Trimmed Codex++ Manager: provider switching, managed model catalogs, session lifecycle, and config diagnostics."
 
 [lib]
 name = "codex_minus_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [[bin]]
-name = "codex-minus"
+name = "codex-minus-core"
 path = "src/main.rs"
 
 [dependencies]
@@ -28,19 +29,13 @@ directories = "6"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "socks"] }
 # Same version the pinned core links, so the bundled libsqlite3 stays a single copy.
 rusqlite = { version = "0.32", features = ["bundled"] }
+minisign-verify = "0.2.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 semver = "1"
 sha2 = "0.10"
-tauri = { version = "2", features = ["custom-protocol", "tray-icon"] }
-tauri-plugin-dialog = "2"
-tauri-plugin-process = "2"
-tauri-plugin-updater = "2"
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["time", "rt-multi-thread", "macros", "io-std", "io-util", "sync"] }
 toml_edit = "0.22"
-
-[build-dependencies]
-tauri-build = { version = "2", features = [] }
 
 [dev-dependencies]
 tempfile = "3"

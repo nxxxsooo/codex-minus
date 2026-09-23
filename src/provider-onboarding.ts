@@ -34,15 +34,13 @@ type NewProviderMaterializationInput = {
 export const PRO_MODEL_SLUGS = [
   "gpt-5.6-terra",
   "gpt-6-astra",
-  "gpt-5.6-luna",
-  "gpt-5.6-sol",
-  "gpt-5.5",
-  "gpt-5.3-codex-spark",
+  "gpt-6-luna",
+  "gpt-6-sol",
 ] as const;
 
 /// Slugs the official bundled catalog hides. Kept beside the shipped list so a retired model is
 /// caught by a test rather than shipped to a user whose catalog can no longer represent it.
-export const RETIRED_MODEL_SLUGS = ["gpt-5.4", "gpt-5.4-mini"] as const;
+export const RETIRED_MODEL_SLUGS = ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"] as const;
 
 /// Provider table identifier a brand-new draft is created with.
 ///
@@ -127,7 +125,7 @@ model_provider = "${NEW_PROVIDER_ID}"
 name = "OpenAI"
 base_url = "${baseUrl}"
 wire_api = "responses"
-${contract}`,
+${contract}${profile.transientTarget === "pureApi" ? "\n[features]\nimage_generation = true\n" : ""}`,
   };
 }
 

@@ -138,6 +138,33 @@ describe("provider config transform router", () => {
     );
   });
 
+  it("routes a filled but unsaved new provider target change through its owned builder", () => {
+    const blank = createNewRelayProfileDraft({ id: "new", contextSelection: {} });
+    const filled = applyProviderConfigPatch({ ...blank, baseUrl: "https://relay.example/v1", apiKey: "provider-key" },
+      { baseUrl: "https://relay.example/v1" }, newTarget);
+    assert.match(filled.configContents, /requires_openai_auth = true/);
+    const switched = routeProviderConfigDraftEdit({
+      profile: filled,
+      patch: { transientTarget: "pureApi", relayMode: "pureApi", officialMixApiKey: false },
+      target: { target: "pureApi", source: "brand-new-empty" },
+    });
+    assert.equal(switched.kind, "synchronous");
+    if (switched.kind !== "synchronous") return;
+    assert.match(switched.profile.configContents, /requires_openai_auth = false/);
+    assert.doesNotMatch(switched.profile.configContents, /x-openai-actor-authorization/);
+    assert.match(switched.profile.configContents, /experimental_bearer_token = "provider-key"/);
+
+    const back = routeProviderConfigDraftEdit({
+      profile: switched.profile,
+      patch: { transientTarget: "nativePriority", relayMode: "official", officialMixApiKey: true },
+      target: newTarget,
+    });
+    assert.equal(back.kind, "synchronous");
+    if (back.kind !== "synchronous") return;
+    assert.match(back.profile.configContents, /requires_openai_auth = true/);
+    assert.match(back.profile.configContents, /x-openai-actor-authorization/);
+  });
+
   it("routes every existing actor or mode transition to one revisioned backend request", () => {
     const cases = [
       {

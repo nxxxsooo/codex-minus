@@ -6,6 +6,31 @@
 
 ## Changelog
 
+### 2026-09-23
+
+- **verify/distribution**: PR #50 passed all three platform checks for the Electron v0.5.0 candidate, including native Windows x64 installation and automatic upgrade from the published v0.4.18 NSIS package with preserved data/path ownership. Windows ARM64 evidence remains build/resource validation.
+  - refs: CI run `35872689671`, commit `9c16f90`, `openspec/changes/migrate-electron-redesign/`
+
+- **feat/desktop**: built and verified the v0.5.0 Electron/Bauhaus local release candidate with the existing Rust transaction core and the integrated session/image/long-context work.
+  - verified: `npm run verify`（285 frontend＋38 desktop/release tests）, full Rust suite（370 tests）, signed macOS packaging, isolated packaged UI/IPC workflows, native headless update/rollback, and actual pinned Tauri updater download/signature/replacement into a disposable Electron bundle. Detailed evidence and ownership boundaries are in the OpenSpec change.
+  - recovery: original uncommitted work remains in the pre-integration stash; PR #48/#49 ancestry is preserved by local merge commits. The installed `/Applications/Codex Minus.app` was not replaced. Native Windows acceptance and final native focus recheck are outside these local results.
+  - refs: `openspec/changes/migrate-electron-redesign/`, `scripts/desktop-smoke.mjs`, `scripts/update-macos-smoke.mjs`, `scripts/legacy-updater-smoke.mjs`
+
+- **fix/catalog**: integrated the model-list and long-context changes into the running Electron review build
+  - what: four-model preset now uses Astra, GPT-6 Sol, GPT-5.6 Terra and GPT-6 Luna; new/explicitly restored custom-only rows use catalog display names; candidates are collapsed and same-slug rows render once
+  - evidence: models.dev and official Codex docs confirm the September 22 Sol/Luna release; the downloaded OpenAI-signed CLI 0.156.0 still lacks their bundled rows, so they are source-marked supplemental custom cards rather than synthesized official entries
+  - verified: `npm run verify`（263 frontend + 10 Electron transport tests）, Rust core build, Vite build, and real Electron → IPC → Rust → disk smoke; confirmed four IDs and names after save/reopen, both generated context limits at 1,050,000, Context/auth preservation, reconnect, stale-save rejection and routing-disabled saves; the user's isolated Electron preview home was reopened and its existing test provider explicitly restored to the new list
+  - boundary: this is the Electron worktree review build; the published release and `/Applications/Codex Minus.app` are unchanged
+  - refs: `src/supplemental-openai-models.ts`, `src/catalog-workflow.test.ts`, `scripts/desktop-smoke.mjs`, `output/catalog-electron-current.png`
+
+### 2026-09-22
+
+- **feat/sessions**: implemented permanent single/selected-session deletion without backups and “clear all archives” across pagination in `codex/session-cleanup`.
+  - why: the existing delete path retained backup copies; cleanup now removes the selected rollout files and related database rows, rechecks archived-only eligibility, and reports incomplete items for retry.
+  - verified: `npm run verify` (256 tests), `npm run vite:build`, `cargo test` (312 library + 44 integration), Rust formatting and diff checks; isolated SQLite/file fixtures cover related rows, duplicate databases, active-session preservation, invalid paths, SQL failures and unlink failures. Browser smoke with mocked IPC covered cancellation, 201 archives across pages, busy controls, refresh and selected active deletion.
+  - boundary: source implementation only; native packaged-app click-through, release and installation are not part of this verification. Permanent deletion creates no recovery copy; partial file removal cannot be rolled back.
+  - refs: `src/session-cleanup.ts`, `src/session-cleanup.test.ts`, `src-tauri/src/session_cleanup.rs`
+
 ### 2026-09-12
 
 - **fix/catalog**: refresh the bundled official catalog for GPT-6 Astra and keep the maintained Pro preset current
