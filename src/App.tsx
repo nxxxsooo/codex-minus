@@ -105,6 +105,7 @@ import {
   type ProviderMutationKind,
 } from "./provider-commit";
 import * as settingsBaseline from "./settings-baseline";
+import { cleanupSessions } from "./session-cleanup";
 import { LiveConfigPanel } from "./relay-config-panels";
 import { providerDoctorSteps } from "./provider-doctor-steps";
 import { isSuccessStatus, statusClass, statusLabel } from "./status-presentation";
@@ -171,7 +172,6 @@ import {
   relayProfileEditorStatus,
   relayProfileModeHelp,
   stringifyError,
-  truncateSessionDeletePreview,
 } from "./app-shell-rules";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 import type {
@@ -185,7 +185,6 @@ import type {
   CommandResult,
   ContextKind,
   CustomCatalogModel,
-  DeleteLocalSessionResult,
   EnvConflictsResult,
   ExtractRelayCommonConfigResult,
   ImageOverlayFitMode,
@@ -567,72 +566,36 @@ export function App() {
     if (scan?.mismatchCount) await adaptActiveSessions(scan);
   };
 
-  const requestDeleteLocalSession = (session: LocalSession) =>
-    call<DeleteLocalSessionResult>("delete_local_session", {
-      request: { sessionId: session.id, title: session.title, dbPath: session.dbPath },
-    });
-
   const confirmSessionDelete = (title: string, message: string) =>
     new Promise<boolean>((resolve) => {
       setConfirmDialog({
         title,
         message,
-        confirmText: t("确认删除"),
+        confirmText: t("永久删除"),
         cancelText: t("取消"),
         resolve,
       });
     });
 
-  const deleteLocalSession = async (session: LocalSession) => {
-    const title = session.title || session.id;
-    const confirmed = await confirmSessionDelete(t("删除会话"), tf("删除会话“{0}”？此操作会删除本地数据库记录和 rollout 文件，并创建备份。", [title]));
-    if (!confirmed) return;
-    const result = await run(() => requestDeleteLocalSession(session));
-    if (result) {
-      showResultNotice(t("会话删除"), result);
-      await refreshLocalSessions(true);
+  const sessionCleanupBusy = useRef(false);
+  const [sessionCleanupRunning, setSessionCleanupRunning] = useState(false);
+  const deleteLocalSessions = async (target: LocalSession[] | "archived") => {
+    if (sessionCleanupBusy.current) return;
+    sessionCleanupBusy.current = true;
+    setSessionCleanupRunning(true);
+    try {
+      await run(() => cleanupSessions(target, {
+        invoke: call,
+        confirm: confirmSessionDelete,
+        notice: showNotice,
+        refresh: () => Promise.all([refreshLocalSessions(true), refreshProviderCompatibility(true), refreshArchivePreview(undefined, true)]),
+      }));
+    } finally {
+      sessionCleanupBusy.current = false;
+      setSessionCleanupRunning(false);
     }
   };
-
-  const deleteLocalSessions = async (sessions: LocalSession[]) => {
-    const uniqueSessions = Array.from(new Map(sessions.map((session) => [session.id, session])).values());
-    if (!uniqueSessions.length) {
-      showNotice(t("批量删除会话"), t("请先选择要删除的会话。"), "failed");
-      return;
-    }
-    const preview = uniqueSessions
-      .slice(0, 6)
-      .map((session) => `- ${truncateSessionDeletePreview(session.title || session.id)}`)
-      .join("\n");
-    const extraCount = uniqueSessions.length > 6 ? tf("\n...以及另外 {0} 个会话", [uniqueSessions.length - 6]) : "";
-    const confirmed = await confirmSessionDelete(
-      t("批量删除会话"),
-      tf("删除选中的 {0} 个会话？此操作会删除本地数据库记录和 rollout 文件，并为每个会话创建备份。\n\n{1}{2}", [uniqueSessions.length, preview, extraCount]),
-    );
-    if (!confirmed) return;
-
-    let succeeded = 0;
-    const failed: string[] = [];
-    for (const session of uniqueSessions) {
-      const result = await run(() => requestDeleteLocalSession(session));
-      if (result && isSuccessStatus(result.status)) {
-        succeeded += 1;
-      } else {
-        failed.push(session.title || session.id);
-      }
-    }
-
-    if (failed.length) {
-      showNotice(
-        t("批量删除会话"),
-        tf("已删除 {0} 个，失败 {1} 个：{2}", [succeeded, failed.length, failed.slice(0, 3).map(truncateSessionDeletePreview).join(t("、"))]),
-        succeeded ? "ok" : "failed",
-      );
-    } else {
-      showNotice(t("批量删除会话"), tf("已删除 {0} 个会话。", [succeeded]), "ok");
-    }
-    await refreshLocalSessions(true);
-  };
+  const deleteLocalSession = (session: LocalSession) => deleteLocalSessions([session]);
 
   const navigate = async (next: Route) => {
     setRoute(next);
@@ -1287,6 +1250,7 @@ export function App() {
               archivePreview={archivePreview}
               archiveMaintenance={archiveMaintenance}
               archiveMaintenanceRunning={archiveMaintenanceRunning}
+              cleanupRunning={sessionCleanupRunning}
               providerCompatibility={providerCompatibility}
               providerCompatibilityLoading={providerCompatibilityLoading}
               actions={actions}
@@ -1340,7 +1304,7 @@ type Actions = {
   refreshProviderCompatibility: (silent?: boolean) => Promise<ProviderCompatibilityResult | null>;
   adaptActiveSessions: () => Promise<void>;
   deleteLocalSession: (session: LocalSession) => Promise<void>;
-  deleteLocalSessions: (sessions: LocalSession[]) => Promise<void>;
+  deleteLocalSessions: (sessions: LocalSession[] | "archived") => Promise<void>;
   openExternalUrl: (url: string) => Promise<void>;
   extractRelayCommonConfig: (configContents: string) => Promise<ExtractRelayCommonConfigResult | null>;
   testRelayProfile: (profile: RelayProfile) => Promise<void>;
@@ -1761,6 +1725,7 @@ function SessionsScreen({
   archivePreview,
   archiveMaintenance,
   archiveMaintenanceRunning,
+  cleanupRunning,
   providerCompatibility,
   providerCompatibilityLoading,
   actions,
@@ -1771,6 +1736,7 @@ function SessionsScreen({
   archivePreview: ArchivePreviewResult | null;
   archiveMaintenance: ArchiveMaintenanceResult | null;
   archiveMaintenanceRunning: boolean;
+  cleanupRunning: boolean;
   providerCompatibility: ProviderCompatibilityResult | null;
   providerCompatibilityLoading: boolean;
   actions: Actions;
@@ -1781,7 +1747,6 @@ function SessionsScreen({
   const [retentionDays, setRetentionDays] = useState(lifecycle?.retentionDays ?? 30);
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set());
   const [selectionMode, setSelectionMode] = useState(false);
-  const [bulkDeleting, setBulkDeleting] = useState(false);
   const selectedSessions = useMemo(() => items.filter((session) => selectedSessionIds.has(session.id)), [items, selectedSessionIds]);
   const selectedCount = selectedSessions.length;
   const allSelected = items.length > 0 && selectedCount === items.length;
@@ -1816,15 +1781,6 @@ function SessionsScreen({
   const selectAllSessions = () => setSelectedSessionIds(new Set(items.map((session) => session.id)));
 
   const clearSelectedSessions = () => setSelectedSessionIds(new Set());
-
-  const deleteSelectedSessions = async () => {
-    setBulkDeleting(true);
-    try {
-      await actions.deleteLocalSessions(selectedSessions);
-    } finally {
-      setBulkDeleting(false);
-    }
-  };
 
   const toggleArchivePolicy = async (enabled: boolean) => {
     if (enabled) {
@@ -1949,10 +1905,10 @@ function SessionsScreen({
         <CardHead title={t("本地会话")} detail={items.length ? t("按更新时间倒序显示") : t("当前列表为空")} />
         <CardContent>
           <div className="session-view-tabs segmented" role="tablist">
-            <button className={!archiveView ? "active" : ""} onClick={() => void actions.refreshLocalSessions(true, false)} role="tab" type="button">
+            <button disabled={cleanupRunning} className={!archiveView ? "active" : ""} onClick={() => void actions.refreshLocalSessions(true, false)} role="tab" type="button">
               {t("活动")} <small>{activeCount}</small>
             </button>
-            <button className={archiveView ? "active" : ""} onClick={() => void actions.refreshLocalSessions(true, true)} role="tab" type="button">
+            <button disabled={cleanupRunning} className={archiveView ? "active" : ""} onClick={() => void actions.refreshLocalSessions(true, true)} role="tab" type="button">
               {t("已归档")} <small>{archivedCount}</small>
             </button>
           </div>
@@ -1963,24 +1919,30 @@ function SessionsScreen({
                   {selectionMode ? `${t("已选择")} ${selectedCount} / ${items.length} ${t("个会话")}` : null}
                 </span>
                 <div className="session-selection-actions">
+                  {archiveView ? (
+                    <Button className="session-delete-button" disabled={cleanupRunning || !archivedCount} onClick={() => void actions.deleteLocalSessions("archived")} size="sm" variant="outline">
+                      <Trash2 className="h-4 w-4" />
+                      {t("清空全部归档")}
+                    </Button>
+                  ) : null}
                   {selectionMode ? (
                     <>
-                      <Button disabled={allSelected || bulkDeleting} onClick={selectAllSessions} size="sm" variant="outline">
+                      <Button disabled={allSelected || cleanupRunning} onClick={selectAllSessions} size="sm" variant="outline">
                         {t("全选当前列表")}
                       </Button>
-                      <Button disabled={!selectedCount || bulkDeleting} onClick={clearSelectedSessions} size="sm" variant="outline">
+                      <Button disabled={!selectedCount || cleanupRunning} onClick={clearSelectedSessions} size="sm" variant="outline">
                         {t("清空选择")}
                       </Button>
-                      <Button disabled={!selectedCount || bulkDeleting} onClick={() => void deleteSelectedSessions()} size="sm" variant="outline">
+                      <Button className="session-delete-button" disabled={!selectedCount || cleanupRunning} onClick={() => void actions.deleteLocalSessions(selectedSessions)} size="sm" variant="outline">
                         <Trash2 className="h-4 w-4" />
-                        {bulkDeleting ? t("正在删除…") : t("删除已选")}
+                        {cleanupRunning ? t("正在删除…") : t("永久删除已选")}
                       </Button>
-                      <Button disabled={bulkDeleting} onClick={() => { setSelectionMode(false); clearSelectedSessions(); }} size="sm" variant="ghost">
+                      <Button disabled={cleanupRunning} onClick={() => { setSelectionMode(false); clearSelectedSessions(); }} size="sm" variant="ghost">
                         {t("取消")}
                       </Button>
                     </>
                   ) : (
-                    <Button onClick={() => setSelectionMode(true)} size="sm" variant="outline">
+                    <Button disabled={cleanupRunning} onClick={() => setSelectionMode(true)} size="sm" variant="outline">
                       {t("多选")}
                     </Button>
                   )}
@@ -1996,6 +1958,7 @@ function SessionsScreen({
                           <input
                             aria-label={tf("选择会话 {0}", [session.title || session.id])}
                             checked={selected}
+                            disabled={cleanupRunning}
                             onChange={(event) => toggleSessionSelection(session.id, event.currentTarget.checked)}
                             type="checkbox"
                           />
@@ -2012,13 +1975,13 @@ function SessionsScreen({
                         <span>{formatTime(session.updatedAtMs ?? 0)}</span>
                       </div>
                       <div className="session-row-actions">
-                        <Button variant="outline" onClick={() => void actions.archiveOrRestoreSession(session, !archiveView)}>
+                        <Button disabled={cleanupRunning} variant="outline" onClick={() => void actions.archiveOrRestoreSession(session, !archiveView)}>
                           {archiveView ? <ArchiveRestore className="h-4 w-4" /> : <Archive className="h-4 w-4" />}
                           {archiveView ? t("恢复") : t("归档")}
                         </Button>
-                        <Button className="session-delete-button" variant="outline" onClick={() => void actions.deleteLocalSession(session)}>
+                        <Button disabled={cleanupRunning} className="session-delete-button" variant="outline" onClick={() => void actions.deleteLocalSession(session)}>
                           <Trash2 className="h-4 w-4" />
-                          {t("删除")}
+                          {t("永久删除")}
                         </Button>
                       </div>
                     </div>
@@ -2027,7 +1990,7 @@ function SessionsScreen({
               </div>
               {sessions?.nextCursor ? (
                 <Toolbar>
-                  <Button variant="outline" onClick={() => void actions.refreshLocalSessions(true, archiveView, sessions.nextCursor ?? undefined)}>
+                  <Button disabled={cleanupRunning} variant="outline" onClick={() => void actions.refreshLocalSessions(true, archiveView, sessions.nextCursor ?? undefined)}>
                     {tf("显示更多（已显示 {0} 个）", [items.length])}
                   </Button>
                 </Toolbar>

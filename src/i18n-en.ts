@@ -792,6 +792,12 @@ export const EN_PLAIN: Record<string, string> = {
   "活动": "Active",
   "恢复": "Restore",
   "归档": "Archive",
+  "清空全部归档": "Clear all archives",
+  "永久删除": "Delete permanently",
+  "永久删除已选": "Delete selected permanently",
+  "永久删除会话": "Permanently delete sessions",
+  "归档列表读取不完整，请刷新后重试。": "The archive list is incomplete. Refresh and try again.",
+  "会话清理失败，请查看详情。": "Session cleanup failed. See details.",
   "没有已归档会话。": "No archived sessions.",
   "没有活动会话。": "No active sessions.",
 };
@@ -820,12 +826,14 @@ export const EN_TEMPLATE: Record<string, string> = {
   "供应商 {0}": "Provider {0}",
   "供应商「{0}」缺少独立 config.toml，已停止切换，避免继续显示上一套配置文件。请先在该供应商详情里保存 config.toml。":
     "Provider “{0}” is missing its own config.toml, so the switch was stopped to avoid showing the previous config files. Save config.toml in this provider's details first.",
-  "删除会话“{0}”？此操作会删除本地数据库记录和 rollout 文件，并创建备份。":
-    "Delete session “{0}”? This deletes the local database record and rollout file, and creates a backup.",
+  "永久删除全部 {0} 个已归档会话？将清理本地数据库记录和 rollout 文件，不留备份，无法恢复。":
+    "Permanently delete all {0} archived sessions? Local database records and rollout files will be removed without backups. This cannot be undone.",
+  "永久删除选中的 {0} 个会话？将清理本地数据库记录和 rollout 文件，不留备份，无法恢复。\n\n{1}{2}":
+    "Permanently delete the {0} selected session(s)? Local database records and rollout files will be removed without backups. This cannot be undone.\n\n{1}{2}",
+  "已永久删除 {0} 个会话，未创建备份。": "Permanently deleted {0} session(s) without backups.",
+  "已永久删除 {0} 个，未完成 {1} 个。": "Permanently deleted {0}; cleanup incomplete for {1}.",
   "删除脚本“{0}”？此操作会移除本地脚本文件。": "Delete script “{0}”? This removes the local script file.",
   "删除这些环境变量？\n\n{0}\n\n删除前会写入备份。": "Delete these environment variables?\n\n{0}\n\nA backup is written before deletion.",
-  "删除选中的 {0} 个会话？此操作会删除本地数据库记录和 rollout 文件，并为每个会话创建备份。\n\n{1}{2}":
-    "Delete the {0} selected session(s)? This deletes the local database records and rollout files, and creates a backup for each session.\n\n{1}{2}",
   "发现 {0} 个 Codex 供应商": "Found {0} Codex provider(s)",
   "发现新版本 {0}": "New version {0} available",
   "在 GitHub 上支持作者：{0}": "Support the author on GitHub: {0}",
@@ -876,6 +884,8 @@ export const EN_BACKEND: Record<string, string> = {
   "会话归档设置已保存。": "Session archive settings saved.",
   "归档候选预览已生成，尚未修改任何会话。": "Archive preview generated; no sessions were modified.",
   "会话已原生归档。": "Session archived using the native Codex operation.",
+  "会话已永久删除，未创建备份。": "Sessions permanently deleted without backups.",
+  "部分会话未能完成清理，请查看详情。": "Cleanup is incomplete for some sessions. See details.",
   "会话已原生恢复。": "Session restored using the native Codex operation.",
   "会话已经归档。": "Session is already archived.",
   "会话已经恢复。": "Session is already active.",
