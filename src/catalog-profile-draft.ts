@@ -1,4 +1,5 @@
-import type { CatalogModeValue, CatalogOverlayDraft } from "./model-catalog-ui.ts";
+import { restoreCatalogList, type CatalogModeValue, type CatalogOverlayDraft } from "./model-catalog-ui.ts";
+import { PRO_MODEL_SLUGS } from "./provider-onboarding.ts";
 import type { CatalogUpstreamTopology, ProfileCatalogDraft } from "./provider-commit.ts";
 
 type CatalogDraftSummary = {
@@ -16,6 +17,7 @@ export function catalogProfileDraft(input: {
   profileId: string;
   fallbackMode: CatalogModeValue;
   summary: CatalogDraftSummary | null;
+  officialModels?: readonly { slug: string; displayName: string; visible: boolean; contextWindow: number | null }[];
 }): ProfileCatalogDraft {
   return {
     profileId: input.profileId,
@@ -23,7 +25,10 @@ export function catalogProfileDraft(input: {
     modeExplicit: input.summary?.modeExplicit ?? false,
     upstreamTopology: input.summary?.upstreamTopology ?? "direct",
     externalPointer: input.summary?.externalPointer ?? null,
-    overlay: input.summary?.overlay ?? { official: {}, custom: [] },
+    overlay: input.summary?.overlay ?? restoreCatalogList({
+      overlay: { official: {}, custom: [] }, officialModels: input.officialModels ?? [],
+      wanted: PRO_MODEL_SLUGS, mode: input.fallbackMode,
+    }),
   };
 }
 

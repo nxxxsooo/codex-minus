@@ -783,11 +783,10 @@ pub fn draft_provider_native_capability_with_boundary(
     }
 }
 
-#[tauri::command]
 pub async fn transform_provider_native_capability_draft(
     request: ProviderNativeCapabilityDraftRequest,
 ) -> ProviderNativeCapabilityDraftPayload {
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::runtime::spawn_blocking(move || {
         transform_provider_native_capability_draft_from_paths(
             &codex_plus_core::paths::default_settings_path(),
             &crate::model_catalog::catalog_state_path(),
@@ -1955,15 +1954,12 @@ pub fn inspect_provider_native_capabilities_from_paths(
     Ok(ProviderNativeCapabilityInspectionPayload { inspections })
 }
 
-#[tauri::command]
 pub async fn inspect_provider_native_capabilities(
     request: Option<ProviderNativeCapabilityInspectionRequest>,
 ) -> CommandResult<ProviderNativeCapabilityInspectionPayload> {
-    tauri::async_runtime::spawn_blocking(move || {
-        inspect_command_blocking(request.unwrap_or_default())
-    })
-    .await
-    .expect("blocking command panicked")
+    crate::runtime::spawn_blocking(move || inspect_command_blocking(request.unwrap_or_default()))
+        .await
+        .expect("blocking command panicked")
 }
 
 fn inspect_command_blocking(

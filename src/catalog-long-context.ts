@@ -1,7 +1,7 @@
 import { emptyOfficialOverride, officialModelIsVisible, type CatalogModeValue, type CatalogOverlayDraft } from "./model-catalog-ui.ts";
 
 const LONG_CONTEXT_WINDOW = 1_050_000;
-const ELIGIBLE_SLUGS = new Set(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
+const ELIGIBLE_SLUGS = new Set(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
 
 type OfficialModel = { slug: string; visible: boolean; contextWindow?: number | null };
 type Input = { overlay: CatalogOverlayDraft; officialModels: readonly OfficialModel[]; mode: CatalogModeValue };
@@ -24,8 +24,8 @@ export function longContextState(input: Input) {
   return { available: rows.length > 0, checked: rows.length > 0 && enabled === rows.length, mixed: enabled > 0 && enabled < rows.length };
 }
 
-/// Only the four visible, current OpenAI models are affected. This edits the catalog draft;
-/// the existing commit owns materialization, context protection and writing the live config.
+/// The visible Astra, Sol, Terra and Luna variants are affected. This edits the catalog draft;
+/// the existing commit owns materialization, Context protection and live writes.
 /// Disabling clears only the preset value, leaving independently edited windows alone.
 export function setLongContext(input: Input, enabled: boolean): CatalogOverlayDraft {
   const rows = contextRows(input);
@@ -37,7 +37,6 @@ export function setLongContext(input: Input, enabled: boolean): CatalogOverlayDr
       const item = custom.find((item) => item.slug === row.slug)!;
       item.contextWindow = enabled ? LONG_CONTEXT_WINDOW
         : input.officialModels.find((model) => model.slug === row.slug)?.contextWindow ?? 272_000;
-      // In a composed catalog an official override takes precedence over a same-slug custom row.
       if (input.mode !== "custom-only" && official[row.slug]?.contextWindow != null) {
         official[row.slug] = { ...official[row.slug], contextWindow: enabled ? LONG_CONTEXT_WINDOW : null };
       }

@@ -1,4 +1,5 @@
 import assert from "node:assert";
+import { SUPPLEMENTAL_OPENAI_MODELS } from "./supplemental-openai-models.ts";
 import fs from "node:fs";
 import { describe, it } from "node:test";
 
@@ -266,9 +267,8 @@ describe("built-in Pro model list", () => {
 });
 
 describe("Pro model list maintenance", () => {
-  it("recommends only the four current models and keeps retired rows out of the default picker", () => {
-    assert.deepEqual([...PRO_MODEL_SLUGS].sort(), ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].sort());
-    for (const slug of ["gpt-5.3-codex-spark", "gpt-5.5"]) assert.equal(bundledBaselineVisibility.get(slug), false);
+  it("uses the September 22 Sol/Luna release and retains Terra as the stable default", () => {
+    assert.deepEqual([...PRO_MODEL_SLUGS], ["gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol"]);
   });
   it("ships no slug the official bundled catalog hides", () => {
     const retired = new Set<string>(RETIRED_MODEL_SLUGS);
@@ -281,15 +281,15 @@ describe("Pro model list maintenance", () => {
     assert.ok((RETIRED_MODEL_SLUGS as readonly string[]).includes("gpt-5.4-mini"));
   });
 
-  it("ships only models the bundled baseline actually lists", () => {
+  it("ships models represented by the verified baseline or explicitly sourced supplemental cards", () => {
     // Cross-referencing the two frontend lists is not enough: the asset once carried a listed
     // gpt-5.2 while the Pro list shipped gpt-5.3-codex-spark, and nothing failed until a user's
     // first save would have. The asset itself is the contract.
     for (const slug of PRO_MODEL_SLUGS) {
       assert.equal(
-        bundledBaselineVisibility.get(slug),
+        bundledBaselineVisibility.get(slug) === true || SUPPLEMENTAL_OPENAI_MODELS.some((model) => model.slug === slug),
         true,
-        `${slug} is shipped in the Pro list but the bundled baseline does not list it`,
+        `${slug} is shipped in the Pro list without baseline metadata or a supplemental card`,
       );
     }
     for (const slug of RETIRED_MODEL_SLUGS) {

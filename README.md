@@ -71,10 +71,10 @@ shasum -a 256 -c SHA256SUMS
 
 ### 模型目录
 
-- 默认／「还原 Pro 列表」提供 Astra、Sol、Terra、Luna，启动默认仍是 Terra。Spark 已退出默认列表；GPT-5.5 提前移出推荐列表，其 ChatGPT／Codex 退役日期为 **2026-10-14**，API 不受影响（[官方说明](https://developers.openai.com/codex/models)）。已有自定义行和显式可见性选择由供应商档案继续持有。
-- 「解锁 1,050,000 上下文」只修改当前供应商列表中的这四个模型，关闭清除这一预设窗口并恢复默认值；其他模型及另行输入的窗口值不受关闭操作影响。修改随供应商保存生效，实际可用容量仍由上游决定。
+- 当前维护预设（2026-09-23）：`gpt-6-astra`、`gpt-6-sol`、`gpt-5.6-terra`、`gpt-6-luna`；新建供应商使用该列表，已有供应商通过「还原 Pro 列表」显式更新。用户自行修改的显示名称和上下文保留，旧型号不会在打开配置时被自动替换。
+- GPT-6 Sol／Luna 已于 2026-09-22 发布，经 [models.dev](https://models.dev) 与 [OpenAI Codex 模型文档](https://developers.openai.com/codex/models)核对。OpenAI 签名 CLI 0.156.0 的 bundled 清单尚未包含这两项，因此以注明来源的自定义模型卡补充；已有官方条目的名称仍保留 CLI 原值。
+- 「解锁 1,050,000 上下文」修改列表中的 Astra、Sol、Terra、Luna（含保留的 5.6 版本），通过统一保存写入模型目录；关闭恢复默认工作窗口，实际容量取决于上游。其他候选模型收在「添加模型」中。
 - 「图像工具（无需登录）」开启时通过纯 API 草稿转换写入 `requires_openai_auth = false` 和 `[features] image_generation = true`，保留模型目录。关闭只写入 `image_generation = false`；保存后按提示重启 Codex。新建时选择「纯 API＋开启生图」会直接生成开启配置，保存后可独立开关图工具。上游需支持图像生成。
-
 - Codex 在未配置静态 `model_catalog_json` 时，OAuth 或 API provider 都可能通过各自的 `/models` 路径更新共享 `models_cache.json`；混合模式会走当前 custom provider，因此该 live cache 具有 provider 歧义，不能作为官方基线。
 - 官方清单随应用发布，来源与人工维护差异记录在内置目录资产中。运行时不使用 OAuth 刷新目录，也不把供应商 `/v1/models` 当作官方来源。
 - 每个可用供应商可选择「官方原生」「官方 + 自定义」「仅自定义」或「外部目录」。服务端复合供应商仍以一个纯 API Responses Base URL 和 Key 接入，模型聚合由上游完成，默认使用「官方 + 自定义」。
@@ -92,7 +92,7 @@ shasum -a 256 -c SHA256SUMS
 - 通过目标 Codex CLI 执行原生 `archive` 与 `unarchive`。
 - 自动归档默认保留最近 30 天，首次启用前必须确认候选预览。
 - 自动检查在界面可用后异步执行，最多每 24 小时完成一次。
-- 删除会话前创建本地备份。
+- 单条或多选会话可永久删除；「清空全部归档」跨所有分页重新检查归档状态后清理本地数据库记录与 rollout 文件，**不创建备份，无法恢复**。归档与永久删除是不同操作，归档可恢复且不释放磁盘空间。
 - 「适配到当前 provider」只改活动会话：逐会话重写 rollout 头部与逐 id 更新 sqlite，归档历史按构造不可达；先备份、锁定文件整体跳过，切换供应商时可选自动执行（默认开）。
 
 ### Context 保护
@@ -104,7 +104,11 @@ shasum -a 256 -c SHA256SUMS
 
 ## 更新与卸载
 
-应用启动时会自动检查 GitHub Release 上的新版本：有新版会在侧边栏底部出现横幅，点「更新并重启」即可完成下载、签名校验、安装和重启，无需手动下载。左下角常驻显示当前版本，可随时点「检查更新」手动检查（已是最新会明确告知）。启动时检查失败（如离线）不会打扰使用。此前用旧版 `.msi` 安装过的 Windows 机器，请先卸载旧版再装 `-setup.exe`，避免「应用」列表出现重复条目。
+应用启动时会自动检查 GitHub Release 上的新版本：有新版会在侧边栏底部出现横幅，点击「安装更新」后才下载和安装。Electron 更新清单与安装包都使用原有 minisign 公钥验证；macOS 经外部 helper 原子替换并重启管理器，替换失败会回滚；Windows 交给已验签的 NSIS 安装器。更新管理器不会重启官方 Codex 客户端。
+
+v0.5.0 从 Tauri 迁移到 Electron。旧版通过 `latest.json` 自动取得签名的升级包，安装完成后使用 `electron-latest.json` 独立通道继续更新。Windows 旧版 NSIS 的自动升级沿用原安装路径，并在成功后替换卸载记录。更早的 `.msi` 安装仍需先卸载再安装 `-setup.exe`，避免重复条目。
+
+左下角和偏好设置显示当前版本，可随时手动「检查更新」。启动检查失败（如离线）保持静默，手动检查会明确反馈；开发／隔离预览实例不启用安装更新。
 
 用户设置位于 `~/.codex-session-delete/`，覆盖应用不会删除。卸载应用时可单独决定是否保留该目录。
 
@@ -120,7 +124,7 @@ shasum -a 256 -c SHA256SUMS
 ## 架构
 
 - 前端：React 19、Vite、TypeScript。
-- 桌面与后端：Tauri 2、Rust。
+- 桌面与后端：Electron、受限 preload 桥接、通过私有 stdio 连接的 Rust 核心。
 - 上游逻辑：`codex-plus-core` 与 `codex-plus-data`，固定到明确 git revision，不在本仓库 vendoring。
 - 应用标识：`fun.mjshao.codex-minus`。
 - 状态目录：`~/.codex-session-delete/`。
@@ -129,16 +133,17 @@ shasum -a 256 -c SHA256SUMS
 
 ```bash
 npm install
-npm run check
-npm run vite:build
-cd src-tauri && cargo test
+npm run verify
+cargo test --manifest-path src-tauri/Cargo.toml
 npm run build
 ```
 
-完整 Tauri 构建会生成：
+在目标操作系统上构建 Electron 包（Windows 可用 `node scripts/desktop-package.mjs win32 arm64` 交叉构建 ARM64）。产物包括：
 
-- macOS: `src-tauri/target/release/bundle/macos/Codex Minus.app`
-- Windows: `src-tauri/target/release/bundle/nsis/*.exe`
+- macOS：`dist-desktop/mac-arm64/Codex Minus.app`、`.app.zip` 和更新用 `.app.tar.gz`。
+- Windows：`dist-desktop/CodexMinus_<version>_<arch>-setup.exe`。
+
+`scripts/verify-package.mjs` 检查打包资源、核心架构和本机无窗口启动；`npm run update:smoke:mac` 用一次性应用树验证替换、回滚与管理器重启。旧更新器验收是独立的 `scripts/legacy-updater/` 测试工程，其 Tauri 依赖不进入发布应用。签名和发布只由 tag CI 执行，本地构建不会发布或替换已安装应用。
 
 ## License
 

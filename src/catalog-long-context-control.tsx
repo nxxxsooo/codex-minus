@@ -14,7 +14,7 @@ export function CatalogLongContextControl(props: {
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => { if (input.current) input.current.indeterminate = state.mixed; }, [state.mixed]);
   return (
-    <label className="switch-row">
+    <label className="switch-row catalog-long-context">
       <input ref={input} type="checkbox" checked={state.checked} disabled={props.disabled || !state.available}
         onChange={(event) => props.onChange(setLongContext(props, event.currentTarget.checked))} />
       <span>

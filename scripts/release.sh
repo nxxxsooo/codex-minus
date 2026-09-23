@@ -39,9 +39,10 @@ printf 'release: %s -> %s\n' "$current" "$version"
 node -e '
   const fs = require("fs");
   const [version] = process.argv.slice(1);
-  for (const file of ["package.json", "src-tauri/tauri.conf.json"]) {
+  for (const file of ["package.json", "package-lock.json", "src-tauri/tauri.conf.json"]) {
     const value = JSON.parse(fs.readFileSync(file, "utf8"));
     value.version = version;
+    if (file === "package-lock.json") value.packages[""].version = version;
     fs.writeFileSync(file, JSON.stringify(value, null, 2) + "\n");
   }
 ' "$version"
@@ -52,9 +53,9 @@ perl -0pi -e "s/^version = \"[^\"]+\"/version = \"$version\"/m" src-tauri/Cargo.
 # Nothing but cargo writes Cargo.lock, which is exactly why it is the one that gets forgotten.
 cargo update -p codex-minus --manifest-path src-tauri/Cargo.toml --quiet
 
-npm test --silent >/dev/null || fail "tests fail at $version; not committing"
+npm run verify --silent >/dev/null || fail "verification fails at $version; not committing"
 
-git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock BOARD.md
+git add package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock BOARD.md
 git commit -q -m "chore: release $version"
 
 cat <<EOF

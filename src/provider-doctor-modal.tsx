@@ -4,6 +4,7 @@ import { Button } from "./components/ui/button";
 import type { ProviderDoctorResult } from "./backend-types";
 import { t } from "./i18n";
 import { providerDoctorSteps } from "./provider-doctor-steps";
+import { useDialogFocus } from "./dialog-focus";
 import { isSuccessStatus } from "./status-presentation";
 
 export function ProviderDoctorModal({ result, running, onClose }: {
@@ -11,19 +12,22 @@ export function ProviderDoctorModal({ result, running, onClose }: {
   running: boolean;
   onClose: () => void;
 }) {
+  const dialog = useDialogFocus<HTMLDivElement>(onClose, !running);
   const steps = providerDoctorSteps(result, running);
   const doneCount = steps.filter((step) => step.state === "ok" || step.state === "warning" || step.state === "failed").length;
-  const progress = Math.round((doneCount / steps.length) * 100);
+  const progress = running || result ? Math.round((doneCount / steps.length) * 100) : 0;
+  const failedToRun = !running && !result;
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="provider-doctor-title"
+      ref={dialog.ref} onKeyDown={dialog.onKeyDown} tabIndex={-1}>
       <div className="modal-card provider-doctor-modal">
         <div className="modal-head">
           <div>
-            <h2>Provider Doctor</h2>
-            <p>{running ? t("正在诊断供应商，请稍候。") : result?.summary ?? t("诊断已完成。")}</p>
+            <h2 id="provider-doctor-title">Provider Doctor</h2>
+            <p>{running ? t("正在诊断供应商，请稍候。") : result?.summary ?? t("诊断未完成，请检查核心连接后重试。")}</p>
           </div>
-          <UiBadge variant={result && !isSuccessStatus(result.status) ? "outline" : "secondary"}>
-            {running ? t("诊断中") : result && !isSuccessStatus(result.status) ? t("异常") : t("完成")}
+          <UiBadge variant={failedToRun || result && !isSuccessStatus(result.status) ? "outline" : "secondary"}>
+            {running ? t("诊断中") : failedToRun ? t("未完成") : result && !isSuccessStatus(result.status) ? t("异常") : t("完成")}
           </UiBadge>
         </div>
         <div className="provider-doctor-progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} role="progressbar">
@@ -31,7 +35,7 @@ export function ProviderDoctorModal({ result, running, onClose }: {
         </div>
         <div className="provider-doctor-step-list">
           {steps.map((step) => (
-            <div className={`provider-doctor-step ${step.state}`} key={step.id}>
+            <div className={`provider-doctor-step ${step.state}`} data-step-id={step.id} key={step.id}>
               <span className="provider-doctor-step-icon">
                 {step.state === "running" ? (
                   <RefreshCw className="h-4 w-4" />
@@ -52,10 +56,9 @@ export function ProviderDoctorModal({ result, running, onClose }: {
             </div>
           ))}
         </div>
-        {result?.recommendation ? <p className="provider-doctor-recommendation">{result.recommendation}</p> : null}
         <div className="modal-actions">
           <Button disabled={running} onClick={onClose} variant="secondary">
-            {running ? t("诊断中") : t("关闭")}
+            {running ? t("诊断中") : t("关闭诊断")}
           </Button>
         </div>
       </div>

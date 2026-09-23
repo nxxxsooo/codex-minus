@@ -611,18 +611,16 @@ pub(crate) fn current_activation_scope_hash_at(
     )))
 }
 
-#[tauri::command]
 pub async fn model_catalog_status() -> CommandResult<CatalogStatusPayload> {
-    tauri::async_runtime::spawn_blocking(model_catalog_status_blocking)
+    crate::runtime::spawn_blocking(model_catalog_status_blocking)
         .await
         .expect("blocking command panicked")
 }
 
-#[tauri::command]
 pub async fn adopt_external_model_catalog(
     request: AdoptCatalogRequest,
 ) -> CommandResult<AdoptionPreviewPayload> {
-    tauri::async_runtime::spawn_blocking(move || adopt_external_model_catalog_blocking(request))
+    crate::runtime::spawn_blocking(move || adopt_external_model_catalog_blocking(request))
         .await
         .expect("blocking command panicked")
 }
@@ -658,7 +656,12 @@ fn model_catalog_status_blocking_at(
         let _guard = live_state::lock()?;
         live_state::prepare_secret_paths_at(&paths.app_state, &paths.settings_path, home)?;
         live_state::recover_locked_at(&paths.app_state)?;
-        let settings = sanitized_settings_at(&paths.settings_path)?;
+        // Settings serialization omits structured credentials already represented by TOML.
+        // Match load_settings' output projection before computing the generation token, or a
+        // freshly saved pure-API profile can never adopt its catalog response in the renderer.
+        let settings = crate::commands::sanitize_settings_for_output(sanitized_settings_at(
+            &paths.settings_path,
+        )?);
         let state = load_and_migrate_state_from_path(&settings, home, &paths.catalog_state_path)?;
         status_payload(&state, &settings, home)
     })();
@@ -5077,6 +5080,41 @@ enabled = true
             vec!["provider-model"]
         );
         assert!(!paths.settings_path.exists());
+    }
+
+    #[test]
+    fn pure_api_settings_and_catalog_reads_share_one_generation() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = CatalogCommandPaths {
+            app_state: temp.path().join("state"),
+            codex_home: temp.path().join("home"),
+            settings_path: temp.path().join("settings.json"),
+            catalog_state_path: temp.path().join("catalog.json"),
+        };
+        fs::create_dir_all(&paths.app_state).unwrap();
+        fs::create_dir_all(&paths.codex_home).unwrap();
+        fs::write(&paths.settings_path, serde_json::to_vec(&json!({
+            "relayProfilesEnabled": true, "activeRelayId": "default",
+            "relayProfiles": [{"id":"default","name":"Official","relayMode":"official"}, {
+                "id":"test-api", "name":"Test API", "relayMode":"pureApi", "officialMixApiKey":false,
+                "configContents":"model = \"gpt-5.6-terra\"\nmodel_provider = \"OpenAI\"\n\n[model_providers.OpenAI]\nname = \"OpenAI\"\nbase_url = \"https://example.test/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = false\nexperimental_bearer_token = \"test-key\"\n"
+            }]
+        })).unwrap()).unwrap();
+        let settings_paths = crate::commands::ProviderCommitPaths {
+            app_state: paths.app_state.clone(),
+            codex_home: paths.codex_home.clone(),
+            settings_path: paths.settings_path.clone(),
+            catalog_state_path: paths.catalog_state_path.clone(),
+            current_target: None,
+        };
+        let loaded = crate::commands::load_settings_blocking_at(&settings_paths);
+        let status = model_catalog_status_blocking_at(&paths);
+        assert_eq!(loaded.status, "ok");
+        assert_eq!(status.status, "ok");
+        assert_eq!(
+            loaded.payload.provider_fingerprint,
+            status.payload.provider_fingerprint
+        );
     }
 
     #[test]

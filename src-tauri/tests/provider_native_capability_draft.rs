@@ -1365,12 +1365,13 @@ fn direct_command_rejects_auth_contents_and_never_echoes_them() {
             &canonical_source("inline").replace("same-secret", "provider-secret-sentinel"),
         );
         profile.auth_contents = auth_contents.to_string();
-        let payload =
-            tauri::async_runtime::block_on(transform_provider_native_capability_draft(request(
+        let payload = codex_minus_lib::runtime::block_on(
+            transform_provider_native_capability_draft(request(
                 profile,
                 CatalogMode::OfficialPlusCustom,
                 NativeCapabilityDraftAction::Inspect,
-            )));
+            )),
+        );
         assert_eq!(payload.status, NativeCapabilityDraftStatus::Blocked);
         assert_eq!(
             payload.blockers,
@@ -1391,7 +1392,7 @@ fn complete_response_keeps_provider_secret_only_in_declared_local_draft_fields()
         &canonical_source("inline").replace("same-secret", secret),
     );
     let payload =
-        tauri::async_runtime::block_on(transform_provider_native_capability_draft(request(
+        codex_minus_lib::runtime::block_on(transform_provider_native_capability_draft(request(
             profile,
             CatalogMode::OfficialPlusCustom,
             NativeCapabilityDraftAction::Inspect,

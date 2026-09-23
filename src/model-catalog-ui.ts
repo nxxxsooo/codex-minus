@@ -1,6 +1,11 @@
 import { KNOWN_RELAY_MODELS, knownRelayModel } from "./known-relay-models.ts";
+import { SUPPLEMENTAL_OPENAI_MODELS } from "./supplemental-openai-models.ts";
 
 export type CatalogModeValue = "native-official" | "official-plus-custom" | "custom-only" | "external";
+
+export function catalogOfficialModels<T>(mode: CatalogModeValue, baseline: readonly T[]): readonly T[] {
+  return mode === "native-official" || mode === "official-plus-custom" ? baseline : [];
+}
 
 export type CatalogOverlayDraft = {
   official: Record<string, {
@@ -55,7 +60,90 @@ export function officialModelIsVisible(
   overlay: CatalogOverlayDraft,
   model: { slug: string; visible: boolean },
 ): boolean {
-  return overlay.official[model.slug]?.visible ?? model.visible;
+  return overlay.official[model.slug]?.visible
+    ?? overlay.custom.find((custom) => custom.slug === model.slug)?.visible
+    ?? model.visible;
+}
+
+type CatalogModelMetadata = { slug: string; displayName?: string; contextWindow?: number | null };
+
+/// Keep baseline metadata available for naming/prefill even when custom-only mode displays none
+/// of its rows. Names come from catalog metadata, never from reformatting a request ID.
+export function catalogModelDisplayName(slug: string, models: readonly CatalogModelMetadata[]): string {
+  return models.find((model) => model.slug === slug)?.displayName
+    ?? SUPPLEMENTAL_OPENAI_MODELS.find((model) => model.slug === slug)?.displayName
+    ?? knownRelayModel(slug)?.displayName ?? slug;
+}
+
+/// Same-slug custom values compose underneath official overrides in the backend. Render that
+/// result once, retaining the stored custom record and its independently edited metadata.
+export function catalogOfficialRows<T extends CatalogModelMetadata & { visible: boolean }>(
+  overlay: CatalogOverlayDraft, models: readonly T[], mode: CatalogModeValue,
+): T[] {
+  return catalogOfficialModels(mode, models).filter((model) => officialModelIsVisible(overlay, model))
+    .map((model) => {
+      const custom = overlay.custom.find((item) => item.slug === model.slug);
+      const override = overlay.official[model.slug];
+      return { ...model,
+        displayName: override?.displayName ?? custom?.displayName ?? model.displayName,
+        contextWindow: override?.contextWindow ?? custom?.contextWindow ?? model.contextWindow,
+      };
+    });
+}
+
+export function catalogCustomRows(
+  overlay: CatalogOverlayDraft, models: readonly { slug: string }[], mode: CatalogModeValue,
+) {
+  if (mode === "external") return [];
+  const official = new Set(catalogOfficialModels(mode, models).map((model) => model.slug));
+  return overlay.custom.map((model, index) => ({ model, index }))
+    .filter(({ model }) => model.visible && !official.has(model.slug))
+    .sort((a, b) => a.model.order - b.model.order);
+}
+
+/// Switching a new draft to custom-only must carry its visible official rows into that mode;
+/// baseline metadata still prefills names/windows, but the new mode has no official rows.
+export function catalogOverlayForMode(
+  overlay: CatalogOverlayDraft, mode: CatalogModeValue, nextMode: CatalogModeValue,
+  models: readonly (CatalogModelMetadata & { visible: boolean })[],
+  brandNew = true,
+): CatalogOverlayDraft {
+  if (!brandNew) return overlay;
+  if (mode === "custom-only" && nextMode === "official-plus-custom") {
+    const official = { ...overlay.official };
+    const custom = overlay.custom.filter((row) => {
+      const baseline = models.find((model) => model.slug === row.slug);
+      // The transitional custom row is produced only for a new mixed draft switched to pure API.
+      // Do not reinterpret a user-created or provider-candidate row as an official override.
+      if (!baseline || row.templateProvenance !== "new-provider-official-mode-transition") return true;
+      const next = {
+        ...(official[row.slug] ?? emptyOfficialOverride()),
+        displayName: row.displayName === (baseline.displayName ?? row.slug) ? null : row.displayName,
+        visible: row.visible === baseline.visible ? null : row.visible,
+        contextWindow: row.contextWindow === (baseline.contextWindow ?? 272_000) ? null : row.contextWindow,
+        ...(row.effectiveContextWindowPercent === 100 ? {} : { effectiveContextWindowPercent: row.effectiveContextWindowPercent }),
+        ...(row.supportedReasoningLevels.length ? { supportedReasoningLevels: row.supportedReasoningLevels } : {}),
+        ...(row.defaultReasoningLevel ? { defaultReasoningLevel: row.defaultReasoningLevel } : {}),
+        ...(row.supportedTools.length ? { supportedTools: row.supportedTools } : {}),
+        ...(row.toolCapabilities ? { toolCapabilities: row.toolCapabilities } : {}),
+      };
+      if (Object.values(next).every((value) => value === null)) delete official[row.slug];
+      else official[row.slug] = next;
+      return false;
+    });
+    return { official, custom };
+  }
+  if (nextMode !== "custom-only" || mode === nextMode || mode === "external") return overlay;
+  let next = overlay;
+  for (const model of catalogOfficialRows(overlay, models, mode)) {
+    const alreadyOwned = next.custom.some((row) => row.slug === model.slug);
+    next = addCatalogCandidate(next, model.slug, [model]);
+    next = { ...next, custom: next.custom.map((row) => row.slug === model.slug && !alreadyOwned
+      ? { ...row, templateProvenance: "new-provider-official-mode-transition", displayName: model.displayName ?? row.displayName,
+            contextWindow: model.contextWindow ?? row.contextWindow, visible: true }
+      : row) };
+  }
+  return next;
 }
 
 /// A visibility wish recorded as its difference from the baseline.
@@ -77,24 +165,27 @@ export function customDisplayNameFollowsSlug(displayName: string, previousSlug: 
 ///
 /// Hidden official models belong here — deleting one has to be undoable, and the row it came from
 /// is gone. Known relay-model cards belong here too, whether or not the provider has reported
-/// them. Slugs the table already carries do not: offering one would add a second row with the
-/// same slug as an official model, which the generator reports as a collision.
+/// them. Slugs the table already carries do not: adding them would create a redundant same-slug
+/// custom override, rather than adding a model to the effective catalog.
 export function catalogCandidateSlugs(input: {
   overlay: CatalogOverlayDraft;
   officialModels: readonly { slug: string; visible: boolean }[];
   providerCandidates: readonly string[];
+  mode?: CatalogModeValue;
 }): string[] {
   const shown = new Set<string>();
   const hidden: string[] = [];
   for (const model of input.officialModels) {
-    if (officialModelIsVisible(input.overlay, model)) shown.add(model.slug);
+    if (input.mode !== "custom-only" && officialModelIsVisible(input.overlay, model)) shown.add(model.slug);
     else hidden.push(model.slug);
   }
   for (const custom of input.overlay.custom) {
     const slug = custom.slug.trim();
-    if (slug) shown.add(slug);
+    if (!slug || (input.mode !== "custom-only" && input.officialModels.some((model) => model.slug === slug))) continue;
+    if (custom.visible) shown.add(slug);
+    else hidden.push(slug);
   }
-  const known = KNOWN_RELAY_MODELS.map((card) => card.slug);
+  const known = [...SUPPLEMENTAL_OPENAI_MODELS, ...KNOWN_RELAY_MODELS].map((card) => card.slug);
   return [...new Set([...hidden, ...input.providerCandidates, ...known])].filter((slug) => !shown.has(slug));
 }
 
@@ -104,39 +195,41 @@ export function catalogCandidateSlugs(input: {
 /// how big they are.
 export function restoreCatalogList(input: {
   overlay: CatalogOverlayDraft;
-  officialModels: readonly { slug: string; visible: boolean }[];
+  officialModels: readonly (CatalogModelMetadata & { visible: boolean })[];
   wanted: readonly string[];
   mode?: CatalogModeValue;
 }): CatalogOverlayDraft {
-  // A missing baseline is unavailable metadata, not evidence that every official slug is custom.
-  if (!input.officialModels.length) return input.overlay;
+  // Missing official metadata must not turn an absent baseline into custom rows.
+  if (!input.officialModels.length || input.mode === "external") return input.overlay;
   const wanted = input.wanted.map((slug) => slug.trim()).filter(Boolean);
   const wantedSlugs = new Set(wanted);
+  const officialSlugs = new Set(input.officialModels.map((model) => model.slug));
+  const custom = input.overlay.custom.filter((item) => wantedSlugs.has(item.slug.trim()) && !(
+    input.mode !== "custom-only" && officialSlugs.has(item.slug) && item.templateProvenance === "provider-candidate"
+    && item.displayName === item.slug && !item.description && item.contextWindow === 272000
+    && item.effectiveContextWindowPercent === 100 && item.visible
+    && !item.supportedReasoningLevels.length && item.defaultReasoningLevel === null
+    && !item.supportedTools.length && item.toolCapabilities === null
+  )).map((item) => ({ ...item, visible: true,
+    // An explicit restore repairs an ID-mirroring default; an independently named row stays owned.
+    displayName: item.displayName === item.slug ? catalogModelDisplayName(item.slug, input.officialModels) : item.displayName,
+  }));
   const official = Object.fromEntries(
     Object.entries(input.overlay.official).map(([slug, override]) => [slug, { ...override }]),
   );
   for (const model of input.officialModels) {
+    if (input.mode === "custom-only") continue;
     const next = {
       ...(official[model.slug] ?? emptyOfficialOverride()),
-      visible: officialVisibilityOverride(model.visible, wantedSlugs.has(model.slug)),
+      visible: officialVisibilityOverride(custom.find((item) => item.slug === model.slug)?.visible ?? model.visible, wantedSlugs.has(model.slug)),
     };
     if (Object.values(next).every((field) => field === null)) delete official[model.slug];
     else official[model.slug] = next;
   }
-  const officialSlugs = new Set(input.officialModels.map((model) => model.slug));
-  let restored: CatalogOverlayDraft = {
-    official,
-    custom: input.overlay.custom.filter((item) => wantedSlugs.has(item.slug.trim()) && !(
-      input.mode !== "custom-only" && officialSlugs.has(item.slug) && item.templateProvenance === "provider-candidate"
-      && item.displayName === item.slug && !item.description && item.contextWindow === 272000
-      && item.effectiveContextWindowPercent === 100 && item.visible
-      && !item.supportedReasoningLevels.length && item.defaultReasoningLevel === null
-      && !item.supportedTools.length && item.toolCapabilities === null
-    )),
-  };
+  let restored: CatalogOverlayDraft = { official, custom };
   for (const slug of wanted) {
-    if (officialSlugs.has(slug)) continue;
-    restored = addCatalogCandidate(restored, slug);
+    if (input.mode !== "custom-only" && officialSlugs.has(slug)) continue;
+    restored = addCatalogCandidate(restored, slug, input.officialModels);
   }
   return restored;
 }
@@ -146,16 +239,17 @@ export function catalogRestoreLosses(input: {
   overlay: CatalogOverlayDraft;
   officialModels: readonly { slug: string; visible: boolean }[];
   wanted: readonly string[];
+  mode?: CatalogModeValue;
 }): string[] {
   const wantedSlugs = new Set(input.wanted.map((slug) => slug.trim()).filter(Boolean));
   const losses = input.officialModels
-    .filter((model) => officialModelIsVisible(input.overlay, model) && !wantedSlugs.has(model.slug))
+    .filter((model) => input.mode !== "custom-only" && officialModelIsVisible(input.overlay, model) && !wantedSlugs.has(model.slug))
     .map((model) => model.slug);
   for (const custom of input.overlay.custom) {
     const slug = custom.slug.trim();
     if (slug && !wantedSlugs.has(slug)) losses.push(slug);
   }
-  return losses;
+  return [...new Set(losses)];
 }
 
 /// True when an overlay asks for nothing the official baseline does not already say.
@@ -326,12 +420,18 @@ export function providerEvidenceState(slug: string, reportedSlugs: readonly stri
 export function addCatalogCandidate(
   overlay: CatalogOverlayDraft,
   slug: string,
+  officialModels: readonly CatalogModelMetadata[] = [],
 ): CatalogOverlayDraft {
   const normalized = slug.trim();
-  if (!normalized || overlay.custom.some((item) => item.slug === normalized)) return overlay;
+  if (!normalized) return overlay;
+  const existing = overlay.custom.findIndex((item) => item.slug.trim() === normalized);
+  if (existing !== -1) return overlay.custom[existing].visible ? overlay : {
+    ...overlay, custom: overlay.custom.map((item, index) => index === existing ? { ...item, visible: true } : item),
+  };
   // A slug the fleet has verified end to end arrives as a complete card, not template defaults.
   // The card only prefills this draft; the saved profile owns its copy from here on.
-  const card = knownRelayModel(normalized);
+  const supplemental = SUPPLEMENTAL_OPENAI_MODELS.find((model) => model.slug === normalized);
+  const card = supplemental ?? knownRelayModel(normalized);
   return {
     ...overlay,
     custom: [
@@ -349,12 +449,12 @@ export function addCatalogCandidate(
             defaultReasoningLevel: card.defaultReasoningLevel,
             supportedTools: [],
             toolCapabilities: null,
-            templateProvenance: "known-relay-model",
+            templateProvenance: supplemental ? "models-dev-openai-2026-09-22" : "known-relay-model",
           }
         : {
             slug: normalized,
-            displayName: normalized,
-            contextWindow: 272000,
+            displayName: catalogModelDisplayName(normalized, officialModels),
+            contextWindow: officialModels.find((model) => model.slug === normalized)?.contextWindow ?? 272000,
             effectiveContextWindowPercent: 100,
             visible: true,
             order: overlay.custom.length,
@@ -393,7 +493,8 @@ export function validateCatalogDraft(
   const effective = new Set(mode === "official-plus-custom"
     ? officialSlugs.filter((slug) => overlay.official[slug]?.visible !== false)
     : []);
-  overlay.custom.forEach((item) => effective.add(item.slug.trim()));
+  overlay.custom.filter((item) => item.visible && (mode === "custom-only" || overlay.official[item.slug]?.visible !== false))
+    .forEach((item) => effective.add(item.slug.trim()));
   // The generator refuses a catalog with nothing in it. Saying so here names the list the user is
   // looking at, rather than failing the whole transaction with a sentence about JSON.
   if (!effective.size) return "empty-catalog";

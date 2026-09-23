@@ -14,12 +14,11 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { getVersion } from "@tauri-apps/api/app";
-import { invoke } from "@tauri-apps/api/core";
-import { } from "@tauri-apps/api/event";
-import { } from "@tauri-apps/plugin-dialog";
-import { relaunch } from "@tauri-apps/plugin-process";
-import { check as checkForAppUpdate, type Update as AvailableAppUpdate } from "@tauri-apps/plugin-updater";
+import { getVersion, invoke, relaunch, checkForAppUpdate, confirmDesktop, readUpdateOutcome, type AvailableAppUpdate } from "./desktop-api";
+import { DesktopConnectionNotice } from "./desktop-connection-notice";
+import { SessionsWorkspace } from "./sessions-workspace";
+import { useCoreConnection } from "./use-core-connection";
+import { preserveEditedProviderDraft, providerConfirmationStillCurrent, type ProviderDraftBaseline } from "./provider-detail-refresh";
 import {
   appUpdateBanner,
   appUpdateInstallFailureGuidance,
@@ -28,8 +27,6 @@ import {
 } from "./app-update";
 import {
   ArrowLeft,
-  Archive,
-  ArchiveRestore,
   Bell,
   CheckCircle2,
   Copy,
@@ -45,6 +42,7 @@ import {
   RefreshCw,
   RotateCcw,
   Save,
+  Settings2,
   ShieldCheck,
   ShieldAlert,
   Stethoscope,
@@ -61,9 +59,12 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { knownRelayModel } from "./known-relay-models";
+import { CatalogModelAdditions } from "./catalog-model-additions";
+import { PreferencesDialog } from "./preferences-dialog";
+import { useDialogFocus } from "./dialog-focus";
 import {
   catalogActionRequiredLabel,
+  catalogOfficialRows, catalogCustomRows, catalogModelDisplayName, catalogOverlayForMode,
   customDisplayNameFollowsSlug,
   addCatalogCandidate,
   adoptionPreviewSummary,
@@ -74,7 +75,6 @@ import {
   catalogRestoreLosses,
   defaultCatalogMode,
   emptyOfficialOverride,
-  officialModelIsVisible,
   officialVisibilityOverride,
   restoreCatalogList,
   type CatalogOverlayDraft,
@@ -110,6 +110,7 @@ import { LiveConfigPanel } from "./relay-config-panels";
 import { ProviderDoctorModal } from "./provider-doctor-modal";
 import { CatalogLongContextControl } from "./catalog-long-context-control";
 import { ProviderImageGenerationControl } from "./provider-image-generation-control";
+import { providerImageGenerationEnabled } from "./provider-image-generation";
 import { isSuccessStatus, statusClass, statusLabel } from "./status-presentation";
 import {
   providerPureOAuthEnablementConfirmationMessage,
@@ -258,8 +259,10 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
 ];
 
 export function App() {
+  const coreConnection = useCoreConnection();
   const [theme, setTheme] = useState<Theme>(() => loadInitialTheme());
   const [route, setRoute] = useState<Route>(() => loadInitialRoute());
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [notice, setNotice] = useState<{ title: string; message: string; detail?: string | null; status?: Status } | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{
     title: string;
@@ -404,7 +407,7 @@ export function App() {
   const removeEnvConflicts = async (names: string[]) => {
     const uniqueNames = Array.from(new Set(names.map((name) => name.trim()).filter(Boolean)));
     if (!uniqueNames.length) return;
-    if (!window.confirm(tf("删除这些环境变量？\n\n{0}\n\n删除前会写入备份。", [uniqueNames.join("\n")]))) return;
+    if (!await confirmDesktop(tf("删除这些环境变量？\n\n{0}\n\n删除前会写入备份。", [uniqueNames.join("\n")]))) return;
     const result = await run(() => call<RemoveEnvConflictsResult>("remove_env_conflicts", { request: { names: uniqueNames } }));
     if (result) {
       setEnvConflicts({
@@ -487,7 +490,7 @@ export function App() {
       showNotice(t("原生归档不可用"), preview.capability.message, "failed");
       return;
     }
-    const confirmed = window.confirm(
+    const confirmed = await confirmDesktop(
       tf("将自动归档 {0} 天未活动的会话。当前有 {1} 个候选，会移动到：\n{2}\n\n归档可恢复，不会释放磁盘空间。是否启用？", [
         retentionDays,
         preview.candidateCount,
@@ -518,7 +521,7 @@ export function App() {
   };
 
   const archiveOrRestoreSession = async (session: LocalSession, archived: boolean) => {
-    if (archived && !window.confirm(tf("归档会话「{0}」？归档后可随时恢复。", [session.title || session.id]))) return;
+    if (archived && !await confirmDesktop(tf("归档会话「{0}」？归档后可随时恢复。", [session.title || session.id]))) return;
     const result = await run(() =>
       call<SessionLifecycleOperationResult>(archived ? "archive_local_session" : "restore_local_session", {
         request: { sessionId: session.id },
@@ -591,7 +594,10 @@ export function App() {
         invoke: call,
         confirm: confirmSessionDelete,
         notice: showNotice,
-        refresh: () => Promise.all([refreshLocalSessions(true), refreshProviderCompatibility(true), refreshArchivePreview(undefined, true)]),
+        refresh: async () => {
+          const [sessions] = await Promise.all([refreshLocalSessions(true), refreshProviderCompatibility(true), refreshArchivePreview(undefined, true)]);
+          if (!sessions || !isSuccessStatus(sessions.status)) throw new Error("Session inventory refresh failed");
+        },
       }));
     } finally {
       sessionCleanupBusy.current = false;
@@ -726,7 +732,7 @@ export function App() {
   const refreshAfterCommit = () => {
     void refreshRelay(true);
     void refreshRelayFiles(true);
-    void refreshModelCatalog(true, true);
+    void refreshSettings(true).then(() => refreshModelCatalog(true, true));
   };
 
   const refreshAuthoritativeProviderState = async () => {
@@ -909,7 +915,7 @@ export function App() {
       ? providerManagedContextConflictKeys(selectedAfterSave, relayFiles?.configContents ?? "")
       : [];
     const confirmContextCleanup = contextConflicts.length
-      ? window.confirm(tf("切换到托管目录将移除这些全局上下文设置：\n\n{0}", [contextConflicts.join("\n")]))
+      ? await confirmDesktop(tf("切换到托管目录将移除这些全局上下文设置：\n\n{0}", [contextConflicts.join("\n")]))
       : false;
     if (contextConflicts.length && !confirmContextCleanup) return;
 
@@ -1000,6 +1006,12 @@ export function App() {
     getVersion()
       .then(setAppVersion)
       .catch(() => undefined);
+    readUpdateOutcome().then((outcome) => {
+      if (!outcome) return;
+      showNotice(t("应用更新"), outcome.status === "installed"
+        ? t("管理器已更新；Codex 客户端未重启。")
+        : t("上次更新结果未确认，请核对已安装的管理器版本。"), outcome.status === "installed" ? "ok" : "failed");
+    }).catch(() => undefined);
   }, []);
   const [updateCheck, setUpdateCheck] = useState<"idle" | "checking" | "latest" | "failed">("idle");
   const checkAppUpdateNow = async () => {
@@ -1031,7 +1043,7 @@ export function App() {
       setAppUpdate({ update, phase: { kind: "failed", version: update.version } });
       const guidance = appUpdateInstallFailureGuidance(String(error));
       if (guidance) {
-        showNotice(t("应用更新"), guidance, "failed", stringifyError(error));
+        showNotice(t("应用更新"), t(guidance), "failed", stringifyError(error));
       } else {
         showErrorNotice(t("应用更新"), error);
       }
@@ -1041,7 +1053,7 @@ export function App() {
   // Restart is always an explicit click with a confirm — the manager never restarts the
   // official client on its own.
   const restartCodexHost = async () => {
-    if (!window.confirm(t("重启 Codex 会中断正在运行的会话。现在退出并重新打开 Codex？"))) return;
+    if (!await confirmDesktop(t("重启 Codex 会中断正在运行的会话。现在退出并重新打开 Codex？"))) return;
     const result = await run(() => call<CommandResult<unknown>>("restart_codex_host"));
     if (result) showResultNotice(t("重启 Codex"), result);
   };
@@ -1115,11 +1127,13 @@ export function App() {
       commitProviderDetail,
       switchRelayProfile,
       relaySwitching,
+      coreAvailable: coreConnection.state === "ready",
       showMessage: async (title: string, message: string, status?: Status, detail?: string | null) => showNotice(title, message, status, detail),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
     [
       route,
+      coreConnection.state,
       settingsForm,
       settings,
       theme,
@@ -1212,6 +1226,7 @@ export function App() {
             <p>{routeSubtitle(route)}</p>
           </div>
           <div className="topbar-actions">
+            <Button onClick={() => setPreferencesOpen(true)} size="icon" title={t("偏好设置")} variant="outline"><Settings2 aria-hidden="true" /></Button>
             <Button
               onClick={() => toggleLanguage()}
               size="icon"
@@ -1233,6 +1248,7 @@ export function App() {
             </Button>
           </div>
         </header>
+        <DesktopConnectionNotice onReconnected={() => actions.refreshCurrent()} />
         <section className="screen">
           <div className={route === "relay" ? undefined : "hidden"}>
             <RelayScreen
@@ -1246,7 +1262,7 @@ export function App() {
             />
           </div>
           <div className={route === "sessions" ? undefined : "hidden"}>
-            <SessionsScreen
+            <SessionsWorkspace
               sessions={localSessions}
               archiveView={sessionArchiveView}
               lifecycle={sessionLifecycle}
@@ -1281,6 +1297,9 @@ export function App() {
           }}
         />
       ) : null}
+      {preferencesOpen ? <PreferencesDialog theme={theme} version={appVersion} checking={updateCheck === "checking"}
+        onTheme={setTheme} onUpdate={() => void checkAppUpdateNow()} onRestart={() => void restartCodexHost()}
+        onClose={() => setPreferencesOpen(false)} /> : null}
     </div>
   );
 }
@@ -1319,6 +1338,7 @@ type Actions = {
   commitProviderDetail: (settings: BackendSettings, focusedProfileId: string, catalogDraft: ProfileCatalogDraft | null, focusedProfileWasPersisted: boolean, kind: "detailSave" | "setCurrent", confirmContextCleanup?: boolean) => Promise<boolean>;
   switchRelayProfile: (settings: BackendSettings, previousActiveRelayId?: string, catalogDraftOverride?: ProfileCatalogDraft) => Promise<void>;
   relaySwitching: boolean;
+  coreAvailable: boolean;
   showMessage: (title: string, message: string, status?: Status, detail?: string | null) => Promise<void>;
   toggleTheme: () => void;
 };
@@ -1405,6 +1425,7 @@ function RelayScreen({
           <label className="switch-row relay-master-switch">
             <input
               checked={normalized.relayProfilesEnabled}
+              disabled={!actions.coreAvailable}
               onChange={(event) => {
                 const next = { ...normalized, relayProfilesEnabled: event.currentTarget.checked };
                 void saveRelaySettings(next, "enablement");
@@ -1419,6 +1440,7 @@ function RelayScreen({
           </label>
           <div className="relay-add-row">
             <Button
+              disabled={modelCatalogLoading || !modelCatalog?.officialModels.length} title={!modelCatalog?.officialModels.length ? t("正在加载模型目录…") : undefined}
               variant="secondary"
               onClick={() => {
                 setNewProfileDraft(createRelayProfile(normalized));
@@ -1433,7 +1455,7 @@ function RelayScreen({
             form={normalized}
             onEdit={(profileId) => void editRelayProfile(profileId)}
             onFormChange={saveRelaySettings}
-            disabled={!normalized.relayProfilesEnabled || actions.relaySwitching}
+            disabled={!normalized.relayProfilesEnabled || actions.relaySwitching || !actions.coreAvailable}
             actions={actions}
           />
         </CardContent>
@@ -1488,7 +1510,8 @@ function CatalogProfileEditor({
     customModelCount: overlay.custom.length,
   });
   // The rows this table shows, and the only official models the generated catalog will offer.
-  const shownOfficial = officialModels.filter((model) => officialModelIsVisible(overlay, model));
+  const shownOfficial = catalogOfficialRows(overlay, officialModels, mode);
+  const shownCustom = catalogCustomRows(overlay, officialModels, mode);
   const draftError = validateCatalogDraft(
     overlay,
     mode,
@@ -1530,7 +1553,7 @@ function CatalogProfileEditor({
   const renameCustom = (index: number, slug: string) => {
     const previous = overlay.custom[index]?.slug ?? "";
     const follows = customDisplayNameFollowsSlug(overlay.custom[index]?.displayName ?? "", previous);
-    updateCustom(index, { slug, ...(follows ? { displayName: slug } : {}) });
+    updateCustom(index, { slug, ...(follows ? { displayName: catalogModelDisplayName(slug, officialModels) } : {}) });
     if (previous && selectedModel === previous) onProfileEdit({ model: slug });
   };
   const removeCustom = (index: number) => {
@@ -1541,14 +1564,14 @@ function CatalogProfileEditor({
   // Deleting an official row is a visibility wish, not a deletion: the bundled baseline still
   // carries the model, and the row has to be recoverable from the candidate strip below.
   const hideOfficial = (model: OfficialModelSummary) => {
-    setOfficialOverride(model.slug, { visible: officialVisibilityOverride(model.visible, false) });
+    setOfficialOverride(model.slug, { visible: officialVisibilityOverride(overlay.custom.find((row) => row.slug === model.slug)?.visible ?? model.visible, false) });
     if (selectedModel === model.slug) onProfileEdit({ model: "" });
   };
   const addCustom = (slug = "") => {
     if (slug) {
-      const official = officialModels.find((model) => model.slug === slug);
-      if (official) setOfficialOverride(slug, { visible: officialVisibilityOverride(official.visible, true) });
-      else applyOverlay(addCatalogCandidate(overlay, slug));
+      const official = mode === "custom-only" ? undefined : officialModels.find((model) => model.slug === slug);
+      if (official) setOfficialOverride(slug, { visible: officialVisibilityOverride(overlay.custom.find((row) => row.slug === slug)?.visible ?? official.visible, true) });
+      else applyOverlay(addCatalogCandidate(overlay, slug, officialModels));
       return;
     }
     applyOverlay({ ...overlay, custom: [...overlay.custom, {
@@ -1569,9 +1592,9 @@ function CatalogProfileEditor({
   // A list an older version mangled is repaired in one action, rather than by remembering which
   // models a Pro account routes and rebuilding them by hand.
   const proSlugs: readonly string[] = PRO_MODEL_SLUGS;
-  const restoreProList = () => {
-    const losses = catalogRestoreLosses({ overlay, officialModels, wanted: proSlugs });
-    if (losses.length && !window.confirm(tf("还原为 Pro 列表会移除这些模型：\n\n{0}", [losses.join("\n")]))) return;
+  const restoreProList = async () => {
+    const losses = catalogRestoreLosses({ overlay, officialModels, wanted: proSlugs, mode });
+    if (losses.length && !await confirmDesktop(tf("还原为 Pro 列表会移除这些模型：\n\n{0}", [losses.join("\n")]))) return;
     applyOverlay(restoreCatalogList({ overlay, officialModels, wanted: proSlugs, mode }));
     if (!proSlugs.includes(selectedModel)) onProfileEdit({ model: proSlugs[0] });
   };
@@ -1579,6 +1602,7 @@ function CatalogProfileEditor({
     overlay,
     officialModels,
     providerCandidates: summary?.customCandidates ?? [],
+    mode,
   });
   return (
     <section className="catalog-profile-editor">
@@ -1626,14 +1650,14 @@ function CatalogProfileEditor({
               </span>
               <Input
                 inputMode="numeric"
-                value={overlay.official[model.slug]?.contextWindow ?? ""}
+                value={overlay.official[model.slug]?.contextWindow ?? overlay.custom.find((row) => row.slug === model.slug)?.contextWindow ?? ""}
                 onChange={(event) => setOfficialOverride(model.slug, { contextWindow: positiveNumberOrNull(event.currentTarget.value) })}
                 placeholder={model.contextWindow ? String(model.contextWindow) : t("默认")}
               />
               <Button onClick={() => hideOfficial(model)} size="icon" title={t("删除模型")} variant="ghost"><Trash2 className="h-4 w-4" /></Button>
             </div>
           ))}
-          {overlay.custom.map((model, index) => (
+          {shownCustom.map(({ model, index }) => (
             <div className="catalog-model-row" key={`custom-${index}`}>
               <input
                 checked={!!model.slug && selectedModel === model.slug}
@@ -1647,12 +1671,12 @@ function CatalogProfileEditor({
                 <Input
                   value={model.displayName}
                   onChange={(event) => updateCustom(index, { displayName: event.currentTarget.value })}
-                  placeholder={t("显示名")}
+                  placeholder={t("显示名")} aria-label={t("显示名")} title={t("显示名")}
                 />
                 <Input
                   value={model.slug}
                   onChange={(event) => renameCustom(index, event.currentTarget.value)}
-                  placeholder="model-id"
+                  placeholder="model-id" aria-label={t("模型 ID")} title={t("模型 ID")}
                 />
               </span>
               <Input
@@ -1663,16 +1687,7 @@ function CatalogProfileEditor({
               <Button onClick={() => removeCustom(index)} size="icon" title={t("删除模型")} variant="ghost"><Trash2 className="h-4 w-4" /></Button>
             </div>
           ))}
-          <div className="catalog-list-foot">
-            {candidates.length ? (
-              <div className="catalog-candidates">
-                {candidates.map((slug) => (
-                  <button key={slug} onClick={() => addCustom(slug)} title={knownRelayModel(slug)?.displayName ?? slug} type="button"><Plus className="h-3 w-3" />{slug}</button>
-                ))}
-              </div>
-            ) : <span />}
-            <Button onClick={() => addCustom()} size="sm" variant="secondary"><Plus className="h-4 w-4" />{t("添加模型")}</Button>
-          </div>
+          <CatalogModelAdditions candidates={candidates} officialModels={officialModels} onAdd={addCustom} />
         </div>
       </fieldset>
     </section>
@@ -1721,293 +1736,6 @@ function EnvConflictNotice({
 }
 
 const SESSION_LIST_PAGE_SIZE = 100;
-
-function SessionsScreen({
-  sessions,
-  archiveView,
-  lifecycle,
-  archivePreview,
-  archiveMaintenance,
-  archiveMaintenanceRunning,
-  cleanupRunning,
-  providerCompatibility,
-  providerCompatibilityLoading,
-  actions,
-}: {
-  sessions: LocalSessionsResult | null;
-  archiveView: boolean;
-  lifecycle: SessionLifecycleSettingsResult | null;
-  archivePreview: ArchivePreviewResult | null;
-  archiveMaintenance: ArchiveMaintenanceResult | null;
-  archiveMaintenanceRunning: boolean;
-  cleanupRunning: boolean;
-  providerCompatibility: ProviderCompatibilityResult | null;
-  providerCompatibilityLoading: boolean;
-  actions: Actions;
-}) {
-  const items = sessions?.sessions ?? [];
-  const activeCount = sessions?.activeCount ?? 0;
-  const archivedCount = sessions?.archivedCount ?? 0;
-  const [retentionDays, setRetentionDays] = useState(lifecycle?.retentionDays ?? 30);
-  const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set());
-  const [selectionMode, setSelectionMode] = useState(false);
-  const selectedSessions = useMemo(() => items.filter((session) => selectedSessionIds.has(session.id)), [items, selectedSessionIds]);
-  const selectedCount = selectedSessions.length;
-  const allSelected = items.length > 0 && selectedCount === items.length;
-
-  useEffect(() => setRetentionDays(lifecycle?.retentionDays ?? 30), [lifecycle?.retentionDays]);
-
-  useEffect(() => {
-    const itemIds = new Set(items.map((session) => session.id));
-    setSelectedSessionIds((current) => {
-      const next = new Set(Array.from(current).filter((id) => itemIds.has(id)));
-      return next.size === current.size ? current : next;
-    });
-  }, [items]);
-
-  useEffect(() => {
-    setSelectedSessionIds(new Set());
-    setSelectionMode(false);
-  }, [archiveView]);
-
-  const toggleSessionSelection = (sessionId: string, checked: boolean) => {
-    setSelectedSessionIds((current) => {
-      const next = new Set(current);
-      if (checked) {
-        next.add(sessionId);
-      } else {
-        next.delete(sessionId);
-      }
-      return next;
-    });
-  };
-
-  const selectAllSessions = () => setSelectedSessionIds(new Set(items.map((session) => session.id)));
-
-  const clearSelectedSessions = () => setSelectedSessionIds(new Set());
-
-  const toggleArchivePolicy = async (enabled: boolean) => {
-    if (enabled) {
-      await actions.enableSessionArchiving(retentionDays);
-      return;
-    }
-    await actions.saveSessionLifecycle({ archiveEnabled: false, retentionDays });
-  };
-
-  // The days input saves itself like the toggle does; the preview follows the saved value.
-  useEffect(() => {
-    if (!lifecycle || retentionDays === lifecycle.retentionDays) return;
-    const timer = window.setTimeout(() => {
-      void actions.saveSessionLifecycle({ retentionDays }, true).then((saved) => {
-        if (saved) void actions.refreshArchivePreview(retentionDays, true);
-      });
-    }, 800);
-    return () => window.clearTimeout(timer);
-  }, [retentionDays, lifecycle, actions]);
-
-  return (
-    <>
-      <Panel>
-        <CardHead title={t("会话生命周期")} detail={t("活动会话与原生归档")} />
-        <CardContent>
-          <div className="metric-list">
-            <Metric label={t("活动会话")} value={tf("{0} 个", [activeCount])} />
-            <Metric label={t("已归档")} value={tf("{0} 个", [archivedCount])} />
-            <Metric label={t("自动归档")} value={lifecycle?.archiveEnabled ? t("已启用") : t("未启用")} />
-            <Metric label={t("上次检查")} value={lifecycle?.lastCompletedAtMs ? formatTime(lifecycle.lastCompletedAtMs) : t("尚未执行")} />
-            <Metric label={t("数据库")} value={sessions?.dbPath ?? "~/.codex/sqlite/*.db"} />
-          </div>
-          <div className="session-policy-row">
-            <label className="feature-toggle">
-              <input
-                checked={lifecycle?.archiveEnabled ?? false}
-                onChange={(event) => void toggleArchivePolicy(event.currentTarget.checked)}
-                type="checkbox"
-              />
-              <span>
-                <strong>{t("定期归档旧会话")}</strong>
-                <small>{tf("超过 {0} 天未活动", [retentionDays])}</small>
-              </span>
-              <span className="toggle-switch-visual" aria-hidden="true"><span className="toggle-switch-thumb" /></span>
-            </label>
-            <Field label={t("保留天数")}>
-              <Input
-                max={3650}
-                min={1}
-                onChange={(event) => setRetentionDays(Math.max(1, Math.min(3650, Number(event.currentTarget.value) || 1)))}
-                type="number"
-                value={retentionDays}
-              />
-            </Field>
-          </div>
-          <Toolbar>
-            <Button disabled={!lifecycle?.archiveEnabled || archiveMaintenanceRunning} onClick={() => void actions.runArchiveMaintenance(true)}>
-              <RefreshCw className="h-4 w-4" />
-              {archiveMaintenanceRunning ? t("检查中…") : t("立即检查")}
-            </Button>
-          </Toolbar>
-          {archivePreview ? (
-            <div className="hint-line">
-              <Info className="h-4 w-4" />
-              <span>{tf("截止 {0}，候选 {1} 个；位置：{2}。{3}", [formatTime(archivePreview.cutoffAtMs), archivePreview.candidateCount, archivePreview.destination, t(archivePreview.capability.message)])}</span>
-            </div>
-          ) : null}
-          {archiveMaintenance ? (
-            <div className="hint-line" data-tone={archiveMaintenance.deferred || archiveMaintenance.failedCount ? "warn" : undefined}>
-              {archiveMaintenance.deferred || archiveMaintenance.failedCount ? <TriangleAlert className="h-4 w-4" /> : archiveMaintenance.due ? <CheckCircle2 className="h-4 w-4" /> : <Info className="h-4 w-4" />}
-              <span>
-                {archiveMaintenance.due && !archiveMaintenance.deferred
-                  ? tf("候选 {0}，已归档 {1}，跳过 {2}，失败 {3}。", [archiveMaintenance.candidateCount, archiveMaintenance.archivedCount, archiveMaintenance.skippedCount, archiveMaintenance.failedCount])
-                  : t(archiveMaintenance.message)}
-              </span>
-            </div>
-          ) : null}
-        </CardContent>
-      </Panel>
-      <Panel>
-        <CardHead title={t("供应商兼容性")} detail={providerCompatibility?.currentProvider ?? t("读取当前配置")} />
-        <CardContent>
-          <div className="metric-list">
-            <Metric label={t("当前 provider")} value={providerCompatibility?.currentProvider ?? t("未检查")} />
-            <Metric label={t("活动会话")} value={tf("{0} 个", [providerCompatibility?.activeCount ?? 0])} />
-            <Metric label={t("需要适配")} value={tf("{0} 个", [providerCompatibility?.mismatchCount ?? 0])} />
-          </div>
-          <Toolbar>
-            <Button disabled={providerCompatibilityLoading} onClick={() => void actions.refreshProviderCompatibility()} variant="outline">
-              <RefreshCw className="h-4 w-4" />
-              {providerCompatibilityLoading ? t("检查中…") : t("重新检查")}
-            </Button>
-            <Button
-              disabled={!providerCompatibility?.adaptationAvailable || !providerCompatibility.mismatchCount}
-              onClick={() => void actions.adaptActiveSessions()}
-            >
-              <RefreshCw className="h-4 w-4" />
-              {t("适配到当前 provider")}
-            </Button>
-          </Toolbar>
-          <label className="feature-toggle">
-            <input
-              checked={lifecycle?.autoAdaptProviderOnSwitch ?? true}
-              onChange={(event) => void actions.saveSessionLifecycle({ autoAdaptProviderOnSwitch: event.currentTarget.checked })}
-              type="checkbox"
-            />
-            <span>
-              <strong>{t("切换供应商后自动适配")}</strong>
-              <small>{t("仅活动会话，写前自动备份；归档不受影响")}</small>
-            </span>
-            <span className="toggle-switch-visual" aria-hidden="true"><span className="toggle-switch-thumb" /></span>
-          </label>
-          {providerCompatibility ? (
-            <div className="hint-line">
-              <Info className="h-4 w-4" />
-              <span>{providerCompatibility.mismatchCount ? t(providerCompatibility.adaptationMessage) : t("活动会话的 provider 已兼容当前配置。")}</span>
-            </div>
-          ) : null}
-        </CardContent>
-      </Panel>
-      <Panel>
-        <CardHead title={t("本地会话")} detail={items.length ? t("按更新时间倒序显示") : t("当前列表为空")} />
-        <CardContent>
-          <div className="session-view-tabs segmented" role="tablist">
-            <button disabled={cleanupRunning} className={!archiveView ? "active" : ""} onClick={() => void actions.refreshLocalSessions(true, false)} role="tab" type="button">
-              {t("活动")} <small>{activeCount}</small>
-            </button>
-            <button disabled={cleanupRunning} className={archiveView ? "active" : ""} onClick={() => void actions.refreshLocalSessions(true, true)} role="tab" type="button">
-              {t("已归档")} <small>{archivedCount}</small>
-            </button>
-          </div>
-          {items.length ? (
-            <>
-              <div className="session-list-toolbar">
-                <span className="session-selection-summary">
-                  {selectionMode ? `${t("已选择")} ${selectedCount} / ${items.length} ${t("个会话")}` : null}
-                </span>
-                <div className="session-selection-actions">
-                  {archiveView ? (
-                    <Button className="session-delete-button" disabled={cleanupRunning || !archivedCount} onClick={() => void actions.deleteLocalSessions("archived")} size="sm" variant="outline">
-                      <Trash2 className="h-4 w-4" />
-                      {t("清空全部归档")}
-                    </Button>
-                  ) : null}
-                  {selectionMode ? (
-                    <>
-                      <Button disabled={allSelected || cleanupRunning} onClick={selectAllSessions} size="sm" variant="outline">
-                        {t("全选当前列表")}
-                      </Button>
-                      <Button disabled={!selectedCount || cleanupRunning} onClick={clearSelectedSessions} size="sm" variant="outline">
-                        {t("清空选择")}
-                      </Button>
-                      <Button className="session-delete-button" disabled={!selectedCount || cleanupRunning} onClick={() => void actions.deleteLocalSessions(selectedSessions)} size="sm" variant="outline">
-                        <Trash2 className="h-4 w-4" />
-                        {cleanupRunning ? t("正在删除…") : t("永久删除已选")}
-                      </Button>
-                      <Button disabled={cleanupRunning} onClick={() => { setSelectionMode(false); clearSelectedSessions(); }} size="sm" variant="ghost">
-                        {t("取消")}
-                      </Button>
-                    </>
-                  ) : (
-                    <Button disabled={cleanupRunning} onClick={() => setSelectionMode(true)} size="sm" variant="outline">
-                      {t("多选")}
-                    </Button>
-                  )}
-                </div>
-              </div>
-              <div className="session-list">
-                {items.map((session) => {
-                  const selected = selectedSessionIds.has(session.id);
-                  return (
-                    <div className="session-row" data-selection-mode={selectionMode} data-selected={selected} key={session.id}>
-                      {selectionMode ? (
-                        <label className="session-select" title={t("选择会话")}>
-                          <input
-                            aria-label={tf("选择会话 {0}", [session.title || session.id])}
-                            checked={selected}
-                            disabled={cleanupRunning}
-                            onChange={(event) => toggleSessionSelection(session.id, event.currentTarget.checked)}
-                            type="checkbox"
-                          />
-                        </label>
-                      ) : null}
-                      <div className="session-main">
-                        <strong>{session.title || t("未命名会话")}</strong>
-                        <span>{session.id}</span>
-                        <small>{session.cwd || t("未记录项目路径")}</small>
-                      </div>
-                      <div className="session-meta">
-                        <Badge status={session.archived ? "archived" : "ok"} />
-                        <span>{session.modelProvider || t("provider 未记录")}</span>
-                        <span>{formatTime(session.updatedAtMs ?? 0)}</span>
-                      </div>
-                      <div className="session-row-actions">
-                        <Button disabled={cleanupRunning} variant="outline" onClick={() => void actions.archiveOrRestoreSession(session, !archiveView)}>
-                          {archiveView ? <ArchiveRestore className="h-4 w-4" /> : <Archive className="h-4 w-4" />}
-                          {archiveView ? t("恢复") : t("归档")}
-                        </Button>
-                        <Button disabled={cleanupRunning} className="session-delete-button" variant="outline" onClick={() => void actions.deleteLocalSession(session)}>
-                          <Trash2 className="h-4 w-4" />
-                          {t("永久删除")}
-                        </Button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              {sessions?.nextCursor ? (
-                <Toolbar>
-                  <Button disabled={cleanupRunning} variant="outline" onClick={() => void actions.refreshLocalSessions(true, archiveView, sessions.nextCursor ?? undefined)}>
-                    {tf("显示更多（已显示 {0} 个）", [items.length])}
-                  </Button>
-                </Toolbar>
-              ) : null}
-            </>
-          ) : (
-            <div className="empty">{archiveView ? t("没有已归档会话。") : t("没有活动会话。")}</div>
-          )}
-        </CardContent>
-      </Panel>
-    </>
-  );
-}
 
 function RelayProfileList({
   form,
@@ -2075,7 +1803,7 @@ function SortableRelayProfileCard({
   disabled?: boolean;
   actions: Actions;
 }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: profile.id });
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: profile.id, disabled: !actions.coreAvailable });
   const active = profile.id === form.activeRelayId;
   const deleteAvailable = providerDeleteAvailable(profile.id, form.activeRelayId, form.relayProfiles.length);
   const style: CSSProperties = {
@@ -2154,6 +1882,7 @@ function SortableRelayProfileCard({
             <Edit3 className="h-4 w-4" />
           </Button>
           <Button
+            disabled={!actions.coreAvailable}
             onClick={(event) => {
               event.stopPropagation();
               onFormChange(duplicateRelayProfile(form, profile.id), "copy", profile.id);
@@ -2165,7 +1894,7 @@ function SortableRelayProfileCard({
             <Copy className="h-4 w-4" />
           </Button>
           <Button
-            disabled={!deleteAvailable}
+            disabled={!deleteAvailable || !actions.coreAvailable}
             onClick={(event) => {
               event.stopPropagation();
               onFormChange(removeRelayProfile(form, profile.id), "delete");
@@ -2212,6 +1941,7 @@ function RelayProfileDetail({
   ) as CatalogMode;
   const initialCatalogDraft = isNew || catalogProfile
     ? catalogProfileDraft({
+        officialModels: isNew ? modelCatalog?.officialModels : undefined,
         profileId: profile.id,
         fallbackMode: fallbackCatalogMode,
         summary: catalogProfile,
@@ -2221,6 +1951,7 @@ function RelayProfileDetail({
     createProviderDetailDraftState({ profile, catalogDraft: initialCatalogDraft }),
   );
   const detailStateRef = useRef(detailState);
+  const draftBaseline = useRef<ProviderDraftBaseline | null>(null);
   const authoritativeCapabilityProfile = deriveRelayProfileFromFiles({
     ...profile,
     configContents: profile.configContents,
@@ -2230,6 +1961,7 @@ function RelayProfileDetail({
     authoritativeCapabilityProfile,
   );
   const catalogSummaryFingerprint = JSON.stringify({
+    officialModels: isNew ? modelCatalog?.officialModels : undefined,
     profileId: catalogProfile?.profileId ?? null,
     mode: catalogProfile?.mode ?? null,
     modeExplicit: catalogProfile?.modeExplicit ?? null,
@@ -2239,20 +1971,13 @@ function RelayProfileDetail({
   });
   const authoritativeCapabilityCatalogDraft = isNew || catalogProfile
     ? catalogProfileDraft({
+        officialModels: isNew ? modelCatalog?.officialModels : undefined,
         profileId: profile.id,
         fallbackMode: fallbackCatalogMode,
         summary: catalogProfile,
       })
     : null;
   const updateDetailState = (next: ProviderDetailDraftState<RelayProfile>) => {
-    const current = detailStateRef.current;
-    if (
-      next.sessionToken !== current.sessionToken
-      || next.latestTransformRevision !== current.latestTransformRevision
-      || JSON.stringify(next.profile) !== JSON.stringify(current.profile)
-      || JSON.stringify(next.catalogDraft) !== JSON.stringify(current.catalogDraft)
-    ) {
-    }
     detailStateRef.current = next;
     setDetailState(next);
   };
@@ -2267,26 +1992,27 @@ function RelayProfileDetail({
     },
   });
   useEffect(() => {
-    const nextDraft = deriveRelayProfileFromFiles({
+    const nextDraft = isNew ? profile : deriveRelayProfileFromFiles({
       ...profile,
       configContents: profile.configContents,
       authContents: "",
     });
     const nextCatalogDraft = isNew || catalogProfile
       ? catalogProfileDraft({
+          officialModels: isNew ? modelCatalog?.officialModels : undefined,
           profileId: profile.id,
           fallbackMode: defaultCatalogMode(profile.relayMode, profile.officialMixApiKey) as CatalogMode,
           summary: catalogProfile,
         })
       : null;
-    const nextState = createProviderDetailDraftState({
-      profile: nextDraft,
-      catalogDraft: nextCatalogDraft,
-    });
+    const current = detailStateRef.current;
+    const keepDraft = preserveEditedProviderDraft(draftBaseline.current, { profileId: current.profile.id, profile: JSON.stringify(current.profile), catalog: JSON.stringify(current.catalogDraft) }, profile.id);
+    draftBaseline.current = { profileId: profile.id, profile: JSON.stringify(nextDraft), catalog: JSON.stringify(nextCatalogDraft) };
+    const nextState = createProviderDetailDraftState({ profile: keepDraft ? current.profile : nextDraft, catalogDraft: keepDraft ? current.catalogDraft : nextCatalogDraft });
     updateDetailState(nextState);
     setLegacyReplacementProviderId("");
     let cancelled = false;
-    if (!isNew) {
+    if (!isNew && !keepDraft) {
       const inspectionCorrelation = beginProviderDetailInspection(nextState);
       void actions.inspectProviderNativeCapabilities(profile.id).then((inspection) => {
         if (cancelled || !inspection) return;
@@ -2307,8 +2033,11 @@ function RelayProfileDetail({
   }, [profile.id, authoritativeCapabilityProfileRevision]);
   useEffect(() => {
     let cancelled = false;
+    const current = detailStateRef.current;
+    if (current.catalogDraft && preserveEditedProviderDraft(draftBaseline.current, { profileId: current.profile.id, profile: JSON.stringify(current.profile), catalog: JSON.stringify(current.catalogDraft) }, profile.id)) return;
     const nextCatalogDraft = isNew || catalogProfile
       ? catalogProfileDraft({
+          officialModels: isNew ? modelCatalog?.officialModels : undefined,
           profileId: profile.id,
           fallbackMode: defaultCatalogMode(profile.relayMode, profile.officialMixApiKey) as CatalogMode,
           summary: catalogProfile,
@@ -2361,7 +2090,7 @@ function RelayProfileDetail({
     updateDetailState(step.state);
     const effect = step.effects.find((candidate) => candidate.kind === "transform");
     if (!effect || effect.kind !== "transform") return Promise.resolve(true);
-    return actions.transformProviderNativeCapability(effect.invocation).then((response) => {
+    return actions.transformProviderNativeCapability(effect.invocation).then(async (response) => {
       const settled = settleProviderDetailTransform(
         detailStateRef.current,
         effect.correlation,
@@ -2375,11 +2104,12 @@ function RelayProfileDetail({
           response.status === "confirmationRequired"
           && settled.state.pendingConfirmation
         ) {
-          const accepted = window.confirm(providerTransitionConfirmationMessage(settled.state));
+          const accepted = await confirmDesktop(providerTransitionConfirmationMessage(settled.state));
+          if (!providerConfirmationStillCurrent(detailStateRef.current, settled.state)) return false;
           return dispatchProviderDetailStep(
             accepted
-              ? confirmProviderDetailTransition(settled.state)
-              : cancelProviderDetailTransition(settled.state),
+              ? confirmProviderDetailTransition(detailStateRef.current)
+              : cancelProviderDetailTransition(detailStateRef.current),
           );
         }
         void actions.showMessage(
@@ -2406,7 +2136,7 @@ function RelayProfileDetail({
     let current = detailStateRef.current;
     const target = providerConfigTargetContract(
       { ...current.profile, ...patch },
-      isNew && !current.profile.configContents.trim(),
+      isNew,
     );
     let step;
     try {
@@ -2469,7 +2199,7 @@ function RelayProfileDetail({
             ...step,
             state: replaceProviderDetailCatalogDraft(
               step.state,
-              updateCatalogProfileDraft(step.state.catalogDraft, { mode: impliedMode }),
+              updateCatalogProfileDraft(step.state.catalogDraft, { mode: impliedMode, overlay: catalogOverlayForMode(step.state.catalogDraft.overlay, step.state.catalogDraft.mode, impliedMode, modelCatalog?.officialModels ?? [], target.source === "brand-new-empty") }),
             ),
           };
         }
@@ -2499,7 +2229,7 @@ function RelayProfileDetail({
     setLegacyReplacementProviderId("");
   };
   const newProviderFieldErrors = isNew ? validateNewProviderDraft(draft) : {};
-  const validationError = Object.keys(newProviderFieldErrors).length
+  const validationError = !actions.coreAvailable ? t("核心尚未连接") : Object.keys(newProviderFieldErrors).length
     ? t("请填写所有必填字段。")
     : detailState.pendingTransformRevision !== null
       ? t("供应商配置转换中。")
@@ -2518,7 +2248,7 @@ function RelayProfileDetail({
       // A pure-OAuth profile holding a newly entered key persists only through the explicit
       // enablement confirmation; declining keeps pure OAuth and drops the draft key.
       if (!isNew && providerPureOAuthKeyEnablementPending(detailStateRef.current.profile)) {
-        if (!window.confirm(providerPureOAuthEnablementConfirmationMessage())) {
+        if (!await confirmDesktop(providerPureOAuthEnablementConfirmationMessage())) {
           await dispatchProviderDetailStep(beginProviderDetailEdit(detailStateRef.current, {
             patch: { apiKey: "" },
             target: providerConfigTargetContract(detailStateRef.current.profile, false),
@@ -2570,7 +2300,7 @@ function RelayProfileDetail({
           )
         : [];
       const confirmContextCleanup = contextConflicts.length
-        ? window.confirm(tf("保存托管目录将移除这些全局上下文设置：\n\n{0}", [contextConflicts.join("\n")]))
+        ? await confirmDesktop(tf("保存托管目录将移除这些全局上下文设置：\n\n{0}", [contextConflicts.join("\n")]))
         : false;
       if (contextConflicts.length && !confirmContextCleanup) return;
       const saved = await actions.commitProviderDetail(
@@ -2630,23 +2360,7 @@ function RelayProfileDetail({
   };
   return (
     <div className="relay-detail-page" key={profile.id}>
-      <div className="relay-detail-sticky">
-        <Toolbar>
-          <Button onClick={navigateBack} variant="secondary">
-            <ArrowLeft className="h-4 w-4" />
-            {t("返回列表")}
-          </Button>
-          <Button
-            aria-busy={saving}
-            disabled={saving || !!validationError}
-            onClick={() => void saveDraft()}
-            title={validationError || (saving ? t("保存中") : t("保存"))}
-          >
-            {saving ? <RefreshCw className="h-4 w-4 spin" /> : <Save className="h-4 w-4" />}
-            {saving ? t("保存中") : t("保存")}
-          </Button>
-        </Toolbar>
-      </div>
+      <div className="relay-detail-body">
       {detailState.pendingLegacyProviderIdResolution === null ? null : (
         <section className="catalog-profile-editor">
           <div className="catalog-editor-head">
@@ -2719,6 +2433,16 @@ function RelayProfileDetail({
         liveConfigContents={relayFiles?.configContents ?? ""}
         onRefreshAuth={() => actions.refreshRelayFiles()}
       />
+      </div>
+      <div className="relay-detail-sticky">
+        <Toolbar>
+          <span className="draft-footer-hint">{t(validationError || "供应商与模型将一起保存")}</span>
+          <Button onClick={navigateBack} variant="secondary"><ArrowLeft className="h-4 w-4" />{t("返回列表")}</Button>
+          <Button aria-busy={saving} disabled={saving || !!validationError} onClick={() => void saveDraft()} title={validationError || t("保存")}>
+            {saving ? <RefreshCw className="h-4 w-4 spin" /> : <Save className="h-4 w-4" />}{saving ? t("保存中") : t("保存")}
+          </Button>
+        </Toolbar>
+      </div>
     </div>
   );
 }
@@ -2808,7 +2532,7 @@ function RelayProfileEditor({
         </div>
         {isNew ? null : (
           <Button
-            disabled={!form.relayProfilesEnabled || actions.relaySwitching || draftCommitBlocked}
+             disabled={!actions.coreAvailable || !form.relayProfilesEnabled || actions.relaySwitching || draftCommitBlocked}
             onClick={onSwitch}
             title={!form.relayProfilesEnabled ? t("供应商配置总开关已关闭") : actions.relaySwitching ? t("供应商切换中") : draftCommitBlocked ? t("供应商配置尚未通过后端验证。") : undefined}
             variant={profile.id === form.activeRelayId ? "secondary" : "default"}
@@ -2818,15 +2542,16 @@ function RelayProfileEditor({
         )}
       </div>
       <div className="relay-fields">
-        <Field className="relay-field-name" label={t("名称")}>
+        <Field className="relay-field-name" label={t("名称")} htmlFor="provider-name">
           <Input
+            id="provider-name"
             value={profile.name}
             onChange={(event) => updateDraft({ name: event.currentTarget.value })}
           />
         </Field>
         {isNew ? (
           <Field className="relay-field-mode" label={t("接入方式")}>
-            <div className="relay-target-options" role="radiogroup">
+            <div className="relay-target-options" role="radiogroup" aria-label={t("接入方式")}>
               {NEW_PROVIDER_TARGET_OPTIONS.map((option) => (
                 <label className="relay-target-option" key={option.value}>
                   <input
@@ -2857,13 +2582,16 @@ function RelayProfileEditor({
           </Field>
         ) : profile.relayMode === "pureApi" ? (
           <Field className="relay-field-mode" label={t("接入模式")}>
-            <p className="field-hint">{t("纯 API＋开启生图（无需账号）＋Responses API；图片能力由上游提供")}</p>
+            <p className="field-hint">{t(providerImageGenerationEnabled(profile)
+              ? "纯 API＋开启生图（无需账号）＋Responses API；图片能力由上游提供"
+              : "纯 API＋Responses API；图像工具已关闭，可单独开启。")}</p>
           </Field>
         ) : null}
         {showApiFields ? (
           <div className="relay-api-fields">
-            <Field className="relay-field-base-url" label="Base URL">
+            <Field className="relay-field-base-url" label="Base URL" htmlFor="provider-base-url">
               <Input
+                id="provider-base-url"
                 aria-describedby={newProviderFieldErrors.baseUrl ? "provider-base-url-error" : undefined}
                 aria-invalid={newProviderFieldErrors.baseUrl ? true : undefined}
                 value={profile.baseUrl}
@@ -2872,8 +2600,9 @@ function RelayProfileEditor({
               />
               {newProviderFieldErrors.baseUrl ? <p className="field-hint" id="provider-base-url-error" role="alert">{t("必填")}</p> : null}
             </Field>
-            <Field className="relay-field-key" label="Key">
+            <Field className="relay-field-key" label="Key" htmlFor="provider-api-key">
               <Input
+                id="provider-api-key"
                 aria-describedby={newProviderFieldErrors.apiKey ? "provider-api-key-error" : undefined}
                 aria-invalid={newProviderFieldErrors.apiKey ? true : undefined}
                 type="password"
@@ -2996,7 +2725,7 @@ function NoticeDialog({
   }, [failed]);
 
   return (
-    <div className="toast-wrap" role="status" aria-live="polite">
+    <div className="toast-wrap" role={failed ? "alert" : "status"} aria-live={failed ? "assertive" : "polite"}>
       <div className={`toast-card ${failed ? "failed" : ""}`}>
         {failed ? null : <div className="toast-progress" />}
         <div className="toast-icon">
@@ -3012,7 +2741,7 @@ function NoticeDialog({
             </details>
           ) : null}
         </div>
-        <button className="toast-close" onClick={onClose} type="button">×</button>
+        <button aria-label={t("关闭通知")} className="toast-close" onClick={onClose} type="button">×</button>
       </div>
     </div>
   );
@@ -3027,15 +2756,17 @@ function ConfirmDialog({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const dialog = useDialogFocus<HTMLDivElement>(onCancel);
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title"
+      ref={dialog.ref} onKeyDown={dialog.onKeyDown} tabIndex={-1}>
       <div className="modal-card">
         <div className="modal-head">
           <div>
-            <h2>{confirm.title}</h2>
+            <h2 id="confirm-dialog-title">{confirm.title}</h2>
             <p className="modal-message">{confirm.message}</p>
           </div>
-          <button className="toast-close" onClick={onCancel} type="button">×</button>
+          <button aria-label={t("取消")} className="toast-close" onClick={onCancel} type="button">×</button>
         </div>
         <Toolbar>
           <Button onClick={onConfirm}>
@@ -3070,26 +2801,17 @@ function Toolbar({ children }: { children: React.ReactNode }) {
   return <div className="toolbar">{children}</div>;
 }
 
-function Field({ label, children, className = "" }: { label: string; children: React.ReactNode; className?: string }) {
+function Field({ label, children, className = "", htmlFor }: { label: string; children: React.ReactNode; className?: string; htmlFor?: string }) {
   return (
-    <Label className={`field ${className}`}>
-      <span>{label}</span>
+    <div className={`field ${className}`}>
+      <Label htmlFor={htmlFor}>{label}</Label>
       {children}
-    </Label>
+    </div>
   );
 }
 
 function Badge({ status }: { status: string }) {
   return <UiBadge className={statusClass(status)} variant="secondary">{statusLabel(status)}</UiBadge>;
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
 }
 
 function routeTitle(route: Route) {
@@ -3115,8 +2837,8 @@ const contextKindOptions = CONTEXT_KIND_TABLES.map((option) => ({
 
 
 function loadInitialTheme(): Theme {
-  if (typeof window === "undefined") return "dark";
-  return window.localStorage.getItem("codex-plus-theme") === "light" ? "light" : "dark";
+  if (typeof window === "undefined") return "light";
+  return window.localStorage.getItem("codex-plus-theme") === "dark" ? "dark" : "light";
 }
 
 function loadInitialRoute(): Route {

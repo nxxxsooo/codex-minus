@@ -1,12 +1,14 @@
 # codex-minus (Codex Minus)
 
 ## Overview
-Trimmed fork of upstream Codex++ Manager (`BigPizzaV3/CodexPlusPlus`, `apps/codex-plus-manager`): relay provider switching + model catalog management + session management + config doctor only. Tauri 2 + React 19 + Vite. No renderer injection, no launcher. AGPL-3.0-only. Installed as `/Applications/Codex Minus.app`; replaced Codex++ (2026-07-15) and renamed from `Codex-- Manager` (2026-08-12), so an older bundle can remain until it is removed by hand.
+Trimmed fork of upstream Codex++ Manager (`BigPizzaV3/CodexPlusPlus`, `apps/codex-plus-manager`): relay provider switching + model catalog management + session management + config doctor only. Electron + React 19 + Vite with a managed Rust core. No renderer injection, no launcher. AGPL-3.0-only. Installed as `/Applications/Codex Minus.app`; replaced Codex++ (2026-07-15) and renamed from `Codex-- Manager` (2026-08-12), so an older bundle can remain until it is removed by hand.
 
 ## Architecture
-- **Frontend shell**: `src/App.tsx` — dual-mounted screens (relay / sessions / doctor), v1.2.35 green theme. **Wiring only**: the App component's state and handlers, screen components, JSX. A function that can be tested without rendering is a rule, not wiring — put it in a module beside its own `.test.ts`. `src/app-shell-budget.test.ts` enforces this: it lists the rules not yet moved (that list may only shrink) and caps the file's length (that cap may only be lowered). Reason: every unrelated change merges around this one file, so two concurrent branches conflict on it by construction.
+- **Frontend shell**: `src/App.tsx` — providers and sessions with embedded Doctor/preferences dialogs; Bauhaus light/dark theme. **Wiring only**: the App component's state and handlers, screen components, JSX. A function that can be tested without rendering is a rule, not wiring — put it in a module beside its own `.test.ts`. `src/app-shell-budget.test.ts` enforces this: it lists the rules not yet moved (that list may only shrink) and caps the file's length (that cap may only be lowered). Reason: every unrelated change merges around this one file, so two concurrent branches conflict on it by construction.
 - **Frontend modules**: `backend-types.ts` (every shape the Rust side sends/receives), `codex-toml.ts` (text-level `config.toml` reads and rewrites), `codex-context-entries.ts` (MCP / skills / plugins as one list), `relay-settings.ts` (normalize, derive, and mutate the provider list), plus one module per rule area (`model-catalog-ui`, `provider-commit`, `provider-detail-draft-state`, …)
-- **Backend**: `src-tauri/src/commands.rs` — all Tauri commands; IO-heavy commands are async (off main thread)
+- **Desktop boundary**: `desktop/main.mjs` / `preload.cjs`, with `src/desktop-api.ts` as the renderer adapter. Validate every IPC sender; no Node API or arbitrary filesystem/command path crosses preload.
+- **Backend**: `src-tauri/src/commands.rs` — domain commands, dispatched by bounded private NDJSON in `rpc.rs`; IO-heavy work runs off the main thread. `src-tauri/` is a historical directory name, not a Tauri runtime dependency.
+- **Updates**: `desktop/update-*.mjs` and Rust `update_verify.rs` / `update_swap.rs`. Both the Electron manifest and artifact use the pinned minisign key; install helpers acknowledge readiness, operate outside the installed app, and never restart the official Codex client. Use original-fs for physical `app.asar` operations. The independent `scripts/legacy-updater/` crate is test-only and must not ship.
 - **Live state**: `src-tauri/src/live_state.rs` — process-wide coordinator, owner-only multi-file transaction journal, and crash recovery for settings/config/catalog generations
 - **Model catalogs**: `src-tauri/src/model_catalog.rs` — verified target-CLI official refresh, four catalog modes, overlays, provider evidence, materialization, and external ownership
 - **Upstream deps**: `codex-plus-core` / `codex-plus-data` as git deps pinned to rev `59a2f90` in `src-tauri/Cargo.toml`. Upgrade = bump the rev; do NOT vendor or fork provider logic.
@@ -26,9 +28,10 @@ Trimmed fork of upstream Codex++ Manager (`BigPizzaV3/CodexPlusPlus`, `apps/code
 - `npm run verify` — tsc + frontend tests + knip; this is what CI runs
 - `npm run check` — tsc --noEmit
 - `npm run knip` — unused dependencies, exports, and files
-- `scripts/release.sh <version>` / `scripts/release-tag.sh <version>` — bump the four version files and commit; tag origin/master after the PR merges (see `docs/workflow.md`)
+- `scripts/release.sh <version>` / `scripts/release-tag.sh <version>` — synchronize package/lock, Rust and legacy identity-reference versions and commit; tag origin/master after the PR merges (see `docs/workflow.md`)
 - `npm run vite:build` — frontend build
-- `npm run build` — full tauri build (macOS app bundle + icns)
+- `npm run build` — native Electron package with a target-matched Rust core; artifacts in `dist-desktop/`
+- `npm run update:smoke:mac` — headless, disposable native install/rollback/helper acceptance
 - `cargo test` in `src-tauri/` — includes Context, live-state transaction, and model-catalog tests; the live OAuth test remains ignored unless explicitly enabled
 
 ## Role Separation

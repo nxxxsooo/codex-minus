@@ -1,6 +1,17 @@
 import assert from "node:assert";
+import { catalogOfficialModels } from "./model-catalog-ui.ts";
 import { describe, it } from "node:test";
 import { PRO_MODEL_SLUGS } from "./provider-onboarding.ts";
+
+describe("catalog ownership in the editor", () => {
+  it("keeps official rows out of custom-only/external editing and available as custom candidates", () => {
+    const baseline = [{ slug: "gpt-6-astra", visible: true }];
+    assert.deepEqual(catalogOfficialModels("custom-only", baseline), []);
+    assert.deepEqual(catalogOfficialModels("external", baseline), []);
+    assert.strictEqual(catalogOfficialModels("official-plus-custom", baseline), baseline);
+    assert.strictEqual(catalogOfficialModels("native-official", baseline), baseline);
+  });
+});
 
 import {
   catalogActionRequiredLabel,
@@ -299,7 +310,7 @@ describe("the model table shows the list Codex will show", () => {
     toolCapabilities: null,
     ...patch,
   });
-  // Historical baseline: restoration must remove 5.5 and Spark even when an older snapshot lists them.
+  // Historical baseline: explicit restoration removes retired rows and works before the new rollout.
   const officialModels = [
     { slug: "gpt-6-astra", visible: true },
     { slug: "gpt-5.6-sol", visible: true },
@@ -369,7 +380,7 @@ describe("the model table shows the list Codex will show", () => {
     const after = restoreCatalogList({ overlay: before, officialModels: officialModelsWithExtra, wanted: pro });
     assert.deepEqual(visibleList(after).sort(), [...pro].sort());
     assert.equal(after.official["gpt-5.6-sol"].contextWindow, 372000);
-    assert.equal(after.official["gpt-5.6-sol"].visible, null, "a Pro model keeps the baseline answer");
+    assert.equal(after.official["gpt-5.6-sol"].visible, false, "the previous generation is outside the maintained preset");
     assert.equal(after.official["gpt-future-extra"].visible, false);
     assert.equal(after.official["gpt-5.4"], undefined, "a model already hidden needs no override");
   });
@@ -392,7 +403,7 @@ describe("the model table shows the list Codex will show", () => {
     };
     assert.deepEqual(
       catalogRestoreLosses({ overlay: before, officialModels: officialModelsWithExtra, wanted: pro }).sort(),
-      ["gpt-5.3-codex-spark", "gpt-5.5", "gpt-future-extra", "some-experiment"],
+      ["gpt-5.3-codex-spark", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-future-extra", "some-experiment"],
     );
     const restored = restoreCatalogList({ overlay: before, officialModels: officialModelsWithExtra, wanted: pro });
     assert.deepEqual(catalogRestoreLosses({ overlay: restored, officialModels: officialModelsWithExtra, wanted: pro }), []);

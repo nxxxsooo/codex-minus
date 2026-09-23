@@ -45,10 +45,16 @@ export async function cleanupSessions(target: LocalSession[] | "archived", ports
     ? tf("永久删除全部 {0} 个已归档会话？将清理本地数据库记录和 rollout 文件，不留备份，无法恢复。", [sessions.length])
     : tf("永久删除选中的 {0} 个会话？将清理本地数据库记录和 rollout 文件，不留备份，无法恢复。\n\n{1}{2}", [sessions.length, preview, extra]);
   if (!await ports.confirm(title, message)) return;
+  let result: SessionCleanupResult | null = null;
+  let refreshFailed = false;
   try {
-    const result = await ports.invoke<SessionCleanupResult>("permanently_delete_local_sessions", {
+    result = await ports.invoke<SessionCleanupResult>("permanently_delete_local_sessions", {
       request: { sessionIds: sessions.map((session) => session.id), archivedOnly },
     });
+  } finally {
+    await ports.refresh().catch(() => { refreshFailed = true; });
+  }
+  if (result) {
     const summary = result.status === "ok"
       ? tf("已永久删除 {0} 个会话，未创建备份。", [result.deletedCount])
       : result.failures.length
@@ -57,8 +63,7 @@ export async function cleanupSessions(target: LocalSession[] | "archived", ports
     const detail = result.failures.length
       ? result.failures.map((failure) => `${failure.sessionId}: ${failure.message}`).join("\n")
       : result.status === "ok" ? undefined : result.message;
-    ports.notice(title, summary, result.status, detail);
-  } finally {
-    await ports.refresh();
+    ports.notice(title, refreshFailed ? `${summary} ${t("会话列表刷新失败，请手动刷新后核对状态。")}` : summary,
+      refreshFailed ? "failed" : result.status, detail);
   }
 }

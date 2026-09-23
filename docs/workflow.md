@@ -87,7 +87,7 @@ gh pr merge <PR号> --merge
 
 ### 2.6 发版
 
-版本号写在**四个**文件里，没有任何工具会帮你同步：`package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`。改三个漏一个，安装包文件名和 App 里的版本号就会对不上。
+Electron 的版本来自 `package.json`，还需同步 `package-lock.json`、Rust 的 `src-tauri/Cargo.toml`／`Cargo.lock`，以及保留旧身份与信任根的 `src-tauri/tauri.conf.json`。最后一个文件是迁移参考，不再用于构建桌面运行时。
 
 所以先手写 BOARD.md 那一条（什么 / 为什么 / 怎么验证的 —— 脚本写不出来），然后：
 
@@ -96,7 +96,7 @@ gh pr merge <PR号> --merge
 scripts/release.sh 0.4.5
 ```
 
-这个脚本会：拒绝脏工作区、拒绝在 master 上跑、拒绝 BOARD.md 没有今天的条目、改四个文件、跑一遍测试、提交。任何一步不满足就停下并说原因。
+这个脚本会：拒绝脏工作区、拒绝在 master 上跑、拒绝 BOARD.md 没有今天的条目、同步上述版本、跑 `npm run verify`、提交。任何一步不满足就停下并说原因。
 
 ```bash
 # 2. 走 2.3–2.5 的 PR 流程合并
@@ -107,13 +107,13 @@ scripts/release-tag.sh 0.4.5
 
 `release-tag.sh` 会先 fetch，确认 **origin/master 上**的版本号确实是 0.4.5，才打 tag —— 防止在没合并的提交上打 tag。
 
-推 tag 会触发 release job，自动构建 6 个安装包并发布。
+推 tag 会构建 macOS arm64 应用包、Windows x64／arm64 NSIS 安装器，并签名与发布。旧 Tauri 的 `latest.json` 和 Electron 的 `electron-latest.json` 指向同一组签名资产；Electron 清单自身也签名。PR 只产出审阅包，不持有发布签名步骤、不生成更新通道。
 
 ```bash
 gh release view v0.4.5 --json assets --jq '.assets[].name'
 ```
 
-**兜底**：`src/release-version.test.ts` 会断言四个文件版本号一致，跟着 `npm test` 在 CI 里跑。就算绕过脚本手工改，不一致也会在 PR 阶段红掉。
+**兜底**：`src/release-version.test.ts` 会断言版本文件及 npm lock 根记录一致，跟着 `npm test` 在 CI 里跑。就算手工改，不一致也会在 PR 阶段红掉。`scripts/verify-package.mjs` 检查真实打包资源与核心架构，本机架构还运行无窗口 Electron／Rust 入口；Windows ARM64 的资源检查不冒充原生安装验证。
 
 ### 2.7 收工
 

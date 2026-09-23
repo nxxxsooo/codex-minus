@@ -86,3 +86,26 @@ test("partial failures stay failed with details and refresh; transport errors al
   await assert.rejects(cleanupSessions([session("one")], h.ports), /transport lost/);
   assert.equal(h.refreshed, 2);
 });
+
+test("a failed list refresh cannot replace cleanup's per-session failure details", async () => {
+  const h = harness();
+  h.ports.invoke = async <T>() => ({ status: "failed", deletedCount: 1, failures: [{ sessionId: "two", message: "locked" }] }) as T;
+  h.ports.refresh = async () => { h.ports.notice("会话列表", "刷新失败", "failed"); };
+  await cleanupSessions([session("one"), session("two")], h.ports);
+  assert.equal(h.notices.at(-1)?.[0], "永久删除会话");
+  assert.match(String(h.notices.at(-1)?.[3]), /two: locked/);
+});
+
+test("a successful cleanup reports stale list state when its post-delete refresh fails", async () => {
+  const h = harness();
+  h.ports.refresh = async () => { throw new Error("fixture refresh unavailable"); };
+  await cleanupSessions([session("one")], h.ports);
+  assert.match(String(h.notices.at(-1)?.[1]), /刷新失败/);
+});
+
+test("a failed cleanup still reports the transport error after attempting a refresh", async () => {
+  const h = harness();
+  h.ports.invoke = async () => { throw new Error("transport lost"); };
+  h.ports.refresh = async () => { throw new Error("refresh unavailable"); };
+  await assert.rejects(cleanupSessions([session("one")], h.ports), /transport lost/);
+});

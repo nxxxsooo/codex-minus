@@ -472,12 +472,11 @@ pub struct StartupPayload {
     pub show_update: bool,
 }
 
-#[tauri::command]
 pub async fn load_settings() -> CommandResult<SettingsPayload> {
     // A panic here used to reject the whole invoke, which left the UI with no settings baseline
     // and no reason for it. Answering with the fallback payload keeps the failure legible.
     settle_blocking(
-        tauri::async_runtime::spawn_blocking(|| load_settings_blocking()),
+        crate::runtime::spawn_blocking(|| load_settings_blocking()),
         "设置读取中断；请重新加载设置。",
         fallback_settings_payload,
     )
@@ -541,10 +540,9 @@ pub(crate) fn legacy_model_reset_notice(reset: &LegacyModelResetOutcome) -> Opti
     }
 }
 
-#[tauri::command]
 pub async fn save_settings(settings: Value) -> CommandResult<SettingsPayload> {
     settle_blocking(
-        tauri::async_runtime::spawn_blocking(move || save_settings_blocking(settings)),
+        crate::runtime::spawn_blocking(move || save_settings_blocking(settings)),
         "设置保存中断；请重新加载设置后再试。",
         fallback_settings_payload,
     )
@@ -825,11 +823,10 @@ pub(crate) fn save_settings_with_provider_guard_at_observed(
     .map_err(|_| GenericSettingsSaveError::SecureStorageFailed)
 }
 
-#[tauri::command]
 pub async fn list_local_sessions(
     request: Option<LocalSessionsRequest>,
 ) -> CommandResult<LocalSessionsPayload> {
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::runtime::spawn_blocking(move || {
         list_local_sessions_blocking(request.unwrap_or_default())
     })
     .await
@@ -1299,9 +1296,8 @@ fn persist_last_completed_at_ms(completed_at_ms: i64) -> anyhow::Result<SessionL
     Ok(latest)
 }
 
-#[tauri::command]
 pub async fn load_session_lifecycle_settings() -> CommandResult<SessionLifecycleSettings> {
-    tauri::async_runtime::spawn_blocking(|| {
+    crate::runtime::spawn_blocking(|| {
         match read_session_lifecycle_settings_from(&session_lifecycle_settings_path()) {
             Ok(settings) => ok("会话归档设置已加载。", settings),
             Err(error) => failed(
@@ -1314,11 +1310,10 @@ pub async fn load_session_lifecycle_settings() -> CommandResult<SessionLifecycle
     .expect("blocking command panicked")
 }
 
-#[tauri::command]
 pub async fn save_session_lifecycle_settings(
     settings: SessionLifecycleSettings,
 ) -> CommandResult<SessionLifecycleSettings> {
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::runtime::spawn_blocking(move || {
         let Ok(_guard) = lifecycle_settings_mutex().lock() else {
             return failed("生命周期设置锁已损坏，请重启管理器后再试。", settings);
         };
@@ -1331,11 +1326,10 @@ pub async fn save_session_lifecycle_settings(
     .expect("blocking command panicked")
 }
 
-#[tauri::command]
 pub async fn preview_session_archive(
     request: Option<ArchivePreviewRequest>,
 ) -> CommandResult<ArchivePreviewPayload> {
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::runtime::spawn_blocking(move || {
         let retention_days = request
             .and_then(|request| request.retention_days)
             .unwrap_or(30);
@@ -1395,26 +1389,20 @@ fn current_effective_provider_from_home(home: &Path) -> String {
         .unwrap_or_else(|| "openai".to_string())
 }
 
-#[tauri::command]
 pub async fn archive_local_session(
     request: SessionLifecycleOperationRequest,
 ) -> CommandResult<SessionLifecycleOperationPayload> {
-    tauri::async_runtime::spawn_blocking(move || {
-        session_lifecycle_operation_blocking(request, true)
-    })
-    .await
-    .expect("blocking command panicked")
+    crate::runtime::spawn_blocking(move || session_lifecycle_operation_blocking(request, true))
+        .await
+        .expect("blocking command panicked")
 }
 
-#[tauri::command]
 pub async fn restore_local_session(
     request: SessionLifecycleOperationRequest,
 ) -> CommandResult<SessionLifecycleOperationPayload> {
-    tauri::async_runtime::spawn_blocking(move || {
-        session_lifecycle_operation_blocking(request, false)
-    })
-    .await
-    .expect("blocking command panicked")
+    crate::runtime::spawn_blocking(move || session_lifecycle_operation_blocking(request, false))
+        .await
+        .expect("blocking command panicked")
 }
 
 fn session_lifecycle_operation_blocking(
@@ -1509,11 +1497,10 @@ fn target_client_running() -> Option<bool> {
     }
 }
 
-#[tauri::command]
 pub async fn run_session_archive_maintenance(
     force: Option<bool>,
 ) -> CommandResult<ArchiveMaintenancePayload> {
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::runtime::spawn_blocking(move || {
         run_session_archive_maintenance_blocking(force.unwrap_or(false))
     })
     .await
@@ -1670,11 +1657,10 @@ fn run_session_archive_maintenance_blocking(
     }
 }
 
-#[tauri::command]
 pub async fn permanently_delete_local_sessions(
     request: crate::session_cleanup::CleanupRequest,
 ) -> CommandResult<crate::session_cleanup::CleanupOutcome> {
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::runtime::spawn_blocking(move || {
         let Ok(_guard) = session_operation_mutex().lock() else {
             return failed("会话操作锁已损坏，请重启管理器后再试。", Default::default());
         };
@@ -2049,7 +2035,6 @@ fn ensure_text_newline(value: &str) -> String {
     }
 }
 
-#[tauri::command]
 pub fn open_external_url(url: String) -> CommandResult<Value> {
     let trimmed = url.trim();
     if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
@@ -2065,9 +2050,8 @@ pub fn open_external_url(url: String) -> CommandResult<Value> {
 /// catalog takes effect. Quit is always graceful (AppleScript `quit`, no signal): a host
 /// mid-write is never force-killed — if it does not exit in time the command reports
 /// failure and the user decides. Nothing calls this automatically.
-#[tauri::command]
 pub async fn restart_codex_host() -> CommandResult<Value> {
-    tauri::async_runtime::spawn_blocking(restart_codex_host_blocking)
+    crate::runtime::spawn_blocking(restart_codex_host_blocking)
         .await
         .unwrap_or_else(|_| failed("重启 Codex 中断；请手动确认 Codex 状态。", json!({})))
 }
@@ -2137,9 +2121,8 @@ fn restart_codex_host_blocking() -> CommandResult<Value> {
     }
 }
 
-#[tauri::command]
 pub async fn relay_status() -> CommandResult<RelayPayload> {
-    tauri::async_runtime::spawn_blocking(|| relay_status_blocking())
+    crate::runtime::spawn_blocking(|| relay_status_blocking())
         .await
         .expect("blocking command panicked")
 }
@@ -2154,9 +2137,8 @@ fn relay_status_blocking() -> CommandResult<RelayPayload> {
     ok(message, relay_payload(status, None))
 }
 
-#[tauri::command]
 pub async fn read_relay_files() -> CommandResult<RelayFilesPayload> {
-    tauri::async_runtime::spawn_blocking(|| read_relay_files_blocking())
+    crate::runtime::spawn_blocking(|| read_relay_files_blocking())
         .await
         .expect("blocking command panicked")
 }
@@ -2177,9 +2159,8 @@ fn read_relay_files_blocking() -> CommandResult<RelayFilesPayload> {
     }
 }
 
-#[tauri::command]
 pub async fn check_env_conflicts() -> CommandResult<EnvConflictsPayload> {
-    tauri::async_runtime::spawn_blocking(|| check_env_conflicts_blocking())
+    crate::runtime::spawn_blocking(|| check_env_conflicts_blocking())
         .await
         .expect("blocking command panicked")
 }
@@ -2194,7 +2175,6 @@ fn check_env_conflicts_blocking() -> CommandResult<EnvConflictsPayload> {
     ok(message, EnvConflictsPayload { conflicts })
 }
 
-#[tauri::command]
 pub fn remove_env_conflicts(
     request: RemoveEnvConflictsRequest,
 ) -> CommandResult<RemoveEnvConflictsPayload> {
@@ -2222,9 +2202,8 @@ pub fn remove_env_conflicts(
     }
 }
 
-#[tauri::command]
 pub async fn save_relay_file(request: SaveRelayFileRequest) -> CommandResult<RelayFilesPayload> {
-    tauri::async_runtime::spawn_blocking(move || save_relay_file_blocking(request))
+    crate::runtime::spawn_blocking(move || save_relay_file_blocking(request))
         .await
         .expect("blocking command panicked")
 }
@@ -2990,7 +2969,7 @@ fn provider_commit_failure_for_legacy_auth_migration(
 /// Re-panicking inside a Tauri command drops its IPC responder without answering, so the caller's
 /// promise never settles and the editor keeps a pending state with nothing to show.
 pub(crate) async fn settle_blocking<T, F>(
-    task: tauri::async_runtime::JoinHandle<CommandResult<T>>,
+    task: crate::runtime::JoinHandle<CommandResult<T>>,
     message: &str,
     on_panic: F,
 ) -> CommandResult<T>
@@ -3004,12 +2983,11 @@ where
     }
 }
 
-#[tauri::command]
 pub async fn commit_provider_detail(
     request: crate::provider_commit::ProviderCommitRequest,
 ) -> CommandResult<ProviderCommitPayload> {
     let draft_revision = request.draft_revision;
-    let task = tauri::async_runtime::spawn_blocking(move || {
+    let task = crate::runtime::spawn_blocking(move || {
         provider_commit_command_result(
             draft_revision,
             commit_provider_detail_from_paths(&ProviderCommitPaths::defaults(), request),
@@ -4477,20 +4455,18 @@ fn materialize_provider_commit_catalogs(
     Ok(mutations)
 }
 
-#[tauri::command]
 pub async fn switch_relay_profile(
     request: RelayProfileSwitchRequest,
 ) -> CommandResult<RelaySwitchPayload> {
-    tauri::async_runtime::spawn_blocking(move || switch_relay_profile_blocking(request))
+    crate::runtime::spawn_blocking(move || switch_relay_profile_blocking(request))
         .await
         .expect("blocking command panicked")
 }
 
-#[tauri::command]
 pub async fn save_active_relay_profile(
     request: RelayProfileSwitchRequest,
 ) -> CommandResult<RelaySwitchPayload> {
-    tauri::async_runtime::spawn_blocking(move || switch_relay_profile_blocking(request))
+    crate::runtime::spawn_blocking(move || switch_relay_profile_blocking(request))
         .await
         .expect("blocking command panicked")
 }
@@ -4858,7 +4834,6 @@ fn read_optional_bytes(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
     }
 }
 
-#[tauri::command]
 pub fn write_diagnostic_event(event: String, detail: Value) -> CommandResult<Value> {
     let event = sanitize_ui_manager_event(&event);
     let detail = if event == "manager.ui.event" {
@@ -4872,7 +4847,6 @@ pub fn write_diagnostic_event(event: String, detail: Value) -> CommandResult<Val
     }
 }
 
-#[tauri::command]
 pub fn backfill_relay_profile_from_live(
     request: BackfillRelayProfileRequest,
 ) -> CommandResult<SettingsBackfillPayload> {
@@ -4934,7 +4908,6 @@ pub fn backfill_relay_profile_from_live(
     }
 }
 
-#[tauri::command]
 pub fn extract_relay_common_config(
     request: ExtractRelayCommonConfigRequest,
 ) -> CommandResult<ExtractRelayCommonConfigPayload> {
@@ -5193,7 +5166,6 @@ pub(crate) fn sanitize_provider_doctor_result(
     result
 }
 
-#[tauri::command]
 pub async fn test_relay_profile(
     profile: crate::provider_commit::ProviderRelayProfileInput,
 ) -> CommandResult<RelayProfileTestPayload> {
@@ -5275,7 +5247,6 @@ pub async fn test_relay_profile(
     sanitize_provider_test_result(&profile, result)
 }
 
-#[tauri::command]
 pub async fn fetch_relay_profile_models(
     profile: crate::provider_commit::ProviderRelayProfileInput,
 ) -> CommandResult<RelayProfileModelsPayload> {
@@ -5312,7 +5283,7 @@ pub async fn fetch_relay_profile_models(
                 let profile_id = profile.id.clone();
                 let endpoint = endpoint.clone();
                 let models = models.clone();
-                tauri::async_runtime::spawn_blocking(move || {
+                crate::runtime::spawn_blocking(move || {
                     crate::model_catalog::record_provider_evidence(&profile_id, &endpoint, &models)
                 })
                 .await
@@ -5339,7 +5310,6 @@ pub async fn fetch_relay_profile_models(
     sanitize_provider_models_result(&profile, result)
 }
 
-#[tauri::command]
 pub async fn diagnose_relay_profile(
     profile: crate::provider_commit::ProviderRelayProfileInput,
 ) -> CommandResult<ProviderDoctorPayload> {
@@ -5600,16 +5570,14 @@ fn provider_doctor_recommendation(checks: &[ProviderDoctorCheck]) -> String {
     "可以作为 Codex Responses 供应商使用；如果真实对话仍失败，请检查上游 Responses 响应和 Codex 日志。".to_string()
 }
 
-#[tauri::command]
 pub async fn apply_relay_injection() -> CommandResult<RelayPayload> {
-    tauri::async_runtime::spawn_blocking(|| apply_active_relay_profile_blocking("供应商配置"))
+    crate::runtime::spawn_blocking(|| apply_active_relay_profile_blocking("供应商配置"))
         .await
         .expect("blocking command panicked")
 }
 
-#[tauri::command]
 pub async fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
-    tauri::async_runtime::spawn_blocking(|| apply_active_relay_profile_blocking("纯 API 配置"))
+    crate::runtime::spawn_blocking(|| apply_active_relay_profile_blocking("纯 API 配置"))
         .await
         .expect("blocking command panicked")
 }
@@ -5639,9 +5607,8 @@ fn apply_active_relay_profile_blocking(label: &str) -> CommandResult<RelayPayloa
     }
 }
 
-#[tauri::command]
 pub async fn clear_relay_injection() -> CommandResult<RelayPayload> {
-    tauri::async_runtime::spawn_blocking(clear_relay_injection_blocking)
+    crate::runtime::spawn_blocking(clear_relay_injection_blocking)
         .await
         .expect("blocking command panicked")
 }
@@ -6758,9 +6725,8 @@ fn provider_compatibility_payload() -> ProviderCompatibilityPayload {
     provider_compatibility_from_sessions(current_provider, &sessions)
 }
 
-#[tauri::command]
 pub async fn scan_provider_compatibility() -> CommandResult<ProviderCompatibilityPayload> {
-    tauri::async_runtime::spawn_blocking(|| {
+    crate::runtime::spawn_blocking(|| {
         let started = Instant::now();
         let mut payload = provider_compatibility_payload();
         payload.scan_elapsed_ms = started.elapsed().as_millis();
@@ -6780,11 +6746,10 @@ pub async fn scan_provider_compatibility() -> CommandResult<ProviderCompatibilit
     .expect("blocking command panicked")
 }
 
-#[tauri::command]
 pub async fn adapt_active_sessions_to_current_provider(
     scan_generation: String,
 ) -> CommandResult<ProviderCompatibilityPayload> {
-    tauri::async_runtime::spawn_blocking(move || {
+    crate::runtime::spawn_blocking(move || {
         let before = provider_compatibility_payload();
         if scan_generation != before.scan_generation {
             return failed("兼容性检查结果已过期，请重新检查。", before);
@@ -6920,7 +6885,7 @@ mod session_lifecycle_tests {
             assert!(validate_relay_profile_transaction_input(&settings).is_err());
 
             let switch =
-                tauri::async_runtime::block_on(switch_relay_profile(RelayProfileSwitchRequest {
+                crate::runtime::block_on(switch_relay_profile(RelayProfileSwitchRequest {
                     settings: settings.clone(),
                     previous_active_relay_id: String::new(),
                     confirm_context_cleanup: false,
@@ -6928,13 +6893,12 @@ mod session_lifecycle_tests {
             assert_eq!(switch.status, "failed");
             assert_safe_route_settings(&switch.payload.settings);
 
-            let save = tauri::async_runtime::block_on(save_active_relay_profile(
-                RelayProfileSwitchRequest {
+            let save =
+                crate::runtime::block_on(save_active_relay_profile(RelayProfileSwitchRequest {
                     settings,
                     previous_active_relay_id: String::new(),
                     confirm_context_cleanup: false,
-                },
-            ));
+                }));
             assert_eq!(save.status, "failed");
             assert_safe_route_settings(&save.payload.settings);
         }
@@ -8631,7 +8595,7 @@ experimental_bearer_token = "{api_key}"
         for config_contents in invalid {
             let mut profile = canonical.clone();
             profile.config_contents = config_contents;
-            let result = tauri::async_runtime::block_on(super::test_relay_profile(profile.into()));
+            let result = crate::runtime::block_on(super::test_relay_profile(profile.into()));
             assert_eq!(result.status, "failed");
             assert_eq!(result.payload.http_status, 0);
             assert!(result.payload.endpoint.is_empty());
@@ -8651,10 +8615,9 @@ experimental_bearer_token = "{api_key}"
         ]);
         let profile = provider_test_profile(base_url, api_key);
 
-        let result = tauri::async_runtime::block_on(test_relay_profile_with_compatibility(
-            &profile, "gpt-test",
-        ))
-        .unwrap();
+        let result =
+            crate::runtime::block_on(test_relay_profile_with_compatibility(&profile, "gpt-test"))
+                .unwrap();
         let bodies = server.join().unwrap();
 
         assert_eq!(bodies.len(), 2);
@@ -8676,10 +8639,9 @@ experimental_bearer_token = "{api_key}"
         )]);
         let profile = provider_test_profile(base_url, "sk-manager-no-retry");
 
-        let result = tauri::async_runtime::block_on(test_relay_profile_with_compatibility(
-            &profile, "gpt-test",
-        ))
-        .unwrap();
+        let result =
+            crate::runtime::block_on(test_relay_profile_with_compatibility(&profile, "gpt-test"))
+                .unwrap();
         let bodies = server.join().unwrap();
 
         assert_eq!(bodies.len(), 1);
@@ -8721,7 +8683,7 @@ experimental_bearer_token = "{api_key}"
         profile.name = "Quick Test".to_string();
         profile.test_model = "gpt-test".to_string();
 
-        let result = tauri::async_runtime::block_on(super::test_relay_profile(profile.into()));
+        let result = crate::runtime::block_on(super::test_relay_profile(profile.into()));
         assert_eq!(result.status, "ok");
         assert_eq!(result.payload.http_status, 200);
         assert!(result.payload.compatibility_fallback_used);
@@ -8749,7 +8711,7 @@ experimental_bearer_token = "{api_key}"
         profile.name = "Doctor Test".to_string();
         profile.test_model = "gpt-test".to_string();
 
-        let result = tauri::async_runtime::block_on(super::diagnose_relay_profile(profile.into()));
+        let result = crate::runtime::block_on(super::diagnose_relay_profile(profile.into()));
         assert_eq!(result.status, "ok");
         assert!(result.payload.compatibility_fallback_used);
         assert_eq!(result.payload.initial_http_status, Some(400));
@@ -8781,7 +8743,7 @@ experimental_bearer_token = "{api_key}"
         let mut profile = provider_test_profile(base_url, "sk-doctor-rejected");
         profile.test_model = "gpt-test".to_string();
 
-        let result = tauri::async_runtime::block_on(super::diagnose_relay_profile(profile.into()));
+        let result = crate::runtime::block_on(super::diagnose_relay_profile(profile.into()));
         let bodies = server.join().unwrap();
 
         assert_eq!(bodies.len(), 2);
@@ -8813,7 +8775,7 @@ experimental_bearer_token = "{api_key}"
             r#"{{"auth_mode":"chatgpt","tokens":{{"access_token":"{oauth_token}","account_email":"{account_email}"}}}}"#
         );
 
-        let result = tauri::async_runtime::block_on(super::diagnose_relay_profile(profile.into()));
+        let result = crate::runtime::block_on(super::diagnose_relay_profile(profile.into()));
         let serialized = serde_json::to_string(&result).unwrap();
         server.join().unwrap();
 
@@ -8990,8 +8952,8 @@ mod command_settlement_tests {
 
     #[test]
     fn a_panicked_blocking_command_answers_the_caller_instead_of_dropping_the_reply() {
-        let result = tauri::async_runtime::block_on(async {
-            let task = tauri::async_runtime::spawn_blocking(|| -> CommandResult<Payload> {
+        let result = crate::runtime::block_on(async {
+            let task = crate::runtime::spawn_blocking(|| -> CommandResult<Payload> {
                 panic!("the blocking body panicked");
             });
             settle_blocking(task, "提交中断。", || Payload {
@@ -9007,8 +8969,8 @@ mod command_settlement_tests {
 
     #[test]
     fn a_completed_blocking_command_keeps_its_own_result() {
-        let result = tauri::async_runtime::block_on(async {
-            let task = tauri::async_runtime::spawn_blocking(|| {
+        let result = crate::runtime::block_on(async {
+            let task = crate::runtime::spawn_blocking(|| {
                 ok(
                     "done",
                     Payload {
