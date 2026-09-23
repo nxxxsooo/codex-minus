@@ -8,6 +8,9 @@
 
 ### 2026-09-23
 
+- **verify/distribution**: PR #50 passed all three platform checks for the Electron v0.5.0 candidate, including native Windows x64 installation and automatic upgrade from the published v0.4.18 NSIS package with preserved data/path ownership. Windows ARM64 evidence remains build/resource validation.
+  - refs: CI run `35872689671`, commit `9c16f90`, `openspec/changes/migrate-electron-redesign/`
+
 - **feat/desktop**: built and verified the v0.5.0 Electron/Bauhaus local release candidate with the existing Rust transaction core and the integrated session/image/long-context work.
   - verified: `npm run verify`（285 frontend＋38 desktop/release tests）, full Rust suite（370 tests）, signed macOS packaging, isolated packaged UI/IPC workflows, native headless update/rollback, and actual pinned Tauri updater download/signature/replacement into a disposable Electron bundle. Detailed evidence and ownership boundaries are in the OpenSpec change.
   - recovery: original uncommitted work remains in the pre-integration stash; PR #48/#49 ancestry is preserved by local merge commits. The installed `/Applications/Codex Minus.app` was not replaced. Native Windows acceptance and final native focus recheck are outside these local results.
