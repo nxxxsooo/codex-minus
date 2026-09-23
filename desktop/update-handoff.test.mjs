@@ -14,6 +14,9 @@ test("a helper must acknowledge readiness and receive an explicit commit", async
   const commit = await awaitUpdateHelperReady(child, 1_000);
   assert.equal(child.exitCode, null);
   commit();
+  // Production deliberately unrefs the helper so the manager can exit. This test still owns
+  // a wait for its fixture exit; retain it explicitly (Node 22 otherwise cancels the test).
+  child.ref();
   assert.equal(await closed, 0);
 });
 
