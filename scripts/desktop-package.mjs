@@ -43,6 +43,9 @@ await build({
 if (platform === "darwin") {
   const directory = join(root, "dist-desktop/mac-arm64");
   const app = join(directory, "Codex Minus.app");
+  // electron-builder skips its signing hook for PRs. This identity is deliberately ad-hoc and
+  // needs no private certificate; every review bundle must still have valid resource seals.
+  if (config.mac.identity === "-") await command("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", app]);
   if ((await inspectMacBundle(app)).version !== version) throw new Error("PackagedVersionMismatch");
   await command("/usr/bin/ditto", ["-c", "-k", "--sequesterRsrc", "--keepParent", app, join(root, `dist-desktop/CodexMinus_${version}_aarch64.app.zip`)]);
   // AppleDouble entries such as top-level ._Codex Minus.app break the legacy updater's

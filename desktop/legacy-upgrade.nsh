@@ -21,8 +21,9 @@
     ${EndIf}
     ReadRegStr $CodexLegacyPath HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex Minus" "InstallLocation"
     StrCpy $0 $CodexLegacyPath 1
-    ${If} $0 == '$"'
-      StrCpy $CodexLegacyPath $CodexLegacyPath -1 1
+    ${If} $0 == '"'
+      StrCpy $CodexLegacyPath $CodexLegacyPath "" 1
+      StrCpy $CodexLegacyPath $CodexLegacyPath -1
     ${EndIf}
     ${IfNot} ${FileExists} "$CodexLegacyPath\codex-minus.exe"
       SetErrorLevel 2
@@ -48,7 +49,7 @@
     ClearErrors
     ${GetOptions} $CMDLINE "/R" $0
     ${IfNot} ${Errors}
-      Exec '$"$INSTDIR\codex-minus.exe$"'
+      Exec '"$INSTDIR\codex-minus.exe"'
     ${EndIf}
     SetAutoClose true
   ${EndIf}

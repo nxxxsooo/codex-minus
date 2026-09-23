@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { spawn, execFile } from "node:child_process";
 import { createServer } from "node:net";
-import { mkdtemp, readFile, mkdir, rm, stat } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, mkdir, rm, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -40,8 +40,19 @@ if (native) {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, timeout: 15_000, windowsHide: true,
   });
   assert.deepEqual(JSON.parse(stdout.trim()), { electron: expected.devDependencies.electron, arch });
+  // Windows BaseDirs resolves FOLDERID_Profile rather than HOME/USERPROFILE overrides. The
+  // production isolation gate correctly rejects a fake home. Only an explicitly disposable CI
+  // profile may run this positive Windows smoke; require empty data directories before creation.
+  const profileFixture = platform === "win32";
+  if (profileFixture && (process.env.GITHUB_ACTIONS !== "true" || process.env.CODEX_MINUS_CI_PROFILE_TEST !== "1")) {
+    throw new Error("Windows core smoke requires an explicitly disposable CI user profile");
+  }
   await mkdir(join(homedir(), ".cache"), { recursive: true });
-  const home = await mkdtemp(join(homedir(), ".cache/cm-pkg-"));
+  const home = profileFixture ? homedir() : await mkdtemp(join(homedir(), ".cache/cm-pkg-"));
+  const owned = profileFixture ? [join(home, ".codex"), join(home, ".codex-session-delete")] : [home];
+  if (profileFixture) {
+    for (const path of owned) assert.equal(await lstat(path).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; }), false, "CI profile must not contain pre-existing Codex data");
+  }
   const server = createServer();
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const port = server.address().port;
@@ -55,6 +66,9 @@ if (native) {
     }), { expectedVersion: expected.version });
     await client.ready();
     assert.equal((await client.request("load_settings", {})).status, "ok");
-  } finally { await client?.stop(); await rm(home, { recursive: true, force: true }); }
+  } finally {
+    await client?.stop();
+    for (const path of owned) await rm(path, { recursive: true, force: true });
+  }
 }
 console.log(JSON.stringify({ version: packed.version, platform, arch, nativeRuntimeVerified: native, coreBytes: (await stat(core)).size, rendererArchiveBytes: (await stat(archive)).size }));

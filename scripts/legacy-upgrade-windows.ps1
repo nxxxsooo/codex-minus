@@ -18,10 +18,10 @@ $key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex Minus"
 $registered = Get-ItemProperty $key
 if ($registered.MainBinaryName -ne "codex-minus.exe" -or $registered.DisplayVersion -ne "0.4.18") { throw "Wrong legacy registration" }
 if ($registered.InstallLocation.Trim('"') -ne $destination) { throw "Legacy install path mismatch" }
-$env:USERPROFILE = Join-Path $root "home"
-$env:HOME = $env:USERPROFILE
-$env:CODEX_HOME = Join-Path $env:USERPROFILE ".codex"
-$data = Join-Path $env:USERPROFILE ".codex-session-delete"
+$profile = [Environment]::GetFolderPath("UserProfile")
+$env:CODEX_HOME = Join-Path $profile ".codex"
+$data = Join-Path $profile ".codex-session-delete"
+if ((Test-Path $env:CODEX_HOME) -or (Test-Path $data)) { throw "Disposable CI profile must not contain pre-existing Codex data" }
 New-Item -ItemType Directory -Force -Path $env:CODEX_HOME, $data | Out-Null
 $sentinels = @{
   (Join-Path $env:CODEX_HOME "auth.json") = "official-auth-sentinel"
@@ -38,6 +38,8 @@ if (Test-Path $key) { throw "Duplicate legacy uninstaller registration remains" 
 foreach ($item in $sentinels.GetEnumerator()) {
   if ([IO.File]::ReadAllText($item.Key) -ne $item.Value) { throw "Upgrade changed user data" }
 }
+# Only the directories this script created in the fresh CI profile are removed here.
+Remove-Item -Recurse -Force $env:CODEX_HOME, $data
 node scripts/verify-package.mjs "$destination" win32 x64
 if ($LASTEXITCODE -ne 0) { throw "Upgraded Electron package failed" }
 Write-Output '{"from":"0.4.18","legacyPathReused":true,"oldRegistryRetired":true,"dataUnchanged":true,"headlessRestart":true}'

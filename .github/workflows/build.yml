@@ -80,6 +80,8 @@ jobs:
     name: Windows ${{ matrix.arch }}
     runs-on: windows-latest
     timeout-minutes: 45
+    env:
+      CODEX_MINUS_CI_PROFILE_TEST: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -110,6 +112,9 @@ jobs:
       - name: Native Rust tests
         if: matrix.native
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }}
+      - name: Native stdio ownership in the disposable Windows profile
+        if: matrix.native
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --test stdio_runtime windows_ci_profile_roundtrip -- --ignored
       - name: Package Electron and matching Rust core
         run: node scripts/desktop-package.mjs win32 ${{ matrix.arch }}
       - name: Verify package architecture and native entry points where available
