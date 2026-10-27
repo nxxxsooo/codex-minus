@@ -39,6 +39,15 @@
   - verified: the shipped rows other than the documented Spark addition and 5.2 omission match `codex debug models --bundled` from official CLI 0.153.4; `npm run verify`, `npm run vite:build`, `cargo test` (304 library + 19 + 25 integration), `cargo fmt --all --check`, and `git diff --check` passed; no Sub2API account or OAuth credential was read, exported, refreshed, or changed
   - refs: `src-tauri/assets/official-model-catalog.json`, `src-tauri/src/model_catalog.rs`, `src/provider-onboarding.ts`, `src/model-catalog-ui.test.ts`
 
+### 2026-08-28
+
+- **release/windows**: released 0.4.17 and established the reusable Windows ARM64 verification lane for Pure API mode
+  - why: 0.4.16 restored the explicit no-account Pure API path and image-generation copy, while 0.4.17 stopped rewriting catalog and user-owned model display names; the Parallels test VM also carried stale Manager state and an unknown Windows password, so source and CI evidence alone were not enough for recovery
+  - did: merged PRs #43/#44, published `v0.4.16` and `v0.4.17`, installed the signed ARM64 NSIS release in the Windows 11 VM, reset the VM account password (stored in the maintainer's password manager), and configured this dedicated test VM for Winlogon automatic login; real Sub2API Responses traffic used a server-owned active key without persisting it into the normal VM profile
+  - verified: tag workflows passed macOS arm64, Windows x64, Windows arm64, and Create Release; the VM executable reported product/file version 0.4.17 and ran in the Windows console session; a cold VM reset produced a fresh `mingjian / console / Active` session without keyboard input; temporary Pure API `CODEX_HOME` directories and transient keys were absent after cleanup
+  - not verified: the complete new-provider GUI save path against a real key remained blocked by the VM's pre-existing Manager safety-check state, and Parallels Tools did not reliably return the final Codex CLI stdout marker even though server-side key usage proved the Windows request reached Sub2API
+  - refs: PR #43, PR #44, tags `v0.4.16`/`v0.4.17`
+
 ### 2026-08-23
 
 - **fix/catalog**: preserve catalog and user-owned model display names in the Manager model table

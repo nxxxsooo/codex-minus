@@ -36,4 +36,4 @@ Trimmed fork of upstream Codex++ Manager (`BigPizzaV3/CodexPlusPlus`, `apps/code
 
 ## Role Separation
 - Completed-work history → `BOARD.md` (append-only changelog)
-- Active tasks → OmniFocus (`Personal/Projects-Dev`)
+- Active tasks → toodo
