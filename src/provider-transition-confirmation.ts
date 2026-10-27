@@ -13,6 +13,9 @@ export function providerTransitionConfirmationMessage(
   if (pending.transition.action === "exitPureApi") {
     return t("切换到纯 API 后不再需要官方登录：只用中转 Key 请求，移除本管理器的 Actor 标记，模型目录切为仅自定义，不再声明官方登录派生的原生能力。确认后只更新草稿，仍需点击保存或设为当前才会生效。是否继续？");
   }
+  if (pending.transition.action === "enableImageGeneration") {
+    return t("启用图像工具将切换为纯 API：不再要求官方登录，移除本管理器的 Actor 标记，并开启 image_generation。保留模型目录，保存后生效。是否继续？");
+  }
   if (pending.transition.action === "exitPureOAuth") {
     const providerId = state.preview?.removedProviderId || t("当前自定义供应商");
     const fields = state.preview?.removedProviderFields.join("、") || t("全部供应商字段");

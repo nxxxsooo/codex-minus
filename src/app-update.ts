@@ -33,14 +33,14 @@ export function appUpdatePhaseAfterEvent(
 
 export type AppUpdateBanner = {
   text: { key: string; args: Array<string | number> };
-  action: "更新并重启" | "重试" | null;
+  action: "安装更新" | "重试" | null;
 };
 
 export function appUpdateBanner(phase: AppUpdatePhase): AppUpdateBanner {
   const version = `v${phase.version}`;
   switch (phase.kind) {
     case "available":
-      return { text: { key: "发现新版本 {0}，可以直接更新到这一版。", args: [version] }, action: "更新并重启" };
+      return { text: { key: "发现新版本 {0}，可以直接更新到这一版。", args: [version] }, action: "安装更新" };
     case "downloading": {
       const percent = downloadPercent(phase.received, phase.total);
       return {
@@ -52,7 +52,7 @@ export function appUpdateBanner(phase: AppUpdatePhase): AppUpdateBanner {
       };
     }
     case "installing":
-      return { text: { key: "正在安装 {0}，装好后会自动重启。", args: [version] }, action: null };
+      return { text: { key: "正在准备安装 {0}，管理器随后退出并交给安装程序。", args: [version] }, action: null };
     case "failed":
       return { text: { key: "更新到 {0} 没有成功，可以重试。", args: [version] }, action: "重试" };
   }
@@ -63,6 +63,9 @@ export function appUpdateBanner(phase: AppUpdatePhase): AppUpdateBanner {
 // replace its own bundle and fails with EROFS. The raw "os error 30" names the symptom but
 // not the one-time fix, which is worth a sentence of its own.
 export function appUpdateInstallFailureGuidance(rawError: string): string | null {
+  if (rawError.includes("UpdateLocationNotWritable")) {
+    return "更新无法写入当前安装位置。请将 app 放入你有写入权限的「应用程序」目录，再启动并重试。";
+  }
   if (/os error 30|read-only file system|apptranslocation/i.test(rawError)) {
     return "更新无法写入：应用正从 macOS 隔离的只读位置运行。用 Finder 把 app 拖入「应用程序」后重新启动，或执行 xattr -dr com.apple.quarantine 后重试；处理一次后后续更新即可正常。";
   }

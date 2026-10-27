@@ -1,7 +1,7 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
-  "entry": ["src/**/*.test.ts"],
-  "project": ["src/**/*.{ts,tsx}", "*.config.ts"],
+  "entry": ["src/**/*.test.ts", "desktop/main.mjs", "desktop/preload.cjs", "desktop/update-helper.mjs", "desktop/*.test.mjs", "scripts/desktop-dev.mjs", "scripts/desktop-package.mjs", "scripts/electron-release-manifest.mjs"],
+  "project": ["src/**/*.{ts,tsx}", "desktop/*.{mjs,cjs}", "scripts/desktop-dev.mjs", "*.config.ts"],
   "ignore": ["src/components/ui/**"],
   "rules": {
     "types": "warn"

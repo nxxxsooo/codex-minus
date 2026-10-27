@@ -6,14 +6,47 @@
 
 ## Changelog
 
+### 2026-09-23
+
+- **verify/distribution**: PR #50 passed all three platform checks for the Electron v0.5.0 candidate, including native Windows x64 installation and automatic upgrade from the published v0.4.18 NSIS package with preserved data/path ownership. Windows ARM64 evidence remains build/resource validation.
+  - refs: CI run `35872689671`, commit `9c16f90`, `openspec/changes/migrate-electron-redesign/`
+
+- **feat/desktop**: built and verified the v0.5.0 Electron/Bauhaus local release candidate with the existing Rust transaction core and the integrated session/image/long-context work.
+  - verified: `npm run verify`（285 frontend＋38 desktop/release tests）, full Rust suite（370 tests）, signed macOS packaging, isolated packaged UI/IPC workflows, native headless update/rollback, and actual pinned Tauri updater download/signature/replacement into a disposable Electron bundle. Detailed evidence and ownership boundaries are in the OpenSpec change.
+  - recovery: original uncommitted work remains in the pre-integration stash; PR #48/#49 ancestry is preserved by local merge commits. The installed `/Applications/Codex Minus.app` was not replaced. Native Windows acceptance and final native focus recheck are outside these local results.
+  - refs: `openspec/changes/migrate-electron-redesign/`, `scripts/desktop-smoke.mjs`, `scripts/update-macos-smoke.mjs`, `scripts/legacy-updater-smoke.mjs`
+
+- **fix/catalog**: integrated the model-list and long-context changes into the running Electron review build
+  - what: four-model preset now uses Astra, GPT-6 Sol, GPT-5.6 Terra and GPT-6 Luna; new/explicitly restored custom-only rows use catalog display names; candidates are collapsed and same-slug rows render once
+  - evidence: models.dev and official Codex docs confirm the September 22 Sol/Luna release; the downloaded OpenAI-signed CLI 0.156.0 still lacks their bundled rows, so they are source-marked supplemental custom cards rather than synthesized official entries
+  - verified: `npm run verify`（263 frontend + 10 Electron transport tests）, Rust core build, Vite build, and real Electron → IPC → Rust → disk smoke; confirmed four IDs and names after save/reopen, both generated context limits at 1,050,000, Context/auth preservation, reconnect, stale-save rejection and routing-disabled saves; the user's isolated Electron preview home was reopened and its existing test provider explicitly restored to the new list
+  - boundary: this is the Electron worktree review build; the published release and `/Applications/Codex Minus.app` are unchanged
+  - refs: `src/supplemental-openai-models.ts`, `src/catalog-workflow.test.ts`, `scripts/desktop-smoke.mjs`, `output/catalog-electron-current.png`
+
+### 2026-09-22
+
+- **feat/sessions**: implemented permanent single/selected-session deletion without backups and “clear all archives” across pagination in `codex/session-cleanup`.
+  - why: the existing delete path retained backup copies; cleanup now removes the selected rollout files and related database rows, rechecks archived-only eligibility, and reports incomplete items for retry.
+  - verified: `npm run verify` (256 tests), `npm run vite:build`, `cargo test` (312 library + 44 integration), Rust formatting and diff checks; isolated SQLite/file fixtures cover related rows, duplicate databases, active-session preservation, invalid paths, SQL failures and unlink failures. Browser smoke with mocked IPC covered cancellation, 201 archives across pages, busy controls, refresh and selected active deletion.
+  - boundary: source implementation only; native packaged-app click-through, release and installation are not part of this verification. Permanent deletion creates no recovery copy; partial file removal cannot be rolled back.
+  - refs: `src/session-cleanup.ts`, `src/session-cleanup.test.ts`, `src-tauri/src/session_cleanup.rs`
+
+### 2026-09-12
+
+- **fix/catalog**: refresh the bundled official catalog for GPT-6 Astra and keep the maintained Pro preset current
+  - what: replaced the 0.147.0 baseline with the verified official Codex CLI 0.153.4 bundled output, added `gpt-6-astra` to the Pro restore list, retained the server-only `gpt-5.3-codex-spark` row, kept deprecated `gpt-5.2` retired, and raised the target CLI capability floor to Astra's required 0.153.0; Terra remains the new-provider and legacy-repair default
+  - why: 0.4.17 predated Astra, so a managed official catalog and the one-click Pro repair could not represent the newly released model; the bundled CLI still exposes deprecated 5.2, so copying it mechanically would undo an existing catalog-continuity contract
+  - verified: the shipped rows other than the documented Spark addition and 5.2 omission match `codex debug models --bundled` from official CLI 0.153.4; `npm run verify`, `npm run vite:build`, `cargo test` (304 library + 19 + 25 integration), `cargo fmt --all --check`, and `git diff --check` passed; no Sub2API account or OAuth credential was read, exported, refreshed, or changed
+  - refs: `src-tauri/assets/official-model-catalog.json`, `src-tauri/src/model_catalog.rs`, `src/provider-onboarding.ts`, `src/model-catalog-ui.test.ts`
+
 ### 2026-08-28
 
 - **release/windows**: released 0.4.17 and established the reusable Windows ARM64 verification lane for Pure API mode
   - why: 0.4.16 restored the explicit no-account Pure API path and image-generation copy, while 0.4.17 stopped rewriting catalog and user-owned model display names; the Parallels test VM also carried stale Manager state and an unknown Windows password, so source and CI evidence alone were not enough for recovery
-  - did: merged PRs #43/#44, published `v0.4.16` and `v0.4.17`, installed the signed ARM64 NSIS release in the Windows 11 VM, reset and stored the `mingjian` VM password in Bitwarden item `Windows 11 (Parallels)`, and configured this dedicated test VM for Winlogon automatic login; real Sub2API Responses traffic used a server-owned active key without persisting it into the normal VM profile
+  - did: merged PRs #43/#44, published `v0.4.16` and `v0.4.17`, installed the signed ARM64 NSIS release in the Windows 11 VM, reset the VM account password (stored in the maintainer's password manager), and configured this dedicated test VM for Winlogon automatic login; real Sub2API Responses traffic used a server-owned active key without persisting it into the normal VM profile
   - verified: tag workflows passed macOS arm64, Windows x64, Windows arm64, and Create Release; the VM executable reported product/file version 0.4.17 and ran in the Windows console session; a cold VM reset produced a fresh `mingjian / console / Active` session without keyboard input; temporary Pure API `CODEX_HOME` directories and transient keys were absent after cleanup
   - not verified: the complete new-provider GUI save path against a real key remained blocked by the VM's pre-existing Manager safety-check state, and Parallels Tools did not reliably return the final Codex CLI stdout marker even though server-side key usage proved the Windows request reached Sub2API
-  - refs: PR #43, PR #44, tags `v0.4.16`/`v0.4.17`, `Vault/Notes/tech/macos/parallels-win11-ssh-access.md`, Bitwarden `Windows 11 (Parallels)`
+  - refs: PR #43, PR #44, tags `v0.4.16`/`v0.4.17`
 
 ### 2026-08-23
 

@@ -194,6 +194,16 @@ export function beginProviderDetailInspection<P extends ProviderDetailProfile>(
   };
 }
 
+export function beginProviderDetailImageGeneration<P extends ProviderDetailProfile>(
+  state: ProviderDetailDraftState<P>, enabled: boolean,
+): ProviderDetailStep<P> {
+  return beginProviderDetailEdit(state, {
+    patch: {},
+    target: { target: "preserveExisting", source: "existing" },
+    transition: { action: enabled ? "enableImageGeneration" : "disableImageGeneration", confirmations: [] },
+  });
+}
+
 export function beginProviderDetailNativePriorityUpgrade<
   P extends ProviderDetailProfile,
 >(state: ProviderDetailDraftState<P>): ProviderDetailStep<P> {
@@ -678,6 +688,7 @@ function confirmationForResponse(
     && blockers[0] === "capabilityLossConfirmationRequired"
     && (
       action === "exitPureApi"
+      || action === "enableImageGeneration"
       || action === "exitLegacyCompatibility"
     )
   ) return "confirmCapabilityLoss";

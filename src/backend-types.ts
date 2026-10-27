@@ -266,12 +266,9 @@ export type ProviderCompatibilityResult = CommandResult<{
   archivedRolloutsTraversed: number;
 }>;
 
-export type DeleteLocalSessionResult = CommandResult<{
-  status: string;
-  session_id: string;
-  message: string;
-  undo_token: string | null;
-  backup_path: string | null;
+export type SessionCleanupResult = CommandResult<{
+  deletedCount: number;
+  failures: { sessionId: string; message: string }[];
 }>;
 
 export type ExtractRelayCommonConfigResult = CommandResult<{

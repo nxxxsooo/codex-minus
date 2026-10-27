@@ -68,8 +68,9 @@ describe("provider detail draft wiring", () => {
 
   it("consumes compatibility-exit preview confirmation only through the draft state machine", () => {
     assert.match(source, /response\.status === "confirmationRequired"/);
-    assert.match(source, /window\.confirm\(providerTransitionConfirmationMessage\(settled\.state\)\)/);
-    assert.match(source, /confirmProviderDetailTransition\(settled\.state\)/);
-    assert.match(source, /cancelProviderDetailTransition\(settled\.state\)/);
+    assert.match(source, /await confirmDesktop\(providerTransitionConfirmationMessage\(settled\.state\)\)/);
+    assert.match(source, /providerConfirmationStillCurrent\(detailStateRef\.current, settled\.state\)/);
+    assert.match(source, /confirmProviderDetailTransition\(detailStateRef\.current\)/);
+    assert.match(source, /cancelProviderDetailTransition\(detailStateRef\.current\)/);
   });
 });
